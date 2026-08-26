@@ -1,0 +1,13 @@
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+DO $$ BEGIN CREATE TYPE user_role AS ENUM ('OWNER', 'BRANCH_MANAGER'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE TYPE record_status AS ENUM ('ACTIVE', 'INACTIVE'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+CREATE TABLE IF NOT EXISTS branches (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), code varchar(20) NOT NULL UNIQUE, name varchar(120) NOT NULL, location varchar(255) NOT NULL, status record_status NOT NULL DEFAULT 'ACTIVE', created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS users (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), branch_id uuid REFERENCES branches(id) ON DELETE RESTRICT, first_name varchar(80) NOT NULL, last_name varchar(80) NOT NULL, email varchar(255) NOT NULL, username varchar(80) NOT NULL, password_hash text NOT NULL, role user_role NOT NULL, status record_status NOT NULL DEFAULT 'ACTIVE', last_login_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), CONSTRAINT users_role_branch_check CHECK ((role = 'OWNER' AND branch_id IS NULL) OR (role = 'BRANCH_MANAGER' AND branch_id IS NOT NULL)));
+CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_uq ON users (lower(email));
+CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_uq ON users (lower(username));
+CREATE INDEX IF NOT EXISTS users_branch_idx ON users (branch_id);
+CREATE INDEX IF NOT EXISTS users_status_idx ON users (status);
+CREATE TABLE IF NOT EXISTS audit_logs (id bigserial PRIMARY KEY, user_id uuid REFERENCES users(id) ON DELETE SET NULL, branch_id uuid REFERENCES branches(id) ON DELETE SET NULL, action varchar(80) NOT NULL, entity_type varchar(80) NOT NULL, entity_id text, description text NOT NULL, metadata jsonb NOT NULL DEFAULT '{}'::jsonb, created_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX IF NOT EXISTS audit_logs_user_idx ON audit_logs (user_id);
+CREATE INDEX IF NOT EXISTS audit_logs_branch_idx ON audit_logs (branch_id);
+CREATE INDEX IF NOT EXISTS audit_logs_created_idx ON audit_logs (created_at DESC);
