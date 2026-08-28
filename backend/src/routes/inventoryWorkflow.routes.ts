@@ -4,6 +4,7 @@ import {
   getExpectedInventory,
   getShrinkageReport,
   importPosSales,
+  listPosImports,
   listInventoryCounts,
   listInventoryVariances,
   listNotifications,
@@ -18,6 +19,7 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 
 export const posSalesRouter = Router();
 posSalesRouter.use(authenticate);
+posSalesRouter.get("/", asyncHandler(listPosImports));
 posSalesRouter.post("/import", authorize("BRANCH_MANAGER"), asyncHandler(importPosSales));
 
 export const inventoryWorkflowRouter = Router();

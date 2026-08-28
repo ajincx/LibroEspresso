@@ -48,7 +48,7 @@ export function InventoryCountPage() {
     </div>
 
     {submitted ? <CountResult countNo={submitted.countNo} items={submitted.items} onInvestigate={(item) => item.shrinkageReportId && navigate(`/shrinkage?reportId=${item.shrinkageReportId}`)} onNewCount={() => void loadExpected()} /> : <div className="rounded-2xl border overflow-hidden" style={{ borderColor: "var(--app-border)", background: "var(--app-surface)" }}>
-      <div className="overflow-x-auto"><table className="w-full text-sm"><thead style={{ background: "var(--app-bg)" }}><tr>{["SKU", "Ingredient", "Previous Actual", "Received", "Recipe Consumption", "Expected Stock", "Physical Count", "Preview Variance"].map((heading) => <th key={heading} className="px-4 py-3 text-left text-xs whitespace-nowrap" style={{ color: "var(--app-text-muted)" }}>{heading}</th>)}</tr></thead>
+      <div className="overflow-x-auto"><table className="data-table w-full text-sm"><thead style={{ background: "var(--app-bg)" }}><tr>{["SKU", "Ingredient", "Previous Actual", "Received", "Recipe Consumption", "Expected Stock", "Physical Count", "Preview Variance"].map((heading) => <th key={heading} className="px-4 py-3 text-left text-xs whitespace-nowrap" style={{ color: "var(--app-text-muted)" }}>{heading}</th>)}</tr></thead>
         <tbody>{expected.map((item) => {
           const variance = (actual[item.inventoryItemId] ?? 0) - item.expectedQuantity;
           return <tr key={item.inventoryItemId} className="border-t" style={{ borderColor: "var(--app-border)" }}>

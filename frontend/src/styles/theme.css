@@ -1,5 +1,16 @@
 @custom-variant dark (&:is(.dark *));
 
+/* Keep every data value aligned with the start of its column heading. */
+.data-table th,
+.data-table td {
+  text-align: left;
+}
+
+/* Preserve centered messages that intentionally span the complete table. */
+.data-table td.text-center {
+  text-align: center;
+}
+
 :root {
   color-scheme: light;
   --app-bg: #f8f5f5;

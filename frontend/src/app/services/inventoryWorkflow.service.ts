@@ -1,5 +1,5 @@
 import type { ApiSuccess } from "../types/auth";
-import type { CountVarianceItem, ExpectedInventoryItem, ShrinkageClassification, ShrinkageReport, VarianceRecord, WorkflowNotification } from "../types/inventoryWorkflow";
+import type { CountVarianceItem, ExpectedInventoryItem, PosImportRecord, ShrinkageClassification, ShrinkageReport, VarianceRecord, WorkflowNotification } from "../types/inventoryWorkflow";
 import { api } from "./api";
 
 export const inventoryWorkflowService = {
@@ -23,6 +23,9 @@ export const inventoryWorkflowService = {
   },
   async importPosSales(input: { businessDate: string; sourceFilename: string; items: { menuItemId: string; quantitySold: number }[] }) {
     return (await api.post<ApiSuccess<{ importId: string; consumption: { inventoryItemId: string; sku: string; name: string; unit: string; expectedConsumption: number }[] }>>("/pos-sales/import", input)).data.data;
+  },
+  async posImports(branchId?: string) {
+    return (await api.get<ApiSuccess<{ imports: PosImportRecord[] }>>("/pos-sales", { params: { branchId } })).data.data.imports;
   },
   async notifications() {
     return (await api.get<ApiSuccess<{ notifications: WorkflowNotification[] }>>("/notifications")).data.data.notifications;

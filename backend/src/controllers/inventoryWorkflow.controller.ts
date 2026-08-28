@@ -27,6 +27,17 @@ export const importPosSales: RequestHandler = async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    const existingImport = await client.query<{ id: string }>(
+      `SELECT id FROM pos_imports WHERE branch_id=$1 AND business_date=$2 AND source_filename=$3 LIMIT 1`,
+      [branchId, input.businessDate, input.sourceFilename],
+    );
+    if (existingImport.rowCount) {
+      throw new AppError(
+        409,
+        "POS_IMPORT_DUPLICATE",
+        `The file ${input.sourceFilename} was already imported for ${input.businessDate}`,
+      );
+    }
     const menuIds = input.items.map((item) => item.menuItemId);
     const recipeCheck = await client.query<{
       id: string; name: string; recipeId: string | null; ingredientCount: number; unitsMatch: boolean | null;
@@ -74,10 +85,41 @@ export const importPosSales: RequestHandler = async (req, res) => {
     res.status(201).json({ success: true, data: { importId, branchId, businessDate: input.businessDate, consumption: consumption.rows } });
   } catch (error) {
     await client.query("ROLLBACK");
+    if ((error as { code?: string }).code === "23505") {
+      throw new AppError(
+        409,
+        "POS_IMPORT_DUPLICATE",
+        `The file ${input.sourceFilename} was already imported for ${input.businessDate}`,
+      );
+    }
     throw error;
   } finally {
     client.release();
   }
+};
+
+export const listPosImports: RequestHandler = async (req, res) => {
+  const requestedBranchId = typeof req.query.branchId === "string" ? req.query.branchId : undefined;
+  const branchId = getEffectiveBranchId(req.user!, requestedBranchId);
+  const result = await pool.query(
+    `SELECT pi.id,pi.business_date::text "businessDate",pi.source_filename "sourceFilename",
+            pi.imported_at "importedAt",b.id "branchId",b.name "branchName",
+            concat(u.first_name,' ',u.last_name) "importedBy",
+            count(psi.id)::int "productLines",
+            coalesce(sum(psi.quantity_sold),0)::float8 "unitsSold",
+            coalesce(sum(psi.quantity_sold*mi.selling_price),0)::float8 "totalSales"
+       FROM pos_imports pi
+       JOIN branches b ON b.id=pi.branch_id
+       JOIN users u ON u.id=pi.imported_by
+       LEFT JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
+       LEFT JOIN menu_items mi ON mi.id=psi.menu_item_id
+      ${branchId ? "WHERE pi.branch_id=$1" : ""}
+      GROUP BY pi.id,b.id,u.id
+      ORDER BY pi.business_date DESC,pi.imported_at DESC
+      LIMIT 100`,
+    branchId ? [branchId] : [],
+  );
+  res.json({ success: true, data: { imports: result.rows } });
 };
 
 export const createInventoryMovement: RequestHandler = async (req, res) => {
@@ -111,6 +153,17 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    const existingCount = await client.query<{ countNo: string }>(
+      `SELECT count_no "countNo" FROM inventory_counts WHERE branch_id=$1 AND count_date=$2 LIMIT 1`,
+      [branchId, input.countDate],
+    );
+    if (existingCount.rowCount) {
+      throw new AppError(
+        409,
+        "INVENTORY_COUNT_DUPLICATE",
+        `Physical count ${existingCount.rows[0]!.countNo} was already submitted for ${input.countDate}`,
+      );
+    }
     const countNoResult = await client.query<{ countNo: string }>(`SELECT 'IC-'||to_char($1::date,'YYYY')||'-'||lpad(nextval('inventory_count_number_seq')::text,5,'0') "countNo"`, [input.countDate]);
     const count = await client.query<{ id: string; countNo: string }>(
       `INSERT INTO inventory_counts (count_no,branch_id,count_date,submitted_by) VALUES ($1,$2,$3,$4) RETURNING id,count_no "countNo"`,
@@ -163,6 +216,13 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
     res.status(201).json({ success: true, data: { count: { ...count.rows[0], branchId, countDate: input.countDate, items: countItems } } });
   } catch (error) {
     await client.query("ROLLBACK");
+    if ((error as { code?: string }).code === "23505") {
+      throw new AppError(
+        409,
+        "INVENTORY_COUNT_DUPLICATE",
+        `A physical count was already submitted for ${input.countDate}`,
+      );
+    }
     throw error;
   } finally {
     client.release();

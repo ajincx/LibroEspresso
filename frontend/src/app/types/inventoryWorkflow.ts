@@ -12,6 +12,19 @@ export interface ExpectedInventoryItem {
   baselineDate: string;
 }
 
+export interface PosImportRecord {
+  id: string;
+  businessDate: string;
+  sourceFilename: string;
+  importedAt: string;
+  branchId: string;
+  branchName: string;
+  importedBy: string;
+  productLines: number;
+  unitsSold: number;
+  totalSales: number;
+}
+
 export interface CountVarianceItem {
   id: string;
   inventoryItemId: string;

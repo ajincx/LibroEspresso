@@ -16,6 +16,7 @@ import { MessagesPage } from "./pages/messages/MessagesPage";
 import { inventoryWorkflowService } from "./services/inventoryWorkflow.service";
 import { masterDataService } from "./services/masterData.service";
 import type { MenuItem } from "./types/masterData";
+import type { PosImportRecord } from "./types/inventoryWorkflow";
 import {
   LayoutDashboard, ShoppingCart, Package, AlertTriangle,
   TrendingDown, FileText, BarChart3, Sparkles,
@@ -27,7 +28,7 @@ import {
   TrendingUp, DollarSign, Activity, Lock,
   ClipboardList, GitCompare, BarChart2, Hash,
   Percent, Minus, RefreshCw, Filter, Calendar,
-  Database, Inbox, ChevronUp, Moon, Sun, UtensilsCrossed, MessageCircle
+  Database, Inbox, ChevronUp, Moon, Sun, MessageCircle
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -604,12 +605,14 @@ function EmptyState({ icon: Icon, title, body, action, onAction }: {
 const ownerNav = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "sales", label: "Sales Analysis", icon: ShoppingCart },
-  { id: "menu", label: "Menu & Recipes", icon: UtensilsCrossed },
   { id: "inventory-group", label: "Inventory", icon: Package, children: [
     { id: "inventory", label: "Overview" },
+    { id: "menu", label: "Menu & Standard Recipes" },
     { id: "master-data", label: "Master Data" },
-    { id: "shrinkage", label: "Shrinkage" },
-    { id: "variance", label: "Variance" },
+  ]},
+  { id: "shrinkage-group", label: "Shrinkage", icon: TrendingDown, children: [
+    { id: "variance", label: "Variance & Discrepancies" },
+    { id: "shrinkage", label: "Classification & Investigation" },
   ]},
   { id: "purchase-orders", label: "Purchase Orders", icon: ClipboardList },
   { id: "cogs", label: "COGS Analysis", icon: BarChart2 },
@@ -624,12 +627,14 @@ const ownerNav = [
 const managerNav = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "sales", label: "Sales Analysis", icon: ShoppingCart },
-  { id: "menu", label: "Menu & Recipes", icon: UtensilsCrossed },
   { id: "inventory-group", label: "Inventory", icon: Package, children: [
     { id: "inventory", label: "Overview" },
     { id: "physical-count", label: "Physical Count" },
-    { id: "shrinkage", label: "Shrinkage" },
-    { id: "variance", label: "Variance" },
+    { id: "menu", label: "Menu & Standard Recipes" },
+  ]},
+  { id: "shrinkage-group", label: "Shrinkage", icon: TrendingDown, children: [
+    { id: "variance", label: "Variance & Discrepancies" },
+    { id: "shrinkage", label: "Classification & Investigation" },
   ]},
   { id: "purchase-orders", label: "Purchase Orders", icon: ClipboardList },
   { id: "cogs", label: "COGS Analysis", icon: BarChart2 },
@@ -645,6 +650,11 @@ function Sidebar({ role, page, onNavigate, collapsed, onToggle }: {
   const { user } = useAuth();
   const [expanded, setExpanded] = useState<string[]>(["inventory-group"]);
   const nav = role === "owner" ? ownerNav : managerNav;
+
+  useEffect(() => {
+    const activeGroup = nav.find((item: any) => item.children?.some((child: any) => child.id === page));
+    if (activeGroup) setExpanded((current) => current.includes(activeGroup.id) ? current : [...current, activeGroup.id]);
+  }, [nav, page]);
 
   const toggleGroup = (id: string) => setExpanded(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]);
   const isActive = (id: string) => id === page;
@@ -741,9 +751,9 @@ function Sidebar({ role, page, onNavigate, collapsed, onToggle }: {
 // ─── Top Header ────────────────────────────────────────────────────────────────
 const pageTitles: Record<Page, string> = {
   login: "Login", dashboard: "Dashboard", sales: "Sales Analysis",
-  menu: "Menu & Recipes",
+  menu: "Menu & Standard Recipes",
   inventory: "Inventory Overview", "physical-count": "Physical Count",
-  shrinkage: "Shrinkage Monitoring", variance: "Variance Monitoring",
+  shrinkage: "Classification & Investigation", variance: "Variance & Discrepancies",
   "purchase-orders": "Purchase Orders", cogs: "COGS Analysis",
   predictive: "Predictive Analytics", reports: "Reports",
   users: "User Management", branches: "Branch Management", settings: "Settings", "master-data": "Inventory Master Data",
@@ -1335,7 +1345,7 @@ function OwnerDashboard({ onNavigate }: { onNavigate: (p: Page) => void }) {
           </div>
           {loading ? <SkeletonTable rows={4} cols={6} /> : (
             <div className="overflow-x-auto">
-              <table className="w-full">
+              <table className="data-table w-full">
                 <THead cols={["Item", "Branch", "Alert Type", "Stock / Threshold", "Detected", "Severity"]} />
                 <tbody>
                   {[
@@ -1366,7 +1376,7 @@ function OwnerDashboard({ onNavigate }: { onNavigate: (p: Page) => void }) {
           </div>
           {loading ? <SkeletonTable rows={5} cols={4} /> : (
             <div className="overflow-x-auto">
-              <table className="w-full">
+              <table className="data-table w-full">
                 <THead cols={["Branch", "Sales", "Margin", "Shrinkage"]} />
                 <tbody>
                   {branchPerf.map((b, i) => (
@@ -1533,7 +1543,7 @@ function ManagerDashboard({ onNavigate }: { onNavigate: (p: Page) => void }) {
             <Btn variant="ghost" size="sm" onClick={() => onNavigate("inventory")}>View all</Btn>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full">
+              <table className="data-table w-full">
               <THead cols={["SKU", "Item", "On Hand", "Reorder", "Status", "Action"]} />
               <tbody>
                 {inventoryItems.filter(i => i.status !== "healthy").map(item => (
@@ -1739,13 +1749,19 @@ function SpoilageModal({ onClose, onSave }: { onClose: () => void; onSave: () =>
 
 // ─── Sales Analysis ────────────────────────────────────────────────────────────
 function SalesAnalysis({ role }: { role: Role }) {
+  const localToday = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
   const [uploadStep, setUploadStep] = useState<"idle" | "select" | "preview" | "done">("idle");
   const [posMenu, setPosMenu] = useState<MenuItem[]>([]);
   const [posLines, setPosLines] = useState<{ menuItemId: string; product: string; quantitySold: number }[]>([]);
   const [posFilename, setPosFilename] = useState("");
+  const [posBusinessDate, setPosBusinessDate] = useState(localToday);
   const [posImportError, setPosImportError] = useState("");
   const [posImporting, setPosImporting] = useState(false);
   const [posConsumption, setPosConsumption] = useState<{ name: string; unit: string; expectedConsumption: number }[]>([]);
+  const [posImports, setPosImports] = useState<PosImportRecord[]>([]);
+  const [posHistoryLoading, setPosHistoryLoading] = useState(true);
+  const [posImportSearch, setPosImportSearch] = useState("");
+  const [posBranchFilter, setPosBranchFilter] = useState("All Branches");
   const [tab, setTab] = useState("overview");
   const [range, setRange] = useState<DashboardRange>("mtd");
   const [comparison, setComparison] = useState<DashboardComparison>("previous");
@@ -1761,6 +1777,22 @@ function SalesAnalysis({ role }: { role: Role }) {
     if (role !== "manager") return;
     void masterDataService.menuItems().then((items) => setPosMenu(items.filter((item) => item.status === "ACTIVE"))).catch(() => setPosMenu([]));
   }, [role]);
+
+  useEffect(() => {
+    setPosHistoryLoading(true);
+    void inventoryWorkflowService.posImports()
+      .then(setPosImports)
+      .catch(() => setPosImports([]))
+      .finally(() => setPosHistoryLoading(false));
+  }, [role]);
+
+  const visiblePosImports = posImports.filter((item) => {
+    const matchesBranch = posBranchFilter === "All Branches" || item.branchName === posBranchFilter;
+    const query = posImportSearch.trim().toLowerCase();
+    const matchesSearch = !query || [item.sourceFilename, item.branchName, item.importedBy, item.businessDate]
+      .some((value) => value.toLowerCase().includes(query));
+    return matchesBranch && matchesSearch;
+  });
 
   const selectPosFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -1799,11 +1831,12 @@ function SalesAnalysis({ role }: { role: Role }) {
     setPosImporting(true); setPosImportError("");
     try {
       const result = await inventoryWorkflowService.importPosSales({
-        businessDate: new Date().toISOString().slice(0, 10),
+        businessDate: posBusinessDate,
         sourceFilename: posFilename,
         items: posLines.map(({ menuItemId, quantitySold }) => ({ menuItemId, quantitySold })),
       });
       setPosConsumption(result.consumption);
+      void inventoryWorkflowService.posImports().then(setPosImports);
       setUploadStep("done");
     } catch (reason) {
       setPosImportError(reason instanceof Error ? reason.message : "Unable to import POS sales.");
@@ -1890,39 +1923,32 @@ function SalesAnalysis({ role }: { role: Role }) {
         <Card padding={false}>
           <div className="px-5 pt-5 pb-3">
             <div className="flex items-center gap-2 mb-4">
-              <SearchInput placeholder="Search imports…" />
-              {role === "owner" && <Select options={["All Branches", "Gulod", "Lipa", "Vermosa", "Tagaytay", "Evo"]} />}
-              <Select options={["All Status", "Imported", "Pending", "Failed", "Duplicate"]} />
+              <SearchInput placeholder="Search imports…" value={posImportSearch} onChange={setPosImportSearch} />
+              {role === "owner" && <Select options={["All Branches", "Gulod", "Lipa", "Vermosa", "Tagaytay", "Evo"]} value={posBranchFilter} onChange={setPosBranchFilter} />}
             </div>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full">
+              <table className="data-table w-full">
               <THead cols={role === "owner"
-                ? ["Branch", "Business Date", "Filename", "Uploaded By", "Time", "Transactions", "Status"]
-                : ["Business Date", "Filename", "Upload Time", "Transactions", "Total Sales", "Status"]} />
+                ? ["Branch", "Business Date", "Filename", "Uploaded By", "Time", "Units Sold", "Total Sales", "Status"]
+                : ["Business Date", "Filename", "Upload Time", "Units Sold", "Total Sales", "Status"]} />
               <tbody>
-                {[
-                  { branch: "Lipa", date: "Aug 26, 2026", file: "lipa_20260826_pos.csv", by: "M. Santos", time: "08:14 AM", txns: 540, sales: "₱48,700", status: "imported" },
-                  { branch: "Gulod", date: "Aug 26, 2026", file: "gulod_20260826_pos.csv", by: "A. Reyes", time: "07:58 AM", txns: 612, sales: "₱56,400", status: "imported" },
-                  { branch: "Vermosa", date: "Aug 25, 2026", file: "vermosa_20260825_pos.csv", by: "J. Cruz", time: "09:22 PM", txns: 489, sales: "₱44,200", status: "imported" },
-                  { branch: "Lipa", date: "Aug 25, 2026", file: "lipa_20260825_pos.csv", by: "M. Santos", time: "08:47 PM", txns: 0, sales: "—", status: "failed" },
-                  { branch: "Tagaytay", date: "Aug 25, 2026", file: "tagaytay_20260825_pos.csv", by: "J. Lim", time: "09:01 PM", txns: 524, sales: "₱48,900", status: "imported" },
-                ].map((row, i) => (
-                  <TR key={i}>
-                    {role === "owner" && <TD><span className="font-semibold" style={{ color: C.maroon }}>{row.branch}</span></TD>}
-                    <TD muted>{row.date}</TD>
-                    <TD><span className="font-mono text-xs" style={{ color: C.primary }}>{row.file}</span></TD>
-                    {role === "owner" && <TD muted>{row.by}</TD>}
-                    <TD muted>{row.time}</TD>
-                    <TD right>{row.txns > 0 ? row.txns.toLocaleString() : <span style={{ color: C.muted }}>—</span>}</TD>
-                    <TD right>{row.sales}</TD>
-                    <TD><StatusChip status={row.status} /></TD>
+                {posHistoryLoading ? <tr><td colSpan={role === "owner" ? 8 : 6} className="px-5 py-10 text-center text-sm" style={{ color: C.muted }}>Loading import history...</td></tr> : visiblePosImports.length === 0 ? <tr><td colSpan={role === "owner" ? 8 : 6} className="px-5 py-10 text-center text-sm" style={{ color: C.muted }}>No POS imports found.</td></tr> : visiblePosImports.slice(0, 10).map((row) => (
+                  <TR key={row.id}>
+                    {role === "owner" && <TD><span className="font-semibold" style={{ color: C.maroon }}>{row.branchName}</span></TD>}
+                    <TD muted>{new Date(`${row.businessDate}T00:00:00`).toLocaleDateString("en-PH")}</TD>
+                    <TD><span className="font-mono text-xs" style={{ color: C.primary }}>{row.sourceFilename}</span></TD>
+                    {role === "owner" && <TD muted>{row.importedBy}</TD>}
+                    <TD muted>{new Date(row.importedAt).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" })}</TD>
+                    <TD right>{row.unitsSold.toLocaleString()}</TD>
+                    <TD right>{formatPeso(row.totalSales)}</TD>
+                    <TD><StatusChip status="imported" /></TD>
                   </TR>
                 ))}
               </tbody>
             </table>
           </div>
-          <Pagination total={28} page={1} perPage={5} />
+          <Pagination total={visiblePosImports.length} page={1} perPage={10} />
         </Card>
       )}
 
@@ -1963,6 +1989,19 @@ function SalesAnalysis({ role }: { role: Role }) {
 
             {uploadStep === "select" && (
               <>
+                <label className="block mb-4">
+                  <span className="block text-xs font-semibold mb-1.5" style={{ color: C.secondary }}>Business date</span>
+                  <input
+                    type="date"
+                    value={posBusinessDate}
+                    max={localToday}
+                    onChange={(event) => { setPosBusinessDate(event.target.value); setPosImportError(""); }}
+                    className="w-full px-3 py-2.5 rounded-xl border text-sm outline-none"
+                    style={{ borderColor: C.border, background: C.surface, color: C.primary }}
+                    required
+                  />
+                  <span className="block text-xs mt-1" style={{ color: C.muted }}>Choose the actual trading date in the POS file. This date controls recipe-based inventory deduction.</span>
+                </label>
                 <label className="block border-2 border-dashed rounded-xl p-8 text-center mb-4 cursor-pointer transition-all"
                   style={{ borderColor: C.border }}>
                   <div className="w-12 h-12 rounded-xl flex items-center justify-center mx-auto mb-3" style={{ background: C.grayBg }}>
@@ -1989,7 +2028,7 @@ function SalesAnalysis({ role }: { role: Role }) {
                   <div className="grid grid-cols-2 gap-y-2 gap-x-4 text-sm">
                     {[
                       ["File", posFilename],
-                      ["Business Date", new Date().toLocaleDateString("en-PH")],
+                      ["Business Date", new Date(`${posBusinessDate}T00:00:00`).toLocaleDateString("en-PH")],
                       ["Products", `${posLines.length} valid product lines`],
                       ["Units Sold", posLines.reduce((sum, line) => sum + line.quantitySold, 0).toLocaleString()],
                     ].map(([label, value]) => (
@@ -2024,14 +2063,14 @@ function SalesAnalysis({ role }: { role: Role }) {
                   </div>
                   <h4 className="font-bold text-lg mb-1" style={{ color: C.primary }}>Import Successful</h4>
                   <p className="text-sm" style={{ color: C.secondary }}>{posLines.reduce((sum, line) => sum + line.quantitySold, 0)} units sold were connected to their configured recipes.</p>
-                  <p className="text-xs mt-1" style={{ color: C.muted }}>{posFilename}</p>
+                  <p className="text-xs mt-1" style={{ color: C.muted }}>{posFilename} - {new Date(`${posBusinessDate}T00:00:00`).toLocaleDateString("en-PH")}</p>
                   <div className="mt-4 p-3 rounded-xl text-left space-y-1.5" style={{ background: C.mainBg }}>
                     <p className="text-xs font-bold uppercase tracking-wide" style={{ color: C.secondary }}>Expected ingredient consumption</p>
                     {posConsumption.map((item) => <div key={`${item.name}-${item.unit}`} className="flex justify-between text-xs"><span>{item.name}</span><strong>{item.expectedConsumption.toFixed(2)} {item.unit}</strong></div>)}
                   </div>
                 </div>
                 <button className="w-full py-2.5 rounded-xl text-sm font-bold text-white" style={{ background: C.maroon }}
-                  onClick={() => { setUploadStep("idle"); setPosLines([]); setPosConsumption([]); setPosFilename(""); toast.success("POS CSV imported successfully"); }}>
+                  onClick={() => { setUploadStep("idle"); setPosLines([]); setPosConsumption([]); setPosFilename(""); setPosBusinessDate(localToday); toast.success("POS CSV imported successfully"); }}>
                   Done
                 </button>
               </>
@@ -2109,7 +2148,7 @@ function InventoryOverview({ role, onNavigate }: { role: Role; onNavigate: (page
           </div>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full">
+              <table className="data-table w-full">
             <THead cols={role === "owner"
               ? ["SKU", "Ingredient", "Category", "Branch", "On Hand", "Unit Cost", "Value", "Reorder Pt.", "Status", "Last Count"]
               : ["SKU", "Ingredient", "Category", "On Hand", "Unit", "Unit Cost", "Value", "Reorder Pt.", "Status", "Actions"]} />
@@ -2216,7 +2255,7 @@ function PhysicalCount() {
 
       <Card padding={false}>
         <div className="overflow-x-auto">
-          <table className="w-full">
+              <table className="data-table w-full">
             <THead cols={["SKU", "Ingredient", "System Qty", "Physical Count", "Variance", "Unit", "Notes"]} />
             <tbody>
               {inventoryItems.map(item => {
@@ -2363,7 +2402,7 @@ function ShrinkageMonitoring({ role }: { role: Role }) {
           </div>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full">
+              <table className="data-table w-full">
             <THead cols={["Date", "Item", ...(role === "owner" ? ["Branch"] : []), "Expected", "Actual", "Variance", "Classification", "Value Loss", "Reason", "Recorded By", "Status"]} />
             <tbody>
               {shrinkageRows.map((s, i) => (
@@ -2444,7 +2483,7 @@ function VarianceMonitoring({ role }: { role: Role }) {
           </div>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full">
+              <table className="data-table w-full">
             <THead cols={["SKU", "Item", "Expected", "Actual", "Variance", "Variance %", "Est. Value", "Classification", "Status"]} />
             <tbody>
               {varianceRows.map((v, i) => (
@@ -2549,7 +2588,7 @@ function PurchaseOrders({ role }: { role: Role }) {
             </div>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full">
+              <table className="data-table w-full">
               <THead cols={role === "owner"
                 ? ["PO Number", "Branch", "Supplier", "Requested By", "Date", "Amount", "AI Match", "Status", "Actions"]
                 : ["PO Number", "Supplier", "Date", "Items", "Total", "Status", "Actions"]} />
@@ -2866,7 +2905,7 @@ function COGSAnalysis({ role }: { role: Role }) {
           </div>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full">
+              <table className="data-table w-full">
             <THead cols={["Product", "Sales", "Theoretical Cost", "Actual Cost", "COGS Variance", "Gross Profit", "Margin"]} />
             <tbody>
               {[
@@ -3007,7 +3046,7 @@ function PredictiveAnalytics({ role }: { role: Role }) {
             <h3 className="font-semibold mb-3" style={{ color: C.primary }}>Low Stock Prediction</h3>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full">
+              <table className="data-table w-full">
               <THead cols={["Ingredient", ...(role === "owner" ? ["Branch"] : []), "Current Qty", "Daily Usage", "Predicted Stockout", "Recommended Reorder", "Urgency"]} />
               <tbody>
                 {[
@@ -3251,7 +3290,7 @@ function Reports({ role }: { role: Role }) {
               </div>
               <Card padding={false}>
                 <div className="overflow-x-auto">
-                  <table className="w-full">
+              <table className="data-table w-full">
                     <THead cols={["Branch", "Sales", "COGS", "Gross Profit", "Margin", "Shrinkage"]} />
                     <tbody>
                       {branchPerf.map((b, i) => (
@@ -3308,7 +3347,7 @@ function UserManagement() {
           </div>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full">
+              <table className="data-table w-full">
             <THead cols={["User", "Email", "Role", "Assigned Branch", "Status", "Last Login", "Actions"]} />
             <tbody>
               {userList.map(u => (
@@ -3438,7 +3477,7 @@ function BranchManagement() {
 
       <Card padding={false}>
         <div className="overflow-x-auto">
-          <table className="w-full">
+              <table className="data-table w-full">
             <THead cols={["Code", "Branch Name", "Location", "Manager", "Status", "Inv. Value", "Sales (Aug)", "Shrinkage Rate", "Last Sync", "Actions"]} />
             <tbody>
               {branchList.map(b => (
