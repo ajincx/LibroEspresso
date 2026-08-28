@@ -10,6 +10,9 @@ import { LoginPage as RedesignedLoginPage } from "./pages/auth/LoginPage";
 import { MenuRecipesPage } from "./pages/catalog/MenuRecipesPage";
 import { InventoryCountPage } from "./pages/inventory/InventoryCountPage";
 import { ShrinkageWorkflowPage } from "./pages/inventory/ShrinkageWorkflowPage";
+import { VarianceMonitoringPage } from "./pages/inventory/VarianceMonitoringPage";
+import { SettingsPage as AccountSettingsPage } from "./pages/settings/SettingsPage";
+import { MessagesPage } from "./pages/messages/MessagesPage";
 import { inventoryWorkflowService } from "./services/inventoryWorkflow.service";
 import { masterDataService } from "./services/masterData.service";
 import type { MenuItem } from "./types/masterData";
@@ -24,7 +27,7 @@ import {
   TrendingUp, DollarSign, Activity, Lock,
   ClipboardList, GitCompare, BarChart2, Hash,
   Percent, Minus, RefreshCw, Filter, Calendar,
-  Database, Inbox, ChevronUp, Moon, Sun, UtensilsCrossed
+  Database, Inbox, ChevronUp, Moon, Sun, UtensilsCrossed, MessageCircle
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -103,6 +106,18 @@ const salesTrend = [
   { date: "Aug 23", sales: 46100, cogs: 19800, gp: 26300 },
   { date: "Aug 24", sales: 52400, cogs: 22500, gp: 29900 },
   { date: "Aug 25", sales: 48700, cogs: 20900, gp: 27800 },
+];
+
+// Presentation data for the Manager Dashboard's default "Today" view.
+// Multiple time points keep both Sales and COGS trend lines visible.
+const managerTodaySalesTrend = [
+  { date: "8 AM", sales: 4200, cogs: 1800 },
+  { date: "10 AM", sales: 7800, cogs: 3350 },
+  { date: "12 PM", sales: 13600, cogs: 5750 },
+  { date: "2 PM", sales: 18400, cogs: 7900 },
+  { date: "4 PM", sales: 25300, cogs: 10800 },
+  { date: "6 PM", sales: 32700, cogs: 13900 },
+  { date: "8 PM", sales: 38900, cogs: 16500 },
 ];
 
 const kpiSparklines: Record<string, number[]> = {
@@ -196,6 +211,7 @@ type AppNotification = {
   read: boolean;
   icon: string;
   entityId: string | null;
+  entityType: string | null;
 };
 
 const notificationsData: AppNotification[] = [];
@@ -626,6 +642,7 @@ const managerNav = [
 function Sidebar({ role, page, onNavigate, collapsed, onToggle }: {
   role: Role; page: Page; onNavigate: (p: Page) => void; collapsed: boolean; onToggle: () => void;
 }) {
+  const { user } = useAuth();
   const [expanded, setExpanded] = useState<string[]>(["inventory-group"]);
   const nav = role === "owner" ? ownerNav : managerNav;
 
@@ -637,7 +654,7 @@ function Sidebar({ role, page, onNavigate, collapsed, onToggle }: {
       style={{ width: collapsed ? 64 : C.sidebarWidth, background: C.surface, borderRight: `1px solid ${C.border}`, transition: "width 0.2s ease" }}>
       {/* Logo */}
       <div className="flex items-center px-4 border-b flex-shrink-0" style={{ borderColor: C.border, height: C.headerHeight }}>
-        <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: C.maroon }}>
+        <div className="sidebar-brand-mark w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: C.maroon }}>
           <Coffee size={17} color="#fff" />
         </div>
         {!collapsed && (
@@ -647,10 +664,8 @@ function Sidebar({ role, page, onNavigate, collapsed, onToggle }: {
           </div>
         )}
         <button onClick={onToggle}
-          className="w-6 h-6 rounded-md flex items-center justify-center ml-auto flex-shrink-0 transition-colors"
-          style={{ color: C.muted }}
-          onMouseEnter={e => (e.currentTarget.style.background = C.grayBg)}
-          onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
+          className="sidebar-collapse-button w-6 h-6 rounded-md flex items-center justify-center ml-auto flex-shrink-0"
+          style={{ color: C.muted }} aria-label={collapsed ? "Expand navigation" : "Collapse navigation"}>
           {collapsed ? <ChevronRight size={13} /> : <ChevronLeft size={13} />}
         </button>
       </div>
@@ -666,15 +681,13 @@ function Sidebar({ role, page, onNavigate, collapsed, onToggle }: {
             return (
               <div key={item.id}>
                 <button onClick={() => !collapsed && toggleGroup(item.id)}
-                  className="w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-lg text-sm font-medium transition-colors"
-                  style={{ color: anyActive ? C.maroon : C.secondary, background: anyActive && collapsed ? C.softMaroonBg : "transparent" }}
-                  onMouseEnter={e => { if (!anyActive) (e.currentTarget as HTMLElement).style.background = C.grayBg; }}
-                  onMouseLeave={e => { if (!anyActive) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
-                  <item.icon size={16} className="flex-shrink-0" style={{ color: anyActive ? C.maroon : C.secondary }} />
+                  className={`sidebar-nav-item w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl text-sm font-medium ${anyActive && collapsed ? "is-active" : anyActive ? "is-group-active" : ""}`}
+                  title={collapsed ? item.label : undefined} aria-expanded={!collapsed ? isExp : undefined}>
+                  <item.icon size={16} className="flex-shrink-0" />
                   {!collapsed && (
                     <>
                       <span className="flex-1 text-left">{item.label}</span>
-                      <ChevronDown size={12} style={{ color: C.muted, transform: isExp ? "rotate(180deg)" : "", transition: "transform 0.15s" }} />
+                      <ChevronDown size={12} className="sidebar-group-chevron" style={{ transform: isExp ? "rotate(180deg)" : "" }} />
                     </>
                   )}
                 </button>
@@ -682,10 +695,8 @@ function Sidebar({ role, page, onNavigate, collapsed, onToggle }: {
                   <div className="ml-4 pl-3 border-l space-y-0.5 my-0.5" style={{ borderColor: C.border }}>
                     {item.children.map((child: any) => (
                       <button key={child.id} onClick={() => onNavigate(child.id as Page)}
-                        className="w-full text-left px-3 py-2 rounded-lg text-sm transition-colors"
-                        style={{ color: isActive(child.id) ? C.maroon : C.secondary, background: isActive(child.id) ? C.softMaroonBg : "transparent", fontWeight: isActive(child.id) ? 600 : 400 }}
-                        onMouseEnter={e => { if (!isActive(child.id)) (e.currentTarget as HTMLElement).style.background = C.grayBg; }}
-                        onMouseLeave={e => { if (!isActive(child.id)) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+                        className={`sidebar-nav-item sidebar-nav-child w-full text-left px-3 py-2 rounded-xl text-sm ${isActive(child.id) ? "is-active" : ""}`}
+                        aria-current={isActive(child.id) ? "page" : undefined}>
                         {child.label}
                       </button>
                     ))}
@@ -698,14 +709,11 @@ function Sidebar({ role, page, onNavigate, collapsed, onToggle }: {
           const active = isActive(item.id);
           return (
             <button key={item.id} onClick={() => onNavigate(item.id as Page)}
-              className="w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-lg text-sm font-medium transition-colors relative"
-              style={{ color: active ? C.maroon : C.secondary, background: active ? C.softMaroonBg : "transparent" }}
-              onMouseEnter={e => { if (!active) (e.currentTarget as HTMLElement).style.background = C.grayBg; }}
-              onMouseLeave={e => { if (!active) (e.currentTarget as HTMLElement).style.background = "transparent"; }}
-              title={collapsed ? item.label : undefined}>
-              <item.icon size={16} className="flex-shrink-0" style={{ color: active ? C.maroon : C.secondary }} />
+              className={`sidebar-nav-item w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl text-sm font-medium relative ${active ? "is-active" : ""}`}
+              title={collapsed ? item.label : undefined} aria-current={active ? "page" : undefined}>
+              <item.icon size={16} className="flex-shrink-0" />
               {!collapsed && <span>{item.label}</span>}
-              {active && collapsed && <span className="absolute right-2 top-1/2 -translate-y-1/2 w-1.5 h-1.5 rounded-full" style={{ background: C.maroon }} />}
+              {active && collapsed && <span className="absolute right-2 top-1/2 -translate-y-1/2 w-1.5 h-1.5 rounded-full bg-white/85" />}
             </button>
           );
         })}
@@ -713,15 +721,15 @@ function Sidebar({ role, page, onNavigate, collapsed, onToggle }: {
 
       {/* User profile */}
       <div className="border-t p-3 flex-shrink-0" style={{ borderColor: C.border }}>
-        <div className="flex items-center gap-2.5">
+        <div className="sidebar-profile flex items-center gap-2.5 rounded-xl p-1.5 -m-1.5">
           <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-bold text-white"
             style={{ background: C.maroon }}>
-            {role === "owner" ? "CM" : "MS"}
+            {`${user?.firstName[0] ?? ""}${user?.lastName[0] ?? ""}`.toUpperCase()}
           </div>
           {!collapsed && (
             <div className="flex-1 min-w-0">
-              <div className="text-sm font-semibold truncate" style={{ color: C.primary }}>{role === "owner" ? "Carlos Mendoza" : "Maria Santos"}</div>
-              <div className="text-xs truncate" style={{ color: C.muted }}>{role === "owner" ? "Owner · Admin" : "Branch Manager"}</div>
+              <div className="text-sm font-semibold truncate" style={{ color: C.primary }}>{user?.firstName} {user?.lastName}</div>
+              <div className="text-xs truncate" style={{ color: C.muted }}>{user?.position}</div>
             </div>
           )}
         </div>
@@ -741,11 +749,12 @@ const pageTitles: Record<Page, string> = {
   users: "User Management", branches: "Branch Management", settings: "Settings", "master-data": "Inventory Master Data",
 };
 
-function TopHeader({ role, page, branch, setBranch, unreadCount, onBell, onLogout, theme, onThemeToggle }: {
+function TopHeader({ role, page, branch, setBranch, unreadCount, messageUnreadCount, onMessages, onBell, onLogout, theme, onThemeToggle }: {
   role: Role; page: Page; branch: string; setBranch: (b: string) => void;
-  unreadCount: number; onBell: () => void; onLogout: () => void;
+  unreadCount: number; messageUnreadCount: number; onMessages: () => void; onBell: () => void; onLogout: () => void;
   theme: ThemeMode; onThemeToggle: () => void;
 }) {
+  const { user } = useAuth();
   const [uMenuOpen, setUMenuOpen] = useState(false);
   const branches = ["All Branches", "Gulod – Main", "Lipa", "Vermosa", "Tagaytay", "Evo"];
 
@@ -786,7 +795,7 @@ function TopHeader({ role, page, branch, setBranch, unreadCount, onBell, onLogou
         <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border mr-2 text-sm font-medium"
           style={{ borderColor: C.border, background: C.mainBg, color: C.primary }}>
           <MapPin size={12} style={{ color: C.maroon }} />
-          <span>Lipa Branch</span>
+          <span>{user?.branch?.name ?? "Assigned Branch"}</span>
           <Lock size={10} style={{ color: C.muted }} />
         </div>
       )}
@@ -798,6 +807,15 @@ function TopHeader({ role, page, branch, setBranch, unreadCount, onBell, onLogou
         aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
         title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}>
         {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
+      </button>
+
+      {/* Messages are a global communication feature, not a navigation module. */}
+      <button type="button" onClick={onMessages}
+        className="header-icon-button relative w-10 h-10 rounded-xl border flex items-center justify-center mr-1 transition-colors"
+        style={{ color: C.secondary, borderColor: C.border, background: C.surface }}
+        aria-label="Open messages" title="Messages">
+        <MessageCircle size={17} />
+        {messageUnreadCount > 0 && <span className="absolute top-1.5 right-1.5 min-w-4 h-4 px-1 rounded-full text-[9px] font-bold flex items-center justify-center text-white" style={{ background: C.maroon }}>{messageUnreadCount}</span>}
       </button>
 
       {/* Bell */}
@@ -831,9 +849,9 @@ function TopHeader({ role, page, branch, setBranch, unreadCount, onBell, onLogou
           onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
           <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold"
             style={{ background: C.maroon }}>
-            {role === "owner" ? "CM" : "MS"}
+            {`${user?.firstName[0] ?? ""}${user?.lastName[0] ?? ""}`.toUpperCase()}
           </div>
-          <span className="text-sm font-medium">{role === "owner" ? "Carlos M." : "Maria S."}</span>
+          <span className="text-sm font-medium">{user?.firstName} {user?.lastName?.[0]}.</span>
           <ChevronDown size={12} style={{ color: C.muted }} />
         </button>
         {uMenuOpen && (
@@ -841,8 +859,8 @@ function TopHeader({ role, page, branch, setBranch, unreadCount, onBell, onLogou
             <div className="fixed inset-0 z-30" onClick={() => setUMenuOpen(false)} />
             <div className="app-popover absolute right-0 top-full mt-1 w-52 bg-white border rounded-xl shadow-xl py-1.5 z-40" style={{ borderColor: C.border }}>
               <div className="px-3 py-2.5 border-b mb-1" style={{ borderColor: C.border }}>
-                <div className="text-sm font-semibold" style={{ color: C.primary }}>{role === "owner" ? "Carlos Mendoza" : "Maria Santos"}</div>
-                <div className="text-xs mt-0.5" style={{ color: C.muted }}>{role === "owner" ? "Owner / System Administrator" : "Branch Manager · Lipa"}</div>
+                <div className="text-sm font-semibold" style={{ color: C.primary }}>{user?.firstName} {user?.lastName}</div>
+                <div className="text-xs mt-0.5" style={{ color: C.muted }}>{user?.position}{user?.branch ? ` · ${user.branch.name}` : ""}</div>
               </div>
               <button className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 transition-colors"
                 style={{ color: C.red }}
@@ -865,6 +883,7 @@ const notifIcons: Record<string, { Icon: React.ElementType; bg: string; color: s
   inv: { Icon: Package, bg: C.amberBg, color: C.amber },
   shrink: { Icon: TrendingDown, bg: C.redBg, color: C.red },
   ai: { Icon: Sparkles, bg: C.softMaroonBg, color: C.maroon },
+  message: { Icon: MessageCircle, bg: C.softMaroonBg, color: C.maroon },
 };
 
 function NotifDrawer({ open, onClose, notifs, markAllRead, onOpenNotification }: {
@@ -921,6 +940,20 @@ function NotifDrawer({ open, onClose, notifs, markAllRead, onOpenNotification }:
       </div>
     </>
   );
+}
+
+function MessageDrawer({ open, onClose, messageId }: { open: boolean; onClose: () => void; messageId: string | null }) {
+  return <>
+    {open && <div className="fixed inset-0 z-40 bg-black/25" onClick={onClose}/>}
+    <aside className="app-drawer fixed right-0 top-0 h-full z-50 flex flex-col border-l bg-[var(--app-surface)] border-[var(--app-border)]"
+      style={{ width: "min(900px, 100vw)", boxShadow: "-8px 0 32px rgba(0,0,0,.12)", transform: open ? "translateX(0)" : "translateX(100%)", transition: "transform 200ms ease" }}>
+      <header className="h-[72px] px-5 flex items-center justify-between border-b border-[var(--app-border)]">
+        <div className="flex items-center gap-3"><div className="w-9 h-9 rounded-xl flex items-center justify-center bg-[var(--app-primary-subtle)] text-[var(--app-primary)]"><MessageCircle size={17}/></div><div><h2 className="font-semibold text-[var(--app-text)]">Messages</h2><p className="text-xs text-[var(--app-text-muted)]">Libro Espresso communication</p></div></div>
+        <button onClick={onClose} className="w-9 h-9 rounded-xl flex items-center justify-center bg-[var(--app-surface-muted)] text-[var(--app-text-muted)]" aria-label="Close messages"><X size={16}/></button>
+      </header>
+      <div className="flex-1 min-h-0">{open && <MessagesPage embedded initialMessageId={messageId}/>}</div>
+    </aside>
+  </>;
 }
 
 // ─── Login Page ────────────────────────────────────────────────────────────────
@@ -1371,7 +1404,7 @@ function ManagerDashboard({ onNavigate }: { onNavigate: (p: Page) => void }) {
   const managerChanges = comparison === "previous"
     ? { sales: "+4.8%", cogs: "+3.1%", profit: "+6.1%", shrinkage: "+0.2pp" }
     : { sales: "+3.9%", cogs: "+2.6%", profit: "+5.0%", shrinkage: "+0.1pp" };
-  const visibleSalesTrend = range === "today" ? salesTrend.slice(-1) : range === "custom" ? salesTrend.slice(-Math.min(customDays, 7)) : salesTrend;
+  const visibleSalesTrend = range === "today" ? managerTodaySalesTrend : range === "custom" ? salesTrend.slice(-Math.min(customDays, 7)) : salesTrend;
 
   useEffect(() => {
     const t = setTimeout(() => setLoading(false), 1000);
@@ -1443,22 +1476,16 @@ function ManagerDashboard({ onNavigate }: { onNavigate: (p: Page) => void }) {
           </div>
           <div className="h-52 px-3 pb-4">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={visibleSalesTrend}>
-                <defs>
-                  <linearGradient id="sgm" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor={C.maroon} stopOpacity={0.12} />
-                    <stop offset="95%" stopColor={C.maroon} stopOpacity={0} />
-                  </linearGradient>
-                </defs>
+              <LineChart data={visibleSalesTrend}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.border} vertical={false} />
                 <XAxis dataKey="date" tick={{ fontSize: 11, fill: C.secondary }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fontSize: 11, fill: C.secondary }} axisLine={false} tickLine={false}
                   tickFormatter={v => `₱${(v / 1000).toFixed(0)}k`} />
                 <Tooltip content={<ChartTip />} />
                 <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
-                <Area type="monotone" dataKey="sales" name="Sales" stroke={C.maroon} strokeWidth={2} fill="url(#sgm)" dot={false} />
-                <Area type="monotone" dataKey="cogs" name="COGS" stroke={C.amber} strokeWidth={1.5} fill="none" dot={false} strokeDasharray="4 3" />
-              </AreaChart>
+                <Line type="monotone" dataKey="sales" name="Sales" stroke={C.maroon} strokeWidth={2.5} dot={{ r: 2.5, fill: C.maroon }} activeDot={{ r: 5 }} />
+                <Line type="monotone" dataKey="cogs" name="COGS" stroke={C.amber} strokeWidth={2.25} dot={{ r: 2.5, fill: C.amber }} activeDot={{ r: 5 }} />
+              </LineChart>
             </ResponsiveContainer>
           </div>
         </Card>
@@ -3454,7 +3481,7 @@ function BranchManagement() {
 }
 
 // ─── Settings ──────────────────────────────────────────────────────────────────
-function SettingsPage({ role }: { role: Role }) {
+function LegacySettingsPage({ role }: { role: Role }) {
   const sections = role === "owner"
     ? ["Profile & Account", "Security", "Notification Preferences", "System Preferences", "Business Information"]
     : ["Profile", "Password & Security", "Assigned Branch", "Notification Preferences", "UI Preferences"];
@@ -3633,6 +3660,8 @@ export default function App() {
   const [branch, setBranch] = useState("All Branches");
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("libro.sidebar.collapsed") === "true");
   const [notifOpen, setNotifOpen] = useState(false);
+  const [messageOpen, setMessageOpen] = useState(false);
+  const [messageTargetId, setMessageTargetId] = useState<string | null>(null);
   const [notifs, setNotifs] = useState(notificationsData);
   const [showLogout, setShowLogout] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>(() =>
@@ -3640,6 +3669,7 @@ export default function App() {
   );
 
   const unread = notifs.filter(n => !n.read).length;
+  const messageUnread = notifs.filter(n => !n.read && n.entityType === "MESSAGE").length;
 
   useEffect(() => { localStorage.setItem("libro.sidebar.collapsed", String(collapsed)); }, [collapsed]);
   useEffect(() => {
@@ -3647,6 +3677,14 @@ export default function App() {
     document.documentElement.classList.toggle("dark", theme === "dark");
     localStorage.setItem("libro.theme", theme);
   }, [theme]);
+  useEffect(() => {
+    const handleThemeChange = (event: Event) => {
+      const nextTheme = (event as CustomEvent<ThemeMode>).detail;
+      if (nextTheme === "light" || nextTheme === "dark") setTheme(nextTheme);
+    };
+    window.addEventListener("libro-theme-change", handleThemeChange);
+    return () => window.removeEventListener("libro-theme-change", handleThemeChange);
+  }, []);
 
   const loadNotifications = async () => {
     if (!user) return;
@@ -3654,17 +3692,23 @@ export default function App() {
       const workflowNotifications = await inventoryWorkflowService.notifications();
       setNotifs(workflowNotifications.map((notification) => ({
         id: notification.id,
-        cat: "Shrinkage",
+        cat: notification.type === "DIRECT_MESSAGE" ? "Message" : "Shrinkage",
         title: notification.title,
         body: notification.message,
         time: new Intl.DateTimeFormat("en-PH", { dateStyle: "medium", timeStyle: "short" }).format(new Date(notification.createdAt)),
         read: Boolean(notification.readAt),
-        icon: "shrink",
+        icon: notification.type === "DIRECT_MESSAGE" ? "message" : "shrink",
         entityId: notification.entityId,
+        entityType: notification.entityType,
       })));
     } catch { setNotifs([]); }
   };
-  useEffect(() => { void loadNotifications(); }, [user?.id]);
+  useEffect(() => {
+    void loadNotifications();
+    if (!user) return;
+    const timer = window.setInterval(() => void loadNotifications(), 15000);
+    return () => window.clearInterval(timer);
+  }, [user?.id]);
 
   const setPage = (nextPage: Page) => navigate(pagePaths[nextPage as AppPage] ?? "/dashboard");
 
@@ -3689,7 +3733,7 @@ export default function App() {
       case "inventory": return <InventoryOverview role={role} onNavigate={setPage} />;
       case "physical-count": return <InventoryCountPage />;
       case "shrinkage": return <ShrinkageWorkflowPage />;
-      case "variance": return <VarianceMonitoring role={role} />;
+      case "variance": return <VarianceMonitoringPage />;
       case "purchase-orders": return <PurchaseOrders role={role} />;
       case "cogs": return <COGSAnalysis role={role} />;
       case "predictive": return <PredictiveAnalytics role={role} />;
@@ -3697,7 +3741,7 @@ export default function App() {
       case "users": return <AdminUsersPage />;
       case "branches": return <AdminBranchesPage />;
       case "master-data": return <MasterDataPage />;
-      case "settings": return <SettingsPage role={role} />;
+      case "settings": return <AccountSettingsPage />;
       default: return role === "owner" ? <OwnerDashboard onNavigate={setPage} /> : <ManagerDashboard onNavigate={setPage} />;
     }
   };
@@ -3727,6 +3771,7 @@ export default function App() {
         <TopHeader
           role={role} page={page} branch={branch} setBranch={setBranch}
           unreadCount={unread} onBell={() => { setNotifOpen(true); void loadNotifications(); }}
+          messageUnreadCount={messageUnread} onMessages={() => { setNotifOpen(false); setMessageTargetId(null); setMessageOpen(true); }}
           onLogout={() => setShowLogout(true)}
           theme={theme} onThemeToggle={() => setTheme(current => current === "dark" ? "light" : "dark")}
         />
@@ -3745,8 +3790,13 @@ export default function App() {
           if (!notification.read) void inventoryWorkflowService.markNotificationRead(notification.id);
           setNotifs((current) => current.map((item) => item.id === notification.id ? { ...item, read: true } : item));
           setNotifOpen(false);
-          navigate(notification.entityId ? `/shrinkage?reportId=${notification.entityId}` : "/shrinkage");
+          if (notification.entityType === "MESSAGE") {
+            setMessageTargetId(notification.entityId);
+            setMessageOpen(true);
+          } else navigate(notification.entityId ? `/shrinkage?reportId=${notification.entityId}` : "/shrinkage");
         }} />
+
+      <MessageDrawer open={messageOpen} messageId={messageTargetId} onClose={() => { setMessageOpen(false); setMessageTargetId(null); void loadNotifications(); }}/>
 
       {showLogout && <LogoutModal onConfirm={handleLogout} onCancel={() => setShowLogout(false)} />}
     </div>

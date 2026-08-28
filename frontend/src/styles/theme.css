@@ -16,6 +16,7 @@
   --app-primary-soft: #a84c5e;
   --app-primary-subtle: #f6e9ec;
   --app-primary-faint: #fdf8f9;
+  --app-nav-gradient: linear-gradient(135deg, #8b2638 0%, #651823 52%, #4f101a 100%);
   --app-success: #2e8b57;
   --app-success-bg: #eaf6ef;
   --app-success-soft: #d8eee2;
@@ -82,6 +83,7 @@
   --app-primary-soft: #cf7181;
   --app-primary-subtle: #321d23;
   --app-primary-faint: #25191d;
+  --app-nav-gradient: linear-gradient(135deg, #9f3345 0%, #7b2937 52%, #521722 100%);
   --app-success: #67b78a;
   --app-success-bg: #1c3026;
   --app-success-soft: #254333;
@@ -233,7 +235,7 @@
 /* Libro application surfaces and dashboard responsiveness. */
 .app-shell,
 .app-shell * {
-  transition-property: background-color, color, border-color, opacity;
+  transition-property: background-color, color, border-color, opacity, transform, box-shadow;
   transition-duration: 180ms;
   transition-timing-function: ease;
 }
@@ -254,10 +256,115 @@
 
 .app-card {
   box-shadow: 0 1px 2px rgb(45 25 31 / 0.035);
+  transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
 }
 
 .app-card:hover {
   border-color: color-mix(in srgb, var(--app-primary) 24%, var(--app-border)) !important;
+  box-shadow: 0 10px 26px rgb(65 25 37 / 0.09);
+  transform: translateY(-2px);
+}
+
+.app-shell button:not(:disabled):not(.sidebar-nav-item):hover {
+  transform: translateY(-1px);
+}
+
+.app-shell button:not(:disabled):active {
+  transform: translateY(0);
+}
+
+.sidebar-brand-mark {
+  box-shadow: 0 7px 16px color-mix(in srgb, var(--app-primary) 28%, transparent);
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.sidebar-brand-mark:hover {
+  box-shadow: 0 10px 22px color-mix(in srgb, var(--app-primary) 38%, transparent);
+  transform: scale(1.055) rotate(-2deg);
+}
+
+.sidebar-collapse-button:hover {
+  background: var(--app-surface-muted);
+  color: var(--app-primary) !important;
+}
+
+.sidebar-nav-item {
+  color: var(--app-text-muted);
+  background: transparent;
+  position: relative;
+  overflow: hidden;
+  transition: transform 170ms ease, background 170ms ease, color 170ms ease, box-shadow 170ms ease;
+}
+
+.sidebar-nav-item svg {
+  color: currentColor;
+  transition: transform 170ms ease, color 170ms ease;
+}
+
+.sidebar-nav-item:hover:not(.is-active) {
+  color: var(--app-text);
+  background: color-mix(in srgb, var(--app-primary) 9%, var(--app-surface));
+  transform: translateX(3px);
+}
+
+.sidebar-nav-item:hover:not(.is-active) svg {
+  color: var(--app-primary);
+  transform: scale(1.08);
+}
+
+.sidebar-nav-item.is-group-active {
+  color: var(--app-primary);
+  background: color-mix(in srgb, var(--app-primary) 7%, transparent);
+  font-weight: 650;
+}
+
+.sidebar-nav-item.is-active {
+  color: #ffffff !important;
+  background: var(--app-nav-gradient) !important;
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--app-primary-deep) 30%, transparent);
+  font-weight: 650;
+  transform: translateX(2px);
+}
+
+.sidebar-nav-item.is-active::before {
+  content: "";
+  position: absolute;
+  inset-block: 7px;
+  left: 4px;
+  width: 2px;
+  border-radius: 99px;
+  background: rgb(255 255 255 / 0.72);
+}
+
+.sidebar-nav-item.is-active svg {
+  color: #ffffff !important;
+}
+
+.sidebar-nav-item.is-active:hover {
+  box-shadow: 0 11px 25px color-mix(in srgb, var(--app-primary-deep) 38%, transparent);
+  transform: translateX(3px);
+}
+
+.sidebar-nav-child {
+  font-weight: 450;
+}
+
+.sidebar-nav-child.is-active {
+  font-weight: 650;
+}
+
+.sidebar-group-chevron {
+  color: var(--app-text-faint);
+  transition: transform 170ms ease !important;
+}
+
+.sidebar-profile {
+  transition: background-color 170ms ease, transform 170ms ease;
+}
+
+.sidebar-profile:hover {
+  background: var(--app-surface-muted);
+  transform: translateY(-1px);
 }
 
 .kpi-card {
@@ -319,6 +426,10 @@
 
 .dashboard-page table tbody tr:hover {
   background-color: var(--app-surface-muted);
+}
+
+.dashboard-page table tbody tr {
+  transition: background-color 160ms ease;
 }
 
 .app-main::-webkit-scrollbar,

@@ -10,6 +10,8 @@ import { branchRouter } from "./routes/branch.routes.js";
 import { inventoryItemRouter, menuCategoryRouter, menuItemRouter, recipeRouter } from "./routes/catalog.routes.js";
 import { userRouter } from "./routes/user.routes.js";
 import { inventoryMovementRouter, inventoryWorkflowRouter, notificationRouter, posSalesRouter, shrinkageReportRouter } from "./routes/inventoryWorkflow.routes.js";
+import { accountRouter } from "./routes/account.routes.js";
+import { messageRouter } from "./routes/message.routes.js";
 
 export const app = express();
 app.disable("x-powered-by");
@@ -31,5 +33,7 @@ app.use("/api/inventory-counts", inventoryWorkflowRouter);
 app.use("/api/inventory-movements", inventoryMovementRouter);
 app.use("/api/shrinkage-reports", shrinkageReportRouter);
 app.use("/api/notifications", notificationRouter);
+app.use("/api/profile", accountRouter);
+app.use("/api/messages", messageRouter);
 app.use(notFoundHandler);
 app.use(errorHandler);

@@ -23,11 +23,12 @@ export interface CountVarianceItem {
   varianceQuantity: number;
   varianceValue: number;
   unit: string;
-  requiresShrinkageReport: boolean;
+  requiresInvestigation: boolean;
+  shrinkageReportId: string | null;
 }
 
 export type ShrinkageClassification = "SPOILAGE" | "WASTAGE" | "PILFERAGE" | "COUNT_ERROR";
-export type ShrinkageStatus = "PENDING_REVIEW" | "REVIEWED";
+export type ShrinkageStatus = "DETECTED" | "PENDING_REVIEW" | "REVIEWED";
 
 export interface ShrinkageReport {
   id: string;
@@ -44,14 +45,36 @@ export interface ShrinkageReport {
   varianceQuantity: number;
   varianceValue: number;
   unit: string;
-  classification: ShrinkageClassification;
-  explanation: string;
+  classification: ShrinkageClassification | null;
+  explanation: string | null;
   supportingNotes: string | null;
   status: ShrinkageStatus;
   managerName: string;
+  detectedAt: string;
+  investigatedAt: string | null;
   submittedAt: string;
   reviewedAt: string | null;
   reviewedByName: string | null;
+}
+
+export interface VarianceRecord {
+  countItemId: string;
+  countNo: string;
+  countDate: string;
+  branchId: string;
+  branchName: string;
+  inventoryItemId: string;
+  sku: string;
+  itemName: string;
+  expectedQuantity: number;
+  actualQuantity: number;
+  varianceQuantity: number;
+  varianceValue: number;
+  unit: string;
+  anomalyId: string | null;
+  reportNo: string | null;
+  anomalyStatus: ShrinkageStatus | null;
+  classification: ShrinkageClassification | null;
 }
 
 export interface WorkflowNotification {

@@ -12,6 +12,8 @@ export interface AuthUser {
   lastName: string;
   email: string;
   username: string;
+  phoneNumber: string | null;
+  position: string;
   role: UserRole;
   branchId: string | null;
   branch: BranchSummary | null;

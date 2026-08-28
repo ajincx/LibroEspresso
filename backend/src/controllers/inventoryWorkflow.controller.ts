@@ -11,7 +11,8 @@ import {
   notificationIdParams,
   posImportInput,
   shrinkageFilters,
-  shrinkageReportInput,
+  shrinkageInvestigationInput,
+  varianceFilters,
 } from "../validators/inventoryWorkflow.js";
 
 function requiredBranchId(user: NonNullable<Express.Request["user"]>, requested?: string) {
@@ -133,7 +134,29 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
          ON CONFLICT (branch_id,inventory_item_id) DO UPDATE SET actual_quantity=excluded.actual_quantity,as_of=excluded.as_of,updated_at=now()`,
         [branchId, submitted.inventoryItemId, submitted.actualQuantity, input.countDate],
       );
-      countItems.push({ ...inserted.rows[0], sku: expected.sku, itemName: expected.itemName, expectedConsumption: expected.expectedConsumption, requiresShrinkageReport: Math.abs(varianceQuantity) > 0.0001 });
+      const countItem = inserted.rows[0] as { id: string };
+      let shrinkageReportId: string | null = null;
+      if (varianceQuantity < -0.0001) {
+        const reportNo = await client.query<{ reportNo: string }>(`SELECT 'SR-'||to_char(now(),'YYYY')||'-'||lpad(nextval('shrinkage_report_number_seq')::text,5,'0') "reportNo"`);
+        const anomaly = await client.query<{ id: string }>(
+          `INSERT INTO shrinkage_reports
+            (report_no,branch_id,inventory_item_id,inventory_count_item_id,expected_quantity,actual_quantity,variance_quantity,variance_value,unit,status,submitted_by,detected_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'DETECTED',$10,now())
+           RETURNING id`,
+          [reportNo.rows[0]!.reportNo, branchId, submitted.inventoryItemId, countItem.id, expected.expectedQuantity, submitted.actualQuantity, varianceQuantity, varianceValue, expected.unit, req.user!.id],
+        );
+        shrinkageReportId = anomaly.rows[0]!.id;
+        await client.query(
+          `INSERT INTO notifications (recipient_user_id,branch_id,type,title,message,entity_type,entity_id)
+           VALUES ($1,$2,'INVENTORY_ANOMALY','Inventory Anomaly Detected',$3,'SHRINKAGE_REPORT',$4)`,
+          [req.user!.id, branchId, `${expected.itemName} is ${Math.abs(varianceQuantity).toFixed(2)}${expected.unit} below expected stock. Investigation is required.`, shrinkageReportId],
+        );
+      }
+      countItems.push({
+        ...inserted.rows[0], sku: expected.sku, itemName: expected.itemName,
+        expectedConsumption: expected.expectedConsumption,
+        requiresInvestigation: Boolean(shrinkageReportId), shrinkageReportId,
+      });
     }
     await writeAudit(req.user!, "SUBMIT_INVENTORY_COUNT", "INVENTORY_COUNT", count.rows[0]!.id, `Submitted physical inventory count ${count.rows[0]!.countNo}`, { branchId, itemCount: countItems.length }, client);
     await client.query("COMMIT");
@@ -161,9 +184,34 @@ export const listInventoryCounts: RequestHandler = async (req, res) => {
   res.json({ success: true, data: { counts: result.rows } });
 };
 
+export const listInventoryVariances: RequestHandler = async (req, res) => {
+  const filters = varianceFilters.parse(req.query);
+  const branchId = getEffectiveBranchId(req.user!, filters.branchId);
+  const clauses: string[] = [];
+  const values: unknown[] = [];
+  if (branchId) { values.push(branchId); clauses.push(`ic.branch_id=$${values.length}`); }
+  if (filters.countDate) { values.push(filters.countDate); clauses.push(`ic.count_date=$${values.length}::date`); }
+  const result = await pool.query(
+    `SELECT ici.id "countItemId",ic.count_no "countNo",ic.count_date::text "countDate",
+            b.id "branchId",b.name "branchName",ii.id "inventoryItemId",ii.sku,ii.name "itemName",
+            ici.expected_quantity::float8 "expectedQuantity",ici.actual_quantity::float8 "actualQuantity",
+            ici.variance_quantity::float8 "varianceQuantity",ici.variance_value::float8 "varianceValue",ici.unit,
+            sr.id "anomalyId",sr.report_no "reportNo",sr.status "anomalyStatus",sr.classification
+       FROM inventory_count_items ici
+       JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
+       JOIN branches b ON b.id=ic.branch_id
+       JOIN inventory_items ii ON ii.id=ici.inventory_item_id
+       LEFT JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ici.id
+      ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
+      ORDER BY ic.count_date DESC,abs(ici.variance_value) DESC,ii.name`,
+    values,
+  );
+  res.json({ success: true, data: { variances: result.rows } });
+};
+
 const shrinkageSelection = `SELECT sr.id,sr.report_no "reportNo",sr.status,sr.classification,sr.explanation,sr.supporting_notes "supportingNotes",
   sr.expected_quantity::float8 "expectedQuantity",sr.actual_quantity::float8 "actualQuantity",sr.variance_quantity::float8 "varianceQuantity",sr.variance_value::float8 "varianceValue",sr.unit,
-  sr.submitted_at "submittedAt",sr.reviewed_at "reviewedAt",b.id "branchId",b.name "branchName",ii.id "inventoryItemId",ii.sku,ii.name "inventoryItemName",
+  sr.detected_at "detectedAt",sr.investigated_at "investigatedAt",sr.submitted_at "submittedAt",sr.reviewed_at "reviewedAt",b.id "branchId",b.name "branchName",ii.id "inventoryItemId",ii.sku,ii.name "inventoryItemName",
   mi.id "menuItemId",mi.name "menuItemName",concat(su.first_name,' ',su.last_name) "managerName",concat(ru.first_name,' ',ru.last_name) "reviewedByName"
   FROM shrinkage_reports sr JOIN branches b ON b.id=sr.branch_id JOIN inventory_items ii ON ii.id=sr.inventory_item_id
   JOIN users su ON su.id=sr.submitted_by LEFT JOIN users ru ON ru.id=sr.reviewed_by LEFT JOIN menu_items mi ON mi.id=sr.menu_item_id`;
@@ -176,7 +224,7 @@ export const listShrinkageReports: RequestHandler = async (req, res) => {
   if (branchId) { values.push(branchId); clauses.push(`sr.branch_id=$${values.length}`); }
   if (filters.status) { values.push(filters.status); clauses.push(`sr.status=$${values.length}`); }
   if (filters.classification) { values.push(filters.classification); clauses.push(`sr.classification=$${values.length}`); }
-  const result = await pool.query(`${shrinkageSelection} ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""} ORDER BY CASE WHEN sr.status='PENDING_REVIEW' THEN 0 ELSE 1 END,sr.submitted_at DESC`, values);
+  const result = await pool.query(`${shrinkageSelection} ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""} ORDER BY CASE sr.status WHEN 'DETECTED' THEN 0 WHEN 'PENDING_REVIEW' THEN 1 ELSE 2 END,sr.detected_at DESC`, values);
   res.json({ success: true, data: { reports: result.rows } });
 };
 
@@ -188,38 +236,40 @@ export const getShrinkageReport: RequestHandler = async (req, res) => {
   res.json({ success: true, data: { report: result.rows[0] } });
 };
 
-export const createShrinkageReport: RequestHandler = async (req, res) => {
-  const input = shrinkageReportInput.parse(req.body);
+export const submitShrinkageInvestigation: RequestHandler = async (req, res) => {
+  const { id } = idParams.parse(req.params);
+  const input = shrinkageInvestigationInput.parse(req.body);
   const branchId = requiredBranchId(req.user!);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const variance = await client.query<{
-      inventoryItemId: string; expectedQuantity: number; actualQuantity: number; varianceQuantity: number; varianceValue: number; unit: string; itemName: string; branchName: string;
-    }>(`SELECT ici.inventory_item_id "inventoryItemId",ici.expected_quantity::float8 "expectedQuantity",ici.actual_quantity::float8 "actualQuantity",
-              ici.variance_quantity::float8 "varianceQuantity",ici.variance_value::float8 "varianceValue",ici.unit,ii.name "itemName",b.name "branchName"
-         FROM inventory_count_items ici JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
-         JOIN inventory_items ii ON ii.id=ici.inventory_item_id JOIN branches b ON b.id=ic.branch_id
-        WHERE ici.id=$1 AND ic.branch_id=$2`, [input.inventoryCountItemId, branchId]);
-    const row = variance.rows[0];
-    if (!row) throw new AppError(404, "INVENTORY_VARIANCE_NOT_FOUND", "Inventory count variance not found for your branch");
-    if (Math.abs(row.varianceQuantity) <= 0.0001) throw new AppError(422, "NO_VARIANCE", "A shrinkage report requires a non-zero inventory variance");
-    const reportNo = await client.query<{ reportNo: string }>(`SELECT 'SR-'||to_char(now(),'YYYY')||'-'||lpad(nextval('shrinkage_report_number_seq')::text,5,'0') "reportNo"`);
-    const inserted = await client.query<{ id: string }>(
-      `INSERT INTO shrinkage_reports
-        (report_no,branch_id,inventory_item_id,inventory_count_item_id,menu_item_id,expected_quantity,actual_quantity,variance_quantity,variance_value,unit,classification,explanation,supporting_notes,submitted_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
-      [reportNo.rows[0]!.reportNo, branchId, row.inventoryItemId, input.inventoryCountItemId, input.menuItemId ?? null, row.expectedQuantity, row.actualQuantity, row.varianceQuantity, row.varianceValue, row.unit, input.classification, input.explanation, input.supportingNotes ?? null, req.user!.id],
+    const investigated = await client.query<{ reportNo: string; inventoryItemId: string; varianceQuantity: number; unit: string }>(
+      `UPDATE shrinkage_reports
+          SET menu_item_id=$3,classification=$4,explanation=$5,supporting_notes=$6,
+              status='PENDING_REVIEW',investigated_at=now(),submitted_at=now(),updated_at=now()
+        WHERE id=$1 AND branch_id=$2 AND status='DETECTED'
+        RETURNING report_no "reportNo",inventory_item_id "inventoryItemId",variance_quantity::float8 "varianceQuantity",unit`,
+      [id, branchId, input.menuItemId ?? null, input.classification, input.explanation, input.supportingNotes ?? null],
+    );
+    const row = investigated.rows[0];
+    if (!row) {
+      const existing = await client.query(`SELECT 1 FROM shrinkage_reports WHERE id=$1 AND branch_id=$2`, [id, branchId]);
+      if (!existing.rows[0]) throw new AppError(404, "SHRINKAGE_REPORT_NOT_FOUND", "Detected anomaly not found for your branch");
+      throw new AppError(409, "INVESTIGATION_ALREADY_SUBMITTED", "This anomaly has already been submitted for Owner review");
+    }
+    const context = await client.query<{ itemName: string; branchName: string }>(
+      `SELECT ii.name "itemName",b.name "branchName" FROM inventory_items ii CROSS JOIN branches b WHERE ii.id=$1 AND b.id=$2`,
+      [row.inventoryItemId, branchId],
     );
     await client.query(
       `INSERT INTO notifications (recipient_user_id,branch_id,type,title,message,entity_type,entity_id)
        SELECT id,$1,'SHRINKAGE_SUBMITTED','New Shrinkage Report',$2,'SHRINKAGE_REPORT',$3 FROM users WHERE role='OWNER' AND status='ACTIVE'`,
-      [branchId, `${row.branchName} submitted a shrinkage report for ${row.itemName}. Variance: ${row.varianceQuantity}${row.unit}. Classification: ${input.classification.replace("_", " ")}.`, inserted.rows[0]!.id],
+      [branchId, `${context.rows[0]!.branchName} submitted investigation findings for ${context.rows[0]!.itemName}. System variance: ${row.varianceQuantity}${row.unit}. Classification: ${input.classification.replace("_", " ")}.`, id],
     );
-    await writeAudit(req.user!, "SUBMIT_SHRINKAGE_REPORT", "SHRINKAGE_REPORT", inserted.rows[0]!.id, `Submitted shrinkage report ${reportNo.rows[0]!.reportNo}`, { branchId, classification: input.classification }, client);
+    await writeAudit(req.user!, "SUBMIT_SHRINKAGE_INVESTIGATION", "SHRINKAGE_REPORT", id, `Submitted investigation findings for ${row.reportNo}`, { branchId, classification: input.classification }, client);
     await client.query("COMMIT");
-    const result = await pool.query(`${shrinkageSelection} WHERE sr.id=$1`, [inserted.rows[0]!.id]);
-    res.status(201).json({ success: true, data: { report: result.rows[0] } });
+    const result = await pool.query(`${shrinkageSelection} WHERE sr.id=$1`, [id]);
+    res.json({ success: true, data: { report: result.rows[0] } });
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;

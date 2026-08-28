@@ -5,11 +5,11 @@ import { env } from "../config/env.js";
 import type { TokenUser, UserRole } from "../types/auth.js";
 import { AppError } from "../utils/appError.js";
 
-interface UserRow { id: string; branch_id: string | null; first_name: string; last_name: string; email: string; username: string; password_hash: string; role: UserRole; status: string; branch_code: string | null; branch_name: string | null }
+interface UserRow { id: string; branch_id: string | null; first_name: string; last_name: string; email: string; username: string; phone_number: string | null; position: string; password_hash: string; role: UserRole; status: string; branch_code: string | null; branch_name: string | null }
 
 const publicUser = (row: UserRow) => ({
   id: row.id, firstName: row.first_name, lastName: row.last_name, email: row.email,
-  username: row.username, role: row.role, branchId: row.branch_id,
+  username: row.username, phoneNumber: row.phone_number, position: row.position, role: row.role, branchId: row.branch_id,
   branch: row.branch_id ? { id: row.branch_id, code: row.branch_code!, name: row.branch_name! } : null,
 });
 

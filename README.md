@@ -155,12 +155,14 @@ Password: owner123
 Role: OWNER
 ```
 
-Branch Manager:
+Branch Managers (password for all Manager accounts: `manager123`):
 
 ```text
-Email: manager@libro.com
-Password: manager123
-Role: BRANCH_MANAGER
+Gulod:    manager.gulod@libro.com
+Lipa:     manager@libro.com
+Tagaytay: manager.tagaytay@libro.com
+Vermosa:  manager.vermosa@libro.com
+Evo:      manager.evo@libro.com
 ```
 
 These accounts are for local development only. Passwords are bcrypt-hashed in PostgreSQL and are not prefilled by the frontend.

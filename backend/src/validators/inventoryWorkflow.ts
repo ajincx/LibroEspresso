@@ -27,8 +27,7 @@ export const inventoryCountInput = z.object({
   })).min(1).refine((items) => new Set(items.map((item) => item.inventoryItemId)).size === items.length, "Inventory items must be unique"),
 });
 
-export const shrinkageReportInput = z.object({
-  inventoryCountItemId: z.string().uuid(),
+export const shrinkageInvestigationInput = z.object({
   menuItemId: z.string().uuid().optional(),
   classification: z.enum(["SPOILAGE", "WASTAGE", "PILFERAGE", "COUNT_ERROR"]),
   explanation: z.string().trim().min(10).max(3000),
@@ -37,8 +36,13 @@ export const shrinkageReportInput = z.object({
 
 export const shrinkageFilters = z.object({
   branchId: z.string().uuid().optional(),
-  status: z.enum(["PENDING_REVIEW", "REVIEWED"]).optional(),
+  status: z.enum(["DETECTED", "PENDING_REVIEW", "REVIEWED"]).optional(),
   classification: z.enum(["SPOILAGE", "WASTAGE", "PILFERAGE", "COUNT_ERROR"]).optional(),
+});
+
+export const varianceFilters = z.object({
+  branchId: z.string().uuid().optional(),
+  countDate: z.iso.date().optional(),
 });
 
 export const notificationIdParams = z.object({ id: z.string().uuid() });

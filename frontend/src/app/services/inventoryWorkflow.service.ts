@@ -1,5 +1,5 @@
 import type { ApiSuccess } from "../types/auth";
-import type { CountVarianceItem, ExpectedInventoryItem, ShrinkageClassification, ShrinkageReport, WorkflowNotification } from "../types/inventoryWorkflow";
+import type { CountVarianceItem, ExpectedInventoryItem, ShrinkageClassification, ShrinkageReport, VarianceRecord, WorkflowNotification } from "../types/inventoryWorkflow";
 import { api } from "./api";
 
 export const inventoryWorkflowService = {
@@ -12,8 +12,11 @@ export const inventoryWorkflowService = {
   async reports(filters?: { branchId?: string; status?: string; classification?: string }) {
     return (await api.get<ApiSuccess<{ reports: ShrinkageReport[] }>>("/shrinkage-reports", { params: filters })).data.data.reports;
   },
-  async createReport(input: { inventoryCountItemId: string; menuItemId?: string; classification: ShrinkageClassification; explanation: string; supportingNotes?: string }) {
-    return (await api.post<ApiSuccess<{ report: ShrinkageReport }>>("/shrinkage-reports", input)).data.data.report;
+  async variances(filters?: { branchId?: string; countDate?: string }) {
+    return (await api.get<ApiSuccess<{ variances: VarianceRecord[] }>>("/inventory-counts/variances", { params: filters })).data.data.variances;
+  },
+  async submitInvestigation(id: string, input: { menuItemId?: string; classification: ShrinkageClassification; explanation: string; supportingNotes?: string }) {
+    return (await api.patch<ApiSuccess<{ report: ShrinkageReport }>>(`/shrinkage-reports/${id}/investigation`, input)).data.data.report;
   },
   async reviewReport(id: string) {
     return (await api.post<ApiSuccess<{ report: ShrinkageReport }>>(`/shrinkage-reports/${id}/review`)).data.data.report;

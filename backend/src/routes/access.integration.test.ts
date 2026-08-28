@@ -75,8 +75,13 @@ describe("access controls", () => {
     expect(response.status).toBe(403);
   });
 
-  it("blocks an Owner from creating a shrinkage report", async () => {
-    const response = await request(app).post("/api/shrinkage-reports").set("Cookie", session({ id: "owner", role: "OWNER", branchId: null })).send({});
+  it("does not expose manual shrinkage-report creation", async () => {
+    const response = await request(app).post("/api/shrinkage-reports").set("Cookie", session({ id: "manager", role: "BRANCH_MANAGER", branchId: "lipa" })).send({});
+    expect(response.status).toBe(404);
+  });
+
+  it("blocks an Owner from submitting Manager investigation findings", async () => {
+    const response = await request(app).patch("/api/shrinkage-reports/00000000-0000-0000-0000-000000000001/investigation").set("Cookie", session({ id: "owner", role: "OWNER", branchId: null })).send({});
     expect(response.status).toBe(403);
   });
 
