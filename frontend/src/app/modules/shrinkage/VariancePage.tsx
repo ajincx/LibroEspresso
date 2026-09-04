@@ -17,7 +17,7 @@ function displayStatus(record: VarianceRecord): DisplayStatus {
   return "MATCHED";
 }
 
-export function VarianceMonitoringPage() {
+export function VariancePage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const owner = user?.role === "OWNER";

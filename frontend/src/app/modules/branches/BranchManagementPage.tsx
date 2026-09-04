@@ -5,7 +5,7 @@ import { masterDataService } from "../../services/masterData.service";
 import type { Branch, RecordStatus } from "../../types/masterData";
 const maroon="#7A1F2B",border="#E7E7EB",muted="#6F717A";
 const empty={code:"",name:"",location:"",status:"ACTIVE" as RecordStatus};
-export function AdminBranchesPage(){
+export function BranchManagementPage(){
   const [branches,setBranches]=useState<Branch[]>([]),[loading,setLoading]=useState(true),[error,setError]=useState(""),[open,setOpen]=useState(false),[saving,setSaving]=useState(false),[form,setForm]=useState(empty);
   const load=async()=>{setLoading(true);setError("");try{setBranches(await masterDataService.branches());}catch(e){setError(e instanceof Error?e.message:"Unable to load branches");}finally{setLoading(false);}}; useEffect(()=>{void load();},[]);
   const create=async()=>{setSaving(true);try{await masterDataService.createBranch(form);setOpen(false);setForm(empty);toast.success("Branch created");await load();}catch(e){toast.error(e instanceof Error?e.message:"Unable to create branch");}finally{setSaving(false);}};

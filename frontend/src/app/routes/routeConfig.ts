@@ -2,9 +2,16 @@ import type { UserRole } from "../types/auth";
 
 export const pagePaths = {
   dashboard: "/dashboard", sales: "/sales", menu: "/menu", inventory: "/inventory",
-  "physical-count": "/inventory/physical-count", shrinkage: "/shrinkage",
+  "physical-count": "/inventory/physical-count",
+  "physical-count-history": "/inventory/physical-count-history",
+  "expected-stock": "/inventory/expected-stock",
+  "stock-levels": "/inventory/stock-levels",
+  "recipe-reference": "/cogs/standardized-recipes",
+  "ingredient-usage": "/cogs/ingredient-usage",
+  shrinkage: "/shrinkage",
   variance: "/inventory/variance", "purchase-orders": "/purchase-orders",
   cogs: "/cogs", predictive: "/predictive", reports: "/reports",
+  "staff-monitoring": "/staff-monitoring",
   users: "/users", branches: "/branches", settings: "/settings", "master-data": "/inventory/master-data",
 } as const;
 

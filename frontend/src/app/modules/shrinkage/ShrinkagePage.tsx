@@ -20,7 +20,7 @@ const classificationLabel = (value: ShrinkageClassification | null) => value
   : "Awaiting Investigation";
 const formatDate = (value: string | null) => value ? new Intl.DateTimeFormat("en-PH", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)) : "—";
 
-export function ShrinkageWorkflowPage() {
+export function ShrinkagePage() {
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const owner = user?.role === "OWNER";

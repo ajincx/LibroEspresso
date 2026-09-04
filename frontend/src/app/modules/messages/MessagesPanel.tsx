@@ -7,7 +7,7 @@ import type { DirectMessage, MessageContact } from "../../types/messaging";
 
 function initials(contact: MessageContact) { return `${contact.firstName[0] ?? ""}${contact.lastName[0] ?? ""}`.toUpperCase(); }
 
-export function MessagesPage({ embedded = false, initialMessageId = null }: { embedded?: boolean; initialMessageId?: string | null }) {
+export function MessagesPanel({ embedded = false, initialMessageId = null }: { embedded?: boolean; initialMessageId?: string | null }) {
   const { user } = useAuth();
   const [contacts, setContacts] = useState<MessageContact[]>([]);
   const [selectedId, setSelectedId] = useState("");

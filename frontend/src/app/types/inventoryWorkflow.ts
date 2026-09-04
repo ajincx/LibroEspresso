@@ -25,6 +25,18 @@ export interface PosImportRecord {
   totalSales: number;
 }
 
+export interface InventoryCountSummary {
+  id: string;
+  countNo: string;
+  countDate: string;
+  submittedAt: string;
+  branchId: string;
+  branchName: string;
+  submittedBy: string;
+  itemCount: number;
+  varianceCount: number;
+}
+
 export interface CountVarianceItem {
   id: string;
   inventoryItemId: string;

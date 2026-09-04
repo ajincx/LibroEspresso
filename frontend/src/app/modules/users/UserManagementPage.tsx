@@ -16,7 +16,7 @@ const inputClass = "mt-1.5 w-full rounded-xl border px-3 py-2.5 text-sm outline-
 
 function message(error: unknown, fallback: string) { return error instanceof Error ? error.message : fallback; }
 
-export function AdminUsersPage() {
+export function UserManagementPage() {
   const { user: currentUser, refreshUser } = useAuth();
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
