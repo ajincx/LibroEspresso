@@ -1,4 +1,4 @@
-export type UserRole = "OWNER" | "BRANCH_MANAGER";
+export type UserRole = "OWNER" | "BRANCH_MANAGER" | "STAFF";
 
 export interface BranchSummary {
   id: string;

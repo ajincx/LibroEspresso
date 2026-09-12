@@ -1,534 +1,407 @@
-import React, { lazy, Suspense, useEffect, useState } from "react";
-import { ShoppingCart, Package, AlertTriangle, TrendingDown, ChevronRight, Plus, MapPin, CheckCircle, Activity, ClipboardList, Percent } from "lucide-react";
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart as RPieChart, Pie, Cell, Area, ComposedChart, LabelList } from "recharts";
-import { C, DashboardRange, DashboardComparison, dashboardPeriodLabel, dashboardRangeFactor, formatPeso, SkeletonBlock, SkeletonKPICard, SkeletonTable, StatusChip, KPICard, Card, Btn, DashboardFilters, THead, TR, TD, ChartTip } from "../../components/ModuleUi";
-import { salesTrend, managerTodaySalesTrend, branchPerf, inventoryStatus, inventoryItems, aiInsights } from "../demoData";
-import { toast } from "sonner";
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router";
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { ShoppingCart, Package, Percent, TrendingDown, RefreshCw, Check, AlertTriangle, Search, BadgeDollarSign } from "lucide-react";
+import { Card, Btn, KPICard, DashboardFilters, StatusChip, SearchInput, Select, C, type DashboardRange, type DashboardComparison } from "../../components/ModuleUi";
 import { useAuth } from "../../contexts/AuthContext";
+import { inventoryWorkflowService as workflow } from "../../services/inventoryWorkflow.service";
+import { operationsService } from "../../services/operations.service";
+import { predictiveService } from "../../services/predictive.service";
+import type { PosAnalytics, ShrinkageReport } from "../../types/inventoryWorkflow";
+import type { InventoryOverviewItem } from "../../types/operations";
+import type { PredictiveForecast } from "../../types/predictive";
 import type { Page, Role } from "../../types/navigation";
-import { LossRecordModal as SpoilageModal } from "../../components/LossRecordModal";
+import { businessDate, addDateDays, periodDates } from "../../utils/businessDate";
+import { formatAppCurrency as money, formatAppDate, readAppPreferences } from "../../utils/appPreferences";
+import { officialFinancialMetrics } from "../../utils/financialMetrics";
 
-function OwnerDashboard({ onNavigate }: { onNavigate: (p: Page) => void }) {
+const ALERT_PRIORITY: Record<InventoryOverviewItem["status"], number> = { OUT_OF_STOCK: 4, CRITICAL: 3, LOW_STOCK: 2, HEALTHY: 1 };
+export const DASHBOARD_INVENTORY_TARGET:Page="inventory";
+export const dashboardGreeting = (hour:number,firstName?:string) => `${hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"}, ${firstName ?? ""} 👋`.replace(",  ", ", ");
+export const prioritizeInventoryAlerts = (items:InventoryOverviewItem[]) => [...items].filter(item=>item.status!=="HEALTHY").sort((a,b)=>ALERT_PRIORITY[b.status]-ALERT_PRIORITY[a.status] || (b.reorderLevel-b.systemStock)-(a.reorderLevel-a.systemStock) || a.name.localeCompare(b.name));
+export const stockStatusChip=(status:InventoryOverviewItem["status"])=>status==="OUT_OF_STOCK"?"out":status==="LOW_STOCK"?"low":status.toLowerCase();
+
+export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName = "All Branches" }: {
+  role: Role; onNavigate: (page: Page) => void; scopeBranchId?: string; scopeBranchName?: string;
+}) {
   const { user } = useAuth();
-  const [metric, setMetric] = useState<"sales" | "cogs" | "margin" | "shrinkage">("sales");
-  const [loading, setLoading] = useState(true);
-  const [range, setRange] = useState<DashboardRange>("mtd");
+  const navigate = useNavigate();
+  const [now, setNow] = useState(new Date());
+  const [range, setRange] = useState<DashboardRange>(role === "owner" ? "mtd" : "today");
   const [comparison, setComparison] = useState<DashboardComparison>("previous");
-  const [customStart, setCustomStart] = useState("2026-08-01");
-  const [customEnd, setCustomEnd] = useState("2026-08-26");
-  const customDays = Math.max(1, Math.round((new Date(customEnd).getTime() - new Date(customStart).getTime()) / 86400000) + 1);
-  const rangeFactor = range === "custom" ? Math.min(customDays / 26, 2) : dashboardRangeFactor(range);
-  const grossMargin = range === "custom" ? 56.7 + Math.min(customDays, 30) * 0.01 : { today: 58.2, "7d": 57.4, "30d": 56.8, mtd: 57 }[range];
-  const shrinkageRate = range === "custom" ? 1.42 + Math.min(customDays, 30) * 0.008 : { today: 1.31, "7d": 1.48, "30d": 1.72, mtd: 1.65 }[range];
-  const periodLabel = dashboardPeriodLabel(range, customStart, customEnd);
-  const comparisonLabel = comparison === "previous" ? "previous period" : "last month";
-  const ownerChanges = comparison === "previous"
-    ? { sales: "+8.3%", cogs: "+5.1%", margin: "+1.2pp", shrinkage: "+0.2pp" }
-    : { sales: "+6.9%", cogs: "+4.4%", margin: "+0.8pp", shrinkage: "+0.1pp" };
-  const rankedBranchData = branchPerf
-    .map(branch => ({
-      ...branch,
-      sales: Math.round(branch.sales * rangeFactor),
-      cogs: Math.round(branch.cogs * rangeFactor),
-      margin: Number((branch.margin + grossMargin - 57).toFixed(1)),
-      shrinkage: Math.round(branch.shrinkage * rangeFactor),
-    }))
-    .sort((a, b) => Number(b[metric]) - Number(a[metric]));
-  const visibleSalesTrend = range === "today" ? salesTrend.slice(-1) : range === "custom" ? salesTrend.slice(-Math.min(customDays, 7)) : salesTrend;
-
+  const [customStart, setCustomStart] = useState(businessDate());
+  const [customEnd, setCustomEnd] = useState(businessDate());
+  const [refresh, setRefresh] = useState(0);
+  const [data, setData] = useState<{ current: PosAnalytics; previous: PosAnalytics; inventory: InventoryOverviewItem[]; reports: ShrinkageReport[] } | null>(null);
+  const [forecast, setForecast] = useState<PredictiveForecast | null>(null);
+  const [error, setError] = useState("");
+  const [forecastError, setForecastError] = useState("");
+  const [marginOpen, setMarginOpen] = useState(false);
+  const [alertSearch, setAlertSearch] = useState("");
+  const [alertCategory, setAlertCategory] = useState("All Categories");
+  const branchId = role === "owner" && scopeBranchId && scopeBranchId !== "ALL" ? scopeBranchId : undefined;
+  const scope = role === "manager" ? user?.branch?.name ?? "Assigned Branch" : scopeBranchName;
+  const today = businessDate(now);
+  const { startDate, endDate } = periodDates(range, customStart, customEnd);
   useEffect(() => {
-    const t = setTimeout(() => setLoading(false), 1200);
-    return () => clearTimeout(t);
+    const tick = window.setInterval(() => setNow(new Date()), 60000);
+    const focus = () => { setNow(new Date()); setRefresh(v => v + 1); };
+    window.addEventListener("focus", focus);
+    window.addEventListener("libro-data-changed", focus);
+    return () => { clearInterval(tick); window.removeEventListener("focus", focus); window.removeEventListener("libro-data-changed", focus); };
   }, []);
-
-  return (
-    <div className="dashboard-page p-6 space-y-6">
-      <div className="dashboard-intro flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold" style={{ color: C.primary }}>Good morning, {user?.firstName ?? "Owner"} 👋</h1>
-          <p className="text-sm mt-1" style={{ color: C.secondary }}>Here's how Libro Espresso is performing across all branches.</p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap justify-end">
-          <DashboardFilters range={range} comparison={comparison} customStart={customStart} customEnd={customEnd}
-            onRangeChange={setRange} onComparisonChange={setComparison}
-            onApplyCustom={(start, end) => { setCustomStart(start); setCustomEnd(end); }}
-            onReset={() => { setRange("mtd"); setCustomStart("2026-08-01"); setCustomEnd("2026-08-26"); }} />
-        </div>
-      </div>
-
-      {/* KPI Row */}
-      {loading ? (
-        <div className="dashboard-kpi-grid grid grid-cols-4 gap-4">
-          {Array.from({ length: 4 }).map((_, i) => <SkeletonKPICard key={i} />)}
-        </div>
-      ) : (
-        <div className="dashboard-kpi-grid grid grid-cols-4 gap-4">
-          <KPICard label="Total Sales" value={formatPeso(1120500 * rangeFactor)} change={ownerChanges.sales} changeDir="up" sub={`All branches · ${periodLabel}`} icon={ShoppingCart} color={C.maroon} comparisonLabel={comparisonLabel} />
-          <KPICard label="Total COGS" value={formatPeso(482100 * rangeFactor)} change={ownerChanges.cogs} changeDir="up" sub="43.0% of sales" icon={Package} color={C.amber} comparisonLabel={comparisonLabel} />
-          <KPICard label="Gross Margin" value={`${grossMargin.toFixed(1)}%`} change={ownerChanges.margin} changeDir="up" sub={`${formatPeso(638400 * rangeFactor)} gross profit`} icon={Percent} color={C.green} comparisonLabel={comparisonLabel} />
-          <KPICard label="Shrinkage Rate" value={`${shrinkageRate.toFixed(2)}%`} change={ownerChanges.shrinkage} changeDir="down" sub={`${formatPeso(18450 * rangeFactor)} loss this period`} icon={TrendingDown} color={C.red} comparisonLabel={comparisonLabel} />
-        </div>
-      )}
-
-      {/* Row 2: Branch Perf + AI Insights */}
-      <div className="grid grid-cols-5 gap-5">
-        <Card className="col-span-3" padding={false}>
-          <div className="px-5 pt-5 pb-0 flex items-center justify-between mb-3">
-            <div>
-              <h3 className="font-semibold" style={{ color: C.primary }}>Cross-Branch Performance</h3>
-              <p className="text-xs mt-0.5" style={{ color: C.secondary }}>{periodLabel} · Ranked by {metric}</p>
-            </div>
-            <div className="flex gap-1 p-0.5 rounded-lg border" style={{ borderColor: C.border }}>
-              {(["sales", "cogs", "margin", "shrinkage"] as const).map(m => (
-                <button key={m} onClick={() => setMetric(m)}
-                  className="px-2.5 py-1 rounded-md text-xs font-medium capitalize transition-colors"
-                  style={{ background: metric === m ? C.maroon : "transparent", color: metric === m ? "#fff" : C.secondary }}>
-                  {m === "margin" ? "Margin" : m.charAt(0).toUpperCase() + m.slice(1)}
-                </button>
-              ))}
-            </div>
-          </div>
-          {loading ? <div className="h-52 px-5 pb-5"><SkeletonBlock w="100%" h={200} className="rounded-lg" /></div> : (
-            <div className="h-60 px-3 pb-4">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={rankedBranchData} barSize={28} margin={{ left: 8, right: 8, top: 18 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={C.border} vertical={false} />
-                  <XAxis dataKey="branch" tick={{ fontSize: 11, fill: C.secondary }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 10, fill: C.secondary }} axisLine={false} tickLine={false}
-                    tickFormatter={v => metric === "margin" ? `${v}%` : `₱${(v / 1000).toFixed(0)}k`} />
-                  <Tooltip content={<ChartTip />} />
-                  <Bar dataKey={metric} name={metric === "margin" ? "Margin %" : metric.charAt(0).toUpperCase() + metric.slice(1)}
-                    fill={metric === "shrinkage" ? C.red : metric === "cogs" ? C.amber : metric === "margin" ? C.green : C.maroon}
-                    radius={[7, 7, 0, 0]}>
-                    <LabelList dataKey={metric} position="top" style={{ fill: C.secondary, fontSize: 10, fontWeight: 600 }}
-                      formatter={(value: any) => metric === "margin" ? `${value}%` : `₱${(Number(value) / 1000).toFixed(0)}k`} />
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-        </Card>
-
-        <Card className="col-span-2">
-          <div className="flex items-center gap-2.5 mb-4">
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: C.softMaroonBg }}>
-              <Activity size={14} style={{ color: C.maroon }} />
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold" style={{ color: C.primary }}>Business Insight</h3>
-              <p className="text-xs" style={{ color: C.muted }}>Forecast model · Updated 08:02 AM</p>
-            </div>
-          </div>
-          <div className="space-y-2.5">
-            {aiInsights.slice(0, 1).map(ins => (
-              <div key={ins.id} className="p-3 rounded-xl border"
-                style={{ borderColor: C.border, background: C.veryLightMaroon }}>
-                <div className="flex items-start justify-between gap-2 mb-1">
-                  <p className="text-xs font-semibold leading-snug" style={{ color: C.primary }}>{ins.title}</p>
-                  <StatusChip status={ins.urgency === "high" ? "high" : ins.urgency === "medium" ? "medium" : "low_urgency"} />
-                </div>
-                <p className="text-xs leading-relaxed" style={{ color: C.secondary }}>{ins.desc}</p>
-                <div className="mt-1.5 flex items-center gap-1.5">
-                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full" style={{ background: C.softMaroonBg, color: C.maroon }}>
-                    {ins.metric}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-          <button className="mt-3 text-xs font-semibold flex items-center gap-1" style={{ color: C.maroon }}
-            onClick={() => onNavigate("predictive")}>
-            View Predictive Analytics <ChevronRight size={11} />
-          </button>
-        </Card>
-      </div>
-
-      {/* Row 3: Inventory Health + Shrinkage */}
-      <div className="grid grid-cols-5 gap-5">
-        <Card className="col-span-2">
-          <h3 className="font-semibold" style={{ color: C.primary }}>Inventory Health</h3>
-          <p className="text-xs mt-0.5 mb-4" style={{ color: C.secondary }}>228 SKUs · All branches</p>
-          {loading ? <SkeletonBlock w="100%" h={160} className="rounded-lg" /> : (
-            <>
-              <div className="flex justify-center mb-4">
-                <ResponsiveContainer width={200} height={180}>
-                  <RPieChart>
-                    <Pie data={inventoryStatus} cx="50%" cy="50%" innerRadius={55} outerRadius={85}
-                      paddingAngle={3} cornerRadius={7} dataKey="value" startAngle={90} endAngle={-270}
-                      stroke={C.surface} strokeWidth={2}>
-                      {inventoryStatus.map((e, i) => <Cell key={i} fill={e.color} />)}
-                    </Pie>
-                    <Tooltip formatter={(v: any, n: any) => [`${v} SKUs`, n]} />
-                  </RPieChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                {inventoryStatus.map(s => (
-                  <div key={s.name} className="flex items-center gap-2 py-1">
-                    <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: s.color }} />
-                    <div>
-                      <div className="text-xs font-semibold" style={{ color: C.primary }}>{s.value}</div>
-                      <div className="text-xs" style={{ color: C.secondary }}>{s.name}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-        </Card>
-
-        <Card className="col-span-3" padding={false}>
-          <div className="px-5 pt-5 flex items-center justify-between">
-            <div>
-              <h3 className="font-semibold" style={{ color: C.primary }}>Sales &amp; COGS Performance</h3>
-              <p className="text-xs mt-0.5" style={{ color: C.secondary }}>Aug 19–25, 2026 · All branches</p>
-            </div>
-            <Btn variant="ghost" size="sm" onClick={() => onNavigate("sales")}>View analysis</Btn>
-          </div>
-          {loading ? <div className="p-5"><SkeletonBlock w="100%" h={210} className="rounded-lg" /></div> : (
-            <div className="h-64 px-3 pb-4 pt-3">
-              <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={visibleSalesTrend}>
-                  <defs>
-                    <linearGradient id="owner-sales-area" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor={C.maroon} stopOpacity={0.16} />
-                      <stop offset="95%" stopColor={C.maroon} stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke={C.border} vertical={false} />
-                  <XAxis dataKey="date" tick={{ fontSize: 11, fill: C.secondary }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 10, fill: C.secondary }} axisLine={false} tickLine={false}
-                    tickFormatter={v => `₱${(v / 1000).toFixed(0)}k`} />
-                  <Tooltip content={<ChartTip />} />
-                  <Legend iconSize={9} wrapperStyle={{ fontSize: 11 }} />
-                  <Area type="monotone" dataKey="sales" name="Sales" fill="url(#owner-sales-area)" stroke={C.maroon} strokeWidth={2.25} dot={false} />
-                  <Line type="monotone" dataKey="cogs" name="COGS" stroke={C.amber} strokeWidth={1.75} dot={false} />
-                </ComposedChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-        </Card>
-      </div>
-
-      {/* Row 4: Alerts + Branch Table */}
-      <div className="grid grid-cols-5 gap-5">
-        <Card className="col-span-3" padding={false}>
-          <div className="px-5 pt-5 pb-3 flex items-center justify-between">
-            <h3 className="font-semibold" style={{ color: C.primary }}>Recent Inventory Alerts</h3>
-            <Btn variant="ghost" size="sm" onClick={() => onNavigate("inventory")}>View all</Btn>
-          </div>
-          {loading ? <SkeletonTable rows={4} cols={6} /> : (
-            <div className="overflow-x-auto">
-              <table className="data-table w-full">
-                <THead cols={["Item", "Branch", "Alert Type", "Stock / Threshold", "Detected", "Severity"]} />
-                <tbody>
-                  {[
-                    { item: "Arabica Beans", branch: "Vermosa", type: "Potential Pilferage", stock: "38 kg / 20 kg", detected: "Aug 25", sev: "critical" },
-                    { item: "Whole Milk", branch: "Lipa", type: "Low Stock", stock: "45 L / 60 L", detected: "Aug 26", sev: "warning" },
-                    { item: "Butter", branch: "Lipa", type: "Out of Stock", stock: "0 kg / 10 kg", detected: "Aug 26", sev: "critical" },
-                    { item: "White Sugar", branch: "Lipa", type: "Critical Stock", stock: "8 kg / 15 kg", detected: "Aug 25", sev: "critical" },
-                    { item: "Croissants", branch: "Gulod", type: "Low Stock", stock: "24 pcs / 30 pcs", detected: "Aug 26", sev: "warning" },
-                  ].slice(0, 3).map((a, i) => (
-                    <TR key={i}>
-                      <TD><span className="font-medium">{a.item}</span></TD>
-                      <TD muted>{a.branch}</TD>
-                      <TD muted>{a.type}</TD>
-                      <TD muted><span className="font-mono text-xs">{a.stock}</span></TD>
-                      <TD muted>{a.detected}</TD>
-                      <TD><StatusChip status={a.sev} /></TD>
-                    </TR>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </Card>
-
-        <Card className="col-span-2" padding={false}>
-          <div className="px-5 pt-5 pb-3">
-            <h3 className="font-semibold" style={{ color: C.primary }}>Branch Performance</h3>
-          </div>
-          {loading ? <SkeletonTable rows={5} cols={4} /> : (
-            <div className="overflow-x-auto">
-              <table className="data-table w-full">
-                <THead cols={["Branch", "Sales", "Margin", "Shrinkage"]} />
-                <tbody>
-                  {branchPerf.map((b, i) => (
-                    <TR key={i} onClick={() => onNavigate("inventory")}>
-                      <TD><span className="font-semibold" style={{ color: C.maroon }}>{b.branch}</span></TD>
-                      <TD right>₱{(b.sales / 1000).toFixed(0)}k</TD>
-                      <TD right><span className="font-semibold text-xs" style={{ color: C.green }}>{b.margin}%</span></TD>
-                      <TD right><span className="text-xs" style={{ color: C.red }}>₱{(b.shrinkage / 1000).toFixed(1)}k</span></TD>
-                    </TR>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </Card>
-      </div>
+  useEffect(() => {
+    let active = true;
+    setData(null); setError("");
+    const days = Math.round((Date.parse(endDate) - Date.parse(startDate)) / 86400000) + 1;
+    const shiftMonth = (value: string) => {
+      const date = new Date(value + "T12:00:00Z");
+      const day = date.getUTCDate(); date.setUTCDate(1); date.setUTCMonth(date.getUTCMonth() - 1);
+      const last = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth()+1,0)).getUTCDate();
+      date.setUTCDate(Math.min(day,last)); return date.toISOString().slice(0,10);
+    };
+    const previous = comparison === "lastMonth" ? { startDate: shiftMonth(startDate), endDate: shiftMonth(endDate) }
+      : { startDate: addDateDays(startDate, -days), endDate: addDateDays(startDate, -1) };
+    Promise.all([
+      workflow.posAnalytics({ branchId, startDate, endDate }),
+      workflow.posAnalytics({ branchId, ...previous }),
+      operationsService.inventoryOverview(branchId),
+      workflow.reports({ branchId }),
+    ]).then(([current, prior, inventory, reports]) => {
+      if (active) setData({ current, previous: prior, inventory, reports: reports.filter(r => r.detectedAt.slice(0,10) >= startDate && r.detectedAt.slice(0,10) <= endDate) });
+    }).catch(e => { if (active) setError(e.message); });
+    return () => { active = false; };
+  }, [branchId, role, startDate, endDate, comparison, refresh]);
+  useEffect(() => {
+    let active = true; setForecast(null); setForecastError("");
+    predictiveService.generate({ branchId, startDate: today, endDate: addDateDays(today,29) })
+      .then(v => { if (active) setForecast(v); }).catch(e => { if (active) setForecastError(e.message); });
+    return () => { active = false; };
+  }, [branchId, role, today, refresh]);
+  const hour = Number(new Intl.DateTimeFormat("en-GB", { hour: "2-digit", hourCycle: "h23", timeZone: readAppPreferences().timezone }).format(now));
+  const greeting = dashboardGreeting(hour,user?.firstName);
+  const totals = data?.current.summary;
+  const financials = totals ? officialFinancialMetrics(totals) : null;
+  const ratio = (loss: number, sales: number) => sales > 0 ? 100*loss/sales : 0;
+  const changed = (current: number, previous: number) => range === "custom" || previous === 0 ? undefined : ((current-previous)/Math.abs(previous)*100).toFixed(1) + "%";
+  const alerts = useMemo(() => prioritizeInventoryAlerts(data?.inventory ?? []), [data?.inventory]);
+  const alertCategories = useMemo(() => {
+    const cats = new Set(alerts.map((i) => i.category).filter(Boolean));
+    return ["All Categories", ...Array.from(cats)];
+  }, [alerts]);
+  const filteredAlerts = useMemo(() => {
+    const query = alertSearch.trim().toLowerCase();
+    return alerts.filter((i) => {
+      const matchesCategory = alertCategory === "All Categories" || i.category === alertCategory;
+      const matchesSearch =
+        !query ||
+        i.name.toLowerCase().includes(query) ||
+        i.branchName.toLowerCase().includes(query) ||
+        (i.category && i.category.toLowerCase().includes(query)) ||
+        (i.sku && i.sku.toLowerCase().includes(query));
+      return matchesCategory && matchesSearch;
+    }).slice(0,5);
+  }, [alerts, alertSearch, alertCategory]);
+  const classifications = Object.entries((data?.reports ?? []).filter((r)=>
+    (r.status === "VERIFIED" || r.status === "REVIEWED") && r.classification !== "COUNT_ERROR" && r.classification !== null,
+  ).reduce<Record<string,number>>((acc,r) => {
+    const key = (r.classification ?? "Unexplained").replaceAll("_"," ");
+    acc[key] = (acc[key] ?? 0) + Math.max(0, r.varianceValue); return acc;
+  }, {})).map(([name,value]) => ({name,value}));
+  const inventoryHealth = [
+    { key: "HEALTHY", name: "Healthy", color: C.green },
+    { key: "LOW_STOCK", name: "Low Stock", color: C.amber },
+    { key: "CRITICAL", name: "Critical", color: "#e26d2f" },
+    { key: "OUT_OF_STOCK", name: "Out of Stock", color: C.red },
+  ].map((item) => ({
+    ...item,
+    value: data?.inventory.filter((inventoryItem) => inventoryItem.status === item.key).length ?? 0,
+  })).filter((item) => item.value > 0);
+  const selectedPrediction = forecast?.predictions.find(p => p.recommendedReorder > 0);
+  const createOrder = (prediction?: PredictiveForecast["predictions"][0]) => {
+    const target = prediction ?? selectedPrediction;
+    const params = new URLSearchParams({ create: "1" });
+    if (target) {
+      params.set("ingredientId", target.inventoryItemId);
+      params.set("quantity", String(target.recommendedReorder));
+    }
+    navigate(`/purchase-orders?${params.toString()}`);
+  };
+  const salesUrl = "/sales?startDate=" + startDate + "&endDate=" + endDate;
+  return <div className="p-4 md:p-6 space-y-5">
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div><h1 className="text-xl font-bold">{greeting}</h1><p className="text-sm text-[var(--app-text-muted)]">{scope} · {formatAppDate(startDate)} – {formatAppDate(endDate)}</p></div>
+      <div className="flex gap-2"><Btn variant="outline" icon={RefreshCw} onClick={() => setRefresh(v => v+1)}>Refresh</Btn></div>
     </div>
-  );
-}
-
-// ─── Branch Manager Dashboard ──────────────────────────────────────────────────
-function ManagerDashboard({ onNavigate }: { onNavigate: (p: Page) => void }) {
-  const { user } = useAuth();
-  const [showSpoilage, setShowSpoilage] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [range, setRange] = useState<DashboardRange>("today");
-  const [comparison, setComparison] = useState<DashboardComparison>("previous");
-  const [customStart, setCustomStart] = useState("2026-08-01");
-  const [customEnd, setCustomEnd] = useState("2026-08-26");
-  const customDays = Math.max(1, Math.round((new Date(customEnd).getTime() - new Date(customStart).getTime()) / 86400000) + 1);
-  const managerRangeFactor = range === "custom" ? customDays * 0.9 : { today: 1, "7d": 6.36, "30d": 25.1, mtd: 21.7 }[range];
-  const branchMargin = range === "custom" ? 56.9 + Math.min(customDays, 30) * 0.008 : { today: 57.1, "7d": 57.4, "30d": 56.8, mtd: 57 }[range];
-  const branchShrinkage = range === "custom" ? 1.31 + Math.min(customDays, 30) * 0.007 : { today: 1.18, "7d": 1.36, "30d": 1.58, mtd: 1.49 }[range];
-  const periodLabel = dashboardPeriodLabel(range, customStart, customEnd);
-  const comparisonLabel = comparison === "previous" ? "previous period" : "last month";
-  const managerChanges = comparison === "previous"
-    ? { sales: "+4.8%", cogs: "+3.1%", profit: "+6.1%", shrinkage: "+0.2pp" }
-    : { sales: "+3.9%", cogs: "+2.6%", profit: "+5.0%", shrinkage: "+0.1pp" };
-  const visibleSalesTrend = range === "today" ? managerTodaySalesTrend : range === "custom" ? salesTrend.slice(-Math.min(customDays, 7)) : salesTrend;
-
-  useEffect(() => {
-    const t = setTimeout(() => setLoading(false), 1000);
-    return () => clearTimeout(t);
-  }, []);
-
-  return (
-    <div className="dashboard-page p-6 space-y-6">
-      {/* Header */}
-      <div className="dashboard-intro flex items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2.5 mb-0.5">
-            <h1 className="text-2xl font-bold" style={{ color: C.primary }}>Good morning, {user?.firstName ?? "Manager"} 👋</h1>
-            <span className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold" style={{ background: C.softMaroonBg, color: C.maroon }}>
-              <MapPin size={10} /> {user?.branch?.name ?? "Assigned Branch"}
-            </span>
-          </div>
-          <p className="text-sm" style={{ color: C.secondary }}>Here's what needs your attention today — August 26, 2026</p>
-        </div>
-        <DashboardFilters range={range} comparison={comparison} customStart={customStart} customEnd={customEnd}
-          onRangeChange={setRange} onComparisonChange={setComparison}
-          onApplyCustom={(start, end) => { setCustomStart(start); setCustomEnd(end); }}
-          onReset={() => { setRange("today"); setCustomStart("2026-08-01"); setCustomEnd("2026-08-26"); }} />
+    <DashboardFilters range={range} comparison={comparison} customStart={customStart} customEnd={customEnd} onRangeChange={setRange} onComparisonChange={setComparison} onApplyCustom={(a,b) => { setCustomStart(a); setCustomEnd(b); setRange("custom"); }} onReset={() => { setRange(role === "owner" ? "mtd" : "today"); setComparison("previous"); }}/>
+    {role === "manager" && <div className="flex flex-wrap gap-2"><Btn onClick={() => onNavigate("physical-count")}>Record Stock Count</Btn><Btn variant="outline" onClick={() => createOrder()}>Create Purchase Request</Btn></div>}
+    {error ? <Card><p role="alert" className="text-red-700">{error}</p><Btn onClick={() => setRefresh(v => v+1)}>Retry</Btn></Card> : !totals || !data ? <Card>Loading branch records…</Card> : <>
+      <div className="dashboard-kpis grid grid-cols-2 xl:grid-cols-6 gap-4">
+        <KPICard label={role === "owner" ? "Total Sales" : "Branch Sales"} value={money(financials!.sales)} sub={totals.unitsSold + " units sold"} icon={ShoppingCart} change={changed(financials!.sales,data.previous.summary.sales)} onClick={() => navigate(salesUrl)}/>
+        <KPICard label={role === "owner" ? "Total COGS" : "Branch COGS"} value={money(financials!.totalCogs)} sub="Recipe-based cost of products sold" icon={Package} change={changed(financials!.totalCogs,data.previous.summary.totalCogs)} onClick={() => navigate("/cogs?startDate="+startDate+"&endDate="+endDate)}/>
+        <KPICard label="Gross Profit" value={money(financials!.grossProfit)} sub="Sales minus official Total COGS" icon={BadgeDollarSign} change={changed(financials!.grossProfit,data.previous.summary.grossProfit)} onClick={() => setMarginOpen(true)}/>
+        <KPICard label="Gross Margin" value={financials!.grossMargin.toFixed(1)+"%"} sub="Product margin based on COGS" icon={Percent} onClick={() => setMarginOpen(true)}/>
+        <KPICard label="Detected Shortage" value={money(financials!.detectedShortageValue)} sub="Positive inventory variance before resolution" icon={AlertTriangle} onClick={() => onNavigate("variance")}/>
+        <KPICard label="Verified Shrinkage" value={money(financials!.verifiedShrinkageCost)} sub="Reviewed legitimate shrinkage causes only" icon={TrendingDown} onClick={() => onNavigate("shrinkage")}/>
       </div>
-
-      {/* Quick actions */}
-      <div className="dashboard-quick-actions grid grid-cols-3 gap-3">
-        {[
-          { label: "Record Stock Count", Icon: ClipboardList, action: () => onNavigate("physical-count"), accent: C.blue, bg: C.blueBg },
-          { label: "Record Spoilage / Wastage", Icon: AlertTriangle, action: () => setShowSpoilage(true), accent: C.amber, bg: C.amberBg },
-          { label: "Create Purchase Request", Icon: Plus, action: () => onNavigate("purchase-orders"), accent: C.green, bg: C.greenBg },
-        ].map(qa => (
-          <button key={qa.label} onClick={qa.action}
-            className="flex items-center gap-3 px-4 py-3.5 rounded-xl border font-medium text-sm transition-all hover:shadow-sm group"
-            style={{ background: C.surface, borderColor: C.border, color: qa.accent }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = qa.bg; (e.currentTarget as HTMLElement).style.borderColor = qa.accent; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = C.surface; (e.currentTarget as HTMLElement).style.borderColor = C.border; }}>
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: qa.bg }}>
-              <qa.Icon size={15} style={{ color: qa.accent }} />
-            </div>
-            {qa.label}
-          </button>
-        ))}
+      {totals.importCount === 0 && <p className="text-sm text-[var(--app-text-muted)]">No POS sales were imported for this branch and period. No demonstration values are shown.</p>}
+      <div className="grid xl:grid-cols-2 gap-5">
+        <Card className="xl:col-span-2"><h2 className="font-semibold mb-3">Sales & Recipe COGS</h2>{data.current.trends.length ? <div className="h-64"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data.current.trends}><CartesianGrid strokeDasharray="3 3" vertical={false}/><XAxis dataKey="date" tick={{fontSize:10}}/><YAxis tick={{fontSize:10}}/><Tooltip formatter={v=>money(Number(v))} contentStyle={{borderRadius:12, borderColor:"var(--app-border)"}}/><Area type="monotone" dataKey="sales" name="Sales" stroke={C.maroon} strokeWidth={2.5} fill={C.softMaroonBg}/><Area type="monotone" dataKey="cogs" name="Recipe COGS" stroke={C.amber} strokeWidth={2.5} fill={C.amberBg}/></AreaChart></ResponsiveContainer></div> : <p className="py-12 text-sm">No sales records for this period.</p>}</Card>
+        <Card><h2 className="font-semibold">Inventory Health Distribution</h2><p className="text-xs mb-2 text-[var(--app-text-muted)]">Live item counts from the selected branch scope.</p>{inventoryHealth.length ? <div className="h-64"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={inventoryHealth} dataKey="value" nameKey="name" innerRadius={52} outerRadius={82} paddingAngle={3} cornerRadius={7} stroke="var(--app-surface)" strokeWidth={3}>{inventoryHealth.map((item) => <Cell key={item.key} fill={item.color}/>)}</Pie><Tooltip formatter={(value,name)=>[`${Number(value)} item${Number(value) === 1 ? "" : "s"}`,name]} contentStyle={{borderRadius:12, borderColor:"var(--app-border)"}}/><Legend iconType="circle" iconSize={8}/></PieChart></ResponsiveContainer></div> : <p className="py-12 text-sm">No inventory records are available for this branch scope.</p>}</Card>
+        <Card><h2 className="font-semibold mb-1">Verified Shrinkage Causes</h2><p className="text-xs mb-3 text-[var(--app-text-muted)]">Reviewed legitimate shrinkage cost by final classification.</p>{classifications.length ? <div className="h-64"><ResponsiveContainer width="100%" height="100%"><BarChart data={classifications}><CartesianGrid strokeDasharray="3 3" vertical={false}/><XAxis dataKey="name" tick={{fontSize:10}}/><YAxis tick={{fontSize:10}}/><Tooltip formatter={v=>money(Number(v))} contentStyle={{borderRadius:12, borderColor:"var(--app-border)"}}/><Bar dataKey="value" name="Verified shrinkage cost" fill={C.maroon} radius={[8,8,2,2]} maxBarSize={64}/></BarChart></ResponsiveContainer></div> : <p className="py-12 text-sm">No verified shrinkage causes for this period.</p>}</Card>
       </div>
-
-      {/* KPIs */}
-      {loading ? (
-        <div className="dashboard-kpi-grid grid grid-cols-4 gap-4">
-          {Array.from({ length: 4 }).map((_, i) => <SkeletonKPICard key={i} />)}
-        </div>
-      ) : (
-        <div className="dashboard-kpi-grid grid grid-cols-4 gap-4">
-          <KPICard label="Branch Sales" value={formatPeso(48700 * managerRangeFactor)} change={managerChanges.sales} changeDir="up" sub={`Lipa Branch · ${periodLabel}`} icon={ShoppingCart} color={C.maroon} comparisonLabel={comparisonLabel} />
-          <KPICard label="Branch COGS" value={formatPeso(20900 * managerRangeFactor)} change={managerChanges.cogs} changeDir="up" sub="42.9% of sales" icon={Package} color={C.amber} comparisonLabel={comparisonLabel} />
-          <KPICard label="Gross Profit" value={formatPeso(27800 * managerRangeFactor)} change={managerChanges.profit} changeDir="up" sub={`${branchMargin.toFixed(1)}% margin`} icon={Percent} color={C.green} comparisonLabel={comparisonLabel} />
-          <KPICard label="Shrinkage Rate" value={`${branchShrinkage.toFixed(2)}%`} change={managerChanges.shrinkage} changeDir="down" sub={`${formatPeso(3620 * Math.max(1, managerRangeFactor / 21.7))} loss this period`} icon={TrendingDown} color={C.red} comparisonLabel={comparisonLabel} />
-        </div>
-      )}
-
-      {/* Row 2: Sales + Inventory */}
-      <div className="grid grid-cols-5 gap-5">
-        <Card className="col-span-3" padding={false}>
-          <div className="px-5 pt-5 pb-0 flex items-start justify-between mb-3">
-            <div>
-              <h3 className="font-semibold" style={{ color: C.primary }}>Sales Performance</h3>
-              <p className="text-xs mt-0.5" style={{ color: C.secondary }}>{periodLabel} · Lipa Branch</p>
-            </div>
-            <button className="text-xs font-semibold" style={{ color: C.maroon }} onClick={() => onNavigate("sales")}>View Analysis →</button>
-          </div>
-          <div className="h-52 px-3 pb-4">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={visibleSalesTrend}>
-                <CartesianGrid strokeDasharray="3 3" stroke={C.border} vertical={false} />
-                <XAxis dataKey="date" tick={{ fontSize: 11, fill: C.secondary }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 11, fill: C.secondary }} axisLine={false} tickLine={false}
-                  tickFormatter={v => `₱${(v / 1000).toFixed(0)}k`} />
-                <Tooltip content={<ChartTip />} />
-                <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
-                <Line type="monotone" dataKey="sales" name="Sales" stroke={C.maroon} strokeWidth={2.5} dot={{ r: 2.5, fill: C.maroon }} activeDot={{ r: 5 }} />
-                <Line type="monotone" dataKey="cogs" name="COGS" stroke={C.amber} strokeWidth={2.25} dot={{ r: 2.5, fill: C.amber }} activeDot={{ r: 5 }} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </Card>
-
-        <Card className="col-span-2">
-          <h3 className="font-semibold mb-0.5" style={{ color: C.primary }}>Inventory Status</h3>
-          <p className="text-xs mb-4" style={{ color: C.secondary }}>Lipa Branch · 68 SKUs</p>
-          <div className="flex justify-center mb-4">
-            <ResponsiveContainer width={180} height={175}>
-              <RPieChart>
-                <Pie data={[
-                  { name: "Healthy", value: 46, color: C.green },
-                  { name: "Low Stock", value: 14, color: C.amber },
-                  { name: "Critical", value: 6, color: C.red },
-                  { name: "Out of Stock", value: 2, color: C.deepMaroon },
-                ]} cx="50%" cy="50%" innerRadius={52} outerRadius={80} paddingAngle={3} cornerRadius={7}
-                  dataKey="value" stroke={C.surface} strokeWidth={2}>
-                  {[C.green, C.amber, C.red, C.deepMaroon].map((c, i) => <Cell key={i} fill={c} />)}
-                </Pie>
-              </RPieChart>
-            </ResponsiveContainer>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            {[
-              { l: "Healthy", v: 46, c: C.green },
-              { l: "Low Stock", v: 14, c: C.amber },
-              { l: "Critical", v: 6, c: C.red },
-              { l: "Out of Stock", v: 2, c: C.deepMaroon },
-            ].map(s => (
-              <div key={s.l} className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: s.c }} />
-                <span className="text-xs" style={{ color: C.secondary }}>{s.l}</span>
-                <span className="text-xs font-bold ml-auto" style={{ color: C.primary }}>{s.v}</span>
+      <Card padding={false} className="overflow-hidden shadow-sm">
+        <div className="px-5 pt-5 pb-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h2 className="font-bold text-base text-[var(--app-text)] tracking-tight">
+                  Inventory Alerts
+                </h2>
+                {alerts.length > 0 ? (
+                  <span className="inline-flex items-center gap-1.5 text-xs font-bold px-2.5 py-0.5 rounded-full text-rose-700 bg-rose-50 border border-rose-200">
+                    <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
+                    {alerts.length} item{alerts.length === 1 ? "" : "s"} below threshold
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-0.5 rounded-full text-emerald-700 bg-emerald-50 border border-emerald-200">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                    All healthy
+                  </span>
+                )}
               </div>
-            ))}
+              <p className="text-xs text-[var(--app-text-muted)]">
+                Current stock position compared against branch reorder levels
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Btn
+                variant="outline"
+                size="sm"
+                onClick={() => onNavigate(DASHBOARD_INVENTORY_TARGET)}
+                className="hover:border-[var(--app-primary)]"
+              >
+                View All Inventory
+              </Btn>
+              {role === "manager" && alerts.length > 0 && (
+                <Btn
+                  size="sm"
+                  onClick={() => {
+                    const highestShortfall = [...alerts].sort(
+                      (a, b) => (b.reorderLevel - b.systemStock) - (a.reorderLevel - a.systemStock),
+                    )[0];
+                    const params = new URLSearchParams({ create: "1" });
+                    if (highestShortfall) {
+                      params.set("ingredientId", highestShortfall.inventoryItemId);
+                      params.set(
+                        "quantity",
+                        String(Math.max(1, Math.ceil(highestShortfall.reorderLevel * 2 - highestShortfall.systemStock))),
+                      );
+                    }
+                    navigate(`/purchase-orders?${params.toString()}`);
+                  }}
+                >
+                  Create Reorder PO
+                </Btn>
+              )}
+            </div>
           </div>
-        </Card>
-      </div>
 
-      {/* Row 3: Low Stock + AI */}
-      <div className="grid grid-cols-5 gap-5">
-        <Card className="col-span-3" padding={false}>
-          <div className="px-5 pt-5 pb-3 flex items-center justify-between">
-            <h3 className="font-semibold" style={{ color: C.primary }}>Low Stock & Critical Items</h3>
-            <Btn variant="ghost" size="sm" onClick={() => onNavigate("inventory")}>View all</Btn>
-          </div>
-          <div className="overflow-x-auto">
-              <table className="data-table w-full">
-              <THead cols={["SKU", "Item", "On Hand", "Reorder", "Status", "Action"]} />
-              <tbody>
-                {inventoryItems.filter(i => i.status !== "healthy").map(item => (
-                  <TR key={item.sku}>
-                    <TD mono muted>{item.sku}</TD>
-                    <TD><span className="font-medium">{item.name}</span></TD>
-                    <TD right>{item.onHand} {item.unit}</TD>
-                    <TD right muted>{item.reorder}</TD>
-                    <TD><StatusChip status={item.status} /></TD>
-                    <TD>
-                      <button className="text-xs font-semibold px-2.5 py-1 rounded-lg border transition-colors"
-                        style={{ borderColor: C.maroon, color: C.maroon }}
-                        onClick={() => { onNavigate("purchase-orders"); toast.success("Opening purchase request form"); }}>
-                        Request
-                      </button>
-                    </TD>
-                  </TR>
-                ))}
+          {alerts.length > 0 && (
+            <div className="cogs-table-filters flex items-center gap-2 pt-1">
+              <SearchInput
+                placeholder="Search ingredient, category, or branch…"
+                value={alertSearch}
+                onChange={setAlertSearch}
+                width={280}
+              />
+              {alertCategories.length > 2 && (
+                <Select
+                  small
+                  options={alertCategories}
+                  value={alertCategory}
+                  onChange={setAlertCategory}
+                />
+              )}
+            </div>
+          )}
+        </div>
+
+        {alerts.length > 0 ? (
+          <div className="overflow-x-auto border-t" style={{ borderColor: "var(--app-border)" }}>
+            <table className="data-table dashboard-alerts-table w-full text-left border-collapse min-w-[760px]">
+              <thead>
+                <tr style={{ background: "var(--app-bg)", borderBottom: "1px solid var(--app-border)" }}>
+                  <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
+                    Branch
+                  </th>
+                  <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
+                    Ingredient & Category
+                  </th>
+                  <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)] text-center">
+                    Current Stock
+                  </th>
+                  <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)] text-center">
+                    Reorder Level
+                  </th>
+                  <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)] text-center">
+                    Shortfall
+                  </th>
+                  <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)] text-center">
+                    Stock Value
+                  </th>
+                  <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)] text-center">
+                    Health Status
+                  </th>
+                  <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)] text-center">
+                    Action
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y" style={{ borderColor: "var(--app-border)" }}>
+                {filteredAlerts.length > 0 ? (
+                  filteredAlerts.map((i) => {
+                    const shortfall = Math.max(0, i.reorderLevel - i.systemStock);
+                    const suggestedOrder = Math.max(1, Math.ceil(i.reorderLevel * 2 - i.systemStock));
+                    return (
+                      <tr
+                        key={i.branchId + i.inventoryItemId}
+                        className="hover:bg-[var(--app-primary-faint)] transition-colors duration-150"
+                      >
+                        <td className="py-3.5 px-4 text-xs font-medium text-[var(--app-text-muted)] whitespace-nowrap">
+                          {i.branchName}
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <div className="font-bold text-sm text-[var(--app-text)] leading-tight">
+                            {i.name}
+                          </div>
+                          <div className="text-[11px] text-[var(--app-text-muted)] mt-0.5 font-normal">
+                            {i.category || "General"}{i.sku ? ` · SKU: ${i.sku}` : ""}
+                          </div>
+                        </td>
+                        <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                          <span className="font-bold text-sm" style={{color:i.status==="OUT_OF_STOCK"||i.status==="CRITICAL"?C.red:C.primary}}>
+                            {i.systemStock.toLocaleString("en-PH", { maximumFractionDigits: 2 })}
+                          </span>
+                          <span className="text-xs text-[var(--app-text-muted)] ml-1 font-medium">
+                            {i.unit}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4 text-center text-xs font-medium text-[var(--app-text-muted)] whitespace-nowrap">
+                          <span>{i.reorderLevel.toLocaleString("en-PH", { maximumFractionDigits: 2 })}</span>
+                          <span className="ml-1 text-[11px] text-[var(--app-text-faint)]">{i.unit}</span>
+                        </td>
+                        <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                          {shortfall > 0 ? (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+                              -{shortfall.toLocaleString("en-PH", { maximumFractionDigits: 2 })} {i.unit}
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium text-[var(--app-text-muted)] bg-[var(--app-surface-muted)]">
+                              0.00 {i.unit}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3.5 px-4 text-center text-xs font-medium text-[var(--app-text)] whitespace-nowrap">
+                          {money(i.inventoryValue)}
+                        </td>
+                        <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                          <StatusChip status={stockStatusChip(i.status)} />
+                        </td>
+                        <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                          {role === "manager" ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const params = new URLSearchParams({
+                                  create: "1",
+                                  ingredientId: i.inventoryItemId,
+                                  quantity: String(suggestedOrder),
+                                });
+                                navigate(`/purchase-orders?${params.toString()}`);
+                              }}
+                              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border shadow-sm hover:bg-[var(--app-primary)] hover:text-white"
+                              style={{
+                                borderColor: "var(--app-border)",
+                                color: "var(--app-primary)",
+                                background: "var(--app-surface)",
+                              }}
+                            >
+                              Reorder
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => onNavigate(DASHBOARD_INVENTORY_TARGET)}
+                              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border shadow-sm hover:bg-[var(--app-primary)] hover:text-white"
+                              style={{
+                                borderColor: "var(--app-border)",
+                                color: "var(--app-primary)",
+                                background: "var(--app-surface)",
+                              }}
+                            >
+                              Inspect
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={8} className="py-10 text-center text-xs text-[var(--app-text-muted)]">
+                      No inventory alert items match "{alertSearch}".
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
-          </div>
-        </Card>
-
-        <Card className="col-span-2">
-          <div className="flex items-center gap-2 mb-4">
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: C.softMaroonBg }}>
-              <Activity size={14} style={{ color: C.maroon }} />
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold" style={{ color: C.primary }}>Operational Insight</h3>
-              <p className="text-xs" style={{ color: C.muted }}>Forecast model · Lipa · Updated 08:02 AM</p>
-            </div>
-          </div>
-          <div className="space-y-3">
-            {[
-              { item: "Whole Milk", sku: "RM-001", reorder: 24, unit: "L", stockout: "3 days", reason: "Higher consumption detected over last 7 days.", urgency: "high" },
-              { item: "Arabica Beans", sku: "RM-002", reorder: 10, unit: "kg", stockout: "4 days", reason: "Usage trending above seasonal average.", urgency: "high" },
-              { item: "White Sugar", sku: "RM-008", reorder: 20, unit: "kg", stockout: "6 days", reason: "Consistent daily depletion detected.", urgency: "medium" },
-            ].slice(0, 1).map(r => (
-              <div key={r.sku} className="p-3 rounded-xl border" style={{ borderColor: C.border, background: C.veryLightMaroon }}>
-                <div className="flex items-start justify-between mb-1.5">
-                  <div>
-                    <p className="text-sm font-semibold" style={{ color: C.primary }}>{r.item}</p>
-                    <p className="text-xs" style={{ color: C.muted }}>{r.sku}</p>
-                  </div>
-                  <StatusChip status={r.urgency} />
-                </div>
-                <div className="flex gap-3 text-xs mb-1.5">
-                  <span style={{ color: C.secondary }}>Reorder: <strong style={{ color: C.primary }}>{r.reorder} {r.unit}</strong></span>
-                  <span style={{ color: C.secondary }}>Stockout: <strong style={{ color: C.red }}>{r.stockout}</strong></span>
-                </div>
-                <p className="text-xs italic mb-2.5" style={{ color: C.secondary }}>&ldquo;{r.reason}&rdquo;</p>
-                <div className="flex gap-2">
-                  <button className="flex-1 py-1.5 rounded-lg text-xs font-semibold text-white"
-                    style={{ background: C.maroon }}
-                    onClick={() => { onNavigate("purchase-orders"); toast.success("Opening create PO form"); }}>
-                    Create PO
-                  </button>
-                  <button className="px-3 py-1.5 rounded-lg text-xs font-semibold border"
-                    style={{ borderColor: C.border, color: C.secondary }}>
-                    Review
-                  </button>
-                </div>
+            {filteredAlerts.length > 0 && (
+              <div
+                className="px-5 py-3 bg-[var(--app-bg)] border-t flex items-center justify-between text-xs text-[var(--app-text-muted)]"
+                style={{ borderColor: "var(--app-border)" }}
+              >
+                <span>
+                  Showing top {filteredAlerts.length} of {alerts.length} alert item{alerts.length === 1 ? "" : "s"}
+                </span>
+                <span className="font-semibold text-[var(--app-text)]">
+                  Total value: {money(filteredAlerts.reduce((sum, item) => sum + item.inventoryValue, 0))}
+                </span>
               </div>
-            ))}
+            )}
           </div>
-          <button className="mt-3 text-xs font-semibold flex items-center gap-1" style={{ color: C.maroon }}
-            onClick={() => onNavigate("predictive")}>View Predictive Analytics <ChevronRight size={11} /></button>
-          <p className="text-xs mt-3 pt-3 border-t" style={{ borderColor: C.border, color: C.muted }}>
-            Forecast-assisted · Management approval required before ordering.
-          </p>
-        </Card>
-      </div>
-
-      {/* Row 4: Branch Operations */}
-      <Card>
-        <div className="mb-4">
-          <h3 className="font-semibold" style={{ color: C.primary }}>Branch Operations</h3>
-          <p className="text-xs mt-0.5" style={{ color: C.secondary }}>Recent inventory, shrinkage, and POS activity for Lipa Branch</p>
-        </div>
-        <div className="space-y-2.5">
-          {[
-            { Icon: CheckCircle, color: C.green, label: "POS CSV successfully imported", sub: "Aug 26, 2026 · 540 transactions · ₱48,700 total sales", time: "2 hr ago" },
-            { Icon: ClipboardList, color: C.blue, label: "Physical stock count submitted", sub: "Aug 25 end-of-day · 68 items counted · 3 variances noted", time: "Yesterday" },
-            { Icon: AlertTriangle, color: C.amber, label: "Spoilage record created", sub: "Whole Milk · 12 L · Temperature issue · ₱1,680 estimated loss", time: "Yesterday" },
-            { Icon: ClipboardList, color: C.maroon, label: "Purchase request submitted", sub: "PR-2026-0042 · ₱28,400 · Metro Dairy Supply · Pending approval", time: "2 days ago" },
-          ].map((a, i) => (
-            <div key={i} className="flex items-start gap-3 p-3 rounded-xl" style={{ background: C.mainBg }}>
-              <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-                style={{ background: `color-mix(in srgb, ${a.color} 10%, transparent)` }}>
-                <a.Icon size={14} style={{ color: a.color }} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium" style={{ color: C.primary }}>{a.label}</p>
-                <p className="text-xs mt-0.5" style={{ color: C.secondary }}>{a.sub}</p>
-              </div>
-              <span className="text-xs flex-shrink-0" style={{ color: C.muted }}>{a.time}</span>
+        ) : (
+          <div className="p-8 text-center bg-[var(--app-surface)] border-t" style={{ borderColor: "var(--app-border)" }}>
+            <div className="w-11 h-11 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-2.5 border border-emerald-200 shadow-sm">
+              <Check size={22} strokeWidth={2.5} />
             </div>
-          ))}
-        </div>
+            <p className="text-sm font-bold text-emerald-900">All inventory items are currently healthy</p>
+            <p className="text-xs text-[var(--app-text-muted)] mt-1 max-w-sm mx-auto leading-relaxed">
+              No ingredients are below their safety or reorder thresholds in the selected branch scope.
+            </p>
+          </div>
+        )}
       </Card>
-
-      {showSpoilage && <SpoilageModal onClose={() => setShowSpoilage(false)}
-        onSave={() => { setShowSpoilage(false); toast.success("Loss record saved successfully"); }} />}
-    </div>
-  );
-}
-
-// ─── Spoilage / Wastage Modal ──────────────────────────────────────────────────
-
-export function DashboardPage({ role, onNavigate }: { role: Role; onNavigate: (page: Page) => void }) {
-  return role === "owner" ? <OwnerDashboard onNavigate={onNavigate} /> : <ManagerDashboard onNavigate={onNavigate} />;
+    </>}
+    <Card><div className="flex flex-wrap justify-between gap-3"><h2 className="font-semibold">Next 30 Days · Forecast & Replenishment</h2><Btn variant="outline" onClick={() => onNavigate("predictive")}>Review Forecast</Btn></div>
+      {forecastError ? <p role="alert">{forecastError}</p> : !forecast ? <p className="py-6">Loading forecast…</p> : <>
+        <p className="text-sm my-3">Projected sales: {money(forecast.summary.forecastSales)} · <StatusChip status={forecast.methodology.confidence} kind="confidence"/></p>
+        {forecast.insights.map((insight,i)=><div key={i} className="border-t py-3 flex flex-wrap items-start justify-between gap-3">
+          <div className="flex-1 min-w-[200px]">
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-semibold">{insight.title}</h3>
+              <StatusChip status={insight.urgency} kind="urgency"/>
+            </div>
+            <p className="text-sm mt-1">{insight.description}</p>
+            <p className="text-xs mt-1 text-[var(--app-text-muted)]">{insight.recommendation}</p>
+          </div>
+          <Btn size="sm" variant="outline" onClick={() => onNavigate("predictive")}>Review</Btn>
+        </div>)}
+        {selectedPrediction && <p className="text-sm my-3">{selectedPrediction.branchName}: suggested reorder of {selectedPrediction.recommendedReorder.toLocaleString()} {selectedPrediction.unit} {selectedPrediction.name}. Incoming orders are included in this estimate.</p>}
+        {role === "manager" && selectedPrediction && <Btn onClick={() => createOrder(selectedPrediction)}>Create PO from Recommendation</Btn>}
+        <p className="text-xs mt-3 text-[var(--app-text-muted)]">{forecast.methodology.disclaimer}</p>
+      </>}
+    </Card>
+    {marginOpen && totals && financials && <div className="fixed inset-0 z-50 bg-black/40 p-4 flex items-center justify-center" onMouseDown={e=>{if(e.target===e.currentTarget)setMarginOpen(false);}}><section role="dialog" aria-modal="true" aria-label="Gross margin calculation" className="rounded-2xl p-6 max-w-md w-full bg-[var(--app-surface)] shadow-xl"><h2 className="font-bold">Gross Margin Calculation</h2><p className="mt-4">Sales: {money(financials.sales)}</p><p>Total COGS (recipe-based): {money(financials.totalCogs)}</p><p>Gross profit = Sales − Total COGS: {money(financials.grossProfit)}</p><p className="my-4">Gross margin = Gross profit ÷ Sales × 100 = {financials.grossMargin.toFixed(1)}%</p><p className="text-xs mb-3">Detected shortages and verified shrinkage are shown separately and are not deducted again.</p>{financials.sales===0&&<p className="text-xs mb-3">No sales denominator is available; the displayed margin is 0%.</p>}<Btn onClick={()=>setMarginOpen(false)}>Close</Btn></section></div>}
+  </div>;
 }

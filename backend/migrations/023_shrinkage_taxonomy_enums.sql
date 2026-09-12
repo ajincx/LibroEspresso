@@ -1,0 +1,10 @@
+-- Enum values are committed separately before the next migration uses them.
+ALTER TYPE incident_type ADD VALUE IF NOT EXISTS 'SPILLAGE';
+ALTER TYPE incident_type ADD VALUE IF NOT EXISTS 'OVERPRODUCTION';
+ALTER TYPE incident_type ADD VALUE IF NOT EXISTS 'EXPIRATION';
+ALTER TYPE incident_type ADD VALUE IF NOT EXISTS 'UNAUTHORIZED_CONSUMPTION';
+
+ALTER TYPE shrinkage_classification ADD VALUE IF NOT EXISTS 'SPILLAGE';
+ALTER TYPE shrinkage_classification ADD VALUE IF NOT EXISTS 'OVERPRODUCTION';
+ALTER TYPE shrinkage_classification ADD VALUE IF NOT EXISTS 'EXPIRATION';
+ALTER TYPE shrinkage_classification ADD VALUE IF NOT EXISTS 'UNAUTHORIZED_CONSUMPTION';

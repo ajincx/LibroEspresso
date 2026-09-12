@@ -41,7 +41,7 @@ export const branchPerf = [
 export const shrinkageBreakdown = [
   { name: "Spoilage", value: 7840, pct: 42.5, color: C.amber },
   { name: "Wastage", value: 5920, pct: 32.1, color: C.blue },
-  { name: "Potential Pilferage", value: 4690, pct: 25.4, color: C.red },
+  { name: "Unexplained Variance", value: 4690, pct: 25.4, color: C.red },
 ];
 
 export const inventoryStatus = [
@@ -73,7 +73,7 @@ export const varianceRows = [
 
 export const shrinkageRows = [
   { date: "Aug 25", sku: "RM-001", item: "Whole Milk", branch: "Lipa", expected: 120, actual: 108, variance: -12, classification: "Spoilage", value: 1680, reason: "Temperature issue", recordedBy: "M. Santos", status: "Recorded" },
-  { date: "Aug 25", sku: "RM-002", item: "Arabica Beans", branch: "Vermosa", expected: 45, actual: 38, variance: -7, classification: "Potential Pilferage", value: 5320, reason: "Unexplained after reconciliation", recordedBy: "System", status: "Investigation Required" },
+  { date: "Aug 25", sku: "RM-002", item: "Arabica Beans", branch: "Vermosa", expected: 45, actual: 38, variance: 7, classification: "Unexplained Variance – For Investigation", value: 5320, reason: "Unexplained after reconciliation", recordedBy: "System", status: "Investigation Required" },
   { date: "Aug 24", sku: "RM-004", item: "Croissants", branch: "Lipa", expected: 60, actual: 55, variance: -5, classification: "Wastage", value: 425, reason: "Overproduction", recordedBy: "M. Santos", status: "Recorded" },
   { date: "Aug 24", sku: "RM-008", item: "White Sugar", branch: "Gulod", expected: 36, actual: 33, variance: -3, classification: "Wastage", value: 270, reason: "Spillage during prep", recordedBy: "A. Reyes", status: "Recorded" },
   { date: "Aug 23", sku: "RM-003", item: "Almond Milk", branch: "Tagaytay", expected: 80, actual: 77, variance: -3, classification: "Spoilage", value: 570, reason: "Expired stock", recordedBy: "J. Lim", status: "Recorded" },

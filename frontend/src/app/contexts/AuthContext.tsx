@@ -1,11 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { authService } from "../services/auth.service";
+import { subscribeToSessionExpired } from "../services/api";
 import type { AuthUser } from "../types/auth";
 
 interface AuthContextValue {
   user: AuthUser | null;
   loading: boolean;
-  login: (identifier: string, password: string, remember?: boolean) => Promise<AuthUser>;
+  login: (identifier: string, password: string) => Promise<AuthUser>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<AuthUser>;
 }
@@ -20,8 +21,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     authService.me().then(setUser).catch(() => setUser(null)).finally(() => setLoading(false));
   }, []);
 
-  const login = useCallback(async (identifier: string, password: string, remember = false) => {
-    const authenticatedUser = await authService.login(identifier, password, remember);
+  useEffect(() => {
+    const clearExpiredSession = () => setUser(null);
+    return subscribeToSessionExpired(clearExpiredSession);
+  }, []);
+
+  const login = useCallback(async (identifier: string, password: string) => {
+    const authenticatedUser = await authService.login(identifier, password);
     setUser(authenticatedUser);
     return authenticatedUser;
   }, []);

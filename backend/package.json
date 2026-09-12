@@ -10,17 +10,28 @@
     "typecheck": "tsc --noEmit",
     "db:migrate": "tsx src/database/migrate.ts",
     "db:seed": "tsx src/database/seed.ts",
+    "benchmark:pos-import": "tsx scripts/benchmark-pos-import.ts",
+    "benchmark:dashboard": "tsx scripts/benchmark-system.ts dashboard",
+    "benchmark:cogs": "tsx scripts/benchmark-system.ts cogs",
+    "benchmark:reports": "tsx scripts/benchmark-system.ts reports",
+    "benchmark:forecast": "tsx scripts/benchmark-system.ts forecast",
+    "benchmark:system": "tsx scripts/benchmark-system.ts all",
+    "benchmark:pos-database": "tsx scripts/benchmark-pos-database.ts",
     "test": "vitest run"
   },
   "dependencies": {
+    "@types/pdfkit": "^0.17.6",
     "bcrypt": "6.0.0",
     "cookie-parser": "1.4.7",
     "cors": "2.8.5",
+    "csv-parse": "^6.1.0",
     "dotenv": "17.2.1",
+    "exceljs": "^4.4.0",
     "express": "5.1.0",
     "express-rate-limit": "8.6.2",
     "helmet": "8.1.0",
     "jsonwebtoken": "9.0.2",
+    "pdfkit": "^0.20.2",
     "pg": "8.16.3",
     "zod": "4.0.17"
   },
@@ -32,10 +43,13 @@
     "@types/jsonwebtoken": "9.0.10",
     "@types/node": "24.3.0",
     "@types/pg": "8.15.5",
-    "supertest": "7.1.4",
     "@types/supertest": "6.0.3",
+    "supertest": "7.1.4",
     "tsx": "4.20.5",
     "typescript": "5.9.2",
     "vitest": "3.2.7"
+  },
+  "overrides": {
+    "qs": "6.16.0"
   }
 }

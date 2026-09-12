@@ -2,45 +2,57 @@ import { Router } from "express";
 import {
   createInventoryMovement,
   getExpectedInventory,
+  getPosAnalytics,
   getShrinkageReport,
+  getShrinkageEvidence,
   importPosSales,
   listPosImports,
   listInventoryCounts,
+  getInventoryCount,
   listInventoryVariances,
   listNotifications,
+  markAllNotificationsRead,
+  previewPosSales,
   listShrinkageReports,
   markNotificationRead,
   reviewShrinkageReport,
   submitShrinkageInvestigation,
   submitInventoryCount,
+  updateInventoryCount,
 } from "../controllers/inventoryWorkflow.controller.js";
 import { authenticate, authorize } from "../middleware/auth.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 
 export const posSalesRouter = Router();
-posSalesRouter.use(authenticate);
+posSalesRouter.use(authenticate, authorize("OWNER", "BRANCH_MANAGER"));
+posSalesRouter.get("/analytics", asyncHandler(getPosAnalytics));
 posSalesRouter.get("/", asyncHandler(listPosImports));
+posSalesRouter.post("/preview", authorize("BRANCH_MANAGER"), asyncHandler(previewPosSales));
 posSalesRouter.post("/import", authorize("BRANCH_MANAGER"), asyncHandler(importPosSales));
 
 export const inventoryWorkflowRouter = Router();
-inventoryWorkflowRouter.use(authenticate);
+inventoryWorkflowRouter.use(authenticate, authorize("OWNER", "BRANCH_MANAGER"));
 inventoryWorkflowRouter.get("/expected", asyncHandler(getExpectedInventory));
 inventoryWorkflowRouter.get("/variances", asyncHandler(listInventoryVariances));
 inventoryWorkflowRouter.get("/", asyncHandler(listInventoryCounts));
+inventoryWorkflowRouter.get("/:id", asyncHandler(getInventoryCount));
 inventoryWorkflowRouter.post("/", authorize("BRANCH_MANAGER"), asyncHandler(submitInventoryCount));
+inventoryWorkflowRouter.patch("/:id", authorize("BRANCH_MANAGER"), asyncHandler(updateInventoryCount));
 
 export const inventoryMovementRouter = Router();
-inventoryMovementRouter.use(authenticate);
+inventoryMovementRouter.use(authenticate, authorize("OWNER", "BRANCH_MANAGER"));
 inventoryMovementRouter.post("/", authorize("OWNER", "BRANCH_MANAGER"), asyncHandler(createInventoryMovement));
 
 export const shrinkageReportRouter = Router();
-shrinkageReportRouter.use(authenticate);
+shrinkageReportRouter.use(authenticate, authorize("OWNER", "BRANCH_MANAGER"));
 shrinkageReportRouter.get("/", asyncHandler(listShrinkageReports));
 shrinkageReportRouter.get("/:id", asyncHandler(getShrinkageReport));
+shrinkageReportRouter.get("/:id/evidence", asyncHandler(getShrinkageEvidence));
 shrinkageReportRouter.patch("/:id/investigation", authorize("BRANCH_MANAGER"), asyncHandler(submitShrinkageInvestigation));
 shrinkageReportRouter.post("/:id/review", authorize("OWNER"), asyncHandler(reviewShrinkageReport));
 
 export const notificationRouter = Router();
 notificationRouter.use(authenticate);
 notificationRouter.get("/", asyncHandler(listNotifications));
+notificationRouter.patch("/read-all", asyncHandler(markAllNotificationsRead));
 notificationRouter.patch("/:id/read", asyncHandler(markNotificationRead));

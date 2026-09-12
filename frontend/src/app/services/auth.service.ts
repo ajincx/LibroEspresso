@@ -2,8 +2,8 @@ import { api } from "./api";
 import type { ApiSuccess, AuthUser } from "../types/auth";
 
 export const authService = {
-  async login(identifier: string, password: string, remember = false) {
-    const response = await api.post<ApiSuccess<{ user: AuthUser }>>("/auth/login", { identifier, password, remember });
+  async login(identifier: string, password: string) {
+    const response = await api.post<ApiSuccess<{ user: AuthUser }>>("/auth/login", { identifier, password });
     return response.data.data.user;
   },
   async logout() {

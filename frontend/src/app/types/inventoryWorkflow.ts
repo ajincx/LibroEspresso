@@ -23,9 +23,74 @@ export interface PosImportRecord {
   productLines: number;
   unitsSold: number;
   totalSales: number;
+  status: "COMPLETE" | "NEEDS_REVIEW";
+  totalRows: number;
+  validRows: number;
+  warningRows: number;
+  invalidRows: number;
+  unmatchedRows: number;
+  fingerprintIndicator: string | null;
+}
+
+export interface PosImportPreviewRow {
+  rowNumber: number;
+  sourceProduct: string;
+  matchedMenuProduct: string | null;
+  menuItemId: string | null;
+  quantitySold: number | null;
+  unitPrice: number | null;
+  businessDate: string | null;
+  transactionId: string | null;
+  sourceLineId: string | null;
+  transactionTimestamp: string | null;
+  status: "VALID" | "WARNING" | "INVALID";
+  issues: string[];
+}
+
+export interface PosImportPreview {
+  sourceFilename: string;
+  branchId: string;
+  branchName: string;
+  businessDate: string | null;
+  contentHash: string;
+  fingerprintIndicator: string;
+  rows: PosImportPreviewRow[];
+  summary: {
+    totalSourceRows: number;
+    validRows: number;
+    warningRows: number;
+    invalidRows: number;
+    unmatchedRows: number;
+    duplicate: boolean;
+    quality: "COMPLETE" | "NEEDS_REVIEW" | "REJECTED";
+    canImport: boolean;
+  };
+}
+
+export interface PosAnalytics {
+  scope: { branchId: string | null; branchName: string; startDate: string; endDate: string };
+  summary: {
+    sales: number;
+    theoreticalCogs: number;
+    totalCogs: number;
+    detectedShortageValue: number;
+    verifiedShrinkageCost: number;
+    shrinkageCost: number;
+    /** @deprecated Retained temporarily for backward-compatible API responses. */
+    shrinkageRate: number;
+    adjustedCogs: number;
+    grossProfit: number;
+    grossMargin: number;
+    unitsSold: number;
+    importCount: number;
+  };
+  trends: { date: string; sales: number; cogs: number; grossProfit: number }[];
+  products: { id: string; name: string; category: string; unitsSold: number; sales: number; cogs: number }[];
+  ingredients: { id: string; name: string; category: string; cost: number }[];
 }
 
 export interface InventoryCountSummary {
+  canEdit: boolean;
   id: string;
   countNo: string;
   countDate: string;
@@ -47,13 +112,25 @@ export interface CountVarianceItem {
   actualQuantity: number;
   varianceQuantity: number;
   varianceValue: number;
+  variancePercentage?: number | null;
   unit: string;
   requiresInvestigation: boolean;
   shrinkageReportId: string | null;
 }
 
-export type ShrinkageClassification = "SPOILAGE" | "WASTAGE" | "PILFERAGE" | "COUNT_ERROR";
-export type ShrinkageStatus = "DETECTED" | "PENDING_REVIEW" | "REVIEWED";
+export type ShrinkageClassification =
+  | "SPOILAGE"
+  | "WASTAGE"
+  | "SPILLAGE"
+  | "DAMAGED_ITEM"
+  | "PREPARATION_ERROR"
+  | "OVERPRODUCTION"
+  | "EXPIRATION"
+  | "UNAUTHORIZED_CONSUMPTION"
+  | "PILFERAGE"
+  | "COUNT_ERROR";
+export type ShrinkageStatus = "DETECTED" | "VERIFIED" | "PENDING_REVIEW" | "REVIEWED";
+export type EvidenceBasis = "LINKED_STAFF_INCIDENT" | "PHYSICAL_COUNT" | "INVENTORY_MOVEMENT" | "SUPPORTING_IMAGE" | "WRITTEN_INVESTIGATION" | "OTHER_OPERATIONAL_RECORD";
 
 export interface ShrinkageReport {
   id: string;
@@ -69,10 +146,13 @@ export interface ShrinkageReport {
   actualQuantity: number;
   varianceQuantity: number;
   varianceValue: number;
+  variancePercentage?: number | null;
   unit: string;
   classification: ShrinkageClassification | null;
   explanation: string | null;
   supportingNotes: string | null;
+  evidenceReviewConfirmed: boolean;
+  evidenceBasis: EvidenceBasis[];
   status: ShrinkageStatus;
   managerName: string;
   detectedAt: string;
@@ -80,6 +160,19 @@ export interface ShrinkageReport {
   submittedAt: string;
   reviewedAt: string | null;
   reviewedByName: string | null;
+  countDate: string;
+}
+
+export interface ShrinkageEvidence {
+  incidents: {
+    id: string; incidentType: string; quantity: number; occurredAt: string; reason: string;
+    notes: string | null; photoUrl: string | null; status: string; managerComment: string | null;
+    submittedByName: string; explicitlyLinked: boolean;
+  }[];
+  movements: { movementType: string; quantity: number; occurredAt: string; referenceNo: string | null; notes: string | null }[];
+  usage: { date: string; expectedUsage: number }[];
+  aiSuggestion: string | null;
+  aiAdvisoryLabel: string;
 }
 
 export interface VarianceRecord {
@@ -95,6 +188,7 @@ export interface VarianceRecord {
   actualQuantity: number;
   varianceQuantity: number;
   varianceValue: number;
+  variancePercentage: number | null;
   unit: string;
   anomalyId: string | null;
   reportNo: string | null;

@@ -134,6 +134,8 @@ npm run dev
 
 Health check: [http://localhost:5000/api/health](http://localhost:5000/api/health)
 
+Database readiness check: [http://localhost:5000/api/ready](http://localhost:5000/api/ready)
+
 ### Terminal 2 - Frontend
 
 ```cmd
@@ -203,7 +205,14 @@ npm run build
 npm test
 npm run db:migrate
 npm run db:seed
+npm run benchmark:system
 ```
+
+The complete POS database benchmark requires a separate disposable database. Set `BENCHMARK_DATABASE_URL` to a database name containing `benchmark` or `test`, migrate and seed that database, and run `npm run benchmark:pos-database`. The script refuses the normal application database and removes its controlled import afterward.
+
+Production configuration, migration safety, backup/restore guidance, and the release smoke checklist are documented in `docs/PRODUCTION_READINESS.md` and `docs/SMOKE_TEST_CHECKLIST.md`.
+
+Measured Sprint 9 results and their limitations are documented in `docs/PERFORMANCE_EVIDENCE.md`.
 
 Before submitting changes, run both typechecks and builds plus the backend tests.
 

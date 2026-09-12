@@ -1,45 +1,66 @@
 import React, { lazy, Suspense, useEffect, useState } from "react";
-import { ShoppingCart, Package, TrendingDown, Search, X, Upload, Check, Coffee, CheckCircle, TrendingUp, DollarSign, GitCompare, BarChart2, Hash, Percent, Calendar } from "lucide-react";
+import { ShoppingCart, Package, TrendingDown, Search, X, Upload, Check, Coffee, CheckCircle, TrendingUp, DollarSign, GitCompare, BarChart2, Hash, Percent } from "lucide-react";
 import { Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart } from "recharts";
-import { C, DashboardRange, DashboardComparison, dashboardPeriodLabel, dashboardRangeFactor, formatPeso, StatusChip, KPICard, Card, SectionHeader, Btn, SearchInput, Select, DashboardFilters, THead, TR, TD, Pagination, ChartTip, ModuleTabSwitcher, AnimatedTabPanel } from "../../components/ModuleUi";
-import { salesTrend, kpiSparklines, cogsTrend, topProducts } from "../demoData";
+import { C, CalendarDateField, DashboardRange, DashboardComparison, dashboardPeriodLabel, formatPeso, StatusChip, KPICard, Card, SectionHeader, Btn, SearchInput, Select, DashboardFilters, THead, TR, TD, Pagination, ChartTip, ModuleTabSwitcher, AnimatedTabPanel, TableCard, TableWrapper, TableEmptyRow, TableLoadingRow } from "../../components/ModuleUi";
 import { toast } from "sonner";
 import type { Page, Role } from "../../types/navigation";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
 import { masterDataService } from "../../services/masterData.service";
-import type { MenuItem } from "../../types/masterData";
-import type { PosImportRecord } from "../../types/inventoryWorkflow";
+import type { PosAnalytics, PosImportPreview, PosImportRecord } from "../../types/inventoryWorkflow";
+import type { Branch } from "../../types/masterData";
+import { useAuth } from "../../contexts/AuthContext";
+import { businessDate, periodDates } from "../../utils/businessDate";
+
+function dateRange(range: DashboardRange, customStart: string, customEnd: string) {
+  return periodDates(range, customStart, customEnd);
+}
 
 // ─── Sales Analysis ────────────────────────────────────────────────────────────
-function SalesAnalysis({ role }: { role: Role }) {
-  const localToday = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role; scopeBranchName?: string }) {
+  const { user } = useAuth();
+  const localToday = businessDate();
+  const initialMonthStart = `${localToday.slice(0, 8)}01`;
   const [uploadStep, setUploadStep] = useState<"idle" | "select" | "preview" | "done">("idle");
-  const [posMenu, setPosMenu] = useState<MenuItem[]>([]);
-  const [posLines, setPosLines] = useState<{ menuItemId: string; product: string; quantitySold: number }[]>([]);
+  const [posPreview, setPosPreview] = useState<PosImportPreview | null>(null);
+  const [posCsvText, setPosCsvText] = useState("");
   const [posFilename, setPosFilename] = useState("");
-  const [posBusinessDate, setPosBusinessDate] = useState(localToday);
   const [posImportError, setPosImportError] = useState("");
   const [posImporting, setPosImporting] = useState(false);
   const [posConsumption, setPosConsumption] = useState<{ name: string; unit: string; expectedConsumption: number }[]>([]);
+  const [posImportResult, setPosImportResult] = useState<{ rowsImported: number; productsMatched: number; totalQuantitySold: number; totalSales: number; businessDate: string; fingerprintIndicator: string } | null>(null);
   const [posImports, setPosImports] = useState<PosImportRecord[]>([]);
   const [posHistoryLoading, setPosHistoryLoading] = useState(true);
   const [posImportSearch, setPosImportSearch] = useState("");
+  const [productSearch, setProductSearch] = useState("");
+  const [productCategory, setProductCategory] = useState("All Categories");
   const [posBranchFilter, setPosBranchFilter] = useState("All Branches");
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [analytics, setAnalytics] = useState<PosAnalytics | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(true);
   const [tab, setTab] = useState("overview");
   const [range, setRange] = useState<DashboardRange>("mtd");
   const [comparison, setComparison] = useState<DashboardComparison>("previous");
-  const [customStart, setCustomStart] = useState("2026-08-01");
-  const [customEnd, setCustomEnd] = useState("2026-08-26");
-  const customDays = Math.max(1, Math.round((new Date(customEnd).getTime() - new Date(customStart).getTime()) / 86400000) + 1);
-  const rangeFactor = range === "custom" ? Math.min(customDays / 26, 2) : dashboardRangeFactor(range);
+  const [customStart, setCustomStart] = useState(initialMonthStart);
+  const [customEnd, setCustomEnd] = useState(localToday);
   const periodLabel = dashboardPeriodLabel(range, customStart, customEnd);
   const comparisonLabel = comparison === "previous" ? "previous period" : "last month";
-  const visibleSalesTrend = range === "today" ? salesTrend.slice(-1) : range === "custom" ? salesTrend.slice(-Math.min(customDays, 7)) : salesTrend;
+  const branchLabel = role === "manager" ? (user?.branch?.name ?? "Assigned Branch") : posBranchFilter;
 
   useEffect(() => {
-    if (role !== "manager") return;
-    void masterDataService.menuItems().then((items) => setPosMenu(items.filter((item) => item.status === "ACTIVE"))).catch(() => setPosMenu([]));
+    if (role !== "owner") return;
+    void masterDataService.branches().then(setBranches).catch(() => setBranches([]));
   }, [role]);
+  useEffect(() => { if (role === "owner") setPosBranchFilter(scopeBranchName); }, [role, scopeBranchName]);
+
+  useEffect(() => {
+    const dates = dateRange(range, customStart, customEnd);
+    const branchId = role === "owner" ? branches.find((branch) => branch.name === posBranchFilter)?.id : undefined;
+    setAnalyticsLoading(true);
+    void inventoryWorkflowService.posAnalytics({ ...dates, branchId })
+      .then(setAnalytics)
+      .catch(() => setAnalytics(null))
+      .finally(() => setAnalyticsLoading(false));
+  }, [branches, customEnd, customStart, posBranchFilter, range, role]);
 
   useEffect(() => {
     setPosHistoryLoading(true);
@@ -56,33 +77,29 @@ function SalesAnalysis({ role }: { role: Role }) {
       .some((value) => value.toLowerCase().includes(query));
     return matchesBranch && matchesSearch;
   });
+  const productCategories = [...new Set((analytics?.products ?? []).map((product) => product.category))];
+  const visibleProducts = (analytics?.products ?? []).filter((product) => {
+    const matchesCategory = productCategory === "All Categories" || product.category === productCategory;
+    const query = productSearch.trim().toLowerCase();
+    return matchesCategory && (!query || product.name.toLowerCase().includes(query));
+  });
 
   const selectPosFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
     setPosImportError("");
     try {
-      const rows = (await file.text()).split(/\r?\n/).map((row) => row.trim()).filter(Boolean).map((row) => row.split(",").map((cell) => cell.trim().replace(/^\"|\"$/g, "")));
-      if (rows.length < 2) throw new Error("The CSV file has no sales rows.");
-      const headers = rows[0]!.map((header) => header.toLowerCase().replace(/[\s-]+/g, "_"));
-      const productColumn = headers.findIndex((header) => ["product_code", "menu_code", "code", "product", "product_name", "menu_item"].includes(header));
-      const quantityColumn = headers.findIndex((header) => ["quantity", "qty", "quantity_sold", "sold"].includes(header));
-      if (productColumn < 0 || quantityColumn < 0) throw new Error("CSV headers must include product_code (or product_name) and quantity_sold.");
-      const grouped = new Map<string, { menuItemId: string; product: string; quantitySold: number }>();
-      for (const row of rows.slice(1)) {
-        const productValue = row[productColumn]?.toLowerCase();
-        const quantity = Number(row[quantityColumn]);
-        const menuItem = posMenu.find((item) => item.code.toLowerCase() === productValue || item.name.toLowerCase() === productValue);
-        if (!menuItem) throw new Error(`Unknown or inactive menu product: ${row[productColumn] || "blank value"}`);
-        if (!Number.isFinite(quantity) || quantity <= 0) throw new Error(`Invalid quantity for ${menuItem.name}.`);
-        const current = grouped.get(menuItem.id);
-        grouped.set(menuItem.id, { menuItemId: menuItem.id, product: menuItem.name, quantitySold: (current?.quantitySold ?? 0) + quantity });
-      }
-      setPosLines([...grouped.values()]);
+      if (file.size > 4_000_000) throw new Error("POS CSV files must be 4 MB or smaller.");
+      const csvText = await file.text();
+      if (csvText.includes("�")) throw new Error("The CSV contains unsupported or invalid text encoding. Export it as UTF-8 and try again.");
+      const preview = await inventoryWorkflowService.previewPosSales({ sourceFilename: file.name, csvText });
+      setPosPreview(preview);
+      setPosCsvText(csvText);
       setPosFilename(file.name);
       setUploadStep("preview");
     } catch (reason) {
-      setPosLines([]);
+      setPosPreview(null);
+      setPosCsvText("");
       setPosImportError(reason instanceof Error ? reason.message : "Unable to read the POS CSV file.");
     } finally {
       event.target.value = "";
@@ -90,15 +107,16 @@ function SalesAnalysis({ role }: { role: Role }) {
   };
 
   const confirmPosImport = async () => {
-    if (!posLines.length) return;
+    if (!posPreview?.summary.canImport || !posCsvText) return;
     setPosImporting(true); setPosImportError("");
     try {
       const result = await inventoryWorkflowService.importPosSales({
-        businessDate: posBusinessDate,
         sourceFilename: posFilename,
-        items: posLines.map(({ menuItemId, quantitySold }) => ({ menuItemId, quantitySold })),
+        csvText: posCsvText,
+        expectedContentHash: posPreview.contentHash,
       });
       setPosConsumption(result.consumption);
+      setPosImportResult(result);
       void inventoryWorkflowService.posImports().then(setPosImports);
       setUploadStep("done");
     } catch (reason) {
@@ -107,46 +125,46 @@ function SalesAnalysis({ role }: { role: Role }) {
   };
 
   return (
-    <div className="p-6 space-y-5">
+    <div className="p-4 md:p-6 space-y-5">
       <SectionHeader title="Sales Analysis"
-        sub={`${role === "owner" ? "All branches" : "Lipa Branch"} · ${periodLabel}`}
+        sub={`${branchLabel} · ${periodLabel}`}
         actions={
           <>
             {role === "manager" && <Btn variant="primary" icon={Upload} onClick={() => setUploadStep("select")}>Import POS CSV</Btn>}
-            {role === "owner" && <Select options={["All Branches", "Gulod", "Lipa", "Vermosa", "Tagaytay", "Evo"]} small />}
+            {role === "owner" && <Select options={["All Branches", ...branches.map((branch) => branch.name)]} value={posBranchFilter} onChange={setPosBranchFilter} small />}
             <DashboardFilters range={range} comparison={comparison} customStart={customStart} customEnd={customEnd}
               onRangeChange={setRange} onComparisonChange={setComparison}
               onApplyCustom={(start, end) => { setCustomStart(start); setCustomEnd(end); }}
-              onReset={() => { setRange("mtd"); setCustomStart("2026-08-01"); setCustomEnd("2026-08-26"); }} />
+              onReset={() => { setRange("mtd"); setCustomStart(initialMonthStart); setCustomEnd(localToday); }} />
           </>
         } />
 
-      <div className="grid grid-cols-4 gap-4">
-        <KPICard label="Total Sales" value={formatPeso(1120500 * rangeFactor)} change={comparison === "previous" ? "+8.3%" : "+6.9%"} changeDir="up" sub={periodLabel} icon={ShoppingCart} color={C.maroon} comparisonLabel={comparisonLabel} />
-        <KPICard label="Total COGS" value={formatPeso(482100 * rangeFactor)} change={comparison === "previous" ? "+5.1%" : "+4.4%"} changeDir="up" sub="43.0% of sales" icon={Package} color={C.amber} comparisonLabel={comparisonLabel} />
-        <KPICard label="Gross Profit" value={formatPeso(638400 * rangeFactor)} change={comparison === "previous" ? "+10.7%" : "+8.8%"} changeDir="up" sub="57.0% margin" icon={TrendingUp} color={C.green} comparisonLabel={comparisonLabel} />
-        <KPICard label="Transactions" value={Math.round(12420 * rangeFactor).toLocaleString()} change={comparison === "previous" ? "+6.4%" : "+5.2%"} changeDir="up" sub="Completed POS sales" icon={Hash} color={C.blue} comparisonLabel={comparisonLabel} />
+      <div className="sales-kpi-grid grid grid-cols-4 gap-4">
+        <KPICard label="Total Sales" value={analyticsLoading ? "—" : formatPeso(analytics?.summary.sales ?? 0)} sub={periodLabel} icon={ShoppingCart} color={C.maroon} comparisonLabel={comparisonLabel} />
+        <KPICard label="Recipe COGS" value={analyticsLoading ? "—" : formatPeso(analytics?.summary.theoreticalCogs ?? 0)} sub="Based on saved ingredient costs" icon={Package} color={C.amber} comparisonLabel={comparisonLabel} />
+        <KPICard label="Gross Profit" value={analyticsLoading ? "—" : formatPeso(analytics?.summary.grossProfit ?? 0)} sub={`${(analytics?.summary.grossMargin ?? 0).toFixed(1)}% margin`} icon={TrendingUp} color={C.green} comparisonLabel={comparisonLabel} />
+        <KPICard label="Units Sold" value={analyticsLoading ? "—" : (analytics?.summary.unitsSold ?? 0).toLocaleString()} sub={`${analytics?.summary.importCount ?? 0} POS import(s)`} icon={Hash} color={C.blue} comparisonLabel={comparisonLabel} />
       </div>
 
-      <div className="flex gap-1 border-b" style={{ borderColor: C.border }}>
+      <div className="flex gap-1 border-b overflow-x-auto" style={{ borderColor: C.border }}>
         {["overview", "products", role === "owner" ? "branches" : "import_history"].map(t => (
           <button key={t} onClick={() => setTab(t)}
             className="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors capitalize"
             style={{ borderColor: tab === t ? C.maroon : "transparent", color: tab === t ? C.maroon : C.secondary }}>
-            {t === "import_history" ? "Import History" : t}
+            {t === "import_history" ? "Import History" : t === "products" ? "Product Sales" : t}
           </button>
         ))}
       </div>
 
       {tab === "overview" && (
-        <div className="grid grid-cols-3 gap-5">
+        <div className="sales-analysis-grid grid grid-cols-3 gap-5">
           <Card className="col-span-2" padding={false}>
             <div className="px-5 pt-5 pb-0">
               <h3 className="font-semibold mb-4" style={{ color: C.primary }}>Sales vs COGS Trend</h3>
             </div>
             <div className="h-64 px-3 pb-4">
               <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={visibleSalesTrend}>
+                <ComposedChart data={(analytics?.trends ?? []).map((item) => ({ ...item, date: new Date(`${item.date}T00:00:00`).toLocaleDateString("en-PH", { month: "short", day: "numeric" }), gp: item.grossProfit }))}>
                   <CartesianGrid strokeDasharray="3 3" stroke={C.border} vertical={false} />
                   <XAxis dataKey="date" tick={{ fontSize: 11, fill: C.secondary }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fontSize: 11, fill: C.secondary }} axisLine={false} tickLine={false}
@@ -163,15 +181,15 @@ function SalesAnalysis({ role }: { role: Role }) {
           <Card>
             <h3 className="font-semibold mb-4" style={{ color: C.primary }}>Top Products</h3>
             <div className="space-y-3.5">
-              {topProducts.map((p, i) => (
-                <div key={p.product}>
+              {(analytics?.products ?? []).slice(0, 5).map((p, i) => (
+                <div key={p.id}>
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-sm" style={{ color: C.primary }}>{p.product}</span>
+                    <span className="text-sm" style={{ color: C.primary }}>{p.name}</span>
                     <span className="text-sm font-semibold" style={{ color: C.primary }}>₱{(p.sales / 1000).toFixed(0)}k</span>
                   </div>
                   <div className="h-1.5 rounded-full overflow-hidden" style={{ background: C.grayBg }}>
                     <div className="h-full rounded-full" style={{
-                      width: `${p.pct}%`,
+                      width: `${analytics?.summary.sales ? Math.max(4, (p.sales / analytics.summary.sales) * 100) : 0}%`,
                       background: i === 0 ? C.maroon : i === 1 ? C.mediumMaroon : C.blue
                     }} />
                   </div>
@@ -182,47 +200,94 @@ function SalesAnalysis({ role }: { role: Role }) {
         </div>
       )}
 
-      {(tab === "import_history" || tab === "branches") && (
-        <Card padding={false}>
-          <div className="px-5 pt-5 pb-3">
-            <div className="flex items-center gap-2 mb-4">
-              <SearchInput placeholder="Search imports…" value={posImportSearch} onChange={setPosImportSearch} />
-              {role === "owner" && <Select options={["All Branches", "Gulod", "Lipa", "Vermosa", "Tagaytay", "Evo"]} value={posBranchFilter} onChange={setPosBranchFilter} />}
-            </div>
-          </div>
-          <div className="overflow-x-auto">
-              <table className="data-table w-full">
-              <THead cols={role === "owner"
-                ? ["Branch", "Business Date", "Filename", "Uploaded By", "Time", "Units Sold", "Total Sales", "Status"]
-                : ["Business Date", "Filename", "Upload Time", "Units Sold", "Total Sales", "Status"]} />
-              <tbody>
-                {posHistoryLoading ? <tr><td colSpan={role === "owner" ? 8 : 6} className="px-5 py-10 text-center text-sm" style={{ color: C.muted }}>Loading import history...</td></tr> : visiblePosImports.length === 0 ? <tr><td colSpan={role === "owner" ? 8 : 6} className="px-5 py-10 text-center text-sm" style={{ color: C.muted }}>No POS imports found.</td></tr> : visiblePosImports.slice(0, 10).map((row) => (
-                  <TR key={row.id}>
-                    {role === "owner" && <TD><span className="font-semibold" style={{ color: C.maroon }}>{row.branchName}</span></TD>}
-                    <TD muted>{new Date(`${row.businessDate}T00:00:00`).toLocaleDateString("en-PH")}</TD>
-                    <TD><span className="font-mono text-xs" style={{ color: C.primary }}>{row.sourceFilename}</span></TD>
-                    {role === "owner" && <TD muted>{row.importedBy}</TD>}
-                    <TD muted>{new Date(row.importedAt).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" })}</TD>
-                    <TD right>{row.unitsSold.toLocaleString()}</TD>
-                    <TD right>{formatPeso(row.totalSales)}</TD>
-                    <TD><StatusChip status="imported" /></TD>
+      {tab === "products" && (
+        <TableCard
+          title="Product Sales Performance"
+          subtitle={`Calculated from imported POS sales for ${branchLabel} during ${periodLabel}`}
+          toolbar={
+            <>
+              <SearchInput placeholder="Search sold products…" value={productSearch} onChange={setProductSearch} />
+              <Select options={["All Categories", ...productCategories]} value={productCategory} onChange={setProductCategory} />
+            </>
+          }
+        >
+          <TableWrapper minWidth={760}>
+            <THead cols={["Product", "Category", "Units Sold", "Sales", "Recipe COGS", "Gross Profit", "Margin"]} />
+            <tbody>
+              {analyticsLoading ? (
+                <TableLoadingRow colSpan={7} label="Loading product sales…" />
+              ) : visibleProducts.length === 0 ? (
+                <TableEmptyRow colSpan={7} title="No product sales found" subtitle="No product sales were imported for the selected branch and period." />
+              ) : visibleProducts.map((product) => {
+                const grossProfit = product.sales - product.cogs;
+                const margin = product.sales > 0 ? (grossProfit / product.sales) * 100 : 0;
+                return (
+                  <TR key={product.id}>
+                    <TD><span className="font-semibold text-[var(--app-text)]">{product.name}</span></TD>
+                    <TD muted>{product.category}</TD>
+                    <TD right>{product.unitsSold.toLocaleString()}</TD>
+                    <TD right>{formatPeso(product.sales)}</TD>
+                    <TD right muted>{formatPeso(product.cogs)}</TD>
+                    <TD right><span className="font-semibold" style={{ color: grossProfit >= 0 ? C.green : C.red }}>{formatPeso(grossProfit)}</span></TD>
+                    <TD right><span className="font-bold" style={{ color: margin >= 60 ? C.green : margin >= 40 ? C.amber : C.red }}>{margin.toFixed(1)}%</span></TD>
                   </TR>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                );
+              })}
+            </tbody>
+          </TableWrapper>
+          <Pagination total={visibleProducts.length} page={1} perPage={10} />
+        </TableCard>
+      )}
+
+      {(tab === "import_history" || tab === "branches") && (
+        <TableCard
+          title="POS Import History"
+          subtitle={`Audit log of imported daily sales files for ${branchLabel}`}
+          toolbar={
+            <>
+              <SearchInput placeholder="Search imports…" value={posImportSearch} onChange={setPosImportSearch} />
+              {role === "owner" && <Select options={["All Branches", ...branches.map((branch) => branch.name)]} value={posBranchFilter} onChange={setPosBranchFilter} />}
+            </>
+          }
+        >
+          <TableWrapper minWidth={1080}>
+            <THead cols={role === "owner"
+              ? ["Import ID", "Branch", "Business Date", "Filename", "Uploaded By", "Time", "Rows", "Units Sold", "Total Sales", "Fingerprint", "Status"]
+              : ["Import ID", "Business Date", "Filename", "Upload Time", "Rows", "Units Sold", "Total Sales", "Fingerprint", "Status"]} />
+            <tbody>
+              {posHistoryLoading ? (
+                <TableLoadingRow colSpan={role === "owner" ? 11 : 9} label="Loading import history…" />
+              ) : visiblePosImports.length === 0 ? (
+                <TableEmptyRow colSpan={role === "owner" ? 11 : 9} title="No POS imports found" subtitle="Upload a POS sales CSV to see historical records." />
+              ) : visiblePosImports.slice(0, 10).map((row) => (
+                <TR key={row.id}>
+                  <TD mono>{row.id.slice(0, 8)}</TD>
+                  {role === "owner" && <TD><span className="font-semibold" style={{ color: C.maroon }}>{row.branchName}</span></TD>}
+                  <TD muted>{new Date(`${row.businessDate}T00:00:00`).toLocaleDateString("en-PH")}</TD>
+                  <TD><span className="font-mono text-xs font-medium" style={{ color: C.primary }}>{row.sourceFilename}</span></TD>
+                  {role === "owner" && <TD muted>{row.importedBy}</TD>}
+                  <TD muted>{new Date(row.importedAt).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" })}</TD>
+                  <TD right>{row.totalRows || row.productLines}</TD>
+                  <TD right>{row.unitsSold.toLocaleString()}</TD>
+                  <TD right>{formatPeso(row.totalSales)}</TD>
+                  <TD mono>{row.fingerprintIndicator ?? "Legacy"}</TD>
+                  <TD center><StatusChip status={row.status === "NEEDS_REVIEW" ? "pending_review" : "imported"} /></TD>
+                </TR>
+              ))}
+            </tbody>
+          </TableWrapper>
           <Pagination total={visiblePosImports.length} page={1} perPage={10} />
-        </Card>
+        </TableCard>
       )}
 
       {/* CSV Upload Modal */}
       {role === "manager" && uploadStep !== "idle" && (
         <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.45)" }}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6" style={{ border: `1px solid ${C.border}` }}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[92vh] overflow-y-auto p-6" style={{ border: `1px solid ${C.border}` }}>
             <div className="flex items-center justify-between mb-5">
               <div>
                 <h3 className="font-bold text-lg" style={{ color: C.primary }}>Upload POS CSV</h3>
-                <p className="text-xs mt-0.5" style={{ color: C.secondary }}>Lipa Branch — Import daily sales data</p>
+                <p className="text-xs mt-0.5" style={{ color: C.secondary }}>{user?.branch?.name ?? "Assigned Branch"} — Import daily sales data</p>
               </div>
               <button onClick={() => setUploadStep("idle")} className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ color: C.secondary, background: C.grayBg }}>
                 <X size={15} />
@@ -252,26 +317,13 @@ function SalesAnalysis({ role }: { role: Role }) {
 
             {uploadStep === "select" && (
               <>
-                <label className="block mb-4">
-                  <span className="block text-xs font-semibold mb-1.5" style={{ color: C.secondary }}>Business date</span>
-                  <input
-                    type="date"
-                    value={posBusinessDate}
-                    max={localToday}
-                    onChange={(event) => { setPosBusinessDate(event.target.value); setPosImportError(""); }}
-                    className="w-full px-3 py-2.5 rounded-xl border text-sm outline-none"
-                    style={{ borderColor: C.border, background: C.surface, color: C.primary }}
-                    required
-                  />
-                  <span className="block text-xs mt-1" style={{ color: C.muted }}>Choose the actual trading date in the POS file. This date controls recipe-based inventory deduction.</span>
-                </label>
                 <label className="block border-2 border-dashed rounded-xl p-8 text-center mb-4 cursor-pointer transition-all"
                   style={{ borderColor: C.border }}>
                   <div className="w-12 h-12 rounded-xl flex items-center justify-center mx-auto mb-3" style={{ background: C.grayBg }}>
                     <Upload size={20} style={{ color: C.muted }} />
                   </div>
                   <p className="text-sm font-semibold" style={{ color: C.primary }}>Drop your POS CSV file here</p>
-                  <p className="text-xs mt-1" style={{ color: C.secondary }}>Click to browse · Headers: product_code, quantity_sold</p>
+                  <p className="text-xs mt-1" style={{ color: C.secondary }}>Required: product code or name, quantity sold, selling price, and business date</p>
                   <input type="file" accept=".csv,text/csv" className="sr-only" onChange={(event) => void selectPosFile(event)} />
                 </label>
                 {posImportError && <div className="mb-4 p-3 rounded-xl text-sm" style={{ color: C.red, background: C.redBg }}>{posImportError}</div>}
@@ -288,31 +340,36 @@ function SalesAnalysis({ role }: { role: Role }) {
               <>
                 <div className="p-4 rounded-xl border mb-4" style={{ borderColor: C.border, background: C.mainBg }}>
                   <p className="text-sm font-semibold mb-3" style={{ color: C.primary }}>Validation Preview</p>
-                  <div className="grid grid-cols-2 gap-y-2 gap-x-4 text-sm">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-y-2 gap-x-4 text-sm">
                     {[
                       ["File", posFilename],
-                      ["Business Date", new Date(`${posBusinessDate}T00:00:00`).toLocaleDateString("en-PH")],
-                      ["Products", `${posLines.length} valid product lines`],
-                      ["Units Sold", posLines.reduce((sum, line) => sum + line.quantitySold, 0).toLocaleString()],
+                      ["Branch", posPreview?.branchName ?? "Assigned Branch"],
+                      ["Business Date", posPreview?.businessDate ?? "Invalid"],
+                      ["Source Rows", String(posPreview?.summary.totalSourceRows ?? 0)],
+                      ["Valid", String(posPreview?.summary.validRows ?? 0)],
+                      ["Warnings", String(posPreview?.summary.warningRows ?? 0)],
+                      ["Invalid", String(posPreview?.summary.invalidRows ?? 0)],
+                      ["Unmatched", String(posPreview?.summary.unmatchedRows ?? 0)],
+                      ["Duplicate", posPreview?.summary.duplicate ? "Yes" : "No"],
+                      ["Import Quality", posPreview?.summary.quality.replaceAll("_", " ") ?? "Rejected"],
+                      ["Fingerprint", posPreview?.fingerprintIndicator ?? "Not available"],
                     ].map(([label, value]) => (
                       <div key={label}>
                         <span style={{ color: C.secondary }}>{label}: </span>
-                        <span className="font-semibold" style={{ color: label.includes("Error") || label.includes("Duplicate") ? C.green : C.primary }}>{value}</span>
+                        <span className="font-semibold" style={{ color: label === "Duplicate" ? (value === "Yes" ? C.red : C.green) : C.primary }}>{value}</span>
                       </div>
                     ))}
                   </div>
-                  <div className="mt-4 pt-3 border-t space-y-2" style={{ borderColor: C.border }}>
-                    {posLines.map((line) => <div key={line.menuItemId} className="flex justify-between text-sm"><span style={{ color: C.secondary }}>{line.product}</span><strong style={{ color: C.primary }}>{line.quantitySold} sold</strong></div>)}
-                  </div>
+                   <div className="mt-4 pt-3 border-t overflow-x-auto" style={{ borderColor: C.border }}><table className="w-full text-xs min-w-[820px]"><thead><tr>{["Row","Source Product","Matched Product","Quantity","Price","Sales Date","Status","Issue"].map((heading)=><th key={heading} className="text-left px-2 py-2" style={{ color: C.secondary }}>{heading}</th>)}</tr></thead><tbody>{posPreview?.rows.map((row)=><tr key={row.rowNumber} className="border-t" style={{ borderColor: C.border }}><td className="px-2 py-2">{row.rowNumber}</td><td className="px-2 py-2">{row.sourceProduct || "Blank"}</td><td className="px-2 py-2">{row.matchedMenuProduct ?? "Unmatched"}</td><td className="px-2 py-2">{row.quantitySold ?? "Invalid"}</td><td className="px-2 py-2">{row.unitPrice == null ? "Invalid" : `₱${row.unitPrice.toFixed(2)}`}</td><td className="px-2 py-2">{row.businessDate ?? "Invalid"}</td><td className="px-2 py-2 font-semibold" style={{ color: row.status === "INVALID" ? C.red : row.status === "WARNING" ? C.amber : C.green }}>{row.status}</td><td className="px-2 py-2 max-w-xs">{row.issues.join(" ") || "Ready"}</td></tr>)}</tbody></table></div>
                 </div>
                 {posImportError && <div className="mb-4 p-3 rounded-xl text-sm" style={{ color: C.red, background: C.redBg }}>{posImportError}</div>}
-                <div className="flex items-center gap-2 mb-4 p-3 rounded-xl" style={{ background: C.greenBg }}>
-                  <CheckCircle size={14} style={{ color: C.green }} />
-                  <span className="text-sm font-medium" style={{ color: C.green }}>File validated successfully. Ready to import.</span>
+                <div className="flex items-center gap-2 mb-4 p-3 rounded-xl" style={{ background: posPreview?.summary.canImport ? C.greenBg : C.redBg }}>
+                  <CheckCircle size={14} style={{ color: posPreview?.summary.canImport ? C.green : C.red }} />
+                  <span className="text-sm font-medium" style={{ color: posPreview?.summary.canImport ? C.green : C.red }}>{posPreview?.summary.canImport ? "Validation complete. Review warnings, then confirm the atomic import." : "POS import cannot continue until invalid, unmatched, or duplicate data is corrected."}</span>
                 </div>
                 <div className="flex gap-3">
                   <Btn variant="outline" onClick={() => setUploadStep("select")}>Back</Btn>
-                  <button disabled={posImporting || !posLines.length} className="flex-1 py-2.5 rounded-xl text-sm font-bold text-white disabled:opacity-50" style={{ background: C.maroon }}
+                  <button disabled={posImporting || !posPreview?.summary.canImport} className="flex-1 py-2.5 rounded-xl text-sm font-bold text-white disabled:opacity-50" style={{ background: C.maroon }}
                     onClick={() => void confirmPosImport()}>{posImporting ? "Importing…" : "Confirm Import"}</button>
                 </div>
               </>
@@ -324,16 +381,17 @@ function SalesAnalysis({ role }: { role: Role }) {
                   <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4" style={{ background: C.greenBg }}>
                     <CheckCircle size={32} style={{ color: C.green }} />
                   </div>
-                  <h4 className="font-bold text-lg mb-1" style={{ color: C.primary }}>Import Successful</h4>
-                  <p className="text-sm" style={{ color: C.secondary }}>{posLines.reduce((sum, line) => sum + line.quantitySold, 0)} units sold were connected to their configured recipes.</p>
-                  <p className="text-xs mt-1" style={{ color: C.muted }}>{posFilename} - {new Date(`${posBusinessDate}T00:00:00`).toLocaleDateString("en-PH")}</p>
+                  <h4 className="font-bold text-lg mb-1" style={{ color: C.primary }}>POS Import Complete</h4>
+                  <p className="text-sm" style={{ color: C.secondary }}>{posImportResult?.rowsImported ?? 0} sales rows were connected to their configured recipes.</p>
+                  <p className="text-xs mt-1" style={{ color: C.muted }}>{posFilename} · {posImportResult?.businessDate ?? ""}</p>
+                  <div className="grid grid-cols-2 gap-2 mt-4 text-left text-xs">{[["Rows Imported",posImportResult?.rowsImported ?? 0],["Products Matched",posImportResult?.productsMatched ?? 0],["Total Quantity",posImportResult?.totalQuantitySold ?? 0],["Total Sales",`₱${(posImportResult?.totalSales ?? 0).toLocaleString("en-PH",{minimumFractionDigits:2})}`]].map(([label,value])=><div key={label} className="p-2 rounded-lg" style={{ background:C.mainBg }}><span style={{color:C.secondary}}>{label}: </span><strong>{value}</strong></div>)}</div>
                   <div className="mt-4 p-3 rounded-xl text-left space-y-1.5" style={{ background: C.mainBg }}>
                     <p className="text-xs font-bold uppercase tracking-wide" style={{ color: C.secondary }}>Expected ingredient consumption</p>
                     {posConsumption.map((item) => <div key={`${item.name}-${item.unit}`} className="flex justify-between text-xs"><span>{item.name}</span><strong>{item.expectedConsumption.toFixed(2)} {item.unit}</strong></div>)}
                   </div>
                 </div>
                 <button className="w-full py-2.5 rounded-xl text-sm font-bold text-white" style={{ background: C.maroon }}
-                  onClick={() => { setUploadStep("idle"); setPosLines([]); setPosConsumption([]); setPosFilename(""); setPosBusinessDate(localToday); toast.success("POS CSV imported successfully"); }}>
+                  onClick={() => { setUploadStep("idle"); setPosPreview(null); setPosCsvText(""); setPosConsumption([]); setPosImportResult(null); setPosFilename(""); toast.success("POS CSV imported successfully"); }}>
                   Done
                 </button>
               </>
@@ -348,46 +406,86 @@ function SalesAnalysis({ role }: { role: Role }) {
 // ─── Inventory Overview ────────────────────────────────────────────────────────
 
 // ─── COGS Analysis ─────────────────────────────────────────────────────────────
-function COGSAnalysis({ role }: { role: Role }) {
+function COGSAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role; scopeBranchName?: string }) {
+  const { user } = useAuth();
+  const today = businessDate();
+  const monthStart = `${today.slice(0, 8)}01`;
+  const [range, setRange] = useState<DashboardRange>("mtd");
+  const [comparison, setComparison] = useState<DashboardComparison>("previous");
+  const [customStart, setCustomStart] = useState(monthStart);
+  const [customEnd, setCustomEnd] = useState(today);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [branchFilter, setBranchFilter] = useState("All Branches");
+  const [analytics, setAnalytics] = useState<PosAnalytics | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("All Categories");
+
+  useEffect(() => {
+    if (role !== "owner") return;
+    void masterDataService.branches().then(setBranches).catch(() => setBranches([]));
+  }, [role]);
+  useEffect(() => { if (role === "owner") setBranchFilter(scopeBranchName); }, [role, scopeBranchName]);
+
+  useEffect(() => {
+    const branchId = role === "owner" ? branches.find((branch) => branch.name === branchFilter)?.id : undefined;
+    setLoading(true);
+    void inventoryWorkflowService.posAnalytics({ ...dateRange(range, customStart, customEnd), branchId })
+      .then(setAnalytics)
+      .catch(() => setAnalytics(null))
+      .finally(() => setLoading(false));
+  }, [branchFilter, branches, customEnd, customStart, range, role]);
+
+  const summary = analytics?.summary;
+  const branchLabel = role === "manager" ? (user?.branch?.name ?? "Assigned Branch") : branchFilter;
+  const categories = [...new Set((analytics?.products ?? []).map((product) => product.category))];
+  const products = (analytics?.products ?? []).filter((product) =>
+    (category === "All Categories" || product.category === category)
+    && product.name.toLowerCase().includes(search.trim().toLowerCase()));
+  const ingredientTotal = (analytics?.ingredients ?? []).reduce((total, item) => total + item.cost, 0);
+
   return (
-    <div className="p-6 space-y-5">
+    <div className="p-4 md:p-6 space-y-5">
       <SectionHeader title="COGS Analysis"
-        sub={role === "owner" ? "Cost of Goods Sold · All branches · August 2026" : "Lipa Branch · August 2026"}
+        sub={`Cost of Goods Sold · ${branchLabel} · ${dashboardPeriodLabel(range, customStart, customEnd)}`}
         actions={
           <>
-            <Btn variant="outline" icon={Calendar} size="sm">Aug 1–26, 2026</Btn>
-            {role === "owner" && <Select options={["All Branches", "Gulod", "Lipa", "Vermosa", "Tagaytay", "Evo"]} />}
+            {role === "owner" && <Select options={["All Branches", ...branches.map((branch) => branch.name)]} value={branchFilter} onChange={setBranchFilter} />}
+            <DashboardFilters range={range} comparison={comparison} customStart={customStart} customEnd={customEnd}
+              onRangeChange={setRange} onComparisonChange={setComparison}
+              onApplyCustom={(start, end) => { setCustomStart(start); setCustomEnd(end); }}
+              onReset={() => { setRange("mtd"); setCustomStart(monthStart); setCustomEnd(today); }} />
           </>
         } />
 
-      <div className="grid grid-cols-3 gap-4">
-        <KPICard label="Total Sales" value="₱1,120,500" change="+8.3%" changeDir="up" icon={DollarSign} color={C.blue} sparkData={kpiSparklines.sales} />
-        <KPICard label="Theoretical COGS" value="₱468,800" sub="41.8% of sales" icon={BarChart2} color={C.amber} />
-        <KPICard label="Actual COGS" value="₱482,100" sub="43.0% of sales" icon={TrendingDown} color={C.red} />
-        <KPICard label="Gross Profit" value="₱638,400" change="+10.7%" changeDir="up" icon={TrendingUp} color={C.green} sparkData={kpiSparklines.profit} />
-        <KPICard label="Gross Margin" value="57.0%" change="-0.4pp" changeDir="down" icon={Percent} color={C.maroon} />
-        <KPICard label="COGS Variance" value="₱13,300" sub="Actual exceeds theoretical" icon={GitCompare} color={C.red} />
+      <div className="cogs-kpi-grid grid gap-4">
+        <KPICard label="Total Sales" value={loading ? "—" : formatPeso(summary?.sales ?? 0)} sub={`${summary?.unitsSold ?? 0} units sold`} icon={DollarSign} color={C.blue} />
+        <KPICard label="Total COGS" value={loading ? "—" : formatPeso(summary?.totalCogs ?? 0)} sub="Sum of recipe-based product COGS" icon={BarChart2} color={C.amber} />
+        <KPICard label="Gross Profit" value={loading ? "—" : formatPeso(summary?.grossProfit ?? 0)} sub="Total Sales less Total COGS" icon={TrendingUp} color={C.green} />
+        <KPICard label="Gross Margin" value={loading ? "—" : `${(summary?.grossMargin ?? 0).toFixed(1)}%`} sub="Gross Profit ÷ Sales × 100" icon={Percent} color={C.maroon} />
+        <KPICard label="Detected Shortage" value={loading ? "—" : formatPeso(summary?.detectedShortageValue ?? 0)} sub="Positive variance awaiting or under review" icon={TrendingDown} color={C.red} />
+        <KPICard label="Verified Shrinkage" value={loading ? "—" : formatPeso(summary?.verifiedShrinkageCost ?? 0)} sub="Verified positive shrinkage causes only" icon={GitCompare} color={C.red} />
       </div>
 
-      <div className="grid grid-cols-3 gap-5">
+      <div className="cogs-analysis-grid grid grid-cols-3 gap-5">
         <Card className="col-span-2" padding={false}>
           <div className="px-5 pt-5 pb-0">
-            <h3 className="font-semibold mb-1" style={{ color: C.primary }}>COGS Trend — Theoretical vs. Actual</h3>
-            <p className="text-xs mb-4" style={{ color: C.secondary }}>6-month view with gross margin overlay</p>
+            <h3 className="font-semibold mb-1" style={{ color: C.primary }}>Sales and Recipe COGS Trend</h3>
+            <p className="text-xs mb-4" style={{ color: C.secondary }}>Daily totals from imported POS sales and saved recipe costs</p>
           </div>
           <div className="h-56 px-3 pb-4">
             <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={cogsTrend}>
+              <ComposedChart data={(analytics?.trends ?? []).map((item) => ({ ...item, label: new Date(`${item.date}T00:00:00`).toLocaleDateString("en-PH", { month: "short", day: "numeric" }), margin: item.sales ? (item.grossProfit / item.sales) * 100 : 0 }))}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.border} vertical={false} />
-                <XAxis dataKey="month" tick={{ fontSize: 11, fill: C.secondary }} axisLine={false} tickLine={false} />
+                <XAxis dataKey="label" tick={{ fontSize: 11, fill: C.secondary }} axisLine={false} tickLine={false} />
                 <YAxis yAxisId="l" tick={{ fontSize: 11, fill: C.secondary }} axisLine={false} tickLine={false}
                   tickFormatter={v => `₱${(v / 1000).toFixed(0)}k`} />
                 <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 11, fill: C.secondary }} axisLine={false} tickLine={false}
-                  tickFormatter={v => `${v}%`} domain={[55, 60]} />
+                  tickFormatter={v => `${v}%`} domain={[0, 100]} />
                 <Tooltip content={<ChartTip />} />
                 <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
-                <Bar yAxisId="l" dataKey="theo" name="Theoretical COGS" fill={`color-mix(in srgb, ${C.blue} 25%, transparent)`} stroke={C.blue} strokeWidth={1} radius={[3, 3, 0, 0]} />
-                <Bar yAxisId="l" dataKey="actual" name="Actual COGS" fill={`color-mix(in srgb, ${C.maroon} 38%, transparent)`} stroke={C.maroon} strokeWidth={1} radius={[3, 3, 0, 0]} />
+                <Bar yAxisId="l" dataKey="sales" name="Sales" fill={`color-mix(in srgb, ${C.blue} 25%, transparent)`} stroke={C.blue} strokeWidth={1} radius={[3, 3, 0, 0]} />
+                <Bar yAxisId="l" dataKey="cogs" name="Recipe COGS" fill={`color-mix(in srgb, ${C.maroon} 38%, transparent)`} stroke={C.maroon} strokeWidth={1} radius={[3, 3, 0, 0]} />
                 <Line yAxisId="r" type="monotone" dataKey="margin" name="Gross Margin %" stroke={C.green} strokeWidth={2} dot={{ fill: C.green, r: 3 }} />
               </ComposedChart>
             </ResponsiveContainer>
@@ -395,64 +493,57 @@ function COGSAnalysis({ role }: { role: Role }) {
         </Card>
         <Card>
           <h3 className="font-semibold mb-4" style={{ color: C.primary }}>Ingredient Cost Distribution</h3>
-          {[
-            { name: "Coffee Beans", pct: 38.2, color: C.maroon },
-            { name: "Dairy (Milk)", pct: 24.7, color: C.blue },
-            { name: "Alternative Milks", pct: 16.4, color: C.amber },
-            { name: "Bakery/Food", pct: 12.8, color: C.green },
-            { name: "Other", pct: 7.9, color: C.muted },
-          ].map(c => (
-            <div key={c.name} className="mb-3">
+          {(analytics?.ingredients ?? []).slice(0, 6).map((item, index) => {
+            const pct = ingredientTotal > 0 ? (item.cost / ingredientTotal) * 100 : 0;
+            const colors = [C.maroon, C.blue, C.amber, C.green, C.red, C.muted];
+            return (
+            <div key={item.id} className="mb-3">
               <div className="flex items-center justify-between mb-1">
-                <span className="text-xs font-medium" style={{ color: C.primary }}>{c.name}</span>
-                <span className="text-xs font-bold" style={{ color: C.primary }}>{c.pct}%</span>
+                <span className="text-xs font-medium" style={{ color: C.primary }}>{item.name}</span>
+                <span className="text-xs font-bold" style={{ color: C.primary }}>{pct.toFixed(1)}%</span>
               </div>
               <div className="h-1.5 rounded-full overflow-hidden" style={{ background: C.grayBg }}>
-                <div className="h-full rounded-full" style={{ width: `${c.pct * 2.3}%`, background: c.color }} />
+                <div className="h-full rounded-full" style={{ width: `${pct}%`, background: colors[index] }} />
               </div>
             </div>
-          ))}
+          );})}
+          {!loading && (analytics?.ingredients.length ?? 0) === 0 && <p className="text-sm" style={{ color: C.muted }}>No ingredient cost data is available for this period.</p>}
         </Card>
       </div>
 
-      <Card padding={false}>
-        <div className="px-5 pt-5 pb-3">
-          <h3 className="font-semibold mb-3" style={{ color: C.primary }}>Product Profitability</h3>
-          <div className="flex items-center gap-2">
-            <SearchInput placeholder="Search product…" />
-            <Select options={["All Categories", "Coffee Drinks", "Food", "Cold Drinks"]} />
-          </div>
-        </div>
-        <div className="overflow-x-auto">
-              <table className="data-table w-full">
-            <THead cols={["Product", "Sales", "Theoretical Cost", "Actual Cost", "COGS Variance", "Gross Profit", "Margin"]} />
-            <tbody>
-              {[
-                { name: "Espresso Blend", sales: 187400, theo: 62800, actual: 64900 },
-                { name: "Whole Milk", sales: 162300, theo: 78900, actual: 82100 },
-                { name: "Almond Milk Latte", sales: 98700, theo: 41200, actual: 43400 },
-                { name: "Oat Milk Cappuccino", sales: 87200, theo: 35600, actual: 37100 },
-                { name: "Croissants", sales: 74100, theo: 28400, actual: 29200 },
-              ].map((p, i) => {
-                const gp = p.sales - p.actual;
-                const margin = ((gp / p.sales) * 100).toFixed(1);
-                const variance = p.actual - p.theo;
-                return (
-                  <TR key={i}>
-                    <TD><span className="font-medium">{p.name}</span></TD>
-                    <TD right>₱{p.sales.toLocaleString()}</TD>
-                    <TD right muted>₱{p.theo.toLocaleString()}</TD>
-                    <TD right muted>₱{p.actual.toLocaleString()}</TD>
-                    <TD right><span style={{ color: variance > 0 ? C.red : C.green }}>₱{variance.toLocaleString()}</span></TD>
-                    <TD right>₱{gp.toLocaleString()}</TD>
-                    <TD right><span className="font-bold" style={{ color: parseFloat(margin) > 60 ? C.green : parseFloat(margin) > 50 ? C.amber : C.red }}>{margin}%</span></TD>
-                  </TR>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </Card>
+      <TableCard
+        title="Product Profitability"
+        subtitle="Product-level sales and recipe cost performance"
+        toolbar={
+          <>
+            <SearchInput placeholder="Search product…" value={search} onChange={setSearch} />
+            <Select options={["All Categories", ...categories]} value={category} onChange={setCategory} />
+          </>
+        }
+      >
+        <TableWrapper minWidth={800}>
+          <THead cols={["Product", "Sales", "Recipe COGS", "Recipe Gross Profit", "Recipe Margin"]} />
+          <tbody>
+            {loading ? (
+              <TableLoadingRow colSpan={5} label="Calculating product profitability…" />
+            ) : products.length === 0 ? (
+              <TableEmptyRow colSpan={5} title="No POS sales data" subtitle="No POS sales data is available for this period." />
+            ) : products.map((p) => {
+              const gp = p.sales - p.cogs;
+              const margin = ((gp / p.sales) * 100).toFixed(1);
+              return (
+                <TR key={p.id}>
+                  <TD><span className="font-semibold text-[var(--app-text)]">{p.name}</span></TD>
+                  <TD right>₱{p.sales.toLocaleString()}</TD>
+                  <TD right muted>{formatPeso(p.cogs)}</TD>
+                  <TD right>₱{gp.toLocaleString()}</TD>
+                  <TD right><span className="font-bold" style={{ color: parseFloat(margin) > 60 ? C.green : parseFloat(margin) > 50 ? C.amber : C.red }}>{margin}%</span></TD>
+                </TR>
+              );
+            })}
+          </tbody>
+        </TableWrapper>
+      </TableCard>
     </div>
   );
 }
@@ -462,9 +553,10 @@ const cogsModuleTabs = [
   { id: "sales", label: "POS Sales Data" },
 ] as const;
 
-export function COGSAndPosSalesModule({ role, initialTab = "overview" }: {
+export function COGSAndPosSalesModule({ role, initialTab = "overview", scopeBranchName = "All Branches" }: {
   role: Role;
   initialTab?: "overview" | "sales";
+  scopeBranchName?: string;
 }) {
   const [activeTab, setActiveTab] = useState<"overview" | "sales">(initialTab);
 
@@ -474,7 +566,7 @@ export function COGSAndPosSalesModule({ role, initialTab = "overview" }: {
     <div>
       <ModuleTabSwitcher tabs={cogsModuleTabs} active={activeTab} onChange={setActiveTab} />
       <AnimatedTabPanel panelKey={activeTab}>
-        {activeTab === "overview" ? <COGSAnalysis role={role} /> : <SalesAnalysis role={role} />}
+        {activeTab === "overview" ? <COGSAnalysis role={role} scopeBranchName={scopeBranchName} /> : <SalesAnalysis role={role} scopeBranchName={scopeBranchName} />}
       </AnimatedTabPanel>
     </div>
   );

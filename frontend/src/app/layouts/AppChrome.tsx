@@ -2,11 +2,11 @@ import React, { lazy, Suspense, useEffect, useState } from "react";
 import {
   LayoutDashboard, Package, TrendingDown, FileText, Sparkles, Users, Building2, Settings,
   LogOut, Bell, Search, ChevronDown, ChevronRight, X, Coffee, MapPin, Shield,
-  ChevronLeft, BarChart2, ClipboardList, Moon, Sun, MessageCircle, Lock, Info, Inbox,
+  ChevronLeft, BarChart2, ClipboardList, Moon, Sun, MessageCircle, Lock, Info, Inbox, BookOpen, ShoppingCart,
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import type { Page, Role } from "../types/navigation";
-import { C, cn, getInitials, EmptyState, Btn, ModuleLoadingFallback } from "../components/ModuleUi";
+import { C, cn, getInitials, EmptyState, Btn, ModuleLoadingFallback, Select } from "../components/ModuleUi";
 
 const MessagesPanel = lazy(() => import("../modules/messages/MessagesPanel").then((module) => ({ default: module.MessagesPanel })));
 
@@ -23,11 +23,11 @@ export type AppNotification = {
   entityType: string | null;
 };
 
-const ownerNav = [
+export const ownerNav = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { id: "cogs-group", label: "COGS Analysis", icon: BarChart2, children: [
+  { id: "cogs-group", label: "Cost & Sales Management", icon: BarChart2, children: [
     { id: "cogs", label: "COGS & POS Sales" },
-    { id: "recipe-reference", label: "Standardized Recipes" },
+    { id: "recipe-reference", label: "Menu & Recipe Management" },
   ]},
   { id: "shrinkage-group", label: "Shrinkage Monitoring", icon: TrendingDown, children: [
     { id: "variance", label: "Variance & Discrepancies" },
@@ -35,7 +35,6 @@ const ownerNav = [
   ]},
   { id: "inventory", label: "Inventory Management", icon: Package },
   { id: "purchase-orders", label: "Purchase Orders", icon: ClipboardList },
-  { id: "menu", label: "Menu & Standard Recipes", icon: Coffee },
   { id: "predictive", label: "Predictive Analytics", icon: Sparkles },
   { id: "reports", label: "Reports", icon: FileText },
   { id: "staff-monitoring", label: "Staff Monitoring", icon: Users },
@@ -45,11 +44,11 @@ const ownerNav = [
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
-const managerNav = [
+export const managerNav = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { id: "cogs-group", label: "COGS Analysis", icon: BarChart2, children: [
+  { id: "cogs-group", label: "Cost & Sales Management", icon: BarChart2, children: [
     { id: "cogs", label: "COGS & POS Sales" },
-    { id: "recipe-reference", label: "Standardized Recipes" },
+    { id: "recipe-reference", label: "Menu & Recipe Management" },
   ]},
   { id: "shrinkage-group", label: "Shrinkage Monitoring", icon: TrendingDown, children: [
     { id: "variance", label: "Variance & Discrepancies" },
@@ -57,7 +56,6 @@ const managerNav = [
   ]},
   { id: "inventory", label: "Inventory Management", icon: Package },
   { id: "purchase-orders", label: "Purchase Orders", icon: ClipboardList },
-  { id: "menu", label: "Menu & Standard Recipes", icon: Coffee },
   { id: "predictive", label: "Predictive Analytics", icon: Sparkles },
   { id: "reports", label: "Reports", icon: FileText },
   { id: "staff-monitoring", label: "Staff Monitoring", icon: Users },
@@ -65,8 +63,8 @@ const managerNav = [
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
-export function Sidebar({ role, page, onNavigate, collapsed, onToggle }: {
-  role: Role; page: Page; onNavigate: (p: Page) => void; collapsed: boolean; onToggle: () => void;
+export function Sidebar({ role, page, onNavigate, onCloseMobile, collapsed, onToggle }: {
+  role: Role; page: Page; onNavigate: (p: Page) => void; onCloseMobile?: () => void; collapsed: boolean; onToggle: () => void;
 }) {
   const { user } = useAuth();
   const [expanded, setExpanded] = useState<string[]>([]);
@@ -79,6 +77,10 @@ export function Sidebar({ role, page, onNavigate, collapsed, onToggle }: {
 
   const toggleGroup = (id: string) => setExpanded(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]);
   const isActive = (id: string) => id === page;
+  const handleNav = (targetPage: Page) => {
+    onNavigate(targetPage);
+    onCloseMobile?.();
+  };
 
   return (
     <aside className="app-sidebar flex flex-col h-full relative z-10 flex-shrink-0"
@@ -94,15 +96,20 @@ export function Sidebar({ role, page, onNavigate, collapsed, onToggle }: {
             <div className="text-[10px] font-medium leading-tight mt-0.5" style={{ color: C.muted }}>COGS & Inventory Intel</div>
           </div>
         )}
+        <button onClick={onCloseMobile}
+          className="mobile-sidebar-close w-7 h-7 rounded-lg flex md:hidden items-center justify-center ml-auto flex-shrink-0"
+          style={{ color: C.muted }} aria-label="Close navigation">
+          <X size={16} />
+        </button>
         <button onClick={onToggle}
-          className="sidebar-collapse-button w-6 h-6 rounded-md flex items-center justify-center ml-auto flex-shrink-0"
+          className="sidebar-collapse-button hidden md:flex w-6 h-6 rounded-md items-center justify-center ml-auto flex-shrink-0"
           style={{ color: C.muted }} aria-label={collapsed ? "Expand navigation" : "Collapse navigation"}>
           {collapsed ? <ChevronRight size={13} /> : <ChevronLeft size={13} />}
         </button>
       </div>
 
       {/* Nav items */}
-      <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-0.5">
+      <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-1.5">
         {nav.map((item: any) => {
           if (item.id === "__div") return <div key={item.id} className="mx-2 my-2 border-t" style={{ borderColor: C.border }} />;
 
@@ -123,9 +130,9 @@ export function Sidebar({ role, page, onNavigate, collapsed, onToggle }: {
                   )}
                 </button>
                 {!collapsed && isExp && (
-                  <div className="ml-4 pl-3 border-l space-y-0.5 my-0.5" style={{ borderColor: C.border }}>
+                  <div className="ml-4 pl-3 border-l space-y-1 mt-2 mb-1" style={{ borderColor: C.border }}>
                     {item.children.map((child: any) => (
-                      <button key={child.id} onClick={() => onNavigate(child.id as Page)}
+                      <button key={child.id} onClick={() => handleNav(child.id as Page)}
                         className={`sidebar-nav-item sidebar-nav-child w-full text-left px-3 py-2 rounded-xl text-sm ${isActive(child.id) ? "is-active" : ""}`}
                         aria-current={isActive(child.id) ? "page" : undefined}>
                         {child.label}
@@ -139,7 +146,7 @@ export function Sidebar({ role, page, onNavigate, collapsed, onToggle }: {
 
           const active = isActive(item.id);
           return (
-            <button key={item.id} onClick={() => onNavigate(item.id as Page)}
+            <button key={item.id} onClick={() => handleNav(item.id as Page)}
               className={`sidebar-nav-item w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl text-sm font-medium relative ${active ? "is-active" : ""}`}
               title={collapsed ? item.label : undefined} aria-current={active ? "page" : undefined}>
               <item.icon size={16} className="flex-shrink-0" />
@@ -172,11 +179,11 @@ export function Sidebar({ role, page, onNavigate, collapsed, onToggle }: {
 // ─── Top Header ────────────────────────────────────────────────────────────────
 const pageTitles: Record<Page, string> = {
   login: "Login", dashboard: "Dashboard", sales: "COGS & POS Sales",
-  menu: "Menu & Standard Recipes",
+  menu: "Menu & Recipe Management",
   inventory: "Inventory Management", "physical-count": "Inventory Counts",
   "physical-count-history": "Inventory Counts",
   "expected-stock": "Inventory Counts", "stock-levels": "Inventory Overview",
-  "recipe-reference": "Standardized Recipes", "ingredient-usage": "Standardized Recipes",
+  "recipe-reference": "Menu & Recipe Management", "ingredient-usage": "Menu & Recipe Management",
   shrinkage: "Classification & Investigation", variance: "Variance & Discrepancies",
   "purchase-orders": "Purchase Orders", cogs: "COGS & POS Sales",
   predictive: "Predictive Analytics", reports: "Reports",
@@ -184,19 +191,34 @@ const pageTitles: Record<Page, string> = {
   users: "User Management", branches: "Branch Management", settings: "Settings", "master-data": "Inventory Master Data",
 };
 
-export function TopHeader({ role, page, branch, setBranch, unreadCount, messageUnreadCount, onMessages, onBell, onLogout, theme, onThemeToggle }: {
-  role: Role; page: Page; branch: string; setBranch: (b: string) => void;
+type HeaderBranch = { id: string; name: string };
+
+export function TopHeader({ role, page, branch, branches, setBranch, unreadCount, messageUnreadCount, onMessages, onBell, onNavigate, onSettings, onLogout, theme, onThemeToggle, onMenu }: {
+  onMenu?: () => void;
+  role: Role; page: Page; branch: string; branches: HeaderBranch[]; setBranch: (b: string) => void;
   unreadCount: number; messageUnreadCount: number; onMessages: () => void; onBell: () => void; onLogout: () => void;
+  onNavigate: (page: Page) => void; onSettings: () => void;
   theme: ThemeMode; onThemeToggle: () => void;
 }) {
   const { user } = useAuth();
   const [uMenuOpen, setUMenuOpen] = useState(false);
-  const branches = ["All Branches", "Gulod – Main", "Lipa", "Vermosa", "Tagaytay", "Evo"];
+  const [search, setSearch] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const nav = role === "owner" ? ownerNav : managerNav;
+  const searchItems = nav.flatMap((item: any) => item.children ?? (item.id === "__div" ? [] : [item]))
+    .filter((item: any) => item.label.toLowerCase().includes(search.trim().toLowerCase()));
+  const openSearchResult = (item: any) => {
+    setSearch(item.label);
+    setSearchOpen(false);
+    onNavigate(item.id as Page);
+  };
 
   return (
     <header className="app-header flex items-center px-6 border-b flex-shrink-0 relative z-10"
       style={{ height: C.headerHeight, background: C.surface, borderColor: C.border }}>
-      <div className="min-w-0">
+      <button type="button" className="mobile-nav-trigger" aria-label="Open navigation" onClick={onMenu}>☰</button>
+      <div className="header-page-title min-w-0">
         <div className="text-lg font-bold leading-tight" style={{ color: C.primary }}>{pageTitles[page]}</div>
         <div className="text-xs mt-0.5 hidden sm:block" style={{ color: C.secondary }}>
           {page === "dashboard"
@@ -207,27 +229,36 @@ export function TopHeader({ role, page, branch, setBranch, unreadCount, messageU
       <div className="flex-1" />
 
       {/* Global search */}
-      <div className="relative mr-2">
+      <form className="header-global-search relative mr-2" onSubmit={(event) => { event.preventDefault(); if (searchItems[0]) openSearchResult(searchItems[0]); }}>
         <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: C.muted }} />
         <input className="pl-8 pr-3 py-1.5 text-sm rounded-lg border outline-none transition-colors"
           style={{ borderColor: C.border, background: C.mainBg, width: 196, color: C.primary }}
           placeholder="Search…"
+          value={search}
+          onChange={(event) => { setSearch(event.target.value); setSearchOpen(true); }}
           onFocus={e => (e.target.style.borderColor = C.maroon)}
           onBlur={e => (e.target.style.borderColor = C.border)} />
-      </div>
+        {searchOpen && search.trim() && (
+          <>
+            <button type="button" className="fixed inset-0 z-20 cursor-default" aria-label="Close search" onClick={() => setSearchOpen(false)} />
+            <div className="app-popover absolute left-0 top-full mt-2 w-72 rounded-xl border shadow-xl py-1.5 z-30" style={{ background: C.surface, borderColor: C.border }}>
+              {searchItems.length ? searchItems.slice(0, 7).map((item: any) => (
+                <button type="button" key={item.id} onClick={() => openSearchResult(item)} className="w-full px-3 py-2.5 flex items-center gap-2 text-left text-sm hover:bg-[var(--app-surface-muted)]">
+                  <Search size={13} style={{ color: C.maroon }} /><span>{item.label}</span>
+                </button>
+              )) : <p className="px-4 py-3 text-sm" style={{ color: C.muted }}>No matching module found.</p>}
+            </div>
+          </>
+        )}
+      </form>
 
       {/* Branch selector */}
       {role === "owner" ? (
-        <div className="relative mr-2">
-          <select value={branch} onChange={e => setBranch(e.target.value)}
-            className="appearance-none pl-3 pr-8 py-1.5 text-sm rounded-lg border outline-none font-medium cursor-pointer"
-            style={{ borderColor: C.border, background: C.mainBg, color: C.primary }}>
-            {branches.map(b => <option key={b}>{b}</option>)}
-          </select>
-          <ChevronDown size={12} className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: C.muted }} />
+        <div className="header-branch-selector mr-2">
+          <Select value={branch} onChange={setBranch} small options={[{ value: "ALL", label: "All Branches" }, ...branches.map((item) => ({ value: item.id, label: item.name }))]}/>
         </div>
       ) : (
-        <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border mr-2 text-sm font-medium"
+        <div className="header-branch-selector flex items-center gap-1.5 px-3 py-1.5 rounded-lg border mr-2 text-sm font-medium"
           style={{ borderColor: C.border, background: C.mainBg, color: C.primary }}>
           <MapPin size={12} style={{ color: C.maroon }} />
           <span>{user?.branch?.name ?? "Assigned Branch"}</span>
@@ -268,8 +299,10 @@ export function TopHeader({ role, page, branch, setBranch, unreadCount, messageU
       </button>
 
       {/* Help */}
-      <button className="w-9 h-9 rounded-lg flex items-center justify-center mr-2 transition-colors"
+      <button type="button" className="header-info-button w-9 h-9 rounded-lg flex items-center justify-center mr-2 transition-colors"
         style={{ color: C.secondary }}
+        onClick={() => setHelpOpen(true)}
+        aria-label="Open system information" title="System information"
         onMouseEnter={e => (e.currentTarget.style.background = C.grayBg)}
         onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
         <Info size={17} />
@@ -286,7 +319,7 @@ export function TopHeader({ role, page, branch, setBranch, unreadCount, messageU
             style={{ background: C.maroon }}>
             {`${user?.firstName[0] ?? ""}${user?.lastName[0] ?? ""}`.toUpperCase()}
           </div>
-          <span className="text-sm font-medium">{user?.firstName} {user?.lastName?.[0]}.</span>
+          <span className="header-profile-name text-sm font-medium">{user?.firstName} {user?.lastName?.[0]}.</span>
           <ChevronDown size={12} style={{ color: C.muted }} />
         </button>
         {uMenuOpen && (
@@ -298,6 +331,11 @@ export function TopHeader({ role, page, branch, setBranch, unreadCount, messageU
                 <div className="text-xs mt-0.5" style={{ color: C.muted }}>{user?.position}{user?.branch ? ` · ${user.branch.name}` : ""}</div>
               </div>
               <button className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 transition-colors"
+                style={{ color: C.primary }}
+                onClick={() => { setUMenuOpen(false); onSettings(); }}>
+                <Settings size={13} /> Profile &amp; Settings
+              </button>
+              <button className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 transition-colors"
                 style={{ color: C.red }}
                 onMouseEnter={e => (e.currentTarget.style.background = C.redBg)}
                 onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
@@ -308,6 +346,22 @@ export function TopHeader({ role, page, branch, setBranch, unreadCount, messageU
           </>
         )}
       </div>
+      {helpOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.45)" }} onMouseDown={(event) => { if (event.target === event.currentTarget) setHelpOpen(false); }}>
+          <div className="w-full max-w-md rounded-2xl border p-6 shadow-2xl" style={{ background: C.surface, borderColor: C.border }}>
+            <div className="flex items-start justify-between gap-4">
+              <div><h2 className="text-lg font-bold">Libro Espresso</h2><p className="text-sm mt-1" style={{ color: C.secondary }}>COGS, inventory, shrinkage, and branch operations platform.</p></div>
+              <button onClick={() => setHelpOpen(false)} className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: C.grayBg }} aria-label="Close information"><X size={15}/></button>
+            </div>
+            <div className="mt-5 rounded-xl p-4" style={{ background: C.mainBg }}>
+              <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: C.muted }}>Current access</p>
+              <p className="font-semibold mt-1">{role === "owner" ? "Owner · All branches" : `Manager · ${user?.branch?.name ?? "Assigned branch"}`}</p>
+              <p className="text-xs mt-2 leading-relaxed" style={{ color: C.secondary }}>Use Search to open a module, the branch selector to scope Owner records, Messages for internal communication, and Notifications for operational updates.</p>
+            </div>
+            <button onClick={() => { setHelpOpen(false); onSettings(); }} className="mt-5 w-full py-2.5 rounded-xl text-sm font-semibold text-white" style={{ background: C.maroon }}>Open Profile &amp; Settings</button>
+          </div>
+        </div>
+      )}
     </header>
   );
 }
@@ -319,43 +373,40 @@ const notifIcons: Record<string, { Icon: React.ElementType; bg: string; color: s
   shrink: { Icon: TrendingDown, bg: C.redBg, color: C.red },
   ai: { Icon: Sparkles, bg: C.softMaroonBg, color: C.maroon },
   message: { Icon: MessageCircle, bg: C.softMaroonBg, color: C.maroon },
+  menu: { Icon: BookOpen, bg: C.softMaroonBg, color: C.maroon },
+  sales: { Icon: ShoppingCart, bg: C.softMaroonBg, color: C.maroon },
 };
 
 export function NotifDrawer({ open, onClose, notifs, markAllRead, onOpenNotification }: {
   open: boolean; onClose: () => void; notifs: AppNotification[]; markAllRead: () => void;
   onOpenNotification: (notification: AppNotification) => void;
 }) {
+  if (!open) return null;
   return (
-    <>
-      {open && <div className="fixed inset-0 z-40" onClick={onClose} />}
-      <div className="app-drawer fixed right-0 top-0 h-full z-50 flex flex-col bg-white border-l"
-        style={{ width: 384, borderColor: C.border, boxShadow: "-4px 0 24px rgba(0,0,0,0.08)", transform: open ? "translateX(0)" : "translateX(100%)", transition: "transform 0.2s ease" }}>
-        <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: C.border }}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 backdrop-blur-sm" style={{ background:"rgba(24,10,14,.55)" }} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section role="dialog" aria-modal="true" aria-label="Notifications" className="w-full max-w-lg max-h-[82vh] overflow-hidden rounded-3xl border flex flex-col"
+        style={{ background:"var(--app-surface)",borderColor:"var(--app-border)",boxShadow:"0 28px 80px rgba(43,14,22,.28)" }}>
+        <div className="flex items-center justify-between px-5 sm:px-6 py-5 border-b" style={{ borderColor:"var(--app-border)",background:"linear-gradient(135deg,var(--app-primary-faint),var(--app-surface))" }}>
           <div>
-            <h3 className="font-semibold" style={{ color: C.primary }}>Notifications</h3>
+            <div className="flex items-center gap-2.5"><span className="w-9 h-9 rounded-xl flex items-center justify-center text-white" style={{background:C.maroon}}><Bell size={16}/></span><h3 className="font-bold" style={{color:C.primary}}>Notifications</h3></div>
             <p className="text-xs mt-0.5" style={{ color: C.secondary }}>{notifs.filter(n => !n.read).length} unread</p>
           </div>
           <div className="flex items-center gap-2">
-            <button className="text-xs font-semibold" style={{ color: C.maroon }} onClick={markAllRead}>Mark all read</button>
-            <button onClick={onClose} className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors"
-              style={{ color: C.secondary }}
-              onMouseEnter={e => (e.currentTarget.style.background = C.grayBg)}
-              onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
-              <X size={14} />
+            {notifs.some(n => !n.read) && <button className="rounded-xl px-3 py-2 text-xs font-semibold" style={{color:C.maroon,background:"var(--app-primary-subtle)"}} onClick={markAllRead}>Mark all read</button>}
+            <button onClick={onClose} className="w-9 h-9 rounded-xl flex items-center justify-center" style={{color:C.secondary,background:"var(--app-surface-muted)"}} aria-label="Close notifications">
+              <X size={16} />
             </button>
           </div>
         </div>
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-2">
           {notifs.length === 0 ? (
             <EmptyState icon={Inbox} title="No notifications" body="All monitored items are currently within configured thresholds." />
           ) : notifs.map(n => {
             const ni = notifIcons[n.icon] || { Icon: Bell, bg: C.grayBg, color: C.secondary };
             return (
-              <div key={n.id} className="flex gap-3 px-5 py-4 border-b cursor-pointer transition-colors"
-                style={{ borderColor: C.border, background: !n.read ? C.veryLightMaroon : C.surface }}
-                onClick={() => onOpenNotification(n)}
-                onMouseEnter={e => (e.currentTarget.style.background = C.mainBg)}
-                onMouseLeave={e => (e.currentTarget.style.background = !n.read ? C.veryLightMaroon : C.surface)}>
+              <button type="button" key={n.id} className="w-full text-left flex gap-3.5 px-4 py-3.5 rounded-2xl border cursor-pointer transition-all hover:-translate-y-0.5"
+                style={{borderColor:"var(--app-border)",background:!n.read?"var(--app-primary-faint)":"var(--app-surface-elevated)",boxShadow:"0 5px 16px rgba(43,14,22,.06)"}}
+                onClick={() => onOpenNotification(n)}>
                 <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: ni.bg }}>
                   <ni.Icon size={15} style={{ color: ni.color }} />
                 </div>
@@ -368,12 +419,12 @@ export function NotifDrawer({ open, onClose, notifs, markAllRead, onOpenNotifica
                   <p className="text-xs mt-1 leading-relaxed" style={{ color: C.secondary }}>{n.body}</p>
                   <p className="text-xs mt-1.5" style={{ color: C.muted }}>{n.time}</p>
                 </div>
-              </div>
+              </button>
             );
           })}
         </div>
-      </div>
-    </>
+      </section>
+    </div>
   );
 }
 

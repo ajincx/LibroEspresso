@@ -6,8 +6,8 @@ export const pagePaths = {
   "physical-count-history": "/inventory/physical-count-history",
   "expected-stock": "/inventory/expected-stock",
   "stock-levels": "/inventory/stock-levels",
-  "recipe-reference": "/cogs/standardized-recipes",
-  "ingredient-usage": "/cogs/ingredient-usage",
+  "recipe-reference": "/cogs/menu-recipes",
+  "ingredient-usage": "/cogs/menu-recipes/ingredient-usage",
   shrinkage: "/shrinkage",
   variance: "/inventory/variance", "purchase-orders": "/purchase-orders",
   cogs: "/cogs", predictive: "/predictive", reports: "/reports",
@@ -20,6 +20,7 @@ export const ownerOnlyPages = new Set<AppPage>(["users", "branches", "master-dat
 export const managerOnlyPages = new Set<AppPage>(["physical-count"]);
 
 export function isPageAllowed(page: AppPage, role: UserRole) {
+  if (role === "STAFF") return page === "dashboard" || page === "settings";
   return role === "OWNER" ? !managerOnlyPages.has(page) : !ownerOnlyPages.has(page);
 }
 

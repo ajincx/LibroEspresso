@@ -1,19 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
-import { BookOpen, Check, ChefHat, Edit3, Eye, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { BookOpen, Boxes, Check, ChefHat, Edit3, Eye, PackagePlus, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "../../contexts/AuthContext";
 import { masterDataService } from "../../services/masterData.service";
 import type { InventoryItem, MenuCategory, MenuProduct, RecordStatus } from "../../types/masterData";
+import { Btn, SearchInput, Select, StatusBadge, TableCard, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
+import { formatAppCurrency } from "../../utils/appPreferences";
+import { compatibleUnits, units } from "../../utils/units";
 
 type RecipeRow = { key: string; inventoryItemId: string; quantity: number; unit: string };
-type ProductForm = { code: string; name: string; categoryId: string; sellingPrice: number; description: string; status: RecordStatus; recipeName: string; yieldQuantity: number; items: RecipeRow[] };
+type ProductForm = { name: string; categoryId: string; sellingPrice: number | ""; description: string; status: RecordStatus; yieldQuantity: number; effectiveFrom:string; changeReason:string; items: RecipeRow[] };
+type IngredientForm = { name: string; categoryChoice: string; otherCategory: string; unit: string; unitCost: number | ""; reorderLevel: number | "" };
 const newRow = (): RecipeRow => ({ key: crypto.randomUUID(), inventoryItemId: "", quantity: 1, unit: "" });
-const emptyForm = (): ProductForm => ({ code: "", name: "", categoryId: "", sellingPrice: 0, description: "", status: "ACTIVE", recipeName: "", yieldQuantity: 1, items: [newRow()] });
-const money = (value: number) => `₱${Number(value).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const localToday=()=>{const now=new Date();return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;};
+const emptyForm = (): ProductForm => ({ name: "", categoryId: "", sellingPrice: "", description: "", status: "ACTIVE", yieldQuantity: 1, effectiveFrom:"", changeReason:"", items: [newRow()] });
+const emptyIngredientForm = (): IngredientForm => ({ name: "", categoryChoice: "", otherCategory: "", unit: "", unitCost: "", reorderLevel: "" });
+const money = formatAppCurrency;
 
-export function MenuRecipesPage({ readOnly = false }: { readOnly?: boolean }) {
+export function MenuRecipesPage() {
   const { user } = useAuth();
-  const manager = user?.role === "BRANCH_MANAGER" && !readOnly;
+  const manager = user?.role === "BRANCH_MANAGER";
+  const owner = user?.role === "OWNER";
   const [products, setProducts] = useState<MenuProduct[]>([]);
   const [categories, setCategories] = useState<MenuCategory[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
@@ -26,6 +33,10 @@ export function MenuRecipesPage({ readOnly = false }: { readOnly?: boolean }) {
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [actionProductId, setActionProductId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<MenuProduct | null>(null);
+  const [reviewTarget, setReviewTarget] = useState<MenuProduct | null>(null);
+  const [reviewComment, setReviewComment] = useState("");
   const [error, setError] = useState("");
 
   const load = async () => {
@@ -47,55 +58,359 @@ export function MenuRecipesPage({ readOnly = false }: { readOnly?: boolean }) {
   const openCreate = () => { setEditing(null); setForm(emptyForm()); setFormErrors({}); setProductModal(true); };
   const openEdit = (product: MenuProduct) => {
     setEditing(product); setFormErrors({});
-    setForm({ code: product.code, name: product.name, categoryId: product.categoryId ?? categories.find((item) => item.name === product.category)?.id ?? "", sellingPrice: product.sellingPrice, description: product.description ?? "", status: product.status, recipeName: product.recipeName ?? `${product.name} Standard Recipe`, yieldQuantity: product.yieldQuantity ?? 1, items: product.ingredients.map((item) => ({ key: item.id, inventoryItemId: item.inventoryItemId, quantity: item.quantity, unit: item.unit })) });
+    setForm({ name: product.name, categoryId: product.categoryId ?? categories.find((item) => item.name === product.category)?.id ?? "", sellingPrice: product.sellingPrice, description: product.description ?? "", status: product.status, yieldQuantity: product.yieldQuantity ?? 1, effectiveFrom:product.recipeHasHistoricalSales?localToday():"",changeReason:"", items: product.ingredients.map((item) => ({ key: item.id, inventoryItemId: item.inventoryItemId, quantity: item.quantity, unit: item.unit })) });
     setProductModal(true);
   };
   const validate = () => {
     const errors: Record<string, string> = {};
     if (!form.name.trim()) errors.name = "Product name is required.";
-    if (!form.code.trim()) errors.code = "Product code is required.";
     if (!form.categoryId) errors.categoryId = "Category is required.";
-    if (!(form.sellingPrice > 0)) errors.sellingPrice = "Selling price must be greater than zero.";
-    if (!form.recipeName.trim()) errors.recipeName = "Recipe name is required.";
+    if (form.sellingPrice === "" || !(Number(form.sellingPrice) > 0)) errors.sellingPrice = "Selling price must be greater than zero.";
     if (!form.items.length) errors.items = "Add at least one ingredient.";
     if (form.items.some((item) => !item.inventoryItemId || !(item.quantity > 0) || !item.unit)) errors.items = "Complete every ingredient row with a positive quantity.";
     if (new Set(form.items.map((item) => item.inventoryItemId)).size !== form.items.length) errors.items = "Each inventory ingredient may only appear once.";
+    if(editing?.recipeHasHistoricalSales&&!form.effectiveFrom)errors.effectiveFrom="Choose when the new recipe version becomes effective.";
     setFormErrors(errors); return Object.keys(errors).length === 0;
   };
   const saveProduct = async () => {
     if (!validate()) return;
     setSaving(true);
-    const input = { code: form.code, name: form.name, categoryId: form.categoryId, sellingPrice: form.sellingPrice, description: form.description, status: form.status, recipe: { name: form.recipeName, yieldQuantity: form.yieldQuantity, items: form.items.map(({ inventoryItemId, quantity, unit }) => ({ inventoryItemId, quantity, unit })) } };
+    const input = { name: form.name, categoryId: form.categoryId, sellingPrice: Number(form.sellingPrice), description: form.description, status: form.status, recipe: { yieldQuantity: form.yieldQuantity, ...(editing?.recipeHasHistoricalSales?{effectiveFrom:form.effectiveFrom,changeReason:form.changeReason}:{}), items: form.items.map(({ inventoryItemId, quantity, unit }) => ({ inventoryItemId, quantity, unit })) } };
     try {
       if (editing) await masterDataService.updateMenuProduct(editing.id, input); else await masterDataService.createMenuProduct(input);
-      toast.success(editing ? "Menu product and recipe updated" : "Menu product and recipe created"); setProductModal(false); await load();
+      const message = editing
+        ? (manager ? "Changes submitted for Owner approval" : editing.recipeHasHistoricalSales?"New recipe version saved; historical COGS was preserved":"Menu product and recipe updated")
+        : (manager ? "Product submitted for Owner approval" : "Product sent to Branch Managers for review");
+      toast.success(message); setProductModal(false); await load();
     } catch (reason) { toast.error(reason instanceof Error ? reason.message : "Unable to save product"); }
     finally { setSaving(false); }
   };
 
+  const changeProductStatus = async (product: MenuProduct) => {
+    const nextStatus: RecordStatus = product.branchMenuStatus === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+    setActionProductId(product.id);
+    try {
+      await masterDataService.setMenuProductStatus(product.id, nextStatus);
+      toast.success(`${product.name} is now ${nextStatus === "ACTIVE" ? "active" : "inactive"}`);
+      await load();
+    } catch (reason) {
+      toast.error(reason instanceof Error ? reason.message : "Unable to update product status");
+    } finally {
+      setActionProductId(null);
+    }
+  };
+
+  const deleteProduct = async () => {
+    if (!deleteTarget) return;
+    setActionProductId(deleteTarget.id);
+    try {
+      await masterDataService.deleteMenuProduct(deleteTarget.id);
+      toast.success(`${deleteTarget.name} and its recipe were deleted`);
+      setDeleteTarget(null);
+      setSelected(null);
+      await load();
+    } catch (reason) {
+      toast.error(reason instanceof Error ? reason.message : "Unable to delete product");
+    } finally {
+      setActionProductId(null);
+    }
+  };
+
+  const reviewProduct = async (product: MenuProduct, decision: "APPROVE" | "REJECT", comment = "") => {
+    setActionProductId(product.id);
+    try {
+      if (owner) await masterDataService.reviewManagerProduct(product.id, decision, comment);
+      else await masterDataService.reviewOwnerProductForBranch(product.id, decision);
+      toast.success(`${product.name} ${decision === "APPROVE" ? "approved" : "rejected"}`);
+      setSelected(null);
+      setReviewTarget(null);
+      setReviewComment("");
+      await load();
+    } catch (reason) {
+      toast.error(reason instanceof Error ? reason.message : "Unable to review product");
+    } finally {
+      setActionProductId(null);
+    }
+  };
+
   return <div className="p-4 md:p-6 space-y-5">
-    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4"><div><h1 className="text-2xl font-bold" style={{ color: "var(--app-text)" }}>{readOnly ? "Standardized Recipe Reference" : "Menu & Standard Recipes"}</h1><p className="text-sm mt-1" style={{ color: "var(--app-text-muted)" }}>{readOnly ? "Read-only recipe versions, ingredient quantities, and calculated recipe costs used by COGS." : "Products, recipe costs, and inventory-linked standard ingredients."}</p></div><div className="flex gap-2 flex-wrap"><button onClick={() => void load()} className="inline-flex items-center gap-2 px-3 py-2.5 rounded-xl border text-sm font-semibold" style={{ borderColor: "var(--app-border)", background: "var(--app-surface)" }}><RefreshCw size={14} />Refresh</button>{manager && <button onClick={openCreate} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white" style={{ background: "var(--app-primary)" }}><Plus size={16} />Add Product</button>}</div></div>
+    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4"><div><h1 className="text-2xl font-bold" style={{ color: "var(--app-text)" }}>Menu &amp; Recipe Management</h1><p className="text-sm mt-1" style={{ color: "var(--app-text-muted)" }}>{owner ? "Create global products and monitor each branch's availability decision." : "Manage branch product proposals and review global products for your branch."}</p></div><div className="flex gap-2 flex-wrap"><button onClick={() => void load()} className="inline-flex items-center gap-2 px-3 py-2.5 rounded-xl border text-sm font-semibold" style={{ borderColor: "var(--app-border)", background: "var(--app-surface)" }}><RefreshCw size={14} />Refresh</button>{(manager || owner) && <button onClick={openCreate} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white" style={{ background: "var(--app-primary)" }}><Plus size={16} />Add Product</button>}</div></div>
     <div className="flex items-center gap-2.5 px-4 py-3 rounded-xl border" style={{ borderColor: "var(--app-border)", background: "var(--app-primary-faint)", color: "var(--app-text-muted)" }}><BookOpen size={15} style={{ color: "var(--app-primary)" }} /><p className="text-sm">POS quantity sold × the saved standard recipe determines expected inventory consumption.</p></div>
-    <div className="rounded-2xl border overflow-hidden" style={{ borderColor: "var(--app-border)", background: "var(--app-surface)" }}>
-      <div className="p-4 border-b space-y-3" style={{ borderColor: "var(--app-border)" }}><div className="flex flex-col md:flex-row gap-3"><div className="relative flex-1"><Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--app-text-faint)" }} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search menu products..." className="w-full pl-9 pr-3 py-2.5 rounded-xl border text-sm outline-none" style={{ borderColor: "var(--app-border)", background: "var(--app-surface-elevated)", color: "var(--app-text)" }} /></div><select value={category} onChange={(event) => setCategory(event.target.value)} className="px-3 py-2.5 rounded-xl border text-sm md:w-52" style={{ borderColor: "var(--app-border)", background: "var(--app-surface-elevated)" }}><option>All</option>{visibleCategories.map((item) => <option key={item.id}>{item.name}</option>)}</select></div><div className="flex gap-2 overflow-x-auto pb-1">{["All", ...visibleCategories.map((item) => item.name)].map((name) => <button key={name} onClick={() => setCategory(name)} className="px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap border" style={{ borderColor: category === name ? "var(--app-primary)" : "var(--app-border)", color: category === name ? "var(--app-primary)" : "var(--app-text-muted)", background: category === name ? "var(--app-primary-subtle)" : "transparent" }}>{name}</button>)}</div></div>
-      {loading ? <div className="p-16 text-center text-sm" style={{ color: "var(--app-text-muted)" }}>Loading menu products…</div> : error ? <div className="p-16 text-center"><p className="text-sm mb-3" style={{ color: "var(--app-danger)" }}>{error}</p><button onClick={() => void load()} style={{ color: "var(--app-primary)" }}>Retry</button></div> : filtered.length === 0 ? <div className="p-16 text-center"><ChefHat className="mx-auto mb-3" style={{ color: "var(--app-text-faint)" }} /><p className="font-semibold">No menu products found.</p></div> : <ProductTable products={filtered} canEdit={manager} onView={setSelected} onEdit={openEdit} />}
-    </div>
-    {selected && <ProductDetails product={selected} canEdit={manager} onClose={() => setSelected(null)} onEdit={() => { setSelected(null); openEdit(selected); }} />}
-    {productModal && <ProductEditor editing={editing} form={form} setForm={setForm} errors={formErrors} categories={categories} inventory={inventory} saving={saving} onClose={() => setProductModal(false)} onSave={() => void saveProduct()} />}
+    <TableCard
+      title="Menu Products & Recipes"
+      subtitle={owner ? "Master recipe specifications and standard consumption yields" : "Branch product catalog and availability status"}
+      badge={<span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-[var(--app-primary-faint)] text-[var(--app-primary)]">{filtered.length} products</span>}
+      toolbar={
+        <div className="flex flex-col md:flex-row gap-3 w-full">
+          <SearchInput placeholder="Search menu products..." width={280} value={search} onChange={setSearch} />
+          <Select className="md:w-52" value={category} onChange={setCategory} options={["All", ...visibleCategories.map((item) => item.name)]}/>
+          <div className="flex gap-1.5 overflow-x-auto pb-1 md:ml-auto">
+            {["All", ...visibleCategories.map((item) => item.name)].map((name) => (
+              <button
+                key={name}
+                type="button"
+                onClick={() => setCategory(name)}
+                className="px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap transition-colors"
+                style={{
+                  borderColor: category === name ? "var(--app-primary)" : "var(--app-border)",
+                  borderWidth: "1px",
+                  color: category === name ? "#fff" : "var(--app-text-muted)",
+                  background: category === name ? "var(--app-primary)" : "transparent",
+                }}
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+        </div>
+      }
+    >
+      {loading ? (
+        <div className="p-16 text-center text-sm text-[var(--app-text-muted)]">Loading menu products…</div>
+      ) : error ? (
+        <div className="p-16 text-center">
+          <p className="text-sm mb-3 text-[var(--app-danger)]">{error}</p>
+          <Btn variant="outline" size="sm" onClick={() => void load()}>Retry</Btn>
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="p-16 text-center">
+          <ChefHat className="mx-auto mb-3 text-[var(--app-text-muted)]" size={32} />
+          <p className="font-semibold text-sm text-[var(--app-text)]">No menu products found.</p>
+          <p className="text-xs text-[var(--app-text-muted)] mt-1">Try selecting another category or clear the search query.</p>
+        </div>
+      ) : (
+        <ProductTable
+          products={filtered}
+          owner={owner}
+          manager={manager}
+          managerBranchId={user?.branchId ?? null}
+          actionProductId={actionProductId}
+          onView={setSelected}
+          onEdit={openEdit}
+          onToggleStatus={(product) => void changeProductStatus(product)}
+          onDelete={setDeleteTarget}
+          onOwnerReview={(product) => { setReviewTarget(product); setReviewComment(""); }}
+          onManagerReview={(product, decision) => void reviewProduct(product, decision)}
+        />
+      )}
+    </TableCard>
+    {selected && <ProductDetails product={selected} owner={owner} canEdit={(owner && selected.productScope === "GLOBAL") || (manager && selected.productScope === "BRANCH" && selected.originBranchId === user?.branchId)} onClose={() => setSelected(null)} onEdit={() => { setSelected(null); openEdit(selected); }} />}
+    {reviewTarget && <ProductReviewModal product={reviewTarget} comment={reviewComment} setComment={setReviewComment} saving={actionProductId === reviewTarget.id} onClose={() => { if (!actionProductId) { setReviewTarget(null); setReviewComment(""); } }} onDecision={(decision) => void reviewProduct(reviewTarget, decision, reviewComment)} />}
+    {productModal && <ProductEditor editing={editing} form={form} setForm={setForm} errors={formErrors} categories={categories} inventory={owner ? inventory.filter((item) => item.itemScope === "GLOBAL") : inventory} canCreateIngredient={owner || manager} saving={saving} onInventoryCreated={(item) => setInventory((current) => [...current, item].sort((a, b) => a.name.localeCompare(b.name)))} onClose={() => setProductModal(false)} onSave={() => void saveProduct()} />}
+    {deleteTarget && <Modal onClose={() => actionProductId ? undefined : setDeleteTarget(null)} width="max-w-md"><div className="w-12 h-12 rounded-xl flex items-center justify-center mb-4" style={{ background:"var(--app-danger-bg)",color:"var(--app-danger)" }}><Trash2 size={21}/></div><h2 className="text-xl font-bold">Delete {deleteTarget.name}?</h2><p className="text-sm mt-2 leading-relaxed" style={{ color:"var(--app-text-muted)" }}>This permanently deletes the product and its standard recipe. Products with POS sales history cannot be deleted and should be set to Inactive instead.</p><div className="flex justify-end gap-3 mt-6"><button disabled={Boolean(actionProductId)} onClick={() => setDeleteTarget(null)} className="px-4 py-2.5 rounded-xl border text-sm font-semibold disabled:opacity-50" style={{ borderColor:"var(--app-border)" }}>Cancel</button><button disabled={Boolean(actionProductId)} onClick={() => void deleteProduct()} className="px-4 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-50" style={{ background:"var(--app-danger)" }}>{actionProductId ? "Deleting…" : "Delete Product"}</button></div></Modal>}
   </div>;
 }
 
-function ProductTable({ products, canEdit, onView, onEdit }: { products:MenuProduct[];canEdit:boolean;onView:(product:MenuProduct)=>void;onEdit:(product:MenuProduct)=>void }) { return <div className="overflow-x-auto"><table className="data-table w-full text-sm"><thead style={{ background: "var(--app-bg)" }}><tr>{["Product Code","Product Name","Category","Selling Price","Ingredients","Recipe Cost","Margin","Status","Actions"].map((heading) => <th key={heading} className="px-4 py-3 text-left text-xs whitespace-nowrap" style={{ color: "var(--app-text-muted)" }}>{heading}</th>)}</tr></thead><tbody>{products.map((product) => <tr key={product.id} onClick={() => onView(product)} className="border-t cursor-pointer" style={{ borderColor: "var(--app-border)" }}><td className="px-4 py-3 font-mono text-xs" style={{ color: "var(--app-primary)" }}>{product.code}</td><td className="px-4 py-3"><div className="font-semibold">{product.name}</div><div className="text-[11px] max-w-52 truncate" style={{ color: "var(--app-text-faint)" }}>{product.description || "No description"}</div></td><td className="px-4 py-3">{product.category}</td><td className="px-4 py-3 font-semibold">{money(product.sellingPrice)}</td><td className="px-4 py-3">{product.ingredients.length} Ingredient{product.ingredients.length === 1 ? "" : "s"}</td><td className="px-4 py-3">{money(product.recipeCost)}</td><td className="px-4 py-3"><div className="font-semibold" style={{ color: product.marginRate >= 0 ? "var(--app-success)" : "var(--app-danger)" }}>{product.marginRate.toFixed(1)}%</div><div className="text-[10px]" style={{ color: "var(--app-text-faint)" }}>{money(product.marginAmount)}</div></td><td className="px-4 py-3"><StatusBadge status={product.status} /></td><td className="px-4 py-3"><div className="flex gap-2"><button title="View product" onClick={(event) => { event.stopPropagation(); onView(product); }} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold" style={{ borderColor: "var(--app-border)", color: "var(--app-text-muted)" }}><Eye size={13} />View</button>{canEdit && <button title="Edit product and recipe" onClick={(event) => { event.stopPropagation(); onEdit(product); }} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold" style={{ borderColor: "var(--app-primary)", color: "var(--app-primary)", background: "var(--app-primary-faint)" }}><Edit3 size={13} />Edit</button>}</div></td></tr>)}</tbody></table></div>; }
-
-function ProductDetails({ product, canEdit, onClose, onEdit }: { product: MenuProduct; canEdit: boolean; onClose: () => void; onEdit: () => void }) { return <Modal onClose={onClose} width="max-w-2xl"><div className="flex justify-between gap-4"><div><h2 className="text-xl font-bold">{product.name}</h2><p className="text-xs font-mono mt-1" style={{ color: "var(--app-primary)" }}>{product.code}</p></div><button onClick={onClose}><X size={18} /></button></div><p className="text-sm mt-4" style={{ color: "var(--app-text-muted)" }}>{product.description || "No product description."}</p><div className="grid grid-cols-2 md:grid-cols-4 gap-3 my-5">{[["Selling Price",money(product.sellingPrice)],["Recipe Cost",money(product.recipeCost)],["Margin",money(product.marginAmount)],["Margin Rate",`${product.marginRate.toFixed(1)}%`]].map(([label,value]) => <div key={label} className="p-3 rounded-xl" style={{ background: "var(--app-bg)" }}><div className="text-[10px] uppercase" style={{ color: "var(--app-text-faint)" }}>{label}</div><div className="font-bold mt-1">{value}</div></div>)}</div><div className="flex gap-2 mb-4"><span className="px-2.5 py-1 rounded-full text-xs" style={{ background: "var(--app-primary-subtle)", color: "var(--app-primary)" }}>{product.category}</span><StatusBadge status={product.status} /></div><h3 className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color: "var(--app-text-muted)" }}>Standard Recipe · Yield {product.yieldQuantity ?? 1}</h3><div className="rounded-xl border overflow-hidden" style={{ borderColor: "var(--app-border)" }}>{product.ingredients.map((item) => <div key={item.id} className="flex items-center gap-3 px-4 py-3 border-b last:border-0" style={{ borderColor: "var(--app-border)" }}><div className="flex-1"><div className="font-semibold text-sm">{item.name}</div><div className="font-mono text-[10px]" style={{ color: "var(--app-text-faint)" }}>{item.sku}</div></div><strong className="text-sm">{item.quantity} {item.unit}</strong><span className="text-xs w-20 text-right" style={{ color: "var(--app-text-muted)" }}>{money(item.ingredientCost)}</span></div>)}</div>{canEdit && <button onClick={onEdit} className="w-full mt-5 py-2.5 rounded-xl text-white font-semibold" style={{ background: "var(--app-primary)" }}>Edit Product &amp; Recipe</button>}</Modal>; }
-
-function ProductEditor({ editing, form, setForm, errors, categories, inventory, saving, onClose, onSave }: { editing: MenuProduct|null; form: ProductForm; setForm: React.Dispatch<React.SetStateAction<ProductForm>>; errors: Record<string,string>; categories: MenuCategory[]; inventory: InventoryItem[]; saving:boolean; onClose:()=>void; onSave:()=>void }) {
-  const updateRow = (key: string, changes: Partial<RecipeRow>) => setForm((current) => ({ ...current, items: current.items.map((item) => item.key === key ? { ...item, ...changes } : item) }));
-  return <Modal onClose={onClose} width="max-w-4xl"><div className="flex justify-between mb-5"><div><h2 className="text-xl font-bold">{editing ? "Edit Menu Product" : "Add Menu Product"}</h2><p className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>The product and complete standard recipe are saved in one transaction.</p></div><button onClick={onClose}><X size={18} /></button></div><h3 className="text-xs font-bold uppercase tracking-wider mb-3" style={{ color: "var(--app-primary)" }}>Product Information</h3><div className="grid md:grid-cols-2 gap-4"><Field label="Product Name *" value={form.name} error={errors.name} onChange={(value) => setForm((current) => ({ ...current, name:value, recipeName: current.recipeName || `${value} Standard Recipe` }))} /><Field label="Product Code / SKU *" value={form.code} error={errors.code} onChange={(value) => setForm((current) => ({ ...current, code:value.toUpperCase() }))} /><SelectField label="Category *" value={form.categoryId} error={errors.categoryId} onChange={(value) => setForm((current) => ({ ...current, categoryId:value }))} options={categories.filter((item) => item.status === "ACTIVE" || item.id === form.categoryId).map((item) => ({ value:item.id,label:item.name }))} /><Field label="Selling Price *" type="number" value={form.sellingPrice} error={errors.sellingPrice} onChange={(value) => setForm((current) => ({ ...current, sellingPrice:Number(value) }))} /><label className="md:col-span-2 text-sm font-medium">Description<textarea value={form.description} onChange={(event) => setForm((current) => ({ ...current, description:event.target.value }))} rows={3} className="mt-1.5 w-full px-3 py-2.5 rounded-xl border resize-none" style={inputStyle} /></label><SelectField label="Status" value={form.status} onChange={(value) => setForm((current) => ({ ...current, status:value as RecordStatus }))} options={[{value:"ACTIVE",label:"Active"},{value:"INACTIVE",label:"Inactive"}]} /><Field label="Recipe Name *" value={form.recipeName} error={errors.recipeName} onChange={(value) => setForm((current) => ({ ...current, recipeName:value }))} /></div><div className="flex items-center justify-between mt-7 mb-3"><div><h3 className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--app-primary)" }}>Standard Recipe / Ingredients</h3><p className="text-[11px] mt-1" style={{ color: "var(--app-text-faint)" }}>Units come directly from Inventory and cannot be changed here.</p></div><button onClick={() => setForm((current) => ({ ...current, items:[...current.items,newRow()] }))} className="inline-flex gap-2 items-center px-3 py-2 rounded-xl border text-xs font-semibold" style={{ borderColor: "var(--app-primary)", color: "var(--app-primary)" }}><Plus size={14} />Add Ingredient</button></div><div className="space-y-2">{form.items.map((row,index) => <div key={row.key} className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_120px_80px_38px] gap-2 items-end p-3 rounded-xl" style={{ background: "var(--app-bg)" }}><SelectField label={index===0?"Ingredient":""} value={row.inventoryItemId} onChange={(value) => { const item=inventory.find((candidate) => candidate.id===value); updateRow(row.key,{inventoryItemId:value,unit:item?.unit??""}); }} options={inventory.filter((item) => item.status==="ACTIVE").map((item) => ({value:item.id,label:`${item.name} (${item.sku})`}))} /><Field label={index===0?"Quantity":""} type="number" value={row.quantity} onChange={(value) => updateRow(row.key,{quantity:Number(value)})} /><Field label={index===0?"Unit":""} value={row.unit} disabled onChange={()=>undefined} /><button disabled={form.items.length===1} onClick={() => setForm((current) => ({ ...current, items:current.items.filter((item) => item.key!==row.key) }))} className="h-[42px] rounded-xl flex items-center justify-center disabled:opacity-30" style={{ color: "var(--app-danger)" }} title="Remove ingredient"><Trash2 size={15} /></button></div>)}</div>{errors.items && <p className="text-xs mt-2" style={{ color: "var(--app-danger)" }}>{errors.items}</p>}<div className="flex justify-end gap-3 mt-6"><button onClick={onClose} className="px-5 py-2.5 rounded-xl border text-sm font-semibold" style={{ borderColor:"var(--app-border)" }}>Cancel</button><button disabled={saving} onClick={onSave} className="px-5 py-2.5 rounded-xl text-white text-sm font-semibold disabled:opacity-50" style={{ background:"var(--app-primary)" }}>{saving?"Saving…":"Save Product"}</button></div></Modal>;
+function ProductTable({ products, owner, manager, managerBranchId, actionProductId, onView, onEdit, onToggleStatus, onDelete, onOwnerReview, onManagerReview }: { products:MenuProduct[];owner:boolean;manager:boolean;managerBranchId:string|null;actionProductId:string|null;onView:(product:MenuProduct)=>void;onEdit:(product:MenuProduct)=>void;onToggleStatus:(product:MenuProduct)=>void;onDelete:(product:MenuProduct)=>void;onOwnerReview:(product:MenuProduct)=>void;onManagerReview:(product:MenuProduct,decision:"APPROVE"|"REJECT")=>void }) {
+  const headings = ["Product Code", "Product Name", "Scope", "Category", "Selling Price", "Ingredients", "Recipe Cost", "Margin", "Status", "Actions"];
+  return (
+    <TableWrapper minWidth={940}>
+      <THead cols={headings} />
+      <tbody>
+        {products.map((product) => {
+          const busy = actionProductId === product.id;
+          const canEdit = (owner && product.productScope === "GLOBAL") || (manager && product.productScope === "BRANCH" && product.originBranchId === managerBranchId);
+          const canToggle = manager && product.approvalStatus === "APPROVED" && product.branchAvailabilityStatus === "APPROVED";
+          const awaitingOwnerReview = owner && product.productScope === "BRANCH" && product.approvalStatus === "PENDING_OWNER";
+          const awaitingManagerReview = manager && product.productScope === "GLOBAL" && product.branchAvailabilityStatus === "PENDING_MANAGER";
+          const displayedStatus = manager && product.branchAvailabilityStatus === "APPROVED" ? product.branchMenuStatus : null;
+          return (
+            <TR key={product.id} onClick={() => onView(product)} className="cursor-pointer" style={{ opacity: busy ? 0.65 : 1 }}>
+              <TD mono><span className="font-bold text-[var(--app-primary)]">{product.code}</span></TD>
+              <TD>
+                <div className="font-semibold text-[var(--app-text)]">{product.name}</div>
+                {product.description && <div className="text-[11px] max-w-52 truncate text-[var(--app-text-muted)]">{product.description}</div>}
+              </TD>
+              <TD>
+                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md bg-[var(--app-primary-faint)] text-[var(--app-primary)]">
+                  {product.productScope === "GLOBAL" ? "All Branches" : product.originBranchName ?? "Branch"}
+                </span>
+              </TD>
+              <TD muted>{product.category}</TD>
+              <TD right bold>{money(product.sellingPrice)}</TD>
+              <TD right muted>{product.ingredients.length} item{product.ingredients.length === 1 ? "" : "s"}</TD>
+              <TD right muted>{money(product.recipeCost)}</TD>
+              <TD right bold className={product.marginRate >= 0 ? "text-[var(--app-success)]" : "text-[var(--app-danger)]"}>
+                {product.marginRate.toFixed(1)}%
+              </TD>
+              <TD center>
+                {displayedStatus ? (
+                  <StatusBadge status={displayedStatus.toLowerCase()} />
+                ) : (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold uppercase tracking-wide bg-[var(--app-surface-muted)] text-[var(--app-text-muted)]">
+                    {owner
+                      ? (product.productScope === "GLOBAL" ? "Branch controlled" : product.approvalStatus.replaceAll("_", " "))
+                      : (product.branchAvailabilityStatus ?? product.approvalStatus).replaceAll("_", " ")}
+                  </span>
+                )}
+              </TD>
+              <TD center onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center justify-center gap-1.5 whitespace-nowrap">
+                  {!awaitingOwnerReview && (
+                    <Btn variant="outline" size="sm" icon={Eye} onClick={() => onView(product)}>
+                      View
+                    </Btn>
+                  )}
+                  {awaitingOwnerReview && (
+                    <Btn size="sm" icon={Eye} disabled={busy} onClick={() => onOwnerReview(product)}>
+                      Review
+                    </Btn>
+                  )}
+                  {awaitingManagerReview && (
+                    <>
+                      <Btn size="sm" icon={Check} disabled={busy} onClick={() => onManagerReview(product, "APPROVE")}>
+                        Approve
+                      </Btn>
+                      <Btn variant="danger" size="sm" disabled={busy} onClick={() => onManagerReview(product, "REJECT")}>
+                        Reject
+                      </Btn>
+                    </>
+                  )}
+                  {canEdit && (
+                    <>
+                      <Btn variant="outline" size="sm" icon={Edit3} disabled={busy} onClick={() => onEdit(product)}>
+                        Edit
+                      </Btn>
+                      <button
+                        disabled={busy}
+                        title="Delete unused product"
+                        aria-label={`Delete ${product.name}`}
+                        onClick={() => onDelete(product)}
+                        className="w-8 h-8 inline-flex items-center justify-center rounded-lg border text-[var(--app-danger)] border-[var(--app-border)] hover:bg-[var(--app-danger-bg)] transition-colors disabled:opacity-50"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </>
+                  )}
+                  {canToggle && (
+                    <Btn
+                      variant="outline"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => onToggleStatus(product)}
+                    >
+                      {product.branchMenuStatus === "ACTIVE" ? "Inactivate" : "Activate"}
+                    </Btn>
+                  )}
+                </div>
+              </TD>
+            </TR>
+          );
+        })}
+      </tbody>
+    </TableWrapper>
+  );
 }
 
-function Modal({ children, onClose, width }: { children:React.ReactNode; onClose:()=>void; width:string }) { return <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background:"rgba(0,0,0,.52)" }} onMouseDown={(event)=>{if(event.target===event.currentTarget)onClose();}}><div className={`w-full ${width} max-h-[92vh] overflow-y-auto rounded-2xl border p-6 shadow-2xl`} style={{ background:"var(--app-surface)",borderColor:"var(--app-border)" }}>{children}</div></div>; }
+function ProductDetails({ product, owner, canEdit, onClose, onEdit }: { product: MenuProduct; owner: boolean; canEdit: boolean; onClose: () => void; onEdit: () => void }) {
+  const approvedBranches = product.branchApprovals.filter((item) => item.status === "APPROVED").length;
+  const approvalSummary = product.productScope === "GLOBAL"
+    ? (owner ? `${approvedBranches}/${product.branchApprovals.length} branches approved` : (product.branchAvailabilityStatus ?? "NOT ASSIGNED").replaceAll("_", " "))
+    : product.approvalStatus.replaceAll("_", " ");
+
+  return <Modal onClose={onClose} width="max-w-2xl">
+    <div className="flex justify-between gap-4"><div><h2 className="text-xl font-bold">{product.name}</h2><p className="text-xs font-mono mt-1" style={{ color: "var(--app-primary)" }}>{product.code}</p></div><button onClick={onClose}><X size={18} /></button></div>
+    <p className="text-sm mt-4" style={{ color: "var(--app-text-muted)" }}>{product.description || "No product description."}</p>
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 my-5">{[["Selling Price",money(product.sellingPrice)],["Recipe Cost",money(product.recipeCost)],["Margin",money(product.marginAmount)],["Margin Rate",`${product.marginRate.toFixed(1)}%`]].map(([label,value]) => <div key={label} className="p-3 rounded-xl" style={{ background: "var(--app-bg)" }}><div className="text-[10px] uppercase" style={{ color: "var(--app-text-faint)" }}>{label}</div><div className="font-bold mt-1">{value}</div></div>)}</div>
+    <div className="flex flex-wrap gap-2 mb-4"><span className="px-2.5 py-1 rounded-full text-xs" style={{ background: "var(--app-primary-subtle)", color: "var(--app-primary)" }}>{product.category}</span><span className="px-2.5 py-1 rounded-full text-xs font-semibold" style={{ background: "var(--app-primary-faint)", color: "var(--app-primary)" }}>{product.productScope === "GLOBAL" ? "All Branches" : product.originBranchName ?? "Branch Product"}</span>{!owner && product.branchAvailabilityStatus === "APPROVED" && product.branchMenuStatus && <StatusBadge status={product.branchMenuStatus} />}</div>
+    <div className="p-4 rounded-xl border mb-5" style={{ borderColor:"var(--app-border)",background:"var(--app-surface-elevated)" }}>
+      <div className="text-[10px] font-bold uppercase tracking-wider" style={{ color:"var(--app-text-faint)" }}>Approval</div>
+      <div className="font-semibold mt-1 capitalize">{approvalSummary.toLowerCase()}</div>
+      {owner && product.productScope === "GLOBAL" && product.branchApprovals.length > 0 && <div className="flex flex-wrap gap-2 mt-3">{product.branchApprovals.map((item) => { const label=item.status === "APPROVED" ? (item.isActive ? "ACTIVE" : "INACTIVE") : item.status.replaceAll("_", " "); return <span key={item.branchId} className="px-2.5 py-1 rounded-lg text-[11px] font-semibold" style={{ background:label === "ACTIVE" ? "var(--app-success-bg)" : label === "REJECTED" ? "var(--app-danger-bg)" : "var(--app-primary-faint)",color:label === "ACTIVE" ? "var(--app-success)" : label === "REJECTED" ? "var(--app-danger)" : label === "INACTIVE" ? "var(--app-text-muted)" : "var(--app-warning)" }}>{item.branchName}: {label}</span>; })}</div>}
+      {product.ownerReviewComment && <div className="mt-3 pt-3 border-t text-sm" style={{ borderColor:"var(--app-border)",color:"var(--app-text-muted)" }}><strong style={{ color:"var(--app-text)" }}>Owner comment:</strong> {product.ownerReviewComment}</div>}
+    </div>
+    <div className="flex flex-wrap items-center justify-between gap-2 mb-2"><h3 className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--app-text-muted)" }}>Standard Recipe · Version {product.recipeVersion??1} · Yield {product.yieldQuantity ?? 1}</h3><span className="px-2.5 py-1 rounded-full text-[10px] font-bold" style={{background:"var(--app-success-bg)",color:"var(--app-success)"}}>CURRENT</span></div>
+    <div className="rounded-xl border overflow-hidden" style={{ borderColor: "var(--app-border)" }}>{product.ingredients.map((item) => <div key={item.id} className="flex items-center gap-3 px-4 py-3 border-b last:border-0" style={{ borderColor: "var(--app-border)" }}><div className="flex-1"><div className="font-semibold text-sm">{item.name}</div><div className="font-mono text-[10px]" style={{ color: "var(--app-text-faint)" }}>{item.sku}</div></div><strong className="text-sm">{item.quantity} {item.unit}</strong><span className="text-xs w-20 text-right" style={{ color: "var(--app-text-muted)" }}>{money(item.ingredientCost)}</span></div>)}</div>
+    {product.recipeHistory.length>0&&<div className="mt-5"><h3 className="text-xs font-bold uppercase tracking-wider mb-2" style={{color:"var(--app-text-muted)"}}>Recipe History</h3><div className="rounded-xl border divide-y" style={{borderColor:"var(--app-border)"}}>{product.recipeHistory.map((item)=>{const today=localToday();const state=item.effectiveFrom!=="-infinity"&&item.effectiveFrom>today?"FUTURE / SCHEDULED":item.effectiveTo&&item.effectiveTo<=today?"HISTORICAL":"CURRENT";return <div key={item.id} className="p-3 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4"><div className="font-semibold text-sm">Version {item.version}</div><div className="flex-1 text-xs" style={{color:"var(--app-text-muted)"}}>{item.effectiveFrom==="-infinity"?"Legacy start (date unknown)":item.effectiveFrom} → {item.effectiveTo??"Present"} · Yield {item.yieldQuantity}{item.createdByName?` · ${item.createdByName}`:""}{item.changeReason?` · ${item.changeReason}`:""}</div><span className="text-[10px] font-bold px-2 py-1 rounded-full" style={{background:state==="CURRENT"?"var(--app-success-bg)":state.startsWith("FUTURE")?"var(--app-warning-bg)":"var(--app-surface-muted)",color:state==="CURRENT"?"var(--app-success)":state.startsWith("FUTURE")?"var(--app-warning)":"var(--app-text-muted)"}}>{state}</span></div>;})}</div></div>}
+    {canEdit && <button onClick={onEdit} className="w-full mt-5 py-2.5 rounded-xl text-white font-semibold" style={{ background: "var(--app-primary)" }}>Edit Product &amp; Recipe</button>}
+  </Modal>;
+}
+
+function ProductReviewModal({ product, comment, setComment, saving, onClose, onDecision }: { product:MenuProduct;comment:string;setComment:(value:string)=>void;saving:boolean;onClose:()=>void;onDecision:(decision:"APPROVE"|"REJECT")=>void }) {
+  return <Modal onClose={onClose} width="max-w-2xl">
+    <div className="flex justify-between gap-4"><div><div className="text-[10px] font-bold uppercase tracking-wider" style={{ color:"var(--app-warning)" }}>Pending Owner Approval</div><h2 className="text-xl font-bold mt-1">Review {product.name}</h2><p className="text-xs mt-1" style={{ color:"var(--app-text-muted)" }}>Submitted by {product.createdByName ?? "Branch Manager"} · {product.originBranchName ?? "Assigned branch"}</p></div><button disabled={saving} onClick={onClose}><X size={18}/></button></div>
+    <p className="text-sm mt-4 p-3 rounded-xl" style={{ color:"var(--app-text-muted)",background:"var(--app-bg)" }}>{product.description || "No product description."}</p>
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 my-5">{[["Product Code",product.code],["Category",product.category],["Selling Price",money(product.sellingPrice)],["Recipe Cost",money(product.recipeCost)]].map(([label,value]) => <div key={label} className="p-3 rounded-xl border" style={{ borderColor:"var(--app-border)" }}><div className="text-[10px] uppercase" style={{ color:"var(--app-text-faint)" }}>{label}</div><div className="font-bold mt-1">{value}</div></div>)}</div>
+    <h3 className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color:"var(--app-text-muted)" }}>Proposed Recipe · Yield {product.yieldQuantity ?? 1}</h3>
+    <div className="rounded-xl border overflow-hidden" style={{ borderColor:"var(--app-border)" }}>{product.ingredients.map((item) => <div key={item.id} className="flex items-center gap-3 px-4 py-3 border-b last:border-0" style={{ borderColor:"var(--app-border)" }}><div className="flex-1"><div className="font-semibold text-sm">{item.name}</div><div className="font-mono text-[10px]" style={{ color:"var(--app-text-faint)" }}>{item.sku}</div></div><strong className="text-sm">{item.quantity} {item.unit}</strong><span className="text-xs w-20 text-right" style={{ color:"var(--app-text-muted)" }}>{money(item.ingredientCost)}</span></div>)}</div>
+    <label className="block text-sm font-semibold mt-5">Comment <span className="font-normal" style={{ color:"var(--app-text-faint)" }}>(optional)</span><textarea maxLength={1000} value={comment} onChange={(event)=>setComment(event.target.value)} placeholder="Add suggestions or explain your decision…" rows={3} className="mt-2 w-full px-3 py-2.5 rounded-xl border resize-none outline-none" style={inputStyle}/><span className="block text-right text-[10px] mt-1" style={{ color:"var(--app-text-faint)" }}>{comment.length}/1000</span></label>
+    <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-3 mt-5"><button disabled={saving} onClick={onClose} className="px-4 py-2.5 rounded-xl border text-sm font-semibold disabled:opacity-50" style={{ borderColor:"var(--app-border)" }}>Cancel</button><button disabled={saving} onClick={()=>onDecision("REJECT")} className="px-4 py-2.5 rounded-xl border text-sm font-semibold disabled:opacity-50" style={{ borderColor:"var(--app-danger)",color:"var(--app-danger)" }}>{saving?"Saving…":"Reject"}</button><button disabled={saving} onClick={()=>onDecision("APPROVE")} className="px-4 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-50" style={{ background:"var(--app-success)" }}>{saving?"Saving…":"Approve Product"}</button></div>
+  </Modal>;
+}
+
+function ProductEditor({ editing, form, setForm, errors, categories, inventory, canCreateIngredient, saving, onInventoryCreated, onClose, onSave }: { editing: MenuProduct|null; form: ProductForm; setForm: React.Dispatch<React.SetStateAction<ProductForm>>; errors: Record<string,string>; categories: MenuCategory[]; inventory: InventoryItem[]; canCreateIngredient:boolean; saving:boolean; onInventoryCreated:(item:InventoryItem)=>void; onClose:()=>void; onSave:()=>void }) {
+  const [ingredientTarget,setIngredientTarget]=useState<string|null>(null);
+  const updateRow=(key:string,changes:Partial<RecipeRow>)=>setForm((current)=>({...current,items:current.items.map((item)=>item.key===key?{...item,...changes}:item)}));
+  const appendRow=()=>{const row=newRow();setForm((current)=>({...current,items:[...current.items,row]}));return row.key;};
+  return <>
+    <Modal onClose={onClose} width="max-w-5xl">
+      <div className="-m-6 mb-6 px-6 py-5 flex items-start justify-between gap-4 border-b" style={{background:"linear-gradient(135deg,var(--app-primary-faint),var(--app-surface))",borderColor:"var(--app-border)"}}>
+        <div className="flex items-start gap-3"><div className="w-11 h-11 rounded-2xl flex items-center justify-center text-white shadow-sm" style={{background:"var(--app-primary)"}}><ChefHat size={21}/></div><div><h2 className="text-xl font-bold">{editing?"Edit Menu Product":"Add Menu Product"}</h2><p className="text-sm mt-1" style={{color:"var(--app-text-muted)"}}>Save the product details and its complete standard recipe together.</p></div></div>
+        <button aria-label="Close form" onClick={onClose} className="w-9 h-9 rounded-xl border flex items-center justify-center" style={{borderColor:"var(--app-border)",background:"var(--app-surface)"}}><X size={18}/></button>
+      </div>
+      <section className="rounded-2xl border p-4 md:p-5" style={{borderColor:"var(--app-border)",background:"var(--app-surface-elevated)"}}>
+        <div className="flex items-center gap-2 mb-4"><BookOpen size={16} style={{color:"var(--app-primary)"}}/><h3 className="text-xs font-bold uppercase tracking-wider" style={{color:"var(--app-primary)"}}>Product Information</h3></div>
+        <div className="grid md:grid-cols-2 gap-4">
+          <Field label="Product Name *" value={form.name} error={errors.name} placeholder="e.g., Spanish Latte" onChange={(value)=>setForm((current)=>({...current,name:value}))}/>
+          <SelectField label="Category *" value={form.categoryId} error={errors.categoryId} onChange={(value)=>setForm((current)=>({...current,categoryId:value}))} options={categories.filter((item)=>item.status==="ACTIVE"||item.id===form.categoryId).map((item)=>({value:item.id,label:item.name}))}/>
+          <Field label="Selling Price *" type="number" value={form.sellingPrice} error={errors.sellingPrice} placeholder="Enter selling price" onChange={(value)=>setForm((current)=>({...current,sellingPrice:value===""?"":Number(value)}))}/>
+          <label className="md:col-span-2 text-sm font-semibold">Description <span className="font-normal" style={{color:"var(--app-text-faint)"}}>(optional)</span><textarea value={form.description} onChange={(event)=>setForm((current)=>({...current,description:event.target.value}))} placeholder="Add a short product description…" rows={3} className="mt-2 w-full px-4 py-3 rounded-2xl border resize-none outline-none transition-shadow focus:ring-2" style={inputStyle}/></label>
+        </div>
+      </section>
+      <section className="rounded-2xl border p-4 md:p-5 mt-5" style={{borderColor:"var(--app-border)",background:"var(--app-surface-elevated)"}}>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+          <div><div className="flex items-center gap-2"><Boxes size={16} style={{color:"var(--app-primary)"}}/><h3 className="text-xs font-bold uppercase tracking-wider" style={{color:"var(--app-primary)"}}>Standard Recipe Ingredients</h3></div><p className="text-xs mt-1.5" style={{color:"var(--app-text-muted)"}}>Ingredient units come from the inventory catalog.</p></div>
+          <div className="flex gap-2 flex-wrap">{canCreateIngredient&&<button type="button" onClick={()=>setIngredientTarget(form.items.find((item)=>!item.inventoryItemId)?.key??appendRow())} className="inline-flex gap-2 items-center px-3 py-2 rounded-xl border text-xs font-semibold" style={{borderColor:"var(--app-primary)",color:"var(--app-primary)",background:"var(--app-primary-faint)"}}><PackagePlus size={14}/>New Inventory Ingredient</button>}<button type="button" onClick={appendRow} className="inline-flex gap-2 items-center px-3 py-2 rounded-xl text-xs font-semibold text-white shadow-sm" style={{background:"var(--app-primary)"}}><Plus size={14}/>Add Recipe Row</button></div>
+        </div>
+        {!canCreateIngredient&&<div className="mb-4 px-4 py-3 rounded-xl text-xs" style={{background:"var(--app-warning-bg)",color:"var(--app-text-muted)"}}>Missing an ingredient? Ask the Owner to add it to the centralized inventory catalog, then refresh this form.</div>}
+        {editing?.recipeHasHistoricalSales&&<div className="mb-4 p-4 rounded-xl border" style={{background:"var(--app-warning-bg)",borderColor:"var(--app-warning)",color:"var(--app-text-muted)"}}><p className="text-sm font-semibold" style={{color:"var(--app-text)"}}>This product has historical sales.</p><p className="text-xs mt-1">Saving these changes will create a new recipe version and will not modify previous COGS records.</p><div className="grid sm:grid-cols-2 gap-3 mt-3"><Field label="New Version Effective Date *" type="date" value={form.effectiveFrom} error={errors.effectiveFrom} onChange={(value)=>setForm((current)=>({...current,effectiveFrom:value}))}/><Field label="Change Reason (optional)" value={form.changeReason} placeholder="e.g., Updated serving size" onChange={(value)=>setForm((current)=>({...current,changeReason:value}))}/></div></div>}
+        <div className="space-y-3">{form.items.map((row,index)=>{const ingredient=inventory.find((candidate)=>candidate.id===row.inventoryItemId);return <div key={row.key} className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_130px_110px_42px] gap-3 items-end p-3.5 rounded-2xl border" style={{background:"var(--app-bg)",borderColor:"var(--app-border)"}}>
+          <SelectField label={index===0?"Ingredient":""} value={row.inventoryItemId} onChange={(value)=>{const item=inventory.find((candidate)=>candidate.id===value);updateRow(row.key,{inventoryItemId:value,unit:item?.unit??""});}} options={inventory.filter((item)=>item.status==="ACTIVE").map((item)=>({value:item.id,label:`${item.name} (${item.sku})`}))}/>
+          <Field label={index===0?"Quantity":""} type="number" value={row.quantity} placeholder="0.00" onChange={(value)=>updateRow(row.key,{quantity:Number(value)})}/>
+          <SelectField label={index===0?"Recipe Unit":""} value={row.unit} onChange={(value)=>updateRow(row.key,{unit:value})} options={compatibleUnits(ingredient?.unit??"").map((unit)=>({value:unit,label:unit}))}/>
+          <button type="button" disabled={form.items.length===1} onClick={()=>setForm((current)=>({...current,items:current.items.filter((item)=>item.key!==row.key)}))} className="h-[46px] rounded-xl border flex items-center justify-center disabled:opacity-30" style={{color:"var(--app-danger)",borderColor:"var(--app-border)",background:"var(--app-surface)"}} title="Remove ingredient"><Trash2 size={15}/></button>
+        </div>;})}</div>
+        {errors.items&&<p className="text-xs mt-3" style={{color:"var(--app-danger)"}}>{errors.items}</p>}
+      </section>
+      <div className="flex flex-col-reverse sm:flex-row justify-end gap-3 mt-6"><button type="button" onClick={onClose} className="px-5 py-3 rounded-xl border text-sm font-semibold" style={{borderColor:"var(--app-border)",background:"var(--app-surface)"}}>Cancel</button><button type="button" disabled={saving} onClick={onSave} className="px-6 py-3 rounded-xl text-white text-sm font-semibold shadow-md disabled:opacity-50" style={{background:"var(--app-primary)"}}>{saving?"Saving…":editing?"Save Changes":"Create Product"}</button></div>
+    </Modal>
+    {ingredientTarget&&<IngredientEditorModal categories={Array.from(new Set(inventory.map((item)=>item.category))).sort()} onClose={()=>setIngredientTarget(null)} onCreated={(item)=>{onInventoryCreated(item);updateRow(ingredientTarget,{inventoryItemId:item.id,unit:item.unit});setIngredientTarget(null);}}/>}
+  </>;
+}
+
+export function IngredientEditorModal({categories,onClose,onCreated}:{categories:string[];onClose:()=>void;onCreated:(item:InventoryItem)=>void}) {
+  const [form,setForm]=useState<IngredientForm>(emptyIngredientForm);
+  const [errors,setErrors]=useState<Record<string,string>>({});
+  const [saving,setSaving]=useState(false);
+  const save=async()=>{
+    const next:Record<string,string>={};
+    if(!form.name.trim())next.name="Ingredient name is required.";
+    const category=form.categoryChoice==="__OTHER__"?form.otherCategory.trim():form.categoryChoice;
+    if(!category)next.category="Category is required.";
+    if(!form.unit)next.unit="Unit is required.";
+    if(form.unitCost===""||form.unitCost<0)next.unitCost="Enter a valid unit cost.";
+    if(form.reorderLevel===""||form.reorderLevel<0)next.reorderLevel="Enter a valid reorder level.";
+    setErrors(next);if(Object.keys(next).length)return;
+    setSaving(true);
+    try{const item=await masterDataService.createInventoryItem({name:form.name.trim(),category,unit:form.unit,unitCost:Number(form.unitCost),reorderLevel:Number(form.reorderLevel),status:"ACTIVE"});toast.success(`${item.name} added to the inventory catalog`);onCreated(item);}
+    catch(reason){toast.error(reason instanceof Error?reason.message:"Unable to create ingredient");}
+    finally{setSaving(false);}
+  };
+  return <Modal onClose={onClose} width="max-w-2xl">
+    <div className="-m-6 mb-6 px-6 py-5 flex items-start justify-between border-b" style={{background:"linear-gradient(135deg,var(--app-primary-faint),var(--app-surface))",borderColor:"var(--app-border)"}}><div className="flex gap-3"><div className="w-11 h-11 rounded-2xl flex items-center justify-center text-white" style={{background:"var(--app-primary)"}}><PackagePlus size={20}/></div><div><h2 className="text-xl font-bold">Add Inventory Ingredient</h2><p className="text-sm mt-1" style={{color:"var(--app-text-muted)"}}>This ingredient becomes available to recipes and branch inventory.</p></div></div><button aria-label="Close form" onClick={onClose} className="w-9 h-9 rounded-xl border flex items-center justify-center" style={{borderColor:"var(--app-border)",background:"var(--app-surface)"}}><X size={18}/></button></div>
+    <div className="grid sm:grid-cols-2 gap-4">
+      <Field label="Ingredient Name *" value={form.name} error={errors.name} placeholder="e.g., Oat Milk" onChange={(value)=>setForm((current)=>({...current,name:value}))}/>
+      <div><SelectField label="Category *" value={form.categoryChoice} error={errors.category} onChange={(value)=>setForm((current)=>({...current,categoryChoice:value,otherCategory:value==="__OTHER__"?current.otherCategory:""}))} options={[...categories.map((category)=>({value:category,label:category})),{value:"__OTHER__",label:"Others"}]}/>{form.categoryChoice==="__OTHER__"&&<div className="mt-3"><Field label="Specify Category *" value={form.otherCategory} error={errors.category} placeholder="Enter new category" onChange={(value)=>setForm((current)=>({...current,otherCategory:value}))}/></div>}</div>
+      <SelectField label="Inventory Unit *" value={form.unit} error={errors.unit} onChange={(value)=>setForm((current)=>({...current,unit:value}))} options={units.map((unit)=>({value:unit,label:unit}))}/>
+      <Field label="Unit Cost *" type="number" value={form.unitCost} error={errors.unitCost} placeholder="0.00" onChange={(value)=>setForm((current)=>({...current,unitCost:value===""?"":Number(value)}))}/>
+      <Field label="Reorder Level *" type="number" value={form.reorderLevel} error={errors.reorderLevel} placeholder="0.00" onChange={(value)=>setForm((current)=>({...current,reorderLevel:value===""?"":Number(value)}))}/>
+    </div>
+    <div className="mt-5 px-4 py-3 rounded-xl text-xs leading-relaxed" style={{background:"var(--app-primary-faint)",color:"var(--app-text-muted)"}}>Initial stock remains zero. Record receiving or a physical inventory count before the ingredient is treated as available stock.</div>
+    <div className="flex flex-col-reverse sm:flex-row justify-end gap-3 mt-6"><button type="button" disabled={saving} onClick={onClose} className="px-5 py-3 rounded-xl border text-sm font-semibold disabled:opacity-50" style={{borderColor:"var(--app-border)"}}>Cancel</button><button type="button" disabled={saving} onClick={()=>void save()} className="px-6 py-3 rounded-xl text-white text-sm font-semibold shadow-md disabled:opacity-50" style={{background:"var(--app-primary)"}}>{saving?"Adding…":"Add Ingredient"}</button></div>
+  </Modal>;
+}
+
+function Modal({ children, onClose, width }: { children:React.ReactNode; onClose:()=>void; width:string }) { return <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 backdrop-blur-sm" style={{ background:"rgba(24,10,14,.58)" }} onMouseDown={(event)=>{if(event.target===event.currentTarget)onClose();}}><div className={`w-full ${width} max-h-[94vh] overflow-y-auto rounded-3xl border p-6 shadow-2xl`} style={{ background:"var(--app-surface)",borderColor:"var(--app-border)",boxShadow:"0 30px 80px rgba(43,14,22,.24)" }}>{children}</div></div>; }
 const inputStyle = { borderColor:"var(--app-border)",background:"var(--app-surface-elevated)",color:"var(--app-text)" };
-function Field({ label,value,onChange,type="text",error,disabled=false }: { label:string;value:string|number;onChange:(value:string)=>void;type?:string;error?:string;disabled?:boolean }) { return <label className="text-sm font-medium">{label}<input disabled={disabled} type={type} min={type==="number"?0:undefined} step={type==="number"?"0.01":undefined} value={value} onChange={(event)=>onChange(event.target.value)} className="mt-1.5 w-full px-3 py-2.5 rounded-xl border outline-none disabled:opacity-70" style={{...inputStyle,borderColor:error?"var(--app-danger)":"var(--app-border)"}}/>{error&&<span className="block text-xs mt-1" style={{ color:"var(--app-danger)" }}>{error}</span>}</label>; }
-function SelectField({ label,value,onChange,options,error }: { label:string;value:string;onChange:(value:string)=>void;options:{value:string;label:string}[];error?:string }) { return <label className="text-sm font-medium">{label}<select value={value} onChange={(event)=>onChange(event.target.value)} className="mt-1.5 w-full px-3 py-2.5 rounded-xl border" style={{...inputStyle,borderColor:error?"var(--app-danger)":"var(--app-border)"}}><option value="">Select…</option>{options.map((option)=><option key={option.value} value={option.value}>{option.label}</option>)}</select>{error&&<span className="block text-xs mt-1" style={{ color:"var(--app-danger)" }}>{error}</span>}</label>; }
-function StatusBadge({ status }: { status:RecordStatus }) { const active=status==="ACTIVE"; return <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase" style={{ color:active?"var(--app-success)":"var(--app-text-muted)",background:active?"var(--app-success-bg)":"var(--app-bg)" }}>{active&&<Check size={10}/>} {active?"Active":"Inactive"}</span>; }
+function Field({ label,value,onChange,type="text",error,disabled=false,placeholder }: { label:string;value:string|number;onChange:(value:string)=>void;type?:string;error?:string;disabled?:boolean;placeholder?:string }) { return <label className="text-sm font-semibold">{label}<input disabled={disabled} type={type} min={type==="number"?0:undefined} step={type==="number"?"0.01":undefined} value={value} placeholder={placeholder} onChange={(event)=>onChange(event.target.value)} className="mt-2 w-full min-h-12 px-4 py-3 rounded-2xl border outline-none transition-all focus:ring-2 disabled:opacity-70" style={{...inputStyle,borderColor:error?"var(--app-danger)":"var(--app-border)"}}/>{error&&<span className="block text-xs mt-1.5" style={{ color:"var(--app-danger)" }}>{error}</span>}</label>; }
+function SelectField({ label,value,onChange,options,error }: { label:string;value:string;onChange:(value:string)=>void;options:{value:string;label:string}[];error?:string }) { return <label className="text-sm font-medium">{label}<Select className="mt-1.5 w-full" value={value} onChange={onChange} options={[{ value:"", label:"Select…" }, ...options]}/>{error&&<span className="block text-xs mt-1" style={{ color:"var(--app-danger)" }}>{error}</span>}</label>; }

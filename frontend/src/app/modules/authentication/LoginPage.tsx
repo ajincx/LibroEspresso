@@ -1,22 +1,37 @@
-import { useState } from "react";
-import { Check, Eye, EyeOff, LoaderCircle, Lock, Mail, ShieldCheck } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Eye, EyeOff, LoaderCircle, Lock, Mail, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import "./LoginPage.css";
 
+export const REMEMBER_ME_ENABLED = false;
+
+export function loginErrorMessage(reason: unknown) {
+  const message = reason instanceof Error ? reason.message : "";
+  if (message.toLowerCase().includes("credential")) return "Invalid email or password.";
+  if (message.toLowerCase().includes("too many")) return message;
+  return "Unable to sign in. Please try again.";
+}
+
 interface LoginPageProps {
-  onLogin: (identifier: string, password: string, remember: boolean) => Promise<void>;
+  onLogin: (identifier: string, password: string) => Promise<void>;
 }
 
 export function LoginPage({ onLogin }: LoginPageProps) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [remember, setRemember] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const emailError = error === "Email is required.";
   const passwordError = error === "Password is required.";
   const formError = error && !emailError && !passwordError ? error : "";
+
+  useEffect(() => {
+    const message = sessionStorage.getItem("libro.auth.message");
+    if (!message) return;
+    sessionStorage.removeItem("libro.auth.message");
+    toast.error(message);
+  }, []);
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -25,10 +40,9 @@ export function LoginPage({ onLogin }: LoginPageProps) {
     setError("");
     setSubmitting(true);
     try {
-      await onLogin(email.trim(), password, remember);
+      await onLogin(email.trim(), password);
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : "";
-      setError(message.toLowerCase().includes("credential") ? "Invalid email or password." : "Unable to sign in. Please try again.");
+      setError(loginErrorMessage(reason));
     } finally {
       setSubmitting(false);
     }
@@ -82,7 +96,6 @@ export function LoginPage({ onLogin }: LoginPageProps) {
             </div>
 
             <div className="login-options">
-              <label className="login-checkbox"><input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} disabled={submitting} /><span className="login-checkbox__control" aria-hidden="true"><Check size={12} /></span><span>Remember Me</span></label>
               <button type="button" onClick={() => toast.info("Password recovery is not configured yet. Please contact the system administrator.")}>Forgot Password?</button>
             </div>
 

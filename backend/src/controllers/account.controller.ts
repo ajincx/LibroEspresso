@@ -2,7 +2,8 @@ import bcrypt from "bcrypt";
 import type { RequestHandler } from "express";
 import { pool } from "../config/database.js";
 import { writeAudit } from "../services/audit.service.js";
-import { findCurrentUser } from "../services/auth.service.js";
+import { findCurrentUser, revokeAllUserSessions } from "../services/auth.service.js";
+import { clearSessionCookie } from "../services/sessionCookie.service.js";
 import { AppError } from "../utils/appError.js";
 import { passwordPatch, profilePatch } from "../validators/account.js";
 
@@ -31,12 +32,25 @@ export const updateProfile: RequestHandler = async (req, res) => {
 
 export const updatePassword: RequestHandler = async (req, res) => {
   const input = passwordPatch.parse(req.body);
-  const result = await pool.query<{ password_hash: string }>("SELECT password_hash FROM users WHERE id=$1", [req.user!.id]);
-  if (!result.rows[0] || !(await bcrypt.compare(input.currentPassword, result.rows[0].password_hash))) {
-    throw new AppError(400, "CURRENT_PASSWORD_INCORRECT", "Current password is incorrect");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query<{ password_hash: string }>("SELECT password_hash FROM users WHERE id=$1 FOR UPDATE", [req.user!.id]);
+    if (!result.rows[0] || !(await bcrypt.compare(input.currentPassword, result.rows[0].password_hash))) {
+      throw new AppError(400, "CURRENT_PASSWORD_INCORRECT", "Current password is incorrect");
+    }
+    const passwordHash = await bcrypt.hash(input.newPassword, 12);
+    await client.query("UPDATE users SET password_hash=$2,updated_at=now() WHERE id=$1", [req.user!.id, passwordHash]);
+    const revoked = await revokeAllUserSessions(req.user!.id, "PASSWORD_CHANGED", client);
+    if (revoked.rowCount) await writeAudit(req.user!, "SESSION_REVOKED", "USER", req.user!.id, "Revoked active sessions after password change", { reason: "PASSWORD_CHANGED" }, client);
+    await writeAudit(req.user!, "PASSWORD_CHANGED", "USER", req.user!.id, "Changed own password and revoked active sessions", {}, client);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
   }
-  const passwordHash = await bcrypt.hash(input.newPassword, 12);
-  await pool.query("UPDATE users SET password_hash=$2,updated_at=now() WHERE id=$1", [req.user!.id, passwordHash]);
-  await writeAudit(req.user!, "CHANGE_OWN_PASSWORD", "USER", req.user!.id, "Changed own password");
-  res.json({ success: true, data: {} });
+  clearSessionCookie(res);
+  res.json({ success: true, data: { requiresReauthentication: true } });
 };
