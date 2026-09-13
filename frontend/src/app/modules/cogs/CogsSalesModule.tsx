@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useEffect, useState } from "react";
-import { ShoppingCart, Package, TrendingDown, Search, X, Upload, Check, Coffee, CheckCircle, TrendingUp, DollarSign, GitCompare, BarChart2, Hash, Percent } from "lucide-react";
+import { ShoppingCart, Package, TrendingDown, Search, X, Upload, Check, Coffee, CheckCircle, TrendingUp, DollarSign, GitCompare, BarChart2, Hash, Percent, Trash2 } from "lucide-react";
 import { Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart } from "recharts";
 import { C, CalendarDateField, DashboardRange, DashboardComparison, dashboardPeriodLabel, formatPeso, StatusChip, KPICard, Card, SectionHeader, Btn, SearchInput, Select, DashboardFilters, THead, TR, TD, Pagination, ChartTip, ModuleTabSwitcher, AnimatedTabPanel, TableCard, TableWrapper, TableEmptyRow, TableLoadingRow } from "../../components/ModuleUi";
 import { toast } from "sonner";
@@ -10,6 +10,22 @@ import type { PosAnalytics, PosImportPreview, PosImportRecord } from "../../type
 import type { Branch } from "../../types/masterData";
 import { useAuth } from "../../contexts/AuthContext";
 import { businessDate, periodDates } from "../../utils/businessDate";
+import { formatAppDate } from "../../utils/appPreferences";
+
+export const marginValueColor = (margin:number) => margin > 0 ? C.green : margin < 0 ? C.red : "var(--app-text-muted)";
+export const canDeletePosImport = (role:Role) => role === "owner";
+
+export function PosImportDeleteDialog({target,deleting,onCancel,onConfirm}:{target:PosImportRecord;deleting:boolean;onCancel:()=>void;onConfirm:()=>void}) {
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-labelledby="delete-pos-import-title">
+    <div className="w-full max-w-lg rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-6 shadow-2xl">
+      <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-[var(--app-danger-bg)] text-[var(--app-danger)]"><Trash2 size={20}/></div>
+      <h3 id="delete-pos-import-title" className="text-lg font-bold text-[var(--app-text)]">Delete imported sales data?</h3>
+      <dl className="mt-4 grid grid-cols-[120px_1fr] gap-x-3 gap-y-2 text-sm"><dt className="text-[var(--app-text-muted)]">File</dt><dd className="font-semibold break-all">{target.sourceFilename}</dd><dt className="text-[var(--app-text-muted)]">Branch</dt><dd className="font-semibold">{target.branchName}</dd><dt className="text-[var(--app-text-muted)]">Business Date</dt><dd className="font-semibold">{formatAppDate(target.businessDate)}</dd></dl>
+      <p className="mt-4 rounded-xl bg-[var(--app-surface-muted)] p-3 text-sm leading-6 text-[var(--app-text-muted)]">This removes the sales records and recipe-derived usage associated with this import. It cannot be undone. Imports already included in a physical inventory count cannot be deleted.</p>
+      <div className="mt-6 flex justify-end gap-2"><Btn variant="outline" disabled={deleting} onClick={onCancel}>Cancel</Btn><Btn variant="danger" disabled={deleting} onClick={onConfirm}>{deleting?"Deleting…":"Delete Import"}</Btn></div>
+    </div>
+  </div>;
+}
 
 function dateRange(range: DashboardRange, customStart: string, customEnd: string) {
   return periodDates(range, customStart, customEnd);
@@ -30,6 +46,11 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
   const [posImportResult, setPosImportResult] = useState<{ rowsImported: number; productsMatched: number; totalQuantitySold: number; totalSales: number; businessDate: string; fingerprintIndicator: string } | null>(null);
   const [posImports, setPosImports] = useState<PosImportRecord[]>([]);
   const [posHistoryLoading, setPosHistoryLoading] = useState(true);
+  const [posHistoryPage, setPosHistoryPage] = useState(1);
+  const [posHistoryTotal, setPosHistoryTotal] = useState(0);
+  const [historyRefresh, setHistoryRefresh] = useState(0);
+  const [deleteTarget, setDeleteTarget] = useState<PosImportRecord|null>(null);
+  const [deletingImport, setDeletingImport] = useState(false);
   const [posImportSearch, setPosImportSearch] = useState("");
   const [productSearch, setProductSearch] = useState("");
   const [productCategory, setProductCategory] = useState("All Categories");
@@ -60,23 +81,18 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
       .then(setAnalytics)
       .catch(() => setAnalytics(null))
       .finally(() => setAnalyticsLoading(false));
-  }, [branches, customEnd, customStart, posBranchFilter, range, role]);
+  }, [branches, customEnd, customStart, posBranchFilter, range, role, historyRefresh]);
 
   useEffect(() => {
+    let cancelled=false;
+    const branchId=role==="owner"?branches.find(branch=>branch.name===posBranchFilter)?.id:undefined;
     setPosHistoryLoading(true);
-    void inventoryWorkflowService.posImports()
-      .then(setPosImports)
-      .catch(() => setPosImports([]))
-      .finally(() => setPosHistoryLoading(false));
-  }, [role]);
-
-  const visiblePosImports = posImports.filter((item) => {
-    const matchesBranch = posBranchFilter === "All Branches" || item.branchName === posBranchFilter;
-    const query = posImportSearch.trim().toLowerCase();
-    const matchesSearch = !query || [item.sourceFilename, item.branchName, item.importedBy, item.businessDate]
-      .some((value) => value.toLowerCase().includes(query));
-    return matchesBranch && matchesSearch;
-  });
+    const timer=window.setTimeout(()=>void inventoryWorkflowService.posImports({branchId,search:posImportSearch.trim()||undefined,page:posHistoryPage,pageSize:10})
+      .then(result=>{if(!cancelled){setPosImports(result.imports);setPosHistoryTotal(result.pagination.total);}})
+      .catch(()=>{if(!cancelled){setPosImports([]);setPosHistoryTotal(0);}})
+      .finally(()=>{if(!cancelled)setPosHistoryLoading(false);}),200);
+    return()=>{cancelled=true;window.clearTimeout(timer);};
+  }, [branches, historyRefresh, posBranchFilter, posHistoryPage, posImportSearch, role]);
   const productCategories = [...new Set((analytics?.products ?? []).map((product) => product.category))];
   const visibleProducts = (analytics?.products ?? []).filter((product) => {
     const matchesCategory = productCategory === "All Categories" || product.category === productCategory;
@@ -117,11 +133,25 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
       });
       setPosConsumption(result.consumption);
       setPosImportResult(result);
-      void inventoryWorkflowService.posImports().then(setPosImports);
+      setPosHistoryPage(1);
+      setHistoryRefresh(value=>value+1);
       setUploadStep("done");
     } catch (reason) {
       setPosImportError(reason instanceof Error ? reason.message : "Unable to import POS sales.");
     } finally { setPosImporting(false); }
+  };
+
+  const deleteImport=async()=>{
+    if(!deleteTarget||role!=="owner")return;
+    setDeletingImport(true);
+    try{
+      await inventoryWorkflowService.deletePosImport(deleteTarget.id);
+      toast.success("POS import deleted");
+      setDeleteTarget(null);
+      setPosHistoryPage(1);
+      setHistoryRefresh(value=>value+1);
+    }catch(reason){toast.error(reason instanceof Error?reason.message:"Unable to delete the POS import.");}
+    finally{setDeletingImport(false);}
   };
 
   return (
@@ -131,7 +161,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
         actions={
           <>
             {role === "manager" && <Btn variant="primary" icon={Upload} onClick={() => setUploadStep("select")}>Import POS CSV</Btn>}
-            {role === "owner" && <Select options={["All Branches", ...branches.map((branch) => branch.name)]} value={posBranchFilter} onChange={setPosBranchFilter} small />}
+            {role === "owner" && <Select options={["All Branches", ...branches.map((branch) => branch.name)]} value={posBranchFilter} onChange={value=>{setPosBranchFilter(value);setPosHistoryPage(1);}} small />}
             <DashboardFilters range={range} comparison={comparison} customStart={customStart} customEnd={customEnd}
               onRangeChange={setRange} onComparisonChange={setComparison}
               onApplyCustom={(start, end) => { setCustomStart(start); setCustomEnd(end); }}
@@ -147,7 +177,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
       </div>
 
       <div className="flex gap-1 border-b overflow-x-auto" style={{ borderColor: C.border }}>
-        {["overview", "products", role === "owner" ? "branches" : "import_history"].map(t => (
+        {["overview", "products", "import_history"].map(t => (
           <button key={t} onClick={() => setTab(t)}
             className="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors capitalize"
             style={{ borderColor: tab === t ? C.maroon : "transparent", color: tab === t ? C.maroon : C.secondary }}>
@@ -229,7 +259,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
                     <TD right>{formatPeso(product.sales)}</TD>
                     <TD right muted>{formatPeso(product.cogs)}</TD>
                     <TD right><span className="font-semibold" style={{ color: grossProfit >= 0 ? C.green : C.red }}>{formatPeso(grossProfit)}</span></TD>
-                    <TD right><span className="font-bold" style={{ color: margin >= 60 ? C.green : margin >= 40 ? C.amber : C.red }}>{margin.toFixed(1)}%</span></TD>
+                    <TD right><span className="font-bold" style={{ color: marginValueColor(margin) }}>{margin.toFixed(1)}%</span></TD>
                   </TR>
                 );
               })}
@@ -239,57 +269,61 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
         </TableCard>
       )}
 
-      {(tab === "import_history" || tab === "branches") && (
+      {tab === "import_history" && (
         <TableCard
           title="POS Import History"
           subtitle={`Audit log of imported daily sales files for ${branchLabel}`}
           toolbar={
             <>
-              <SearchInput placeholder="Search imports…" value={posImportSearch} onChange={setPosImportSearch} />
-              {role === "owner" && <Select options={["All Branches", ...branches.map((branch) => branch.name)]} value={posBranchFilter} onChange={setPosBranchFilter} />}
+              <SearchInput placeholder="Search imports…" value={posImportSearch} onChange={value=>{setPosImportSearch(value);setPosHistoryPage(1);}} />
+              {role === "owner" && <Select options={["All Branches", ...branches.map((branch) => branch.name)]} value={posBranchFilter} onChange={value=>{setPosBranchFilter(value);setPosHistoryPage(1);}} />}
             </>
           }
         >
           <TableWrapper minWidth={1080}>
             <THead cols={role === "owner"
-              ? ["Import ID", "Branch", "Business Date", "Filename", "Uploaded By", "Time", "Rows", "Units Sold", "Total Sales", "Fingerprint", "Status"]
-              : ["Import ID", "Business Date", "Filename", "Upload Time", "Rows", "Units Sold", "Total Sales", "Fingerprint", "Status"]} />
+              ? ["File Name", "Branch", "Business Date", "Uploaded Date / Time", "Uploaded By", "Valid / Total Rows", "Units Sold", "Total Sales", "Fingerprint", "Status", "Action"]
+              : ["File Name", "Business Date", "Uploaded Date / Time", "Uploaded By", "Valid / Total Rows", "Units Sold", "Total Sales", "Fingerprint", "Status"]} />
             <tbody>
               {posHistoryLoading ? (
                 <TableLoadingRow colSpan={role === "owner" ? 11 : 9} label="Loading import history…" />
-              ) : visiblePosImports.length === 0 ? (
+              ) : posImports.length === 0 ? (
                 <TableEmptyRow colSpan={role === "owner" ? 11 : 9} title="No POS imports found" subtitle="Upload a POS sales CSV to see historical records." />
-              ) : visiblePosImports.slice(0, 10).map((row) => (
+              ) : posImports.map((row) => (
                 <TR key={row.id}>
-                  <TD mono>{row.id.slice(0, 8)}</TD>
-                  {role === "owner" && <TD><span className="font-semibold" style={{ color: C.maroon }}>{row.branchName}</span></TD>}
-                  <TD muted>{new Date(`${row.businessDate}T00:00:00`).toLocaleDateString("en-PH")}</TD>
                   <TD><span className="font-mono text-xs font-medium" style={{ color: C.primary }}>{row.sourceFilename}</span></TD>
-                  {role === "owner" && <TD muted>{row.importedBy}</TD>}
-                  <TD muted>{new Date(row.importedAt).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" })}</TD>
-                  <TD right>{row.totalRows || row.productLines}</TD>
+                  {role === "owner" && <TD center><span className="font-semibold" style={{ color: C.maroon }}>{row.branchName}</span></TD>}
+                  <TD center muted>{formatAppDate(row.businessDate)}</TD>
+                  <TD center muted>{formatAppDate(row.importedAt,true)}</TD>
+                  <TD>{row.importedBy}</TD>
+                  <TD center>{row.validRows} / {row.totalRows}</TD>
                   <TD right>{row.unitsSold.toLocaleString()}</TD>
                   <TD right>{formatPeso(row.totalSales)}</TD>
-                  <TD mono>{row.fingerprintIndicator ?? "Legacy"}</TD>
+                  <TD center mono>{row.fingerprintIndicator ?? "Legacy"}</TD>
                   <TD center><StatusChip status={row.status === "NEEDS_REVIEW" ? "pending_review" : "imported"} /></TD>
+                  {canDeletePosImport(role)&&<TD center><button type="button" aria-label={`Delete import ${row.sourceFilename}`} onClick={()=>setDeleteTarget(row)} className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--app-border)] text-[var(--app-danger)] transition-colors hover:bg-[var(--app-danger-bg)]"><Trash2 size={15}/></button></TD>}
                 </TR>
               ))}
             </tbody>
           </TableWrapper>
-          <Pagination total={visiblePosImports.length} page={1} perPage={10} />
+          <Pagination total={posHistoryTotal} page={posHistoryPage} perPage={10} onPageChange={setPosHistoryPage} />
         </TableCard>
+      )}
+
+      {deleteTarget&&canDeletePosImport(role)&&(
+        <PosImportDeleteDialog target={deleteTarget} deleting={deletingImport} onCancel={()=>setDeleteTarget(null)} onConfirm={()=>void deleteImport()}/>
       )}
 
       {/* CSV Upload Modal */}
       {role === "manager" && uploadStep !== "idle" && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.45)" }}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[92vh] overflow-y-auto p-6" style={{ border: `1px solid ${C.border}` }}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.45)" }}>
+          <div role="dialog" aria-modal="true" aria-labelledby="pos-upload-title" className="rounded-2xl shadow-2xl w-full max-w-5xl max-h-[92vh] overflow-y-auto p-6" style={{ background: "var(--app-surface)", border: `1px solid ${C.border}` }}>
             <div className="flex items-center justify-between mb-5">
               <div>
-                <h3 className="font-bold text-lg" style={{ color: C.primary }}>Upload POS CSV</h3>
+                <h3 id="pos-upload-title" className="font-bold text-lg" style={{ color: C.primary }}>Upload POS CSV</h3>
                 <p className="text-xs mt-0.5" style={{ color: C.secondary }}>{user?.branch?.name ?? "Assigned Branch"} — Import daily sales data</p>
               </div>
-              <button onClick={() => setUploadStep("idle")} className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ color: C.secondary, background: C.grayBg }}>
+              <button aria-label="Close POS upload" onClick={() => setUploadStep("idle")} className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ color: C.secondary, background: C.grayBg }}>
                 <X size={15} />
               </button>
             </div>
@@ -537,7 +571,7 @@ function COGSAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role; 
                   <TD right>₱{p.sales.toLocaleString()}</TD>
                   <TD right muted>{formatPeso(p.cogs)}</TD>
                   <TD right>₱{gp.toLocaleString()}</TD>
-                  <TD right><span className="font-bold" style={{ color: parseFloat(margin) > 60 ? C.green : parseFloat(margin) > 50 ? C.amber : C.red }}>{margin}%</span></TD>
+                  <TD right><span className="font-bold" style={{ color: marginValueColor(parseFloat(margin)) }}>{margin}%</span></TD>
                 </TR>
               );
             })}

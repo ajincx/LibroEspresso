@@ -80,6 +80,12 @@ export function IncidentReportDetailsModal({
             label="Incident Type"
             value={incidentTypeLabel(report.incidentType)}
           />
+          {report.incidentType === "OTHER" && (
+            <ReadOnlyField
+              label="Specified Incident Type"
+              value={report.otherIncidentType?.trim() || "Not specified in this legacy report"}
+            />
+          )}
           <ReadOnlyField
             label="Date and Time of Incident"
             value={formatDate(report.occurredAt)}

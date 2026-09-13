@@ -148,7 +148,7 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
 }
 
 function ModalShell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
-  return <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.45)" }}><div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-2xl border p-6" style={{ background: C.surface, borderColor: C.border }}><div className="flex items-center justify-between mb-5"><h2 className="text-lg font-bold">{title}</h2><button onClick={onClose} className="p-2 rounded-lg bg-[var(--app-surface-muted)]" aria-label="Close"><X size={15}/></button></div>{children}</div></div>;
+  return <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.45)" }}><div role="dialog" aria-modal="true" aria-label={title} className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-2xl border p-6" style={{ background: C.surface, borderColor: C.border }}><div className="flex items-center justify-between mb-5"><h2 className="text-lg font-bold">{title}</h2><button onClick={onClose} className="p-2 rounded-lg bg-[var(--app-surface-muted)]" aria-label="Close"><X size={15}/></button></div>{children}</div></div>;
 }
 
 function CreatePurchaseOrder({

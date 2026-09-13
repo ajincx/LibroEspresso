@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { isTableDataValue, tableHeaderAlignment } from "./ModuleUi";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { Btn, isTableDataValue, tableHeaderAlignment } from "./ModuleUi";
 
 describe("shared table alignment",()=>{
   it("centers numeric headers and values",()=>{
@@ -14,5 +16,13 @@ describe("shared table alignment",()=>{
     expect(tableHeaderAlignment("Business Date")).toBe("center");
     expect(isTableDataValue("Arabica Beans")).toBe(false);
     expect(isTableDataValue("09/12/2026")).toBe(true);
+  });
+});
+
+describe("shared button accessibility",()=>{
+  it("provides a consistent visible keyboard focus treatment",()=>{
+    const markup=renderToStaticMarkup(React.createElement(Btn,null,"Save"));
+    expect(markup).toContain("focus-visible:ring-2");
+    expect(markup).toContain("focus-visible:ring-[var(--app-primary)]");
   });
 });

@@ -196,15 +196,16 @@ export function BranchManagementPage({
 
       {open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/45">
-          <div className="rounded-2xl shadow-2xl w-full max-w-md p-6 bg-[var(--app-surface)] border border-[var(--app-border)]">
+          <div role="dialog" aria-modal="true" aria-labelledby="add-branch-title" className="rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto p-6 bg-[var(--app-surface)] border border-[var(--app-border)]">
             <div className="flex justify-between mb-5">
               <div>
-                <h2 className="font-bold text-lg">Add Branch</h2>
+                <h2 id="add-branch-title" className="font-bold text-lg">Add Branch</h2>
                 <p className="text-xs mt-1 text-[var(--app-text-muted)]">
                   Create a new Libro Espresso location.
                 </p>
               </div>
               <button
+                aria-label="Close branch form"
                 onClick={() => setOpen(false)}
                 className="w-9 h-9 rounded-xl bg-[var(--app-surface-muted)] flex items-center justify-center"
               >

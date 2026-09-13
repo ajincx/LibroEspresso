@@ -299,7 +299,7 @@ export function UserManagementPage({
     <div className="p-4 sm:p-6 space-y-5">
       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-[var(--app-text)]">
+          <h1 className="text-xl font-bold text-[var(--app-text)]">
             User Management
           </h1>
           <p className="text-sm mt-1 text-[var(--app-text-muted)]">
@@ -489,10 +489,10 @@ export function UserManagementPage({
           className="fixed inset-0 z-50 flex items-center justify-center p-4"
           style={{ background: "rgba(0,0,0,.48)" }}
         >
-          <div className="w-full max-w-2xl max-h-[92vh] overflow-y-auto rounded-2xl shadow-2xl p-5 sm:p-6 bg-[var(--app-surface)] border border-[var(--app-border)]">
+          <div role="dialog" aria-modal="true" aria-labelledby="user-account-dialog-title" className="w-full max-w-2xl max-h-[92vh] overflow-y-auto rounded-2xl shadow-2xl p-5 sm:p-6 bg-[var(--app-surface)] border border-[var(--app-border)]">
             <div className="flex items-start justify-between mb-5">
               <div>
-                <h2 className="font-bold text-lg text-[var(--app-text)]">
+                <h2 id="user-account-dialog-title" className="font-bold text-lg text-[var(--app-text)]">
                   {editing ? "Edit User Account" : "Add New User"}
                 </h2>
                 <p className="text-xs mt-1 text-[var(--app-text-muted)]">
@@ -502,6 +502,7 @@ export function UserManagementPage({
                 </p>
               </div>
               <button
+                aria-label="Close user account form"
                 onClick={closeModal}
                 className="w-8 h-8 rounded-lg flex items-center justify-center text-[var(--app-text-muted)] bg-[var(--app-surface-muted)]"
               >

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import {
   createInventoryMovement,
+  deletePosImport,
   getExpectedInventory,
   getPosAnalytics,
   getShrinkageReport,
@@ -27,6 +28,7 @@ export const posSalesRouter = Router();
 posSalesRouter.use(authenticate, authorize("OWNER", "BRANCH_MANAGER"));
 posSalesRouter.get("/analytics", asyncHandler(getPosAnalytics));
 posSalesRouter.get("/", asyncHandler(listPosImports));
+posSalesRouter.delete("/:id", authorize("OWNER"), asyncHandler(deletePosImport));
 posSalesRouter.post("/preview", authorize("BRANCH_MANAGER"), asyncHandler(previewPosSales));
 posSalesRouter.post("/import", authorize("BRANCH_MANAGER"), asyncHandler(importPosSales));
 

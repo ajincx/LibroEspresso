@@ -39,8 +39,11 @@ export const inventoryWorkflowService = {
   async importPosSales(input: { sourceFilename: string; csvText: string; expectedContentHash: string }) {
     return (await api.post<ApiSuccess<{ importId: string; branchId: string; businessDate: string; rowsImported: number; productsMatched: number; totalQuantitySold: number; totalSales: number; fingerprintIndicator: string; quality: "COMPLETE" | "NEEDS_REVIEW"; consumption: { inventoryItemId: string; sku: string; name: string; unit: string; expectedConsumption: number }[] }>>("/pos-sales/import", input)).data.data;
   },
-  async posImports(branchId?: string) {
-    return (await api.get<ApiSuccess<{ imports: PosImportRecord[] }>>("/pos-sales", { params: { branchId } })).data.data.imports;
+  async posImports(filters?: { branchId?: string; search?: string; page?: number; pageSize?: number }) {
+    return (await api.get<ApiSuccess<{ imports: PosImportRecord[]; pagination: { page:number;pageSize:number;total:number;totalPages:number } }>>("/pos-sales", { params: filters })).data.data;
+  },
+  async deletePosImport(id:string) {
+    return (await api.delete<ApiSuccess<{ id:string;deleted:true }>>(`/pos-sales/${id}`)).data.data;
   },
   async posAnalytics(filters?: { branchId?: string; startDate?: string; endDate?: string }) {
     return (await api.get<ApiSuccess<PosAnalytics>>("/pos-sales/analytics", { params: filters })).data.data;

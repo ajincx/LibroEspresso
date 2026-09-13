@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ReportSelector, selectAllReportTypes, toggleReportType } from "./ReportsPage";
+import { ReportExportActions, ReportSelector, selectAllReportTypes, shouldApplyPreviewResponse, toggleReportType } from "./ReportsPage";
 
 describe("report multi-selection",()=>{
   it("selects one and multiple report types in official order",()=>{
@@ -24,5 +24,15 @@ describe("report multi-selection",()=>{
     const markup=renderToStaticMarkup(React.createElement(ReportSelector,{selected:[],onChange:()=>undefined}));
     expect(markup).toContain('type="button"');
     expect(markup).toContain('aria-pressed="false"');
+  });
+  it("rejects stale preview responses after a newer request starts",()=>{
+    expect(shouldApplyPreviewResponse(3,4)).toBe(false);
+    expect(shouldApplyPreviewResponse(4,4)).toBe(true);
+  });
+  it("renders one disabled PDF and Excel action for an unavailable preview",()=>{
+    const markup=renderToStaticMarkup(React.createElement(ReportExportActions,{disabled:true,exporting:null,onExport:()=>undefined}));
+    expect(markup.match(/Export PDF/g)).toHaveLength(1);
+    expect(markup.match(/Export Excel/g)).toHaveLength(1);
+    expect(markup.match(/disabled=""/g)).toHaveLength(2);
   });
 });

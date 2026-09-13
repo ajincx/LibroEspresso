@@ -19,6 +19,7 @@ import {
   inventoryMovementInput,
   notificationIdParams,
   posAnalyticsFilters,
+  posImportHistoryFilters,
   posImportInput,
   posPreviewInput,
   shrinkageFilters,
@@ -249,9 +250,13 @@ export const importPosSales: RequestHandler = async (req, res) => {
 
 export const listPosImports: RequestHandler = async (req, res) => {
   const pagination = paginationQuery.parse(req.query);
-  const requestedBranchId =
-    typeof req.query.branchId === "string" ? req.query.branchId : undefined;
-  const branchId = getEffectiveBranchId(req.user!, requestedBranchId);
+  const filters = posImportHistoryFilters.parse(req.query);
+  const branchId = getEffectiveBranchId(req.user!, filters.branchId);
+  const clauses:string[]=[];
+  const values:unknown[]=[];
+  if(branchId){values.push(branchId);clauses.push(`pi.branch_id=$${values.length}`);}
+  if(filters.search){values.push(`%${filters.search}%`);clauses.push(`(pi.source_filename ILIKE $${values.length} OR b.name ILIKE $${values.length} OR concat(u.first_name,' ',u.last_name) ILIKE $${values.length} OR pi.business_date::text ILIKE $${values.length})`);}
+  values.push(pagination.pageSize,(pagination.page-1)*pagination.pageSize);
   const result = await pool.query(
     `SELECT pi.id,pi.business_date::text "businessDate",pi.source_filename "sourceFilename",
             pi.imported_at "importedAt",pi.import_status "status",pi.total_source_rows "totalRows",
@@ -267,14 +272,60 @@ export const listPosImports: RequestHandler = async (req, res) => {
        JOIN users u ON u.id=pi.imported_by
        LEFT JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
        LEFT JOIN menu_items mi ON mi.id=psi.menu_item_id
-      ${branchId ? "WHERE pi.branch_id=$1" : ""}
+      ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
       GROUP BY pi.id,b.id,u.id
       ORDER BY pi.business_date DESC,pi.imported_at DESC
-      LIMIT $${branchId ? 2 : 1} OFFSET $${branchId ? 3 : 2}`,
-    branchId ? [branchId, pagination.pageSize, (pagination.page-1)*pagination.pageSize] : [pagination.pageSize, (pagination.page-1)*pagination.pageSize],
+      LIMIT $${values.length-1} OFFSET $${values.length}`,
+    values,
   );
   const page = paginatedRows(result.rows, pagination);
   res.json({ success: true, data: { imports: page.data, pagination: page.pagination } });
+};
+
+export const deletePosImport: RequestHandler = async (req, res) => {
+  const { id } = idParams.parse(req.params);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const imported = await client.query<{
+      branchId:string;branchName:string;businessDate:string;sourceFilename:string;importedByUserId:string;
+      totalRows:number;saleRowCount:number;ingredientUsageRowCount:number;
+    }>(
+      `SELECT pi.branch_id "branchId",b.name "branchName",pi.business_date::text "businessDate",
+              pi.source_filename "sourceFilename",pi.imported_by "importedByUserId",pi.total_source_rows "totalRows",
+              (SELECT count(*)::int FROM pos_sale_items psi WHERE psi.pos_import_id=pi.id) "saleRowCount",
+              (SELECT count(*)::int FROM pos_sale_ingredient_usage usage JOIN pos_sale_items psi ON psi.id=usage.pos_sale_item_id WHERE psi.pos_import_id=pi.id) "ingredientUsageRowCount"
+         FROM pos_imports pi JOIN branches b ON b.id=pi.branch_id WHERE pi.id=$1 FOR UPDATE`,
+      [id],
+    );
+    const record=imported.rows[0];
+    if(!record) throw new AppError(404,"POS_IMPORT_NOT_FOUND","POS import not found");
+    const reconciled=await client.query(
+      `SELECT 1 FROM inventory_counts WHERE branch_id=$1 AND count_date >= $2::date LIMIT 1`,
+      [record.branchId,record.businessDate],
+    );
+    if(reconciled.rows[0]) throw new AppError(409,"POS_IMPORT_RECONCILED","This import cannot be deleted because a physical inventory count already includes its business date.");
+    await client.query(`DELETE FROM notifications WHERE entity_type='POS_IMPORT' AND entity_id=$1`,[id]);
+    await client.query(`DELETE FROM pos_imports WHERE id=$1`,[id]);
+    await writeAudit(req.user!,"POS_IMPORT_DELETED","POS_IMPORT",id,`Deleted POS import ${record.sourceFilename}`,{
+      branchId:record.branchId,
+      branchName:record.branchName,
+      businessDate:record.businessDate,
+      sourceFilename:record.sourceFilename,
+      importedByUserId:record.importedByUserId,
+      totalRows:record.totalRows,
+      saleRowCount:record.saleRowCount,
+      ingredientUsageRowCount:record.ingredientUsageRowCount,
+      deletingRole:req.user!.role,
+    },client);
+    await client.query("COMMIT");
+    res.json({success:true,data:{id,deleted:true}});
+  } catch(error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 };
 
 export const getPosAnalytics: RequestHandler = async (req, res) => {

@@ -36,8 +36,25 @@ describe("Staff incident validation", () => {
     reason: "Documented during operations",
   };
 
-  it.each(["SPOILAGE", "WASTAGE", "SPILLAGE", "DAMAGED_ITEM", "PREPARATION_ERROR", "OVERPRODUCTION", "EXPIRATION", "UNAUTHORIZED_CONSUMPTION", "OTHER"])("accepts %s", (incidentType) => {
+  it.each(["SPOILAGE", "WASTAGE", "SPILLAGE", "DAMAGED_ITEM", "PREPARATION_ERROR", "OVERPRODUCTION", "EXPIRATION", "UNAUTHORIZED_CONSUMPTION"])("accepts %s", (incidentType) => {
     expect(incidentCreateInput.parse({ ...base, incidentType }).incidentType).toBe(incidentType);
+  });
+
+  it("requires a separate specification for OTHER incidents", () => {
+    expect(() => incidentCreateInput.parse({ ...base, incidentType: "OTHER" })).toThrow("Please specify the incident type.");
+    expect(() => incidentCreateInput.parse({ ...base, incidentType: "OTHER", otherIncidentType: "   " })).toThrow();
+  });
+
+  it("trims and accepts a valid OTHER incident specification", () => {
+    const parsed = incidentCreateInput.parse({ ...base, incidentType: "OTHER", otherIncidentType: "  Packaging issue  " });
+    expect(parsed.otherIncidentType).toBe("Packaging issue");
+    expect(parsed.reason).toBe(base.reason);
+  });
+
+  it("ignores an OTHER specification for standard incident categories", () => {
+    const parsed = incidentCreateInput.parse({ ...base, incidentType: "SPOILAGE", otherIncidentType: "Stale value" });
+    expect(parsed.otherIncidentType).toBeUndefined();
+    expect(incidentCreateInput.parse({ ...base, incidentType: "WASTAGE", otherIncidentType: null }).otherIncidentType).toBeUndefined();
   });
 
   it.each(["PILFERAGE", "VERIFIED_PILFERAGE"])("rejects Staff classification %s", (incidentType) => {

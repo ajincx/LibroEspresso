@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BarChart3,
   Boxes,
@@ -90,6 +90,7 @@ const reportTypes: {
 ];
 export const selectAllReportTypes=()=>reportTypes.map(item=>item.value);
 export const toggleReportType=(selected:ApprovedReportType[],value:ApprovedReportType)=>selected.includes(value)?selected.filter(item=>item!==value):reportTypes.map(item=>item.value).filter(item=>item===value||selected.includes(item));
+export const shouldApplyPreviewResponse=(requestId:number,latestRequestId:number)=>requestId===latestRequestId;
 const classifications = [
   { label: "All Classifications", value: "" },
   ...(
@@ -183,6 +184,13 @@ export function ReportSelector({
   );
 }
 
+export function ReportExportActions({disabled,exporting,onExport}:{disabled:boolean;exporting:"pdf"|"xlsx"|null;onExport:(format:"pdf"|"xlsx")=>void}) {
+  return <div className="flex items-center gap-2">
+    <Btn icon={Download} disabled={disabled} onClick={() => onExport("pdf")}>{exporting === "pdf" ? "Creating PDF…" : "Export PDF"}</Btn>
+    <Btn variant="outline" icon={FileSpreadsheet} disabled={disabled} onClick={() => onExport("xlsx")}>{exporting === "xlsx" ? "Creating Excel…" : "Export Excel"}</Btn>
+  </div>;
+}
+
 export function Reports({
   role,
   scopeBranchId,
@@ -217,6 +225,7 @@ export function Reports({
     [loading, setLoading] = useState(false),
     [exporting, setExporting] = useState<"pdf" | "xlsx" | null>(null),
     [page, setPage] = useState(1);
+  const previewRequestId = useRef(0);
   useEffect(() => {
     if (role === "owner")
       void masterDataService
@@ -292,37 +301,40 @@ export function Reports({
   );
   const selectionChanged = (next: ApprovedReportType[]) => {
     setSelectedTypes(next);
-    setPreview(null);
+    if (!next.length) setPreview(null);
+    else setLoading(true);
     setPage(1);
   };
-  const generate = async (targetPage = 1) => {
-    if (!selectedTypes.length) return;
-    if (startDate > endDate) {
-      toast.error("Date To must be on or after Date From.");
+  useEffect(() => {
+    const requestId = ++previewRequestId.current;
+    if (!selectedTypes.length) {
+      setPreview(null);
+      setLoading(false);
       return;
     }
-    setLoading(true);
-    try {
-      const result = await reportsService.preview({
-        ...request,
-        page: targetPage,
-      });
-      setPreview(result);
-      setPage(targetPage);
-      toast.success(
-        `${selectedTypes.length} report${selectedTypes.length === 1 ? "" : "s"} prepared for review.`,
-      );
-    } catch (error) {
+    if (startDate > endDate || (showForecast && forecastStart > forecastEnd)) {
       setPreview(null);
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "Report generation failed. Please try again.",
-      );
-    } finally {
       setLoading(false);
+      return;
     }
-  };
+    const controller = new AbortController();
+    setLoading(true);
+    const timeout = window.setTimeout(() => {
+      void reportsService.preview(request, controller.signal).then((result) => {
+        if (shouldApplyPreviewResponse(requestId, previewRequestId.current)) setPreview(result);
+      }).catch((error) => {
+        if (controller.signal.aborted || !shouldApplyPreviewResponse(requestId, previewRequestId.current)) return;
+        setPreview(null);
+        toast.error(error instanceof Error ? error.message : "Report preview failed. Please try again.");
+      }).finally(() => {
+        if (shouldApplyPreviewResponse(requestId, previewRequestId.current)) setLoading(false);
+      });
+    }, 180);
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [request, selectedTypes.length, startDate, endDate, showForecast, forecastStart, forecastEnd]);
   const exportReport = async (format: "pdf" | "xlsx") => {
     setExporting(format);
     try {
@@ -362,7 +374,8 @@ export function Reports({
                 value={startDate}
                 onChange={(value) => {
                   setStartDate(value);
-                  setPreview(null);
+                  setPage(1);
+                  setLoading(true);
                 }}
               />
               <CalendarDateField
@@ -370,7 +383,8 @@ export function Reports({
                 value={endDate}
                 onChange={(value) => {
                   setEndDate(value);
-                  setPreview(null);
+                  setPage(1);
+                  setLoading(true);
                 }}
               />
               {role === "owner" ? (
@@ -387,7 +401,8 @@ export function Reports({
                     value={branchId}
                     onChange={(value) => {
                       setBranchId(value);
-                      setPreview(null);
+                      setPage(1);
+                      setLoading(true);
                     }}
                   />
                 </label>
@@ -418,7 +433,8 @@ export function Reports({
                     value={productId}
                     onChange={(value) => {
                       setProductId(value);
-                      setPreview(null);
+                      setPage(1);
+                      setLoading(true);
                     }}
                   />
                 </label>
@@ -437,7 +453,8 @@ export function Reports({
                     value={ingredientId}
                     onChange={(value) => {
                       setIngredientId(value);
-                      setPreview(null);
+                      setPage(1);
+                      setLoading(true);
                     }}
                   />
                 </label>
@@ -450,7 +467,8 @@ export function Reports({
                     value={classification}
                     onChange={(value) => {
                       setClassification(value);
-                      setPreview(null);
+                      setPage(1);
+                      setLoading(true);
                     }}
                   />
                 </label>
@@ -463,7 +481,8 @@ export function Reports({
                     value={poStatus}
                     onChange={(value) => {
                       setPoStatus(value);
-                      setPreview(null);
+                      setPage(1);
+                      setLoading(true);
                     }}
                   />
                 </label>
@@ -475,7 +494,8 @@ export function Reports({
                     value={forecastStart}
                     onChange={(value) => {
                       setForecastStart(value);
-                      setPreview(null);
+                      setPage(1);
+                      setLoading(true);
                     }}
                   />
                   <CalendarDateField
@@ -483,42 +503,44 @@ export function Reports({
                     value={forecastEnd}
                     onChange={(value) => {
                       setForecastEnd(value);
-                      setPreview(null);
+                      setPage(1);
+                      setLoading(true);
                     }}
                   />
                 </>
               )}
-              <Btn
-                onClick={() => void generate(1)}
-                disabled={loading || selectedTypes.length === 0}
-              >
-                {loading ? "Generating Preview…" : "Generate Preview"}
-              </Btn>
             </div>
           </Card>
         </div>
         <div className="min-w-0">
-          {!preview ? (
+          {!selectedTypes.length ? (
             <Card className="min-h-[520px] flex items-center justify-center">
               <div className="text-center max-w-md">
                 <div className="w-14 h-14 rounded-2xl bg-[var(--app-primary-faint)] text-[var(--app-primary)] flex items-center justify-center mx-auto">
                   <FileText size={25} />
                 </div>
-                <h2 className="font-semibold mt-4">No report generated yet</h2>
+                <h2 className="font-semibold mt-4">Select reports to begin</h2>
                 <p className="text-sm text-[var(--app-text-muted)] mt-2">
-                  {selectedTypes.length
-                    ? "Configure the relevant filters, then generate a backend-owned preview."
-                    : "Select at least one report to enable the preview."}
+                  Select one or more reports to view the preview.
                 </p>
               </div>
             </Card>
+          ) : loading ? (
+            <Card className="min-h-[520px] flex items-center justify-center" aria-live="polite" aria-busy="true">
+              <div className="text-center"><span className="mx-auto block h-9 w-9 animate-spin rounded-full border-4 border-[var(--app-primary-faint)] border-t-[var(--app-primary)]"/><p className="mt-4 text-sm font-semibold">Loading report…</p><p className="mt-1 text-xs text-[var(--app-text-muted)]">Updating the preview with your current selection and filters.</p></div>
+            </Card>
+          ) : !preview ? (
+            <Card className="min-h-[520px] flex items-center justify-center"><div className="text-center max-w-md"><FileText size={25} className="mx-auto text-[var(--app-primary)]"/><h2 className="font-semibold mt-4">Preview unavailable</h2><p className="text-sm text-[var(--app-text-muted)] mt-2">Check the selected date range or adjust the filters to try again.</p></div></Card>
           ) : (
             <div className="space-y-4">
               <Card className="overflow-hidden">
                 <div className="border-b pb-4 mb-4 border-[var(--app-border)]">
-                  <div className="flex items-center gap-3">
-                    <img src="/images/logo.jpg" alt="Libro Espresso Cafe logo" className="h-12 w-12 shrink-0 rounded-xl object-cover shadow-sm"/>
-                    <div className="min-w-0"><p className="text-sm font-extrabold uppercase tracking-wide text-[var(--app-primary)]">Libro Espresso Cafe</p><h1 className="mt-0.5 text-xl font-bold">{preview.metadata.title}</h1></div>
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <img src="/images/logo.jpg" alt="Libro Espresso Cafe logo" className="h-12 w-12 shrink-0 rounded-xl object-cover shadow-sm"/>
+                      <div className="min-w-0"><p className="text-sm font-extrabold uppercase tracking-wide text-[var(--app-primary)]">Libro Espresso Cafe</p><h1 className="mt-0.5 text-xl font-bold">{preview.metadata.title}</h1></div>
+                    </div>
+                    <ReportExportActions disabled={Boolean(exporting) || loading || !preview || !selectedTypes.length} exporting={exporting} onExport={(format) => void exportReport(format)}/>
                   </div>
                   <div className="grid sm:grid-cols-2 gap-x-6 gap-y-1 mt-3 text-xs text-[var(--app-text-muted)]">
                     <p>
@@ -571,7 +593,7 @@ export function Reports({
                   <Btn
                     variant="outline"
                     disabled={page <= 1 || loading}
-                    onClick={() => void generate(page - 1)}
+                    onClick={() => { setLoading(true); setPage(page - 1); }}
                   >
                     Previous
                   </Btn>
@@ -581,29 +603,12 @@ export function Reports({
                   <Btn
                     variant="outline"
                     disabled={page >= preview.pagination.totalPages || loading}
-                    onClick={() => void generate(page + 1)}
+                    onClick={() => { setLoading(true); setPage(page + 1); }}
                   >
                     Next
                   </Btn>
                 </div>
               )}
-              <div className="flex justify-end gap-2">
-                <Btn
-                  variant="outline"
-                  icon={FileSpreadsheet}
-                  disabled={Boolean(exporting)}
-                  onClick={() => void exportReport("xlsx")}
-                >
-                  {exporting === "xlsx" ? "Creating Excel…" : "Excel (.xlsx)"}
-                </Btn>
-                <Btn
-                  icon={Download}
-                  disabled={Boolean(exporting)}
-                  onClick={() => void exportReport("pdf")}
-                >
-                  {exporting === "pdf" ? "Creating PDF…" : "PDF"}
-                </Btn>
-              </div>
             </div>
           )}
         </div>

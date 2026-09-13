@@ -224,6 +224,14 @@ describe("access controls", () => {
     expect(responses.map((response) => response.status)).toEqual([403, 403]);
   });
 
+  it("allows only the Owner role to request POS import deletion",async()=>{
+    const manager=session({id:"manager",role:"BRANCH_MANAGER",branchId:"00000000-0000-0000-0000-000000000002"});
+    const staff=session({id:"staff",role:"STAFF",branchId:"00000000-0000-0000-0000-000000000002"});
+    const path="/api/pos-sales/00000000-0000-4000-8000-000000000010";
+    const responses=await Promise.all([request(app).delete(path).set("Cookie",manager),request(app).delete(path).set("Cookie",staff),request(app).delete(path)]);
+    expect(responses.map(response=>response.status)).toEqual([403,403,401]);
+  });
+
   it("allows only an authenticated Branch Manager into POS preview validation", async () => {
     const cookie = session({
       id: "manager",

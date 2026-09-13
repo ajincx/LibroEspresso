@@ -146,6 +146,7 @@ const statusMap: Record<string, { label: string; bg: string; color: string }> = 
   critical: { label: "Critical", bg: C.redBg, color: C.red },
   out: { label: "Out of Stock", bg: C.redBg, color: C.deepMaroon },
   out_of_stock: { label: "Out of Stock", bg: C.redBg, color: C.deepMaroon },
+  out_neutral: { label: "Out of Stock", bg: C.grayBg, color: C.secondary },
   draft: { label: "Draft", bg: C.grayBg, color: C.secondary },
   pending: { label: "Pending Approval", bg: C.amberBg, color: C.amber },
   ordered: { label: "Ordered", bg: C.blueBg, color: C.blue },
@@ -289,7 +290,7 @@ export function Btn({ children, variant = "primary", size = "md", onClick, icon:
   const sclass = { sm: "px-2.5 py-1.5 text-xs gap-1.5", md: "px-3.5 py-2 text-sm gap-2", lg: "px-5 py-2.5 text-sm gap-2" };
   return (
     <button type="button" onClick={onClick} disabled={disabled} title={title}
-      className={cn(`app-btn app-btn--${variant}`, "inline-flex items-center justify-center font-semibold rounded-xl",
+      className={cn(`app-btn app-btn--${variant}`, "inline-flex items-center justify-center font-semibold rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--app-bg)]",
         sclass[size], disabled && "opacity-40 cursor-not-allowed", className)}
       style={vstyle[variant]}>
       {Icon && <Icon size={size === "sm" ? 13 : 14} />}

@@ -71,6 +71,7 @@ export const operationsService = {
     productId?: string;
     shrinkageReportId?: string;
     incidentType: IncidentType;
+    otherIncidentType?: string;
     quantity: number;
     occurredAt: string;
     reason: string;

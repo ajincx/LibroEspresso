@@ -13,9 +13,10 @@ vi.mock("../config/database.js", () => ({
 }));
 vi.mock("../services/audit.service.js", () => ({ writeAudit: mocks.writeAudit }));
 
-import { importPosSales } from "./inventoryWorkflow.controller.js";
+import { deletePosImport, importPosSales, listPosImports } from "./inventoryWorkflow.controller.js";
 
 const branchId = "00000000-0000-4000-8000-000000000002";
+const importId = "00000000-0000-4000-8000-000000000010";
 const csvText =
   "product_code,quantity_sold,selling_price,business_date,transaction_id,line_id\nLATTE-L,2,190,2026-09-08,R-1,1";
 const request = () =>
@@ -186,5 +187,50 @@ describe("transactional POS import persistence", () => {
     expect(failure).toMatchObject({ status: 409, code: "POS_IMPORT_DUPLICATE" });
     expect(queries.some(({ sql }) => sql === "ROLLBACK")).toBe(true);
     expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_sale_items"))).toBe(false);
+  });
+});
+
+describe("POS import history access and deletion",()=>{
+  it("keeps Branch Manager import history restricted to the authenticated branch",async()=>{
+    mocks.poolQuery.mockResolvedValue({rows:[]});
+    const req={query:{branchId:"00000000-0000-4000-8000-000000000099",page:"1",pageSize:"10"},user:{id:"manager-1",role:"BRANCH_MANAGER",branchId}} as never;
+    await listPosImports(req,response() as never,vi.fn());
+    expect(mocks.poolQuery).toHaveBeenCalledWith(expect.stringContaining("pi.branch_id=$1"),[branchId,10,0]);
+  });
+
+  it("deletes the complete import batch transactionally and writes a retained audit event",async()=>{
+    const queries:Array<{sql:string;values?:unknown[]}>=[];
+    const client={query:vi.fn(async(statement:unknown,values?:unknown[])=>{
+      const sql=String(statement);queries.push({sql,values});
+      if(sql.includes('pi.branch_id "branchId"'))return{rows:[{branchId,branchName:"Lipa",businessDate:"2026-09-13",sourceFilename:"sales.csv",importedByUserId:"manager-1",totalRows:500,saleRowCount:500,ingredientUsageRowCount:1200}]};
+      if(sql.includes("FROM inventory_counts"))return{rows:[]};
+      return{rows:[]};
+    }),release:vi.fn()};
+    mocks.connect.mockResolvedValue(client);
+    const req={params:{id:importId},user:{id:"owner-1",role:"OWNER",branchId:null}} as never;
+    const res=response();
+    await deletePosImport(req,res as never,vi.fn());
+    expect(queries.map(item=>item.sql)).toEqual(expect.arrayContaining(["BEGIN",expect.stringContaining("DELETE FROM notifications"),expect.stringContaining("DELETE FROM pos_imports"),"COMMIT"]));
+    expect(queries.some(item=>item.sql.includes("DELETE FROM pos_sale_items"))).toBe(false);
+    expect(mocks.writeAudit).toHaveBeenCalledWith(expect.objectContaining({role:"OWNER"}),"POS_IMPORT_DELETED","POS_IMPORT",importId,"Deleted POS import sales.csv",expect.objectContaining({saleRowCount:500,ingredientUsageRowCount:1200}),client);
+    expect(res.json).toHaveBeenCalledWith({success:true,data:{id:importId,deleted:true}});
+    expect(client.release).toHaveBeenCalledOnce();
+  });
+
+  it("blocks deletion after a physical count has reconciled the import date",async()=>{
+    const queries:string[]=[];
+    const client={query:vi.fn(async(statement:unknown)=>{
+      const sql=String(statement);queries.push(sql);
+      if(sql.includes('pi.branch_id "branchId"'))return{rows:[{branchId,branchName:"Lipa",businessDate:"2026-09-13",sourceFilename:"sales.csv",importedByUserId:"manager-1",totalRows:10,saleRowCount:10,ingredientUsageRowCount:20}]};
+      if(sql.includes("FROM inventory_counts"))return{rows:[{exists:1}]};
+      return{rows:[]};
+    }),release:vi.fn()};
+    mocks.connect.mockResolvedValue(client);
+    let failure:unknown;
+    try{await deletePosImport({params:{id:importId},user:{id:"owner-1",role:"OWNER",branchId:null}} as never,response() as never,vi.fn());}catch(error){failure=error;}
+    expect(failure).toMatchObject({status:409,code:"POS_IMPORT_RECONCILED"});
+    expect(queries).toContain("ROLLBACK");
+    expect(queries.some(sql=>sql.includes("DELETE FROM pos_imports"))).toBe(false);
+    expect(mocks.writeAudit).not.toHaveBeenCalled();
   });
 });

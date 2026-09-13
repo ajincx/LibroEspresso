@@ -31,6 +31,7 @@ export const incidentCreateInput = z.object({
   productId: z.string().uuid().optional(),
   shrinkageReportId: z.string().uuid().optional(),
   incidentType: z.enum(STAFF_INCIDENT_TYPES),
+  otherIncidentType: z.string().trim().min(1, "Please specify the incident type.").max(120).nullish(),
   quantity: z.coerce.number().positive(),
   occurredAt: z.iso.datetime(),
   reason: z.string().trim().min(3).max(1000),
@@ -44,7 +45,19 @@ export const incidentCreateInput = z.object({
       "Evidence must be a JPEG, PNG, or WebP image",
     )
     .optional(),
-});
+}).superRefine((value, context) => {
+  if (value.incidentType === "OTHER" && !value.otherIncidentType) {
+    context.addIssue({
+      code: "custom",
+      path: ["otherIncidentType"],
+      message: "Please specify the incident type.",
+    });
+  }
+}).transform((value) => ({
+  ...value,
+  otherIncidentType:
+    value.incidentType === "OTHER" ? value.otherIncidentType : undefined,
+}));
 
 export const incidentReviewInput = z.object({
   status: z.enum(["VERIFIED", "REJECTED"]),

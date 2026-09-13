@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { ShoppingCart, Package, Percent, TrendingDown, RefreshCw, Check, AlertTriangle, Search, BadgeDollarSign } from "lucide-react";
+import { ShoppingCart, Package, Percent, TrendingDown, RefreshCw, Check, AlertTriangle, Search, BadgeDollarSign, Sparkles, ArrowRight } from "lucide-react";
 import { Card, Btn, KPICard, DashboardFilters, StatusChip, SearchInput, Select, C, type DashboardRange, type DashboardComparison } from "../../components/ModuleUi";
 import { useAuth } from "../../contexts/AuthContext";
 import { inventoryWorkflowService as workflow } from "../../services/inventoryWorkflow.service";
@@ -19,7 +19,65 @@ const ALERT_PRIORITY: Record<InventoryOverviewItem["status"], number> = { OUT_OF
 export const DASHBOARD_INVENTORY_TARGET:Page="inventory";
 export const dashboardGreeting = (hour:number,firstName?:string) => `${hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"}, ${firstName ?? ""} 👋`.replace(",  ", ", ");
 export const prioritizeInventoryAlerts = (items:InventoryOverviewItem[]) => [...items].filter(item=>item.status!=="HEALTHY").sort((a,b)=>ALERT_PRIORITY[b.status]-ALERT_PRIORITY[a.status] || (b.reorderLevel-b.systemStock)-(a.reorderLevel-a.systemStock) || a.name.localeCompare(b.name));
-export const stockStatusChip=(status:InventoryOverviewItem["status"])=>status==="OUT_OF_STOCK"?"out":status==="LOW_STOCK"?"low":status.toLowerCase();
+export const stockStatusChip=(status:InventoryOverviewItem["status"])=>status==="OUT_OF_STOCK"?"out_neutral":status==="LOW_STOCK"?"low":status.toLowerCase();
+export const inventoryValueColor=(value:number)=>value<0?C.red:"var(--app-text)";
+export const forecastUrgencyAccent=(urgency:PredictiveForecast["insights"][number]["urgency"])=>({HIGH:C.red,MEDIUM:C.amber,LOW:C.green}[urgency]);
+
+export function DashboardToolbar({ actions, filters }:{ actions?:ReactNode;filters:ReactNode }) {
+  return <div data-dashboard-toolbar className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+    <div className="flex min-h-10 flex-wrap items-center gap-2">{actions}</div>
+    <div className="min-w-0 lg:ml-auto">{filters}</div>
+  </div>;
+}
+
+export function ForecastReplenishmentPanel({forecast,forecastError,role,onReview,onCreateOrder}:{forecast:PredictiveForecast|null;forecastError:string;role:Role;onReview:()=>void;onCreateOrder:(prediction:PredictiveForecast["predictions"][number])=>void}) {
+  const selectedPrediction=forecast?.predictions.find(prediction=>prediction.recommendedReorder>0);
+  return <Card padding={false} className="overflow-hidden shadow-[0_18px_46px_rgba(77,20,31,.10)]">
+    <div className="border-b border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-5 sm:px-6">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[.16em] text-[var(--app-primary)]"><span className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--app-primary-faint)]"><Sparkles size={14}/></span>Decision-support forecast</div>
+          <h2 className="text-lg font-bold tracking-tight text-[var(--app-text)] sm:text-xl">Next 30 Days · Forecast &amp; Replenishment</h2>
+          <p className="mt-1 text-xs leading-relaxed text-[var(--app-text-muted)]">Projected demand, inventory risk, and replenishment guidance from recorded operational data.</p>
+        </div>
+        <Btn variant="outline" icon={ArrowRight} onClick={onReview}>Review Forecast</Btn>
+      </div>
+    </div>
+    {forecastError ? <div className="m-5 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700" role="alert">{forecastError}</div> : !forecast ? <div className="flex min-h-56 items-center justify-center p-6" aria-live="polite"><div className="text-center"><span className="mx-auto block h-9 w-9 animate-spin rounded-full border-4 border-[var(--app-primary-faint)] border-t-[var(--app-primary)]"/><p className="mt-3 text-sm font-semibold">Loading forecast…</p></div></div> : <>
+      <div className="grid gap-4 border-b border-[var(--app-border)] bg-[var(--app-bg)] p-5 sm:p-6 md:grid-cols-[minmax(0,1.45fr)_minmax(220px,.55fr)]">
+        <div className="rounded-2xl border border-[var(--app-primary-soft)] bg-[var(--app-surface)] p-5 shadow-sm">
+          <p className="text-[11px] font-bold uppercase tracking-[.14em] text-[var(--app-text-muted)]">Projected sales</p>
+          <div className="mt-2 flex flex-wrap items-end gap-3"><p className="text-3xl font-extrabold tracking-tight text-[var(--app-text)] sm:text-4xl">{money(forecast.summary.forecastSales)}</p><span className="mb-1 text-xs font-medium text-[var(--app-text-muted)]">over the next 30 days</span></div>
+        </div>
+        <div className="flex flex-col justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5 shadow-sm">
+          <p className="text-[11px] font-bold uppercase tracking-[.14em] text-[var(--app-text-muted)]">Forecast confidence</p>
+          <div className="mt-3"><StatusChip status={forecast.methodology.confidence} kind="confidence"/></div>
+          <p className="mt-3 text-xs leading-relaxed text-[var(--app-text-muted)]">Based on {forecast.methodology.observedSalesDays} recorded sales day{forecast.methodology.observedSalesDays===1?"":"s"}.</p>
+        </div>
+      </div>
+      <div className="p-5 sm:p-6">
+        <div className="mb-4 flex flex-wrap items-end justify-between gap-2"><div><h3 className="text-sm font-bold text-[var(--app-text)]">Forecast insights</h3><p className="mt-1 text-xs text-[var(--app-text-muted)]">Review the signals that may require operational attention.</p></div><span className="rounded-full border border-[var(--app-border)] bg-[var(--app-surface-muted)] px-2.5 py-1 text-[10px] font-bold text-[var(--app-text-muted)]">{forecast.insights.length} insight{forecast.insights.length===1?"":"s"}</span></div>
+        <div className="grid gap-3">
+          {forecast.insights.map((insight,index)=>{
+            const accent=forecastUrgencyAccent(insight.urgency);
+            return <article key={`${insight.title}-${index}`} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 shadow-sm transition-shadow hover:shadow-md sm:p-5">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2"><span className="flex h-8 w-8 items-center justify-center rounded-xl" style={{color:accent,background:`color-mix(in srgb, ${accent} 11%, transparent)`}}><AlertTriangle size={15}/></span><h4 className="text-sm font-bold text-[var(--app-text)]">{insight.title}</h4><StatusChip status={insight.urgency} kind="urgency"/></div>
+                  <p className="mt-3 text-sm leading-6 text-[var(--app-text)]">{insight.description}</p>
+                  <div className="mt-3 rounded-xl bg-[var(--app-surface-muted)] px-3.5 py-3"><p className="text-[10px] font-bold uppercase tracking-wider text-[var(--app-primary)]">Recommended response</p><p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">{insight.recommendation}</p></div>
+                </div>
+                <Btn size="sm" variant="outline" onClick={onReview}>Review</Btn>
+              </div>
+            </article>;
+          })}
+        </div>
+        {selectedPrediction&&<div className="mt-5 rounded-2xl border border-[var(--app-primary-soft)] bg-[var(--app-primary-faint)] p-4 sm:p-5"><div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex min-w-0 items-start gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--app-primary)] text-white"><Package size={18}/></span><div><p className="text-[10px] font-bold uppercase tracking-[.13em] text-[var(--app-primary)]">Reorder recommendation</p><p className="mt-1 text-sm font-semibold leading-6 text-[var(--app-text)]">{selectedPrediction.branchName}: suggested reorder of {selectedPrediction.recommendedReorder.toLocaleString()} {selectedPrediction.unit} {selectedPrediction.name}.</p><p className="mt-1 text-xs text-[var(--app-text-muted)]">Confirmed incoming orders are included in this estimate.</p></div></div>{role==="manager"&&<Btn onClick={()=>onCreateOrder(selectedPrediction)}>Create PO from Recommendation</Btn>}</div></div>}
+      </div>
+      <div className="flex items-start gap-2.5 border-t border-[var(--app-border)] bg-[var(--app-surface-muted)] px-5 py-3.5 text-xs leading-relaxed text-[var(--app-text-muted)] sm:px-6"><AlertTriangle size={15} className="mt-0.5 shrink-0 text-[var(--app-primary)]"/><p>{forecast.methodology.disclaimer}</p></div>
+    </>}
+  </Card>;
+}
 
 export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName = "All Branches" }: {
   role: Role; onNavigate: (page: Page) => void; scopeBranchId?: string; scopeBranchName?: string;
@@ -133,8 +191,9 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
       <div><h1 className="text-xl font-bold">{greeting}</h1><p className="text-sm text-[var(--app-text-muted)]">{scope} · {formatAppDate(startDate)} – {formatAppDate(endDate)}</p></div>
       <div className="flex gap-2"><Btn variant="outline" icon={RefreshCw} onClick={() => setRefresh(v => v+1)}>Refresh</Btn></div>
     </div>
-    <DashboardFilters range={range} comparison={comparison} customStart={customStart} customEnd={customEnd} onRangeChange={setRange} onComparisonChange={setComparison} onApplyCustom={(a,b) => { setCustomStart(a); setCustomEnd(b); setRange("custom"); }} onReset={() => { setRange(role === "owner" ? "mtd" : "today"); setComparison("previous"); }}/>
-    {role === "manager" && <div className="flex flex-wrap gap-2"><Btn onClick={() => onNavigate("physical-count")}>Record Stock Count</Btn><Btn variant="outline" onClick={() => createOrder()}>Create Purchase Request</Btn></div>}
+    <DashboardToolbar
+      actions={role === "manager" ? <><Btn onClick={() => onNavigate("physical-count")}>Record Stock Count</Btn><Btn variant="outline" onClick={() => createOrder()}>Create Purchase Request</Btn></> : undefined}
+      filters={<DashboardFilters range={range} comparison={comparison} customStart={customStart} customEnd={customEnd} onRangeChange={setRange} onComparisonChange={setComparison} onApplyCustom={(a,b) => { setCustomStart(a); setCustomEnd(b); setRange("custom"); }} onReset={() => { setRange(role === "owner" ? "mtd" : "today"); setComparison("previous"); }}/>} />
     {error ? <Card><p role="alert" className="text-red-700">{error}</p><Btn onClick={() => setRefresh(v => v+1)}>Retry</Btn></Card> : !totals || !data ? <Card>Loading branch records…</Card> : <>
       <div className="dashboard-kpis grid grid-cols-2 xl:grid-cols-6 gap-4">
         <KPICard label={role === "owner" ? "Total Sales" : "Branch Sales"} value={money(financials!.sales)} sub={totals.unitsSold + " units sold"} icon={ShoppingCart} change={changed(financials!.sales,data.previous.summary.sales)} onClick={() => navigate(salesUrl)}/>
@@ -280,15 +339,15 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
                           </div>
                         </td>
                         <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                          <span className="font-bold text-sm" style={{color:i.status==="OUT_OF_STOCK"||i.status==="CRITICAL"?C.red:C.primary}}>
+                          <span className="font-bold text-sm" style={{color:inventoryValueColor(i.systemStock)}}>
                             {i.systemStock.toLocaleString("en-PH", { maximumFractionDigits: 2 })}
                           </span>
                           <span className="text-xs text-[var(--app-text-muted)] ml-1 font-medium">
                             {i.unit}
                           </span>
                         </td>
-                        <td className="py-3.5 px-4 text-center text-xs font-medium text-[var(--app-text-muted)] whitespace-nowrap">
-                          <span>{i.reorderLevel.toLocaleString("en-PH", { maximumFractionDigits: 2 })}</span>
+                        <td className="py-3.5 px-4 text-center text-xs font-medium whitespace-nowrap">
+                          <span style={{color:inventoryValueColor(i.reorderLevel)}}>{i.reorderLevel.toLocaleString("en-PH", { maximumFractionDigits: 2 })}</span>
                           <span className="ml-1 text-[11px] text-[var(--app-text-faint)]">{i.unit}</span>
                         </td>
                         <td className="py-3.5 px-4 text-center whitespace-nowrap">
@@ -383,25 +442,7 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
         )}
       </Card>
     </>}
-    <Card><div className="flex flex-wrap justify-between gap-3"><h2 className="font-semibold">Next 30 Days · Forecast & Replenishment</h2><Btn variant="outline" onClick={() => onNavigate("predictive")}>Review Forecast</Btn></div>
-      {forecastError ? <p role="alert">{forecastError}</p> : !forecast ? <p className="py-6">Loading forecast…</p> : <>
-        <p className="text-sm my-3">Projected sales: {money(forecast.summary.forecastSales)} · <StatusChip status={forecast.methodology.confidence} kind="confidence"/></p>
-        {forecast.insights.map((insight,i)=><div key={i} className="border-t py-3 flex flex-wrap items-start justify-between gap-3">
-          <div className="flex-1 min-w-[200px]">
-            <div className="flex items-center gap-2">
-              <h3 className="text-sm font-semibold">{insight.title}</h3>
-              <StatusChip status={insight.urgency} kind="urgency"/>
-            </div>
-            <p className="text-sm mt-1">{insight.description}</p>
-            <p className="text-xs mt-1 text-[var(--app-text-muted)]">{insight.recommendation}</p>
-          </div>
-          <Btn size="sm" variant="outline" onClick={() => onNavigate("predictive")}>Review</Btn>
-        </div>)}
-        {selectedPrediction && <p className="text-sm my-3">{selectedPrediction.branchName}: suggested reorder of {selectedPrediction.recommendedReorder.toLocaleString()} {selectedPrediction.unit} {selectedPrediction.name}. Incoming orders are included in this estimate.</p>}
-        {role === "manager" && selectedPrediction && <Btn onClick={() => createOrder(selectedPrediction)}>Create PO from Recommendation</Btn>}
-        <p className="text-xs mt-3 text-[var(--app-text-muted)]">{forecast.methodology.disclaimer}</p>
-      </>}
-    </Card>
+    <ForecastReplenishmentPanel forecast={forecast} forecastError={forecastError} role={role} onReview={() => onNavigate("predictive")} onCreateOrder={createOrder}/>
     {marginOpen && totals && financials && <div className="fixed inset-0 z-50 bg-black/40 p-4 flex items-center justify-center" onMouseDown={e=>{if(e.target===e.currentTarget)setMarginOpen(false);}}><section role="dialog" aria-modal="true" aria-label="Gross margin calculation" className="rounded-2xl p-6 max-w-md w-full bg-[var(--app-surface)] shadow-xl"><h2 className="font-bold">Gross Margin Calculation</h2><p className="mt-4">Sales: {money(financials.sales)}</p><p>Total COGS (recipe-based): {money(financials.totalCogs)}</p><p>Gross profit = Sales − Total COGS: {money(financials.grossProfit)}</p><p className="my-4">Gross margin = Gross profit ÷ Sales × 100 = {financials.grossMargin.toFixed(1)}%</p><p className="text-xs mb-3">Detected shortages and verified shrinkage are shown separately and are not deducted again.</p>{financials.sales===0&&<p className="text-xs mb-3">No sales denominator is available; the displayed margin is 0%.</p>}<Btn onClick={()=>setMarginOpen(false)}>Close</Btn></section></div>}
   </div>;
 }

@@ -48,6 +48,7 @@ export interface IncidentReport {
   shrinkageReportId: string | null;
   shrinkageReportNo: string | null;
   incidentType: IncidentType;
+  otherIncidentType?: string | null;
   quantity: number;
   occurredAt: string;
   reason: string;

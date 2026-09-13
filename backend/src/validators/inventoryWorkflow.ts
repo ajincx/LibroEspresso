@@ -16,6 +16,11 @@ export const posImportInput = posCsvSourceInput.extend({
   expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/i, "Preview the CSV again before importing"),
 });
 
+export const posImportHistoryFilters = z.object({
+  branchId: z.string().uuid().optional(),
+  search: z.string().trim().max(120).optional(),
+});
+
 export const posAnalyticsFilters = z.object({
   branchId: z.string().uuid().optional(),
   startDate: z.iso.date().optional(),

@@ -134,7 +134,7 @@ export const updateBranchInventorySettings: RequestHandler = async (
 const incidentSelection = `SELECT ir.id,ir.branch_id "branchId",b.name "branchName",ir.inventory_item_id "inventoryItemId",
   ii.sku,ii.name "inventoryItemName",ii.unit,ir.shrinkage_report_id "shrinkageReportId",sr.report_no "shrinkageReportNo",
   ir.menu_item_id "productId",mi.code "productCode",mi.name "productName",
-  ir.incident_type "incidentType",ir.quantity::float8,ir.occurred_at "occurredAt",ir.reason,ir.notes,ir.photo_url "photoUrl",
+  ir.incident_type "incidentType",ir.other_incident_type "otherIncidentType",ir.quantity::float8,ir.occurred_at "occurredAt",ir.reason,ir.notes,ir.photo_url "photoUrl",
   ir.status,ir.manager_comment "managerComment",ir.submitted_by "submittedByUserId",concat(su.first_name,' ',su.last_name) "submittedByName",su.role "submittedByRole",
   ir.verified_by "verifiedByUserId",concat(vu.first_name,' ',vu.last_name) "verifiedByName",ir.verified_at "verifiedAt",ir.created_at "createdAt"
   FROM incident_reports ir JOIN branches b ON b.id=ir.branch_id JOIN inventory_items ii ON ii.id=ir.inventory_item_id
@@ -255,8 +255,8 @@ export const createIncidentReport: RequestHandler = async (req, res) => {
       );
   }
   const inserted = await pool.query<{ id: string }>(
-    `INSERT INTO incident_reports (submitted_by,branch_id,inventory_item_id,menu_item_id,shrinkage_report_id,incident_type,quantity,occurred_at,reason,notes,photo_url)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+    `INSERT INTO incident_reports (submitted_by,branch_id,inventory_item_id,menu_item_id,shrinkage_report_id,incident_type,other_incident_type,quantity,occurred_at,reason,notes,photo_url)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
     [
       req.user!.id,
       branchId,
@@ -264,6 +264,7 @@ export const createIncidentReport: RequestHandler = async (req, res) => {
       input.productId ?? null,
       input.shrinkageReportId ?? null,
       input.incidentType,
+      input.otherIncidentType ?? null,
       input.quantity,
       input.occurredAt,
       input.reason,
@@ -282,6 +283,7 @@ export const createIncidentReport: RequestHandler = async (req, res) => {
       inventoryItemId: input.inventoryItemId,
       productId: input.productId ?? null,
       incidentType: input.incidentType,
+      otherIncidentType: input.otherIncidentType ?? null,
       shrinkageReportId: input.shrinkageReportId ?? null,
     },
   );

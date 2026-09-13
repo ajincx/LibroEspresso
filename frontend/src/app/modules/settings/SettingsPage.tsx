@@ -270,7 +270,7 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void } = {}) {
   return (
     <div className="p-4 sm:p-6 space-y-5 max-w-6xl mx-auto">
       <div>
-        <h1 className="text-2xl font-bold text-[var(--app-text)]">Settings</h1>
+        <h1 className="text-xl font-bold text-[var(--app-text)]">Settings</h1>
         <p className="text-sm mt-1 text-[var(--app-text-muted)]">
           Manage your database-backed account information and security.
         </p>
@@ -963,9 +963,10 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void } = {}) {
           <div
             role="dialog"
             aria-modal="true"
+            aria-labelledby="confirm-settings-title"
             className="w-full max-w-md rounded-2xl border p-6 shadow-2xl bg-[var(--app-surface)] border-[var(--app-border)]"
           >
-            <h2 className="text-lg font-bold text-[var(--app-text)]">
+            <h2 id="confirm-settings-title" className="text-lg font-bold text-[var(--app-text)]">
               Confirm changes
             </h2>
             <p className="mt-2 text-sm text-[var(--app-text-muted)]">

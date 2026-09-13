@@ -71,8 +71,8 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
     actual: record.actualQuantity,
   })), [filtered]);
 
-  return <div className="p-6 space-y-5">
-    <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4"><div><h1 className="text-2xl font-bold">Variance &amp; Discrepancies</h1><p className="text-sm mt-1" style={{ color: "var(--app-text-muted)" }}>System-calculated comparison of expected inventory and submitted physical counts (Expected − Actual). Positive values indicate shortages.</p></div><div className="flex gap-2 flex-wrap">
+  return <div className="p-4 md:p-6 space-y-5">
+    <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4"><div><h1 className="text-xl font-bold">Variance &amp; Discrepancies</h1><p className="text-sm mt-1" style={{ color: "var(--app-text-muted)" }}>System-calculated comparison of expected inventory and submitted physical counts (Expected − Actual). Positive values indicate shortages.</p></div><div className="flex gap-2 flex-wrap">
       <CalendarDateField label="Count date" value={countDate} onChange={setCountDate}/>
       {owner && <Select value={branchId} onChange={setBranchId} options={[{ value: "", label: "All Branches" }, ...branches.map((branch) => ({ value: branch.id, label: branch.name }))]}/>}
       <button onClick={() => void load()} className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border text-sm font-semibold"><RefreshCw size={14} />Refresh</button>

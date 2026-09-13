@@ -76,11 +76,11 @@ export function InventoryCountPage() {
     </div>
   );
 
-  return <div className="p-6 space-y-5">
+  return <div className="p-4 md:p-6 space-y-5">
     <div className="flex items-start justify-between gap-4">
       <div>
         <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-bold" style={{ color: "var(--app-text)" }}>
+        <h1 className="text-xl font-bold" style={{ color: "var(--app-text)" }}>
             {editingCountId ? "Correct Physical Inventory Count" : "Physical Inventory Count"}
           </h1>
           {editingCountId && (
