@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { C } from "../../components/ModuleUi";
-import { PosImportDeleteDialog, canDeletePosImport, marginValueColor } from "./CogsSalesModule";
+import { PosImportDeleteDialog, canDeletePosImport, isSupportedPosFilename, marginValueColor } from "./CogsSalesModule";
 
 describe("profitability presentation",()=>{
   it("uses success for positive margin, danger for negative margin, and neutral for zero",()=>{
@@ -19,6 +19,11 @@ describe("profitability presentation",()=>{
 });
 
 describe("POS Import History controls",()=>{
+  it("accepts only the supported POS upload extensions",()=>{
+    expect(["sales.csv","summary.XLS","transactions.xlsx"].every(isSupportedPosFilename)).toBe(true);
+    expect(isSupportedPosFilename("sales.pdf")).toBe(false);
+  });
+
   it("limits import deletion to the Owner presentation",()=>{
     expect(canDeletePosImport("owner")).toBe(true);
     expect(canDeletePosImport("manager")).toBe(false);

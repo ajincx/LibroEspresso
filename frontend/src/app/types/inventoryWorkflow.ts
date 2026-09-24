@@ -37,12 +37,26 @@ export interface PosImportPreviewRow {
   sourceProduct: string;
   matchedMenuProduct: string | null;
   menuItemId: string | null;
+  menuItemVariantId?: string | null;
+  matchedVariant?: string | null;
+  mappingStatus?: "APPROVED" | "UNMATCHED" | "AMBIGUOUS" | "DIRECT";
+  mappingScope?: "GLOBAL" | "BRANCH" | null;
+  mappingId?: string | null;
+  sourceProductId?: string | null;
   quantitySold: number | null;
   unitPrice: number | null;
   businessDate: string | null;
   transactionId: string | null;
   sourceLineId: string | null;
   transactionTimestamp: string | null;
+  sourceFormat?: "CANONICAL_CSV" | "SUMMARY_ITEMS_SOLD_LEGACY_XLS" | "TRANSACTION_SUMMARY_XLSX";
+  sourceWorksheet?: string | null;
+  sourceRow?: number | null;
+  lineAmount?: number | null;
+  sourceOrNumber?: string | null;
+  sourceTransactionNumber?: string | null;
+  transactionStatus?: string | null;
+  transactionTimestampRaw?: string | null;
   status: "VALID" | "WARNING" | "INVALID";
   issues: string[];
 }
@@ -53,7 +67,13 @@ export interface PosImportPreview {
   branchName: string;
   businessDate: string | null;
   contentHash: string;
+  resolutionFingerprint: string;
+  posSourceId: string | null;
+  posSourceName: string | null;
   fingerprintIndicator: string;
+  sourceFormat: "CANONICAL_CSV" | "SUMMARY_ITEMS_SOLD_LEGACY_XLS" | "TRANSACTION_SUMMARY_XLSX";
+  formatLabel: string;
+  importBlockedReason: string | null;
   rows: PosImportPreviewRow[];
   summary: {
     totalSourceRows: number;
@@ -65,6 +85,29 @@ export interface PosImportPreview {
     quality: "COMPLETE" | "NEEDS_REVIEW" | "REJECTED";
     canImport: boolean;
   };
+}
+
+export interface PosSource {
+  id: string;
+  sourceCode: string;
+  displayName: string;
+  supportedFormat: "CANONICAL_CSV" | "SUMMARY_ITEMS_SOLD_LEGACY_XLS" | "TRANSACTION_SUMMARY_XLSX";
+  status: "ACTIVE" | "INACTIVE";
+}
+
+export interface PosMapping {
+  id: string;
+  posSourceId: string;
+  branchId: string | null;
+  sourceProductName: string;
+  sourceProductCode: string | null;
+  menuItemVariantId: string;
+  menuItemId: string;
+  menuItemName: string;
+  variantName: string;
+  status: "ACTIVE" | "INACTIVE";
+  reviewedBy: string | null;
+  reviewedAt: string | null;
 }
 
 export interface PosAnalytics {

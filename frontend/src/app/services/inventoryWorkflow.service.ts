@@ -1,6 +1,21 @@
 import type { ApiSuccess } from "../types/auth";
-import type { CountVarianceItem, EvidenceBasis, ExpectedInventoryItem, InventoryCountSummary, PosAnalytics, PosImportPreview, PosImportRecord, ShrinkageClassification, ShrinkageEvidence, ShrinkageReport, VarianceRecord, WorkflowNotification } from "../types/inventoryWorkflow";
+import type { CountVarianceItem, EvidenceBasis, ExpectedInventoryItem, InventoryCountSummary, PosAnalytics, PosImportPreview, PosImportRecord, PosMapping, PosSource, ShrinkageClassification, ShrinkageEvidence, ShrinkageReport, VarianceRecord, WorkflowNotification } from "../types/inventoryWorkflow";
 import { api } from "./api";
+
+type PosPreviewSource =
+  | { sourceFilename: string; csvText: string; file?: never; posSourceId?: string }
+  | { sourceFilename: string; file: File; csvText?: never; posSourceId?: string };
+type PosImportSource = PosPreviewSource & { expectedContentHash: string; expectedResolutionFingerprint?: string };
+
+function excelHeaders(sourceFilename: string, posSourceId?: string, expectedContentHash?: string, expectedResolutionFingerprint?: string) {
+  return {
+    "Content-Type": "application/octet-stream",
+    "X-POS-Filename": encodeURIComponent(sourceFilename),
+    ...(posSourceId ? { "X-POS-Source-Id": posSourceId } : {}),
+    ...(expectedContentHash ? { "X-POS-Content-Hash": expectedContentHash } : {}),
+    ...(expectedResolutionFingerprint ? { "X-POS-Resolution-Fingerprint": expectedResolutionFingerprint } : {}),
+  };
+}
 
 export const inventoryWorkflowService = {
   async expected(countDate: string, branchId?: string) {
@@ -33,11 +48,35 @@ export const inventoryWorkflowService = {
   async reviewReport(id: string) {
     return (await api.post<ApiSuccess<{ report: ShrinkageReport }>>(`/shrinkage-reports/${id}/review`)).data.data.report;
   },
-  async previewPosSales(input: { sourceFilename: string; csvText: string }) {
-    return (await api.post<ApiSuccess<{ preview: PosImportPreview }>>("/pos-sales/preview", input)).data.data.preview;
+  async previewPosSales(input: PosPreviewSource) {
+    const response = input.file
+      ? await api.post<ApiSuccess<{ preview: PosImportPreview }>>("/pos-sales/preview", input.file, { headers: excelHeaders(input.sourceFilename,input.posSourceId) })
+      : await api.post<ApiSuccess<{ preview: PosImportPreview }>>("/pos-sales/preview", { sourceFilename: input.sourceFilename, csvText: input.csvText, ...(input.posSourceId ? { posSourceId: input.posSourceId } : {}) });
+    return response.data.data.preview;
   },
-  async importPosSales(input: { sourceFilename: string; csvText: string; expectedContentHash: string }) {
-    return (await api.post<ApiSuccess<{ importId: string; branchId: string; businessDate: string; rowsImported: number; productsMatched: number; totalQuantitySold: number; totalSales: number; fingerprintIndicator: string; quality: "COMPLETE" | "NEEDS_REVIEW"; consumption: { inventoryItemId: string; sku: string; name: string; unit: string; expectedConsumption: number }[] }>>("/pos-sales/import", input)).data.data;
+  async importPosSales(input: PosImportSource) {
+    const response = input.file
+      ? await api.post<ApiSuccess<{ importId: string; branchId: string; businessDate: string; rowsImported: number; productsMatched: number; totalQuantitySold: number; totalSales: number; fingerprintIndicator: string; quality: "COMPLETE" | "NEEDS_REVIEW"; consumption: { inventoryItemId: string; sku: string; name: string; unit: string; expectedConsumption: number }[] }>>("/pos-sales/import", input.file, { headers: excelHeaders(input.sourceFilename,input.posSourceId,input.expectedContentHash,input.expectedResolutionFingerprint) })
+      : await api.post<ApiSuccess<{ importId: string; branchId: string; businessDate: string; rowsImported: number; productsMatched: number; totalQuantitySold: number; totalSales: number; fingerprintIndicator: string; quality: "COMPLETE" | "NEEDS_REVIEW"; consumption: { inventoryItemId: string; sku: string; name: string; unit: string; expectedConsumption: number }[] }>>("/pos-sales/import", { sourceFilename: input.sourceFilename, csvText: input.csvText, expectedContentHash: input.expectedContentHash, ...(input.expectedResolutionFingerprint ? { expectedResolutionFingerprint: input.expectedResolutionFingerprint } : {}), ...(input.posSourceId ? { posSourceId: input.posSourceId } : {}) });
+    return response.data.data;
+  },
+  async posSources() {
+    return (await api.get<ApiSuccess<{ sources: PosSource[] }>>("/pos-sales/sources")).data.data.sources;
+  },
+  async createPosSource(input: { sourceCode: string; displayName: string; supportedFormat: PosSource["supportedFormat"]; status?: PosSource["status"] }) {
+    return (await api.post<ApiSuccess<{ source: PosSource }>>("/pos-sales/sources", input)).data.data.source;
+  },
+  async updatePosSource(id: string, input: Partial<Omit<PosSource,"id">>) {
+    return (await api.patch<ApiSuccess<{ source: PosSource }>>(`/pos-sales/sources/${id}`, input)).data.data.source;
+  },
+  async posMappings(posSourceId: string) {
+    return (await api.get<ApiSuccess<{ mappings: PosMapping[] }>>("/pos-sales/mappings", { params: { posSourceId } })).data.data.mappings;
+  },
+  async createPosMapping(input: { posSourceId: string; branchId: string | null; sourceProductName: string; sourceProductCode: string | null; menuItemVariantId: string; status?: "ACTIVE" | "INACTIVE" }) {
+    return (await api.post<ApiSuccess<{ id: string }>>("/pos-sales/mappings", input)).data.data;
+  },
+  async updatePosMapping(id: string, status: "ACTIVE" | "INACTIVE") {
+    return (await api.patch<ApiSuccess<{ id: string; status: string }>>(`/pos-sales/mappings/${id}`, { status })).data.data;
   },
   async posImports(filters?: { branchId?: string; search?: string; page?: number; pageSize?: number }) {
     return (await api.get<ApiSuccess<{ imports: PosImportRecord[]; pagination: { page:number;pageSize:number;total:number;totalPages:number } }>>("/pos-sales", { params: filters })).data.data;

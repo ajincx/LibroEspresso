@@ -2,6 +2,15 @@ import { api } from "./api";
 import type { ApiSuccess } from "../types/auth";
 import type { Branch, InventoryItem, ManagedUser, MenuCategory, MenuItem, MenuProduct, Recipe, RecordStatus } from "../types/masterData";
 
+// Keep the menu page usable while an already-running backend is being restarted
+// after the variant migration. The database-backed variant list takes precedence.
+export function normalizeMenuProduct(product:MenuProduct):MenuProduct {
+  const variants = Array.isArray(product.variants) && product.variants.length
+    ? product.variants
+    : [{id:"",name:"Standard",sellingPrice:product.sellingPrice,status:product.status,createdAt:product.createdAt,updatedAt:product.updatedAt}];
+  return {...product,variants,recipeCost:product.recipeId ? product.recipeCost : null,marginAmount:product.recipeId ? product.marginAmount : null,marginRate:product.recipeId ? product.marginRate : null};
+}
+
 export const masterDataService = {
   async branches() { return (await api.get<ApiSuccess<{branches:Branch[]}>>("/branches")).data.data.branches; },
   async createBranch(input:{code:string;name:string;location:string;status:RecordStatus}) { return (await api.post<ApiSuccess<{branch:Branch}>>("/branches",input)).data.data.branch; },
@@ -15,9 +24,9 @@ export const masterDataService = {
   async createInventoryItem(input:Pick<InventoryItem,"name"|"category"|"unit"|"unitCost"|"reorderLevel"|"status">) { return (await api.post<ApiSuccess<{item:InventoryItem}>>("/inventory-items",input)).data.data.item; },
   async menuItems() { return (await api.get<ApiSuccess<{items:MenuItem[]}>>("/menu-items")).data.data.items; },
   async createMenuItem(input:Omit<MenuItem,"id">) { return (await api.post<ApiSuccess<{item:MenuItem}>>("/menu-items",input)).data.data.item; },
-  async menuProducts() { return (await api.get<ApiSuccess<{products:MenuProduct[]}>>("/menu-items/with-recipes")).data.data.products; },
-  async createMenuProduct(input:{name:string;categoryId:string;sellingPrice:number;description:string;status:RecordStatus;recipe:{yieldQuantity:number;effectiveFrom?:string;changeReason?:string;items:{inventoryItemId:string;quantity:number;unit:string}[]}}) { return (await api.post<ApiSuccess<{product:MenuProduct}>>("/menu-items/with-recipe",input)).data.data.product; },
-  async updateMenuProduct(id:string,input:{name:string;categoryId:string;sellingPrice:number;description:string;status:RecordStatus;recipe:{yieldQuantity:number;effectiveFrom?:string;changeReason?:string;items:{inventoryItemId:string;quantity:number;unit:string}[]}}) { return (await api.put<ApiSuccess<{product:MenuProduct}>>(`/menu-items/${id}/with-recipe`,input)).data.data.product; },
+  async menuProducts() { return (await api.get<ApiSuccess<{products:MenuProduct[]}>>("/menu-items/with-recipes")).data.data.products.map(normalizeMenuProduct); },
+  async createMenuProduct(input:{name:string;categoryId:string;sellingPrice?:number;variants?:{id?:string;name:string;sellingPrice:number;status:RecordStatus;recipe?:{yieldQuantity:number;effectiveFrom?:string;changeReason?:string;items:{inventoryItemId:string;quantity:number;unit:string}[]}}[];description:string;status:RecordStatus;recipe?:{yieldQuantity:number;effectiveFrom?:string;changeReason?:string;items:{inventoryItemId:string;quantity:number;unit:string}[]}}) { return normalizeMenuProduct((await api.post<ApiSuccess<{product:MenuProduct}>>("/menu-items/with-recipe",input)).data.data.product); },
+  async updateMenuProduct(id:string,input:{name:string;categoryId:string;sellingPrice?:number;variants?:{id?:string;name:string;sellingPrice:number;status:RecordStatus;recipe?:{yieldQuantity:number;effectiveFrom?:string;changeReason?:string;items:{inventoryItemId:string;quantity:number;unit:string}[]}}[];description:string;status:RecordStatus;recipe?:{yieldQuantity:number;effectiveFrom?:string;changeReason?:string;items:{inventoryItemId:string;quantity:number;unit:string}[]}}) { return normalizeMenuProduct((await api.put<ApiSuccess<{product:MenuProduct}>>(`/menu-items/${id}/with-recipe`,input)).data.data.product); },
   async setMenuProductStatus(id:string,status:RecordStatus) { return (await api.patch<ApiSuccess<{product:MenuProduct}>>(`/menu-items/${id}/status`,{status})).data.data.product; },
   async deleteMenuProduct(id:string) { await api.delete(`/menu-items/${id}/with-recipe`); },
   async reviewManagerProduct(id:string,decision:"APPROVE"|"REJECT",comment="") { return (await api.post<ApiSuccess<{product:MenuProduct}>>(`/menu-items/${id}/owner-review`,{decision,comment})).data.data.product; },
