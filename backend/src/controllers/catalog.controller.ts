@@ -83,7 +83,7 @@ async function readRecipe(user: NonNullable<Express.Request["user"]>, id?: strin
   const branchId=getEffectiveBranchId(user);
   if(branchId)conditions.push(`(m.product_scope='GLOBAL' OR m.origin_branch_id=$${values.push(branchId)})`);
   const where=conditions.length?`WHERE ${conditions.join(" AND ")}`:"";
-  const result=await pool.query(`SELECT r.id,r.menu_item_id "menuItemId",r.name,r.yield_quantity::float8 "yieldQuantity",r.status,r.version,
+  const result=await pool.query(`SELECT r.id,r.menu_item_id "menuItemId",r.menu_item_variant_id "menuItemVariantId",r.name,r.yield_quantity::float8 "yieldQuantity",r.status,r.version,
     r.effective_from::text "effectiveFrom",r.effective_to::text "effectiveTo",r.change_reason "changeReason",
     concat(u.first_name,' ',u.last_name) "createdByName",r.created_at "createdAt",r.updated_at "updatedAt",
     json_build_object('id',m.id,'code',m.code,'name',m.name,'sellingPrice',m.selling_price::float8) "menuItem",
@@ -152,6 +152,7 @@ async function readMenuProducts(user: NonNullable<Express.Request["user"]>, id?:
   const result = await pool.query(
     `SELECT m.id,m.code,m.name,COALESCE(c.name,m.category) category,c.id "categoryId",m.description,
             m.selling_price::float8 "sellingPrice",m.status,m.created_at "createdAt",m.updated_at "updatedAt",
+            COALESCE((SELECT json_agg(json_build_object('id',v.id,'name',v.name,'sellingPrice',v.selling_price::float8,'status',v.status,'createdAt',v.created_at,'updatedAt',v.updated_at) ORDER BY v.created_at,v.name) FROM menu_item_variants v WHERE v.menu_item_id=m.id),'[]') variants,
             m.product_scope "productScope",m.origin_branch_id "originBranchId",ob.name "originBranchName",
             m.approval_status "approvalStatus",m.owner_review_comment "ownerReviewComment",concat(cu.first_name,' ',cu.last_name) "createdByName",
             ${branchId ? `(SELECT mib.availability_status FROM menu_item_branches mib WHERE mib.menu_item_id=m.id AND mib.branch_id=$${branchParameter})` : "NULL::text"} "branchAvailabilityStatus",
@@ -159,11 +160,11 @@ async function readMenuProducts(user: NonNullable<Express.Request["user"]>, id?:
             COALESCE((SELECT json_agg(json_build_object('branchId',b.id,'branchName',b.name,'status',mib.availability_status,'isActive',mib.is_active,'reviewComment',mib.review_comment,'reviewedAt',mib.reviewed_at) ORDER BY b.name) FROM menu_item_branches mib JOIN branches b ON b.id=mib.branch_id WHERE mib.menu_item_id=m.id ${branchId ? `AND mib.branch_id=$${branchParameter}` : ""}),'[]') "branchApprovals",
             r.id "recipeId",r.name "recipeName",r.yield_quantity::float8 "yieldQuantity",r.version "recipeVersion",
             r.effective_from::text "recipeEffectiveFrom",r.effective_to::text "recipeEffectiveTo",r.change_reason "recipeChangeReason",
-            EXISTS(SELECT 1 FROM pos_sale_items history_sale WHERE history_sale.menu_item_id=m.id) "recipeHasHistoricalSales",
+            EXISTS(SELECT 1 FROM pos_sale_items history_sale WHERE history_sale.menu_item_variant_id=r.menu_item_variant_id) "recipeHasHistoricalSales",
             COALESCE((SELECT json_agg(json_build_object('id',rh.id,'version',rh.version,'effectiveFrom',rh.effective_from::text,
               'effectiveTo',rh.effective_to::text,'yieldQuantity',rh.yield_quantity::float8,'status',rh.status,
               'changeReason',rh.change_reason,'createdByName',concat(hu.first_name,' ',hu.last_name),'createdAt',rh.created_at)
-              ORDER BY rh.version DESC) FROM recipes rh LEFT JOIN users hu ON hu.id=rh.created_by WHERE rh.menu_item_id=m.id),'[]') "recipeHistory",
+              ORDER BY rh.version DESC) FROM recipes rh LEFT JOIN users hu ON hu.id=rh.created_by WHERE rh.menu_item_variant_id=r.menu_item_variant_id),'[]') "recipeHistory",
             COALESCE(json_agg(json_build_object('id',ri.id,'inventoryItemId',ii.id,'sku',ii.sku,'name',ii.name,
               'quantity',ri.quantity::float8,'unit',ri.unit,'inventoryUnit',ii.unit,'unitCost',(${unitCost})::float8)
               ORDER BY ii.name) FILTER (WHERE ri.id IS NOT NULL),'[]') ingredients
@@ -171,25 +172,79 @@ async function readMenuProducts(user: NonNullable<Express.Request["user"]>, id?:
        LEFT JOIN menu_categories c ON c.id=m.category_id
        LEFT JOIN branches ob ON ob.id=m.origin_branch_id
        LEFT JOIN users cu ON cu.id=m.created_by
-       LEFT JOIN LATERAL (SELECT candidate.* FROM recipes candidate WHERE candidate.menu_item_id=m.id
+       LEFT JOIN LATERAL (SELECT candidate.* FROM recipes candidate JOIN menu_item_variants standard_variant ON standard_variant.id=candidate.menu_item_variant_id
+         WHERE candidate.menu_item_id=m.id AND lower(standard_variant.name)='standard' AND candidate.status='ACTIVE'
          AND candidate.effective_from<=CURRENT_DATE AND (candidate.effective_to IS NULL OR candidate.effective_to>CURRENT_DATE)
          ORDER BY candidate.effective_from DESC LIMIT 1) r ON true
        LEFT JOIN recipe_items ri ON ri.recipe_id=r.id
        LEFT JOIN inventory_items ii ON ii.id=ri.inventory_item_id
        ${where}
-      GROUP BY m.id,c.id,r.id,r.name,r.yield_quantity,r.version,r.effective_from,r.effective_to,r.change_reason,ob.id,cu.id
+      GROUP BY m.id,c.id,r.id,r.menu_item_variant_id,r.name,r.yield_quantity,r.version,r.effective_from,r.effective_to,r.change_reason,ob.id,cu.id
       ORDER BY m.name`,
     values,
   );
+  const productIds = result.rows.map((row: { id: string }) => row.id);
+  const variantDetails = productIds.length ? await pool.query<{
+    variantId: string; recipeId: string | null; recipeName: string | null; recipeVersion: number | null;
+    recipeEffectiveFrom: string | null; recipeEffectiveTo: string | null; recipeChangeReason: string | null;
+    yieldQuantity: number | null; recipeHasHistoricalSales: boolean;
+    recipeHistory: Array<{ id: string; version: number; effectiveFrom: string; effectiveTo: string | null; yieldQuantity: number; status: string; changeReason: string | null; createdByName: string | null; createdAt: string }>;
+    ingredients: Array<{ id: string; inventoryItemId: string; sku: string; name: string; quantity: number; unit: string; inventoryUnit: string; unitCost: number }>;
+  }>(`SELECT v.id "variantId",r.id "recipeId",r.name "recipeName",r.version "recipeVersion",
+       r.effective_from::text "recipeEffectiveFrom",r.effective_to::text "recipeEffectiveTo",r.change_reason "recipeChangeReason",
+       r.yield_quantity::float8 "yieldQuantity",
+       (EXISTS(SELECT 1 FROM pos_sale_items psi WHERE psi.menu_item_variant_id=v.id)
+        OR EXISTS(SELECT 1 FROM pos_sale_ingredient_usage usage JOIN recipes used_recipe ON used_recipe.id=usage.recipe_version_id
+          WHERE used_recipe.menu_item_variant_id=v.id)) "recipeHasHistoricalSales",
+       COALESCE((SELECT json_agg(json_build_object('id',history.id,'version',history.version,'effectiveFrom',history.effective_from::text,
+         'effectiveTo',history.effective_to::text,'yieldQuantity',history.yield_quantity::float8,'status',history.status,
+         'changeReason',history.change_reason,'createdByName',concat(creator.first_name,' ',creator.last_name),'createdAt',history.created_at)
+         ORDER BY history.version DESC) FROM recipes history LEFT JOIN users creator ON creator.id=history.created_by
+         WHERE history.menu_item_variant_id=v.id),'[]') "recipeHistory",
+       COALESCE((SELECT json_agg(json_build_object('id',ri.id,'inventoryItemId',ii.id,'sku',ii.sku,'name',ii.name,
+         'quantity',ri.quantity::float8,'unit',ri.unit,'inventoryUnit',ii.unit,
+         'unitCost',CASE WHEN $2::uuid IS NOT NULL THEN COALESCE((SELECT bis.current_unit_cost FROM branch_inventory_settings bis
+           WHERE bis.inventory_item_id=ii.id AND bis.branch_id=$2),ii.unit_cost)
+           ELSE COALESCE((SELECT avg(bis.current_unit_cost) FROM branch_inventory_settings bis WHERE bis.inventory_item_id=ii.id),ii.unit_cost) END::float8)
+         ORDER BY ii.name) FROM recipe_items ri JOIN inventory_items ii ON ii.id=ri.inventory_item_id WHERE ri.recipe_id=r.id),'[]') ingredients
+     FROM menu_item_variants v
+     LEFT JOIN LATERAL (SELECT candidate.* FROM recipes candidate WHERE candidate.menu_item_variant_id=v.id AND candidate.status='ACTIVE'
+       AND candidate.effective_from<=CURRENT_DATE AND (candidate.effective_to IS NULL OR candidate.effective_to>CURRENT_DATE)
+       ORDER BY candidate.effective_from DESC LIMIT 1) r ON true
+     WHERE v.menu_item_id=ANY($1::uuid[])`, [productIds, branchId]) : { rows: [] };
+  const detailsByVariant = new Map(variantDetails.rows.map((detail) => [detail.variantId, detail]));
   return result.rows.map((row) => {
     const yieldQuantity=Number(row.yieldQuantity??1);
     const ingredients=(row.ingredients as Array<{quantity:number;unit:string;inventoryUnit:string;unitCost:number}>).map((item)=>({
       ...item,
       ingredientCost:calculateIngredientCost({recipeQuantity:Number(item.quantity),recipeUnit:item.unit,inventoryUnit:item.inventoryUnit,unitCost:Number(item.unitCost),yieldQuantity}),
     }));
-    const recipeCost=ingredients.reduce((sum,item)=>sum+item.ingredientCost,0);
+    const recipeCost=row.recipeId ? ingredients.reduce((sum,item)=>sum+item.ingredientCost,0) : null;
     const sellingPrice=Number(row.sellingPrice);
-    return {...row,ingredients,recipeCost,marginAmount:sellingPrice-recipeCost,marginRate:sellingPrice>0?(sellingPrice-recipeCost)/sellingPrice*100:0};
+    const variants=(row.variants as Array<{id:string;name:string;sellingPrice:number}>).map((variant)=>{
+      const detail=detailsByVariant.get(variant.id);
+      const variantIngredients=(detail?.ingredients??[]).map((item)=>({...item,
+        ingredientCost:calculateIngredientCost({recipeQuantity:Number(item.quantity),recipeUnit:item.unit,inventoryUnit:item.inventoryUnit,unitCost:Number(item.unitCost),yieldQuantity:Number(detail?.yieldQuantity??1)}),
+      }));
+      const variantRecipeCost=detail?.recipeId ? variantIngredients.reduce((sum,item)=>sum+item.ingredientCost,0) : null;
+      const variantPrice=Number(variant.sellingPrice);
+      return {...variant,recipeId:detail?.recipeId??null,recipeName:detail?.recipeName??null,recipeVersion:detail?.recipeVersion??null,
+        recipeEffectiveFrom:detail?.recipeEffectiveFrom??null,recipeEffectiveTo:detail?.recipeEffectiveTo??null,
+        recipeChangeReason:detail?.recipeChangeReason??null,yieldQuantity:detail?.yieldQuantity??null,
+        recipeHasHistoricalSales:detail?.recipeHasHistoricalSales??false,recipeHistory:detail?.recipeHistory??[],ingredients:variantIngredients,
+        recipeCost:variantRecipeCost,marginAmount:variantRecipeCost===null?null:variantPrice-variantRecipeCost,
+        marginRate:variantRecipeCost===null?null:variantPrice>0?(variantPrice-variantRecipeCost)/variantPrice*100:0};
+    });
+    const standardOnly=variants.length===1&&variants[0]?.name.toLowerCase()==="standard";
+    const parentRecipeCost=standardOnly?variants[0]!.recipeCost:null;
+    return {...row,variants,recipeId:standardOnly?variants[0]!.recipeId:null,
+      recipeName:standardOnly?variants[0]!.recipeName:null,recipeVersion:standardOnly?variants[0]!.recipeVersion:null,
+      recipeEffectiveFrom:standardOnly?variants[0]!.recipeEffectiveFrom:null,recipeEffectiveTo:standardOnly?variants[0]!.recipeEffectiveTo:null,
+      recipeChangeReason:standardOnly?variants[0]!.recipeChangeReason:null,yieldQuantity:standardOnly?variants[0]!.yieldQuantity:null,
+      recipeHasHistoricalSales:standardOnly?variants[0]!.recipeHasHistoricalSales:false,
+      recipeHistory:standardOnly?variants[0]!.recipeHistory:[],ingredients:standardOnly?variants[0]!.ingredients:[],recipeCost:parentRecipeCost,
+      marginAmount:parentRecipeCost===null?null:sellingPrice-parentRecipeCost,
+      marginRate:parentRecipeCost===null?null:sellingPrice>0?(sellingPrice-parentRecipeCost)/sellingPrice*100:0};
   });
 }
 
@@ -253,7 +308,8 @@ async function saveMenuProduct(req: Parameters<RequestHandler>[0], productId?: s
     await client.query("BEGIN");
     const category = await client.query<{ name: string }>(`SELECT name FROM menu_categories WHERE id=$1`, [value.categoryId]);
     if (!category.rows[0]) throw new AppError(422, "MENU_CATEGORY_INVALID", "Select a valid menu category");
-    const ingredientIds = value.recipe.items.map((item) => item.inventoryItemId);
+    const requestedRecipes = [value.recipe, ...(value.variants ?? []).map((variant) => variant.recipe)].filter((recipe) => recipe !== undefined);
+    const ingredientIds = [...new Set(requestedRecipes.flatMap((recipe) => recipe.items.map((item) => item.inventoryItemId)))];
     const ingredients = await client.query<{ id: string; name: string; unit: string; itemScope:"GLOBAL"|"BRANCH";originBranchId:string|null }>(
       `SELECT id,name,unit,item_scope "itemScope",origin_branch_id "originBranchId" FROM inventory_items
         WHERE id=ANY($1::uuid[]) AND status='ACTIVE'`, [ingredientIds],
@@ -263,7 +319,7 @@ async function saveMenuProduct(req: Parameters<RequestHandler>[0], productId?: s
       ? ingredient.itemScope!=="GLOBAL"
       : ingredient.itemScope==="BRANCH"&&ingredient.originBranchId!==req.user!.branchId);
     if(invalidScope) throw new AppError(422,"RECIPE_INGREDIENT_SCOPE_INVALID","The recipe contains an ingredient that is not available to this product scope");
-    for (const item of value.recipe.items) {
+    for (const item of requestedRecipes.flatMap((recipe) => recipe.items)) {
       const ingredient = ingredients.rows.find((candidate) => candidate.id === item.inventoryItemId)!;
       if (!areUnitsCompatible(ingredient.unit,item.unit)) throw new AppError(422, "RECIPE_UNIT_MISMATCH", `${ingredient.name} uses ${ingredient.unit}; select a compatible ${normalizeUnit(ingredient.unit)} measurement unit`);
     }
@@ -283,10 +339,10 @@ async function saveMenuProduct(req: Parameters<RequestHandler>[0], productId?: s
     }
     if (productId) {
       const updated = await client.query(
-        `UPDATE menu_items SET name=$2,category_id=$3,category=$4,selling_price=$5,description=$6,status='ACTIVE',
-          approval_status=CASE WHEN $7='BRANCH_MANAGER' THEN 'PENDING_OWNER' ELSE approval_status END,updated_at=now()
+        `UPDATE menu_items SET name=$2,category_id=$3,category=$4,description=$5,status='ACTIVE',
+          approval_status=CASE WHEN $6='BRANCH_MANAGER' THEN 'PENDING_OWNER' ELSE approval_status END,updated_at=now()
          WHERE id=$1 RETURNING id`,
-        [productId, value.name, value.categoryId, category.rows[0].name, value.sellingPrice, value.description, req.user!.role],
+        [productId, value.name, value.categoryId, category.rows[0].name, value.description, req.user!.role],
       );
       if (!updated.rows[0]) throw new AppError(404, "MENU_PRODUCT_NOT_FOUND", "Menu product not found");
     } else {
@@ -295,19 +351,53 @@ async function saveMenuProduct(req: Parameters<RequestHandler>[0], productId?: s
       const inserted = await client.query<{ id: string }>(
         `INSERT INTO menu_items (code,name,category_id,category,selling_price,description,status,created_by,product_scope,origin_branch_id,approval_status)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
-        [codeResult.rows[0]!.code, value.name, value.categoryId, category.rows[0].name, value.sellingPrice, value.description, "ACTIVE", req.user!.id, ownerCreated ? "GLOBAL" : "BRANCH", ownerCreated ? null : req.user!.branchId, ownerCreated ? "APPROVED" : "PENDING_OWNER"],
+        [codeResult.rows[0]!.code, value.name, value.categoryId, category.rows[0].name, value.variants?.find((variant) => variant.status === "ACTIVE")?.sellingPrice ?? value.sellingPrice, value.description, "ACTIVE", req.user!.id, ownerCreated ? "GLOBAL" : "BRANCH", ownerCreated ? null : req.user!.branchId, ownerCreated ? "APPROVED" : "PENDING_OWNER"],
       );
       savedProductId = inserted.rows[0]!.id;
     }
 
-    const existingRecipe = await client.query<{ id: string }>(`SELECT id FROM recipes WHERE menu_item_id=$1
-      ORDER BY (effective_from<=CURRENT_DATE AND (effective_to IS NULL OR effective_to>CURRENT_DATE)) DESC,version DESC LIMIT 1`, [savedProductId]);
-    let recipeId = existingRecipe.rows[0]?.id;
-    const savedRecipe=await saveRecipeDefinition(client,{
-      recipeId,menuItemId:savedProductId!,name:`${value.name} Standard Recipe`,yieldQuantity:value.recipe.yieldQuantity,
-      status:"ACTIVE",items:value.recipe.items,effectiveFrom:value.recipe.effectiveFrom,changeReason:value.recipe.changeReason,createdBy:req.user!.id,
-    });
-    recipeId=savedRecipe.recipeId;
+    const variants = value.variants ?? (productId ? undefined : [{ name: "Standard", sellingPrice: value.sellingPrice!, status: "ACTIVE" as const }]);
+    const savedVariants: Array<{ id: string; name: string; recipe?: typeof value.recipe }> = [];
+    if (variants) {
+      const existingVariants = productId ? await client.query<{ id: string }>(`SELECT id FROM menu_item_variants WHERE menu_item_id=$1 FOR UPDATE`, [savedProductId]) : { rows: [] };
+      const existingIds = new Set(existingVariants.rows.map((variant) => variant.id));
+      const retainedIds = variants.flatMap((variant) => variant.id ? [variant.id] : []);
+      if (productId) await client.query(`UPDATE menu_item_variants SET status='INACTIVE',updated_at=now() WHERE menu_item_id=$1 AND id<>ALL($2::uuid[])`, [savedProductId, retainedIds]);
+      for (const variant of variants) {
+        if (variant.id) {
+          if (!existingIds.has(variant.id)) throw new AppError(422, "VARIANT_INVALID", "Variant does not belong to this product");
+          await client.query(`UPDATE menu_item_variants SET name=$3,selling_price=$4,status=$5,updated_at=now() WHERE id=$1 AND menu_item_id=$2`, [variant.id, savedProductId, variant.name, variant.sellingPrice, variant.status]);
+          savedVariants.push({ id: variant.id, name: variant.name, recipe: variant.recipe });
+        } else {
+          const insertedVariant = await client.query<{ id: string }>(`INSERT INTO menu_item_variants (menu_item_id,name,selling_price,status) VALUES ($1,$2,$3,$4) RETURNING id`, [savedProductId, variant.name, variant.sellingPrice, variant.status]);
+          savedVariants.push({ id: insertedVariant.rows[0]!.id, name: variant.name, recipe: variant.recipe });
+        }
+      }
+    }
+    if (value.recipe) {
+      const standard = await client.query<{ id: string }>(`SELECT id FROM menu_item_variants WHERE menu_item_id=$1 AND lower(name)='standard' AND status='ACTIVE'`, [savedProductId]);
+      const activeCount = await client.query<{ count: number }>(`SELECT count(*)::int count FROM menu_item_variants WHERE menu_item_id=$1 AND status='ACTIVE'`, [savedProductId]);
+      if (standard.rows.length !== 1 || activeCount.rows[0]?.count !== 1 || savedVariants.some((variant) => variant.recipe)) throw new AppError(422, "RECIPE_VARIANT_REQUIRED", "Choose the variant whose recipe is being edited");
+      savedVariants.push({ id: standard.rows[0]!.id, name: "Standard", recipe: value.recipe });
+    }
+    let savedRecipe: Awaited<ReturnType<typeof saveRecipeDefinition>> | null = null;
+    for (const variant of savedVariants) {
+      if (!variant.recipe) continue;
+      const existingRecipe = await client.query<{ id: string }>(`SELECT id FROM recipes WHERE menu_item_variant_id=$1
+        ORDER BY (effective_from<=CURRENT_DATE AND (effective_to IS NULL OR effective_to>CURRENT_DATE)) DESC,version DESC LIMIT 1`, [variant.id]);
+      savedRecipe = await saveRecipeDefinition(client,{
+        recipeId:existingRecipe.rows[0]?.id,menuItemId:savedProductId!,menuItemVariantId:variant.id,name:`${value.name} ${variant.name} Recipe`,yieldQuantity:variant.recipe.yieldQuantity,
+        status:"ACTIVE",items:variant.recipe.items,effectiveFrom:variant.recipe.effectiveFrom,changeReason:variant.recipe.changeReason,createdBy:req.user!.id,
+      });
+    }
+    const siblingRecipes = await client.query<{ variantName: string; ingredientIds: string[] }>(`SELECT v.name "variantName",array_agg(ri.inventory_item_id::text ORDER BY ri.inventory_item_id) "ingredientIds"
+      FROM menu_item_variants v JOIN recipes r ON r.menu_item_variant_id=v.id AND r.status='ACTIVE' AND r.effective_to IS NULL
+      JOIN recipe_items ri ON ri.recipe_id=r.id
+      WHERE v.menu_item_id=$1 AND v.status='ACTIVE' AND lower(v.name) IN ('small','large')
+      GROUP BY v.id`, [savedProductId]);
+    if (siblingRecipes.rows.length === 2 && JSON.stringify(siblingRecipes.rows[0]!.ingredientIds) !== JSON.stringify(siblingRecipes.rows[1]!.ingredientIds)) {
+      throw new AppError(422, "VARIANT_INGREDIENT_MISMATCH", "Small and Large recipes must use the same ingredients; quantities may differ");
+    }
     if (!productId && req.user!.role === "OWNER") {
       await client.query(`INSERT INTO menu_item_branches (menu_item_id,branch_id,availability_status) SELECT $1,id,'PENDING_MANAGER' FROM branches WHERE status='ACTIVE'`, [savedProductId]);
     } else if (!productId || req.user!.role === "BRANCH_MANAGER") {
@@ -318,7 +408,7 @@ async function saveMenuProduct(req: Parameters<RequestHandler>[0], productId?: s
         [savedProductId, req.user!.branchId],
       );
     }
-    await writeAudit(req.user!, savedRecipe.createdVersion ? "CREATE_RECIPE_VERSION" : productId ? "UPDATE_MENU_PRODUCT_RECIPE" : "CREATE_MENU_PRODUCT_RECIPE", "MENU_ITEM", savedProductId!, `${savedRecipe.createdVersion ? "Created a new recipe version for" : productId ? "Updated" : "Created"} ${value.name}`, { ingredientCount: value.recipe.items.length,recipeVersion:savedRecipe.version,effectiveFrom:value.recipe.effectiveFrom??null }, client);
+    await writeAudit(req.user!, savedRecipe?.createdVersion ? "CREATE_RECIPE_VERSION" : productId ? "UPDATE_MENU_PRODUCT" : "CREATE_MENU_PRODUCT", "MENU_ITEM", savedProductId!, `${productId ? "Updated" : "Created"} ${value.name}`, { variantCount: variants?.length ?? null, ingredientCount: requestedRecipes.reduce((sum,recipe)=>sum+recipe.items.length,0), recipeVersion: savedRecipe?.version ?? null }, client);
     const action = productId ? "updated" : "created";
     if (req.user!.role === "BRANCH_MANAGER") {
       await notifyOwnersOfMenuChange(client, req.user!, productId ? "MENU_PRODUCT_UPDATED" : "MENU_PRODUCT_APPROVAL_REQUIRED", productId ? "Branch Product Updated" : "Product Approval Required", savedProductId!, value.name, `${action} the branch product proposal`);

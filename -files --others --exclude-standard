@@ -1,0 +1,29 @@
+warning: in the working copy of 'backend/src/controllers/catalog.controller.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/src/controllers/inventoryWorkflow.controller.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/src/controllers/inventoryWorkflow.posImport.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/src/database/seed.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/src/routes/access.integration.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/src/routes/inventoryWorkflow.routes.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/src/services/posCsvImport.service.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/src/services/recipeVersion.service.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/src/services/recipeVersion.service.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/src/services/reportRenderers.service.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/src/validators/inventoryWorkflow.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/src/validators/masterData.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/src/validators/masterData.ts', LF will be replaced by CRLF the next time Git touches it
+ backend/package-lock.json                          |  13 [32m++[m
+ backend/package.json                               |   1 [32m+[m
+ backend/src/controllers/catalog.controller.ts      | 134 [32m++++++++++++++[m[31m---[m
+ .../controllers/inventoryWorkflow.controller.ts    | 160 [32m++++++++++++++++[m[31m-----[m
+ .../inventoryWorkflow.posImport.test.ts            | 153 [32m+++++++++++++++++++[m[31m-[m
+ backend/src/database/seed.ts                       |  14 [32m+[m[31m-[m
+ backend/src/routes/access.integration.test.ts      |  44 [32m++++++[m
+ backend/src/routes/inventoryWorkflow.routes.ts     |  14 [32m+[m[31m-[m
+ backend/src/services/posCsvImport.service.ts       |  78 [32m++++++++[m[31m--[m
+ backend/src/services/recipeVersion.service.test.ts |  14 [32m+[m[31m-[m
+ backend/src/services/recipeVersion.service.ts      |  44 [32m+++[m[31m---[m
+ backend/src/services/reportRenderers.service.ts    |   1 [32m+[m
+ backend/src/validators/inventoryWorkflow.ts        |   4 [32m+[m[31m-[m
+ backend/src/validators/masterData.test.ts          |   8 [32m+[m[31m-[m
+ backend/src/validators/masterData.ts               |  22 [32m+[m[31m--[m
+ 15 files changed, 584 insertions(+), 120 deletions(-)

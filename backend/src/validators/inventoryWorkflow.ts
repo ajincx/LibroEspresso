@@ -11,9 +11,11 @@ const posCsvSourceInput = z.object({
   csvText: z.string().min(1).max(4_500_000),
 });
 
-export const posPreviewInput = posCsvSourceInput;
+export const posPreviewInput = posCsvSourceInput.extend({ posSourceId: z.string().uuid().optional() });
 export const posImportInput = posCsvSourceInput.extend({
   expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/i, "Preview the CSV again before importing"),
+  expectedResolutionFingerprint: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
+  posSourceId: z.string().uuid().optional(),
 });
 
 export const posImportHistoryFilters = z.object({

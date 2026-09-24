@@ -215,6 +215,30 @@ describe("access controls", () => {
     expect(response.status).toBe(403);
   });
 
+  it("keeps POS source and mapping administration Owner-only", async () => {
+    const manager = session({ id: "manager", role: "BRANCH_MANAGER", branchId: "00000000-0000-4000-8000-000000000002" });
+    const staff = session({ id: "staff", role: "STAFF", branchId: "00000000-0000-4000-8000-000000000002" });
+    const paths = ["/api/pos-sales/sources", "/api/pos-sales/mappings"];
+    for (const path of paths) {
+      const responses = await Promise.all([
+        request(app).post(path).set("Cookie", manager).send({}),
+        request(app).post(path).set("Cookie", staff).send({}),
+        request(app).post(path).send({}),
+      ]);
+      expect(responses.map((response) => response.status)).toEqual([403, 403, 401]);
+    }
+  });
+
+  it("requires a separate Owner review before activating new POS sources or mappings", async () => {
+    const owner = session({ id: "owner", role: "OWNER", branchId: null });
+    const responses = await Promise.all([
+      request(app).post("/api/pos-sales/sources").set("Cookie", owner).send({ sourceCode: "UNVERIFIED", displayName: "Unverified", supportedFormat: "SUMMARY_ITEMS_SOLD_LEGACY_XLS", status: "ACTIVE" }),
+      request(app).post("/api/pos-sales/mappings").set("Cookie", owner).send({ posSourceId: "00000000-0000-4000-8000-000000000001", branchId: null, sourceProductName: "C12 SPNLT", menuItemVariantId: "00000000-0000-4000-8000-000000000002", status: "ACTIVE" }),
+    ]);
+    expect(responses.map((response) => response.status)).toEqual([422, 422]);
+    expect(responses.map((response) => response.body.error.code)).toEqual(["POS_SOURCE_REVIEW_REQUIRED", "POS_MAPPING_REVIEW_REQUIRED"]);
+  });
+
   it("blocks an Owner from importing branch POS sales", async () => {
     const cookie = session({ id: "owner", role: "OWNER", branchId: null });
     const responses = await Promise.all([
@@ -245,6 +269,26 @@ describe("access controls", () => {
       request(app).post("/api/pos-sales/import").send({}),
     ]);
     expect(responses.map((response) => response.status)).toEqual([422, 422, 401, 401]);
+  });
+
+  it("accepts the Excel binary request path only after Manager authorization and validates its signature", async () => {
+    const manager = session({ id: "manager", role: "BRANCH_MANAGER", branchId: "00000000-0000-0000-0000-000000000002" });
+    const owner = session({ id: "owner", role: "OWNER", branchId: null });
+    const managerResponse = await request(app)
+      .post("/api/pos-sales/preview")
+      .set("Cookie", manager)
+      .set("Content-Type", "application/octet-stream")
+      .set("X-POS-Filename", "sales.xlsx")
+      .send(Buffer.from("not a workbook"));
+    const ownerResponse = await request(app)
+      .post("/api/pos-sales/preview")
+      .set("Cookie", owner)
+      .set("Content-Type", "application/octet-stream")
+      .set("X-POS-Filename", "sales.xlsx")
+      .send(Buffer.from("not a workbook"));
+    expect(managerResponse.status).toBe(422);
+    expect(managerResponse.body.error.code).toBe("INVALID_POS_FILE_SIGNATURE");
+    expect(ownerResponse.status).toBe(403);
   });
 
   it("does not expose manual shrinkage-report creation", async () => {

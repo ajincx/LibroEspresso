@@ -14,6 +14,14 @@ const HEADER_ALIASES = {
 
 export const MAX_POS_ROWS = 5_000;
 
+export const POS_SOURCE_FORMATS = {
+  CSV: "CANONICAL_CSV",
+  LEGACY_SUMMARY: "SUMMARY_ITEMS_SOLD_LEGACY_XLS",
+  TRANSACTION_SUMMARY: "TRANSACTION_SUMMARY_XLSX",
+} as const;
+
+export type PosSourceFormat = typeof POS_SOURCE_FORMATS[keyof typeof POS_SOURCE_FORMATS];
+
 export type PosRowStatus = "VALID" | "WARNING" | "INVALID";
 
 export interface ParsedPosRow {
@@ -27,8 +35,26 @@ export interface ParsedPosRow {
   transactionId: string | null;
   sourceLineId: string | null;
   transactionTimestamp: string | null;
+  sourceFormat?: PosSourceFormat;
+  sourceWorksheet?: string | null;
+  sourceRow?: number | null;
+  lineAmount?: number | null;
+  sourceOrNumber?: string | null;
+  sourceTransactionNumber?: string | null;
+  transactionStatus?: string | null;
+  transactionTimestampRaw?: string | null;
   status: PosRowStatus;
   issues: string[];
+}
+
+export interface ParsedPosDocument {
+  headers: string[];
+  rows: ParsedPosRow[];
+  contentHash: string;
+  businessDate: string | null;
+  sourceFormat: PosSourceFormat;
+  formatLabel: string;
+  importBlockedReason: string | null;
 }
 
 export interface PosMenuCandidate {
@@ -41,6 +67,13 @@ export interface PosMenuCandidate {
 export interface MatchedPosRow extends ParsedPosRow {
   menuItemId: string | null;
   matchedMenuProduct: string | null;
+  menuItemVariantId?: string | null;
+  matchedVariant?: string | null;
+  recipeVersionId?: string | null;
+  mappingId?: string | null;
+  mappingVersion?: string | null;
+  mappingStatus?: "APPROVED" | "UNMATCHED" | "AMBIGUOUS" | "DIRECT";
+  mappingScope?: "GLOBAL" | "BRANCH" | null;
 }
 
 export class PosCsvError extends Error {
@@ -54,11 +87,35 @@ const normalizeHeader = (value: string) =>
 const normalizeProduct = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
 const clean = (value: unknown) => String(value ?? "").trim();
 
-function validBusinessDate(value: string) {
+export function validBusinessDate(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const [year, month, day] = value.split("-").map(Number);
   const date = new Date(Date.UTC(year!, month! - 1, day));
   return date.getUTCFullYear() === year && date.getUTCMonth() === month! - 1 && date.getUTCDate() === day;
+}
+
+export function hashCanonicalPosRows(rows: readonly ParsedPosRow[]) {
+  const canonical = rows.map((row) => ({
+    sourceProduct: row.sourceProduct,
+    sourceProductId: row.sourceProductId,
+    sourceProductName: row.sourceProductName,
+    quantitySold: row.quantitySold,
+    unitPrice: row.unitPrice,
+    businessDate: row.businessDate,
+    transactionId: row.transactionId,
+    sourceLineId: row.sourceLineId,
+    transactionTimestamp: row.transactionTimestamp,
+  }));
+  return createHash("sha256").update(JSON.stringify(canonical), "utf8").digest("hex");
+}
+
+export function enforceSingleBusinessDate(rows: ParsedPosRow[]) {
+  const dates = [...new Set(rows.map((row) => row.businessDate).filter((value): value is string => Boolean(value)))];
+  if (dates.length > 1) rows.forEach((row) => {
+    row.status = "INVALID";
+    row.issues.unshift("All rows in one import must use the same Business Date.");
+  });
+  return dates.length === 1 ? dates[0]! : null;
 }
 
 function columnIndex(headers: string[], aliases: readonly string[], label: string, required = false) {
@@ -68,7 +125,7 @@ function columnIndex(headers: string[], aliases: readonly string[], label: strin
   return matches[0] ?? -1;
 }
 
-export function parsePosCsv(csvText: string): { headers: string[]; rows: ParsedPosRow[]; contentHash: string; businessDate: string | null } {
+export function parsePosCsv(csvText: string): ParsedPosDocument {
   if (!csvText.trim()) throw new PosCsvError("EMPTY_CSV", "The CSV file is empty.");
   if (csvText.includes("\uFFFD") || csvText.includes("\u0000")) {
     throw new PosCsvError(
@@ -142,11 +199,16 @@ export function parsePosCsv(csvText: string): { headers: string[]; rows: ParsedP
     };
   });
 
-  const dates = [...new Set(rows.map((row) => row.businessDate).filter((value): value is string => Boolean(value)))];
-  if (dates.length > 1) rows.forEach((row) => { row.status = "INVALID"; row.issues.unshift("All rows in one import must use the same Business Date."); });
-  const canonical = rows.map(({ rowNumber: _rowNumber, status: _status, issues: _issues, ...row }) => row);
-  const contentHash = createHash("sha256").update(JSON.stringify(canonical), "utf8").digest("hex");
-  return { headers, rows, contentHash, businessDate: dates.length === 1 ? dates[0]! : null };
+  const singleBusinessDate = enforceSingleBusinessDate(rows);
+  return {
+    headers,
+    rows,
+    contentHash: hashCanonicalPosRows(rows),
+    businessDate: singleBusinessDate,
+    sourceFormat: POS_SOURCE_FORMATS.CSV,
+    formatLabel: "Standard POS CSV",
+    importBlockedReason: null,
+  };
 }
 
 export function matchPosRows(rows: ParsedPosRow[], products: readonly PosMenuCandidate[]): MatchedPosRow[] {
@@ -173,6 +235,6 @@ export function summarizePosRows(rows: readonly MatchedPosRow[], duplicate: bool
   const validRows = rows.filter((row) => row.status === "VALID").length;
   const warningRows = rows.filter((row) => row.status === "WARNING").length;
   const invalidRows = rows.filter((row) => row.status === "INVALID").length;
-  const unmatchedRows = rows.filter((row) => row.issues.some((issue) => issue.startsWith("UNMATCHED PRODUCT"))).length;
+  const unmatchedRows = rows.filter((row) => row.mappingStatus === "UNMATCHED" || row.issues.some((issue) => issue.startsWith("UNMATCHED PRODUCT"))).length;
   return { totalSourceRows: rows.length, validRows, warningRows, invalidRows, unmatchedRows, duplicate, quality: duplicate || invalidRows ? "REJECTED" as const : warningRows ? "NEEDS_REVIEW" as const : "COMPLETE" as const, canImport: !duplicate && invalidRows === 0 && rows.length > 0 };
 }

@@ -1,10 +1,12 @@
-import type { RequestHandler } from "express";
+import type { Request, RequestHandler } from "express";
 import type { PoolClient } from "pg";
 import { pool } from "../config/database.js";
 import { env } from "../config/env.js";
 import { calculateExpectedInventory } from "../services/inventoryCalculation.service.js";
 import { calculateFinancialSummary } from "../services/financialMetrics.service.js";
 import { matchPosRows, parsePosCsv, PosCsvError, summarizePosRows, type MatchedPosRow, type PosMenuCandidate } from "../services/posCsvImport.service.js";
+import { parsePosExcel } from "../services/posExcelImport.service.js";
+import { loadPosMappings, loadPosSource, posResolutionFingerprint, resolvePosMapping } from "../services/posProductVariantMapping.service.js";
 import { getEffectiveBranchId } from "../services/branchScope.js";
 import { writeAudit } from "../services/audit.service.js";
 import { VERIFIED_SHRINKAGE_CLASSIFICATIONS_SQL } from "../services/shrinkageWorkflow.service.js";
@@ -41,22 +43,59 @@ function requiredBranchId(
   return branchId;
 }
 
-type PosPreviewProduct = PosMenuCandidate & { recipeValid: boolean };
-type PosPreviewProductRow = PosMenuCandidate & {
+type PosPreviewProductRow = PosMenuCandidate;
+type PosPreviewVariantRow = {
+  id: string;
+  menuItemId: string;
+  name: string;
+  status: "ACTIVE" | "INACTIVE";
   recipeVersionId: string | null;
   recipeUnits: Array<{ recipeUnit: string; inventoryUnit: string }>;
 };
 
+type PosImportSource =
+  | { sourceFilename: string; csvText: string; fileBuffer?: never; posSourceId?: string }
+  | { sourceFilename: string; fileBuffer: Buffer; csvText?: never; posSourceId?: string };
+
+function decodedPosFilename(value: string | string[] | undefined) {
+  if (typeof value !== "string") throw new AppError(422, "POS_FILENAME_REQUIRED", "The POS filename is required.");
+  let filename: string;
+  try { filename = decodeURIComponent(value).trim(); }
+  catch { throw new AppError(422, "INVALID_POS_FILENAME", "The POS filename is invalid."); }
+  if (!filename || filename.length > 255 || !/\.(xls|xlsx)$/i.test(filename)) {
+    throw new AppError(422, "INVALID_POS_FILENAME", "Select a valid XLS or XLSX POS file.");
+  }
+  return filename;
+}
+
+function posRequestSource(req: Request, confirmation: false): PosImportSource;
+function posRequestSource(req: Request, confirmation: true): PosImportSource & { expectedContentHash: string; expectedResolutionFingerprint?: string };
+function posRequestSource(req: Request, confirmation: boolean) {
+  if (Buffer.isBuffer(req.body)) {
+    const sourceFilename = decodedPosFilename(req.headers["x-pos-filename"]);
+    const expectedContentHash = req.headers["x-pos-content-hash"];
+    const posSourceId = req.headers["x-pos-source-id"];
+    const expectedResolutionFingerprint = req.headers["x-pos-resolution-fingerprint"];
+    if (posSourceId !== undefined && (typeof posSourceId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(posSourceId))) throw new AppError(422, "POS_SOURCE_INVALID", "Select a valid POS source.");
+    if (expectedResolutionFingerprint !== undefined && (typeof expectedResolutionFingerprint !== "string" || !/^[a-f0-9]{64}$/i.test(expectedResolutionFingerprint))) throw new AppError(422, "POS_RESOLUTION_INVALID", "Preview the POS file again before importing.");
+    if (confirmation && (typeof expectedContentHash !== "string" || !/^[a-f0-9]{64}$/i.test(expectedContentHash))) {
+      throw new AppError(422, "POS_PREVIEW_REQUIRED", "Preview the POS file again before importing.");
+    }
+    return { sourceFilename, fileBuffer: req.body, ...(posSourceId ? { posSourceId } : {}), ...(confirmation ? { expectedContentHash, expectedResolutionFingerprint } : {}) };
+  }
+  return confirmation ? posImportInput.parse(req.body) : posPreviewInput.parse(req.body);
+}
+
 async function buildPosPreview(
   branchId: string,
-  source: { sourceFilename: string; csvText: string },
+  source: PosImportSource,
   client: Pick<PoolClient, "query"> = pool,
 ) {
   const previewStartedAt = performance.now();
   let parsed: ReturnType<typeof parsePosCsv>;
   const parseStartedAt = performance.now();
   try {
-    parsed = parsePosCsv(source.csvText);
+    parsed = source.fileBuffer ? parsePosExcel(source.sourceFilename, source.fileBuffer) : parsePosCsv(source.csvText);
   } catch (error) {
     if (error instanceof PosCsvError) throw new AppError(422, error.code, error.message);
     throw error;
@@ -66,37 +105,69 @@ async function buildPosPreview(
   const [branch, products] = await Promise.all([
     client.query<{ branchName: string }>(`SELECT name "branchName" FROM branches WHERE id=$1 AND status='ACTIVE'`, [branchId]),
     client.query<PosPreviewProductRow>(
-      `SELECT mi.id,mi.code,mi.name,mi.selling_price::float8 "sellingPrice",
-              r.id "recipeVersionId",
-              COALESCE(json_agg(json_build_object('recipeUnit',ri.unit,'inventoryUnit',ii.unit))
-                FILTER (WHERE ri.id IS NOT NULL),'[]') "recipeUnits"
+      `SELECT mi.id,mi.code,mi.name,mi.selling_price::float8 "sellingPrice"
          FROM menu_items mi
          JOIN menu_item_branches mib ON mib.menu_item_id=mi.id AND mib.branch_id=$1
-         LEFT JOIN LATERAL (SELECT candidate.* FROM recipes candidate
-           WHERE candidate.menu_item_id=mi.id AND candidate.status='ACTIVE'
-             AND candidate.effective_from<=$2::date
-             AND (candidate.effective_to IS NULL OR candidate.effective_to>$2::date)
-           ORDER BY candidate.effective_from DESC LIMIT 1) r ON true
-         LEFT JOIN recipe_items ri ON ri.recipe_id=r.id
-         LEFT JOIN inventory_items ii ON ii.id=ri.inventory_item_id
         WHERE mi.status='ACTIVE' AND mi.approval_status='APPROVED'
           AND mib.availability_status='APPROVED' AND mib.is_active=true
-        GROUP BY mi.id,r.id ORDER BY mi.name`,
-      [branchId, parsed.businessDate],
+        ORDER BY mi.name`,
+      [branchId],
     ),
   ]);
   const productLookupMs = performance.now() - lookupStartedAt;
   const matchingStartedAt = performance.now();
-  const validatedProducts:PosPreviewProduct[]=products.rows.map((product)=>({
-    ...product,
-    recipeValid:Boolean(product.recipeVersionId)&&product.recipeUnits.length>0&&product.recipeUnits.every((item)=>areUnitsCompatible(item.recipeUnit,item.inventoryUnit)),
-  }));
-  const productMap = new Map(validatedProducts.map((product) => [product.id, product]));
-  const rows = matchPosRows(parsed.rows, validatedProducts).map((row): MatchedPosRow => {
+  const variantResult = await client.query<PosPreviewVariantRow>(
+    `SELECT v.id,v.menu_item_id "menuItemId",v.name,v.status,r.id "recipeVersionId",
+       COALESCE(json_agg(json_build_object('recipeUnit',ri.unit,'inventoryUnit',ii.unit))
+         FILTER (WHERE ri.id IS NOT NULL),'[]') "recipeUnits"
+     FROM menu_item_variants v
+     LEFT JOIN LATERAL (SELECT candidate.* FROM recipes candidate WHERE candidate.menu_item_variant_id=v.id
+       AND candidate.status='ACTIVE' AND candidate.effective_from<=$2::date
+       AND (candidate.effective_to IS NULL OR candidate.effective_to>$2::date)
+       ORDER BY candidate.effective_from DESC LIMIT 1) r ON true
+     LEFT JOIN recipe_items ri ON ri.recipe_id=r.id
+     LEFT JOIN inventory_items ii ON ii.id=ri.inventory_item_id
+     WHERE v.menu_item_id=ANY($1::uuid[])
+     GROUP BY v.id,r.id`,
+    [products.rows.map((product)=>product.id), parsed.businessDate],
+  );
+  const variantsByProduct = new Map<string, PosPreviewVariantRow[]>();
+  const variantById = new Map(variantResult.rows.map((variant)=>[variant.id,variant]));
+  for (const variant of variantResult.rows) variantsByProduct.set(variant.menuItemId,[...(variantsByProduct.get(variant.menuItemId)??[]),variant]);
+  const sourceId = source.fileBuffer ? source.posSourceId ?? null : null;
+  const selectedSource = sourceId ? await loadPosSource(client, sourceId, parsed.sourceFormat) : null;
+  const mappings = selectedSource ? await loadPosMappings(client, selectedSource.id, branchId, parsed.businessDate) : [];
+  const preliminaryRows: MatchedPosRow[] = source.fileBuffer
+    ? parsed.rows.map((row) => {
+        const resolution = selectedSource ? resolvePosMapping(row, branchId, mappings) : null;
+        if (!resolution || resolution.status !== "APPROVED") return {
+          ...row, menuItemId: null, matchedMenuProduct: null, menuItemVariantId: null, matchedVariant: null,
+          mappingId: null, mappingStatus: resolution?.status ?? "UNMATCHED", mappingScope: null,
+          status: "INVALID", issues: [...row.issues, resolution?.issue ?? "Select a configured POS source before importing this Excel file."],
+        };
+        return {
+          ...row, menuItemId: resolution.menuItemId, matchedMenuProduct: resolution.menuItemName,
+          menuItemVariantId: resolution.menuItemVariantId, matchedVariant: resolution.variantName,
+          mappingId: resolution.mappingId, mappingVersion: resolution.version,
+          mappingStatus: resolution.status, mappingScope: resolution.scope,
+        };
+      })
+    : matchPosRows(parsed.rows, products.rows).map((row) => {
+        if (!row.menuItemId) return { ...row, mappingStatus: "UNMATCHED" as const };
+        const active = (variantsByProduct.get(row.menuItemId)??[]).filter((variant)=>variant.status==="ACTIVE");
+        if (active.length!==1 || active[0]!.name.toLowerCase()!=="standard") return {
+          ...row,menuItemId:null,matchedMenuProduct:null,menuItemVariantId:null,matchedVariant:null,
+          mappingStatus:"UNMATCHED" as const,status:"INVALID" as const,
+          issues:[...row.issues,"The CSV product does not identify an unambiguous Standard variant. Review the product/variant mapping."],
+        };
+        return {...row,menuItemVariantId:active[0]!.id,matchedVariant:active[0]!.name,mappingStatus:"DIRECT" as const};
+      });
+  const rows = preliminaryRows.map((row): MatchedPosRow => {
     if (!row.menuItemId || row.status === "INVALID") return row;
-    const product = productMap.get(row.menuItemId);
-    if (product?.recipeValid) return row;
-    return { ...row, status: "INVALID", issues: [...row.issues, "Matched product does not have a valid active recipe with matching ingredient units."] };
+    const variant = row.menuItemVariantId ? variantById.get(row.menuItemVariantId) : null;
+    if (variant?.menuItemId===row.menuItemId && variant.status==="ACTIVE" && variant.recipeVersionId
+      && variant.recipeUnits.length>0 && variant.recipeUnits.every((item)=>areUnitsCompatible(item.recipeUnit,item.inventoryUnit))) return {...row,recipeVersionId:variant.recipeVersionId};
+    return { ...row, status: "INVALID", issues: [...row.issues, "Matched variant does not have a valid active recipe with matching ingredient units."] };
   });
   const matchAndValidationMs = performance.now() - matchingStartedAt;
   const duplicateStartedAt = performance.now();
@@ -108,13 +179,24 @@ async function buildPosPreview(
     : { rows: [] as { id: string }[] };
   const duplicateCheckMs = performance.now() - duplicateStartedAt;
   const summary = summarizePosRows(rows, existing.rows.length > 0);
+  const importBlockedReason = parsed.importBlockedReason ?? (source.fileBuffer && !selectedSource ? "Configure and select a verified POS source before confirming this Excel import." : null);
+  if (importBlockedReason) {
+    summary.canImport = false;
+    summary.quality = "REJECTED";
+  }
   return {
     sourceFilename: source.sourceFilename,
     branchId,
     branchName: branch.rows[0]?.branchName ?? "Assigned Branch",
     businessDate: parsed.businessDate,
     contentHash: parsed.contentHash,
+    resolutionFingerprint: posResolutionFingerprint(sourceId, rows),
+    posSourceId: selectedSource?.id ?? null,
+    posSourceName: selectedSource?.displayName ?? null,
     fingerprintIndicator: parsed.contentHash.slice(0, 12),
+    sourceFormat: parsed.sourceFormat,
+    formatLabel: parsed.formatLabel,
+    importBlockedReason,
     rows,
     summary,
     benchmark: { parseMs, productLookupMs, matchAndValidationMs, duplicateCheckMs, previewTotalMs: performance.now() - previewStartedAt },
@@ -122,7 +204,7 @@ async function buildPosPreview(
 }
 
 export const previewPosSales: RequestHandler = async (req, res) => {
-  const input = posPreviewInput.parse(req.body);
+  const input = posRequestSource(req, false);
   const branchId = requiredBranchId(req.user!);
   try {
     const preview = await buildPosPreview(branchId, input);
@@ -136,29 +218,31 @@ export const previewPosSales: RequestHandler = async (req, res) => {
 
 export const importPosSales: RequestHandler = async (req, res) => {
   const importStartedAt = performance.now();
-  const input = posImportInput.parse(req.body);
+  const input = posRequestSource(req, true);
   const branchId = requiredBranchId(req.user!);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const preview = await buildPosPreview(branchId, input, client);
-    if (preview.contentHash !== input.expectedContentHash) throw new AppError(409, "POS_PREVIEW_CHANGED", "The selected CSV changed after preview. Preview it again before importing.");
+    if (preview.contentHash !== input.expectedContentHash) throw new AppError(409, "POS_PREVIEW_CHANGED", "The selected POS file changed after preview. Preview it again before importing.");
     if (preview.summary.duplicate) throw new AppError(409, "POS_IMPORT_DUPLICATE", "This POS file appears to have already been imported for this branch.");
+    if (preview.importBlockedReason) throw new AppError(422, "POS_FORMAT_IMPORT_BLOCKED", preview.importBlockedReason);
+    if (input.fileBuffer && (!input.expectedResolutionFingerprint || preview.resolutionFingerprint !== input.expectedResolutionFingerprint)) throw new AppError(409, "POS_MAPPING_CHANGED", "POS source or product/variant mapping changed after preview. Preview the file again.");
     if (!preview.summary.canImport || !preview.businessDate) throw new AppError(422, "POS_IMPORT_INVALID", "POS import was not completed because the preview contains invalid or unmatched rows.");
     const importRows = preview.rows.filter((row): row is MatchedPosRow & { menuItemId: string; quantitySold: number; unitPrice: number; businessDate: string } => Boolean(row.menuItemId) && row.quantitySold !== null && row.unitPrice !== null && row.businessDate !== null && row.status !== "INVALID");
     const imported = await client.query<{ id: string }>(
-      `INSERT INTO pos_imports (branch_id,business_date,source_filename,imported_by,content_hash,total_source_rows,valid_rows,warning_rows,invalid_rows,unmatched_rows,import_status,completed_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,0,0,$9,now()) RETURNING id`,
-      [branchId, preview.businessDate, input.sourceFilename, req.user!.id, preview.contentHash, preview.summary.totalSourceRows, preview.summary.validRows, preview.summary.warningRows, preview.summary.quality],
+      `INSERT INTO pos_imports (branch_id,business_date,source_filename,imported_by,content_hash,total_source_rows,valid_rows,warning_rows,invalid_rows,unmatched_rows,import_status,completed_at,pos_source_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,0,0,$9,now(),$10) RETURNING id`,
+      [branchId, preview.businessDate, input.sourceFilename, req.user!.id, preview.contentHash, preview.summary.totalSourceRows, preview.summary.validRows, preview.summary.warningRows, preview.summary.quality,preview.posSourceId],
     );
     const importId = imported.rows[0]!.id;
     const salesInsertStartedAt = performance.now();
     await client.query(
-      `INSERT INTO pos_sale_items (pos_import_id,branch_id,business_date,menu_item_id,quantity_sold,unit_price_snapshot,source_product,source_transaction_id,source_line_id,transaction_timestamp)
-       SELECT $1,$2,$3,source.menu_item_id,source.quantity_sold,source.unit_price,source.source_product,source.transaction_id,source.line_id,source.transaction_timestamp
-       FROM unnest($4::uuid[],$5::numeric[],$6::numeric[],$7::text[],$8::text[],$9::text[],$10::timestamptz[])
-         AS source(menu_item_id,quantity_sold,unit_price,source_product,transaction_id,line_id,transaction_timestamp)`,
-      [importId,branchId,preview.businessDate,importRows.map((item)=>item.menuItemId),importRows.map((item)=>item.quantitySold),importRows.map((item)=>item.unitPrice),importRows.map((item)=>item.sourceProduct),importRows.map((item)=>item.transactionId),importRows.map((item)=>item.sourceLineId),importRows.map((item)=>item.transactionTimestamp)],
+      `INSERT INTO pos_sale_items (pos_import_id,branch_id,business_date,menu_item_id,quantity_sold,unit_price_snapshot,source_product,source_transaction_id,source_line_id,transaction_timestamp,menu_item_variant_id)
+       SELECT $1,$2,$3,source.menu_item_id,source.quantity_sold,source.unit_price,source.source_product,source.transaction_id,source.line_id,source.transaction_timestamp,source.variant_id
+       FROM unnest($4::uuid[],$5::numeric[],$6::numeric[],$7::text[],$8::text[],$9::text[],$10::timestamptz[],$11::uuid[])
+         AS source(menu_item_id,quantity_sold,unit_price,source_product,transaction_id,line_id,transaction_timestamp,variant_id)`,
+      [importId,branchId,preview.businessDate,importRows.map((item)=>item.menuItemId),importRows.map((item)=>item.quantitySold),importRows.map((item)=>item.unitPrice),importRows.map((item)=>item.sourceProduct),importRows.map((item)=>item.transactionId),importRows.map((item)=>item.sourceLineId),importRows.map((item)=>item.transactionTimestamp),importRows.map((item)=>item.menuItemVariantId ?? null)],
     );
     const salesInsertMs = performance.now() - salesInsertStartedAt;
     const usageStartedAt = performance.now();

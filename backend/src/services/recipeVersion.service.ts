@@ -36,6 +36,7 @@ type RecipeItemInput = { inventoryItemId: string; quantity: number; unit: string
 type SaveRecipeInput = {
   recipeId?: string;
   menuItemId: string;
+  menuItemVariantId: string;
   name: string;
   yieldQuantity: number;
   status: "ACTIVE" | "INACTIVE";
@@ -55,32 +56,37 @@ async function insertItems(client: Pick<PoolClient, "query">, recipeId: string, 
 }
 
 export async function saveRecipeDefinition(client: Pick<PoolClient, "query">, input: SaveRecipeInput) {
+  const variant = await client.query(
+    `SELECT id FROM menu_item_variants WHERE id=$1 AND menu_item_id=$2 AND status='ACTIVE'`,
+    [input.menuItemVariantId, input.menuItemId],
+  );
+  if (!variant.rows[0]) throw new AppError(422, "RECIPE_VARIANT_INVALID", "Select an active variant belonging to this product");
   if (!input.recipeId) {
-    const existing = await client.query(`SELECT id FROM recipes WHERE menu_item_id=$1 LIMIT 1 FOR UPDATE`, [input.menuItemId]);
-    if (existing.rows[0]) throw new AppError(409, "RECIPE_ALREADY_EXISTS", "This product already has a recipe history");
+    const existing = await client.query(`SELECT id FROM recipes WHERE menu_item_variant_id=$1 LIMIT 1 FOR UPDATE`, [input.menuItemVariantId]);
+    if (existing.rows[0]) throw new AppError(409, "RECIPE_ALREADY_EXISTS", "This variant already has a recipe history");
     const inserted = await client.query<{ id: string }>(
-      `INSERT INTO recipes (menu_item_id,name,yield_quantity,status,version,effective_from,created_by,change_reason)
-       VALUES ($1,$2,$3,$4,1,COALESCE($5::date,CURRENT_DATE),$6,$7) RETURNING id`,
-      [input.menuItemId, input.name, input.yieldQuantity, input.status, input.effectiveFrom ?? null, input.createdBy, input.changeReason?.trim() || null],
+      `INSERT INTO recipes (menu_item_id,menu_item_variant_id,name,yield_quantity,status,version,effective_from,created_by,change_reason)
+       VALUES ($1,$2,$3,$4,$5,1,COALESCE($6::date,CURRENT_DATE),$7,$8) RETURNING id`,
+      [input.menuItemId, input.menuItemVariantId, input.name, input.yieldQuantity, input.status, input.effectiveFrom ?? null, input.createdBy, input.changeReason?.trim() || null],
     );
     await insertItems(client, inserted.rows[0]!.id, input.items);
     return { recipeId: inserted.rows[0]!.id, version: 1, createdVersion: false };
   }
 
   const recipeResult = await client.query<RecipePeriod & { menuItemId: string }>(
-    `SELECT id,menu_item_id "menuItemId",version,effective_from::text "effectiveFrom",effective_to::text "effectiveTo"
-       FROM recipes WHERE id=$1 AND menu_item_id=$2 FOR UPDATE`,
-    [input.recipeId, input.menuItemId],
+      `SELECT id,menu_item_id "menuItemId",version,effective_from::text "effectiveFrom",effective_to::text "effectiveTo"
+       FROM recipes WHERE id=$1 AND menu_item_id=$2 AND menu_item_variant_id=$3 FOR UPDATE`,
+    [input.recipeId, input.menuItemId, input.menuItemVariantId],
   );
   const recipe = recipeResult.rows[0];
   if (!recipe) throw new AppError(404, "RECIPE_NOT_FOUND", "Recipe not found");
-  await client.query(`SELECT id FROM recipes WHERE menu_item_id=$1 FOR UPDATE`, [input.menuItemId]);
+  await client.query(`SELECT id FROM recipes WHERE menu_item_variant_id=$1 FOR UPDATE`, [input.menuItemVariantId]);
   const used = await client.query(
     `SELECT 1 FROM pos_sale_ingredient_usage usage
       JOIN pos_sale_items psi ON psi.id=usage.pos_sale_item_id
-     WHERE usage.recipe_version_id=$1 OR (usage.recipe_version_id IS NULL AND psi.menu_item_id=$2)
+     WHERE usage.recipe_version_id=$1 OR (usage.recipe_version_id IS NULL AND psi.menu_item_variant_id=$2)
      LIMIT 1`,
-    [recipe.id, input.menuItemId],
+    [recipe.id, input.menuItemVariantId],
   );
 
   if (!shouldCreateNewRecipeVersion(Boolean(used.rows[0]))) {
@@ -105,22 +111,22 @@ export async function saveRecipeDefinition(client: Pick<PoolClient, "query">, in
     throw new AppError(409, "RECIPE_PERIOD_OVERLAP", "The selected date is already covered by another recipe version");
   }
   const overlap = await client.query(
-    `SELECT id FROM recipes WHERE menu_item_id=$1 AND id<>$2
+    `SELECT id FROM recipes WHERE menu_item_variant_id=$1 AND id<>$2
        AND effective_from < COALESCE($3::date,'infinity'::date)
        AND COALESCE(effective_to,'infinity'::date) > $3::date LIMIT 1`,
-    [input.menuItemId, recipe.id, input.effectiveFrom],
+    [input.menuItemVariantId, recipe.id, input.effectiveFrom],
   );
   if (overlap.rows[0]) throw new AppError(409, "RECIPE_PERIOD_OVERLAP", "A recipe version already applies during the selected period");
 
   const nextVersion = await client.query<{ version: number }>(
-    `SELECT COALESCE(max(version),0)::int+1 version FROM recipes WHERE menu_item_id=$1`,
-    [input.menuItemId],
+    `SELECT COALESCE(max(version),0)::int+1 version FROM recipes WHERE menu_item_variant_id=$1`,
+    [input.menuItemVariantId],
   );
   await client.query(`UPDATE recipes SET effective_to=$2::date,updated_at=now() WHERE id=$1`, [recipe.id, input.effectiveFrom]);
   const inserted = await client.query<{ id: string }>(
-    `INSERT INTO recipes (menu_item_id,name,yield_quantity,status,version,effective_from,created_by,change_reason)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-    [input.menuItemId, input.name, input.yieldQuantity, input.status, nextVersion.rows[0]!.version, input.effectiveFrom, input.createdBy, input.changeReason?.trim() || null],
+    `INSERT INTO recipes (menu_item_id,menu_item_variant_id,name,yield_quantity,status,version,effective_from,created_by,change_reason)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+    [input.menuItemId, input.menuItemVariantId, input.name, input.yieldQuantity, input.status, nextVersion.rows[0]!.version, input.effectiveFrom, input.createdBy, input.changeReason?.trim() || null],
   );
   await insertItems(client, inserted.rows[0]!.id, input.items);
   return { recipeId: inserted.rows[0]!.id, version: nextVersion.rows[0]!.version, createdVersion: true };
@@ -148,7 +154,7 @@ export async function createIngredientUsageSnapshots(client: Pick<PoolClient, "q
        JOIN pos_imports pi ON pi.id=psi.pos_import_id
        JOIN LATERAL (
          SELECT candidate.* FROM recipes candidate
-          WHERE candidate.menu_item_id=psi.menu_item_id AND candidate.status='ACTIVE'
+          WHERE candidate.menu_item_variant_id=psi.menu_item_variant_id AND candidate.status='ACTIVE'
             AND candidate.effective_from<=psi.business_date
             AND (candidate.effective_to IS NULL OR candidate.effective_to>psi.business_date)
           ORDER BY candidate.effective_from DESC LIMIT 1
