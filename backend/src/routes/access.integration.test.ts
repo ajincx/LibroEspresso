@@ -239,6 +239,22 @@ describe("access controls", () => {
     expect(responses.map((response) => response.body.error.code)).toEqual(["POS_SOURCE_REVIEW_REQUIRED", "POS_MAPPING_REVIEW_REQUIRED"]);
   });
 
+  it("separates Manager import requests from Owner approval decisions",async()=>{
+    const manager=session({id:"manager",role:"BRANCH_MANAGER",branchId:"00000000-0000-4000-8000-000000000002"});
+    const owner=session({id:"owner",role:"OWNER",branchId:null});
+    const staff=session({id:"staff",role:"STAFF",branchId:"00000000-0000-4000-8000-000000000002"});
+    const approvalPath="/api/pos-sales/approvals/00000000-0000-4000-8000-000000000032";
+    const [ownerCannotRequest,staffCannotRequest,managerCannotReview,staffCannotReview,ownerValidation]=await Promise.all([
+      request(app).post("/api/pos-sales/approvals").set("Cookie",owner).send({}),
+      request(app).post("/api/pos-sales/approvals").set("Cookie",staff).send({}),
+      request(app).patch(approvalPath).set("Cookie",manager).send({status:"APPROVED",approvalNotes:"Reviewed"}),
+      request(app).patch(approvalPath).set("Cookie",staff).send({status:"APPROVED",approvalNotes:"Reviewed"}),
+      request(app).patch(approvalPath).set("Cookie",owner).send({}),
+    ]);
+    expect([ownerCannotRequest.status,staffCannotRequest.status,managerCannotReview.status,staffCannotReview.status]).toEqual([403,403,403,403]);
+    expect(ownerValidation.status).toBe(422);
+  });
+
   it("blocks an Owner from importing branch POS sales", async () => {
     const cookie = session({ id: "owner", role: "OWNER", branchId: null });
     const responses = await Promise.all([

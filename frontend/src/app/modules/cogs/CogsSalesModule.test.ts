@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { C } from "../../components/ModuleUi";
-import { PosImportDeleteDialog, canDeletePosImport, isSupportedPosFilename, marginValueColor } from "./CogsSalesModule";
+import { PosImportDeleteDialog, canApprovePosMapping, canDeletePosImport, isSupportedPosFilename, marginValueColor } from "./CogsSalesModule";
 
 describe("profitability presentation",()=>{
   it("uses success for positive margin, danger for negative margin, and neutral for zero",()=>{
@@ -39,5 +39,19 @@ describe("POS Import History controls",()=>{
     expect(markup).toContain("Cancel");
     expect(markup).toContain("Delete Import");
     expect(markup).toContain("app-btn--danger");
+  });
+});
+
+describe("POS mapping activation safeguards",()=>{
+  const verifiedSource={status:"ACTIVE",formatVerifiedAt:"2026-09-25T10:00:00Z"} as const;
+
+  it("allows review approval only for a recipe-backed variant and a verified active source",()=>{
+    expect(canApprovePosMapping({recipeAvailable:true},verifiedSource)).toBe(true);
+  });
+
+  it("blocks review approval when the recipe or verified source is unavailable",()=>{
+    expect(canApprovePosMapping({recipeAvailable:false},verifiedSource)).toBe(false);
+    expect(canApprovePosMapping({recipeAvailable:true},{status:"INACTIVE",formatVerifiedAt:null})).toBe(false);
+    expect(canApprovePosMapping({recipeAvailable:true},null)).toBe(false);
   });
 });

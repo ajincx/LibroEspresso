@@ -11,6 +11,7 @@ import { getEffectiveBranchId } from "../services/branchScope.js";
 import { writeAudit } from "../services/audit.service.js";
 import { VERIFIED_SHRINKAGE_CLASSIFICATIONS_SQL } from "../services/shrinkageWorkflow.service.js";
 import { createIngredientUsageSnapshots } from "../services/recipeVersion.service.js";
+import { calculatePosImportSimulation, type PosSimulationRecipeItem } from "../services/posImportSimulation.service.js";
 import { manilaBusinessDate } from "../services/businessTime.service.js";
 import { areUnitsCompatible } from "../services/unitConversion.service.js";
 import { AppError } from "../utils/appError.js";
@@ -23,6 +24,7 @@ import {
   posAnalyticsFilters,
   posImportHistoryFilters,
   posImportInput,
+  posImportApprovalReviewInput,
   posPreviewInput,
   shrinkageFilters,
   shrinkageInvestigationInput,
@@ -50,6 +52,7 @@ type PosPreviewVariantRow = {
   name: string;
   status: "ACTIVE" | "INACTIVE";
   recipeVersionId: string | null;
+  recipeVersion: number | null;
   recipeUnits: Array<{ recipeUnit: string; inventoryUnit: string }>;
 };
 
@@ -69,19 +72,21 @@ function decodedPosFilename(value: string | string[] | undefined) {
 }
 
 function posRequestSource(req: Request, confirmation: false): PosImportSource;
-function posRequestSource(req: Request, confirmation: true): PosImportSource & { expectedContentHash: string; expectedResolutionFingerprint?: string };
+function posRequestSource(req: Request, confirmation: true): PosImportSource & { expectedContentHash: string; expectedResolutionFingerprint?: string; approvalId: string };
 function posRequestSource(req: Request, confirmation: boolean) {
   if (Buffer.isBuffer(req.body)) {
     const sourceFilename = decodedPosFilename(req.headers["x-pos-filename"]);
     const expectedContentHash = req.headers["x-pos-content-hash"];
     const posSourceId = req.headers["x-pos-source-id"];
     const expectedResolutionFingerprint = req.headers["x-pos-resolution-fingerprint"];
+    const approvalId = req.headers["x-pos-approval-id"];
     if (posSourceId !== undefined && (typeof posSourceId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(posSourceId))) throw new AppError(422, "POS_SOURCE_INVALID", "Select a valid POS source.");
     if (expectedResolutionFingerprint !== undefined && (typeof expectedResolutionFingerprint !== "string" || !/^[a-f0-9]{64}$/i.test(expectedResolutionFingerprint))) throw new AppError(422, "POS_RESOLUTION_INVALID", "Preview the POS file again before importing.");
     if (confirmation && (typeof expectedContentHash !== "string" || !/^[a-f0-9]{64}$/i.test(expectedContentHash))) {
       throw new AppError(422, "POS_PREVIEW_REQUIRED", "Preview the POS file again before importing.");
     }
-    return { sourceFilename, fileBuffer: req.body, ...(posSourceId ? { posSourceId } : {}), ...(confirmation ? { expectedContentHash, expectedResolutionFingerprint } : {}) };
+    if (confirmation && (typeof approvalId !== "string" || !/^[0-9a-f-]{36}$/i.test(approvalId))) throw new AppError(422, "POS_APPROVAL_REQUIRED", "Obtain Owner approval before importing.");
+    return { sourceFilename, fileBuffer: req.body, ...(posSourceId ? { posSourceId } : {}), ...(confirmation ? { expectedContentHash, expectedResolutionFingerprint, approvalId } : {}) };
   }
   return confirmation ? posImportInput.parse(req.body) : posPreviewInput.parse(req.body);
 }
@@ -90,6 +95,7 @@ async function buildPosPreview(
   branchId: string,
   source: PosImportSource,
   client: Pick<PoolClient, "query"> = pool,
+  includeSimulation = true,
 ) {
   const previewStartedAt = performance.now();
   let parsed: ReturnType<typeof parsePosCsv>;
@@ -117,7 +123,7 @@ async function buildPosPreview(
   const productLookupMs = performance.now() - lookupStartedAt;
   const matchingStartedAt = performance.now();
   const variantResult = await client.query<PosPreviewVariantRow>(
-    `SELECT v.id,v.menu_item_id "menuItemId",v.name,v.status,r.id "recipeVersionId",
+    `SELECT v.id,v.menu_item_id "menuItemId",v.name,v.status,r.id "recipeVersionId",r.version "recipeVersion",
        COALESCE(json_agg(json_build_object('recipeUnit',ri.unit,'inventoryUnit',ii.unit))
          FILTER (WHERE ri.id IS NOT NULL),'[]') "recipeUnits"
      FROM menu_item_variants v
@@ -166,7 +172,7 @@ async function buildPosPreview(
     if (!row.menuItemId || row.status === "INVALID") return row;
     const variant = row.menuItemVariantId ? variantById.get(row.menuItemVariantId) : null;
     if (variant?.menuItemId===row.menuItemId && variant.status==="ACTIVE" && variant.recipeVersionId
-      && variant.recipeUnits.length>0 && variant.recipeUnits.every((item)=>areUnitsCompatible(item.recipeUnit,item.inventoryUnit))) return {...row,recipeVersionId:variant.recipeVersionId};
+      && variant.recipeUnits.length>0 && variant.recipeUnits.every((item)=>areUnitsCompatible(item.recipeUnit,item.inventoryUnit))) return {...row,recipeVersionId:variant.recipeVersionId,recipeVersion:variant.recipeVersion};
     return { ...row, status: "INVALID", issues: [...row.issues, "Matched variant does not have a valid active recipe with matching ingredient units."] };
   });
   const matchAndValidationMs = performance.now() - matchingStartedAt;
@@ -184,6 +190,24 @@ async function buildPosPreview(
     summary.canImport = false;
     summary.quality = "REJECTED";
   }
+  const simulationLines = rows.flatMap((row) => row.status !== "INVALID" && row.recipeVersionId
+    && typeof row.quantitySold === "number" && typeof row.unitPrice === "number"
+    ? [{ quantitySold: row.quantitySold, unitPrice: row.unitPrice, recipeVersionId: row.recipeVersionId }]
+    : []);
+  const recipeVersionIds = [...new Set(simulationLines.map((line) => line.recipeVersionId))];
+  const simulationRecipeItems = includeSimulation && recipeVersionIds.length
+    ? await client.query<PosSimulationRecipeItem>(
+      `SELECT r.id "recipeVersionId",ri.inventory_item_id "inventoryItemId",ii.sku,ii.name,
+              ri.quantity::float8 "recipeQuantity",ri.unit "recipeUnit",ii.unit "inventoryUnit",
+              COALESCE(bis.current_unit_cost,ii.unit_cost)::float8 "unitCost",r.yield_quantity::float8 "yieldQuantity"
+         FROM recipes r JOIN recipe_items ri ON ri.recipe_id=r.id
+         JOIN inventory_items ii ON ii.id=ri.inventory_item_id
+         LEFT JOIN branch_inventory_settings bis ON bis.branch_id=$2 AND bis.inventory_item_id=ii.id
+        WHERE r.id=ANY($1::uuid[]) ORDER BY r.id,ii.name`,
+      [recipeVersionIds, branchId],
+    )
+    : { rows: [] as PosSimulationRecipeItem[] };
+  const simulation = calculatePosImportSimulation(simulationLines, simulationRecipeItems.rows);
   return {
     sourceFilename: source.sourceFilename,
     branchId,
@@ -199,6 +223,7 @@ async function buildPosPreview(
     importBlockedReason,
     rows,
     summary,
+    simulation: { ...simulation, complete: summary.canImport, validResolvedRows: simulationLines.length },
     benchmark: { parseMs, productLookupMs, matchAndValidationMs, duplicateCheckMs, previewTotalMs: performance.now() - previewStartedAt },
   };
 }
@@ -216,6 +241,57 @@ export const previewPosSales: RequestHandler = async (req, res) => {
   }
 };
 
+const approvalSelect = `SELECT a.id,a.branch_id "branchId",b.name "branchName",a.pos_source_id "posSourceId",
+  a.source_filename "sourceFilename",a.business_date::text "businessDate",a.content_hash "contentHash",
+  a.resolution_fingerprint "resolutionFingerprint",a.source_sales_total::float8 "sourceSalesTotal",
+  a.source_quantity::float8 "sourceQuantity",a.status,a.requested_by "requestedBy",
+  concat(requester.first_name,' ',requester.last_name) "requestedByName",a.requested_at "requestedAt",
+  a.reviewed_by "reviewedBy",concat(reviewer.first_name,' ',reviewer.last_name) "reviewedByName",
+  a.approval_notes "approvalNotes",a.reviewed_at "reviewedAt",a.consumed_at "consumedAt",a.pos_import_id "posImportId"
+  FROM pos_import_approvals a JOIN branches b ON b.id=a.branch_id JOIN users requester ON requester.id=a.requested_by
+  LEFT JOIN users reviewer ON reviewer.id=a.reviewed_by`;
+
+export const requestPosImportApproval: RequestHandler = async (req, res) => {
+  const input = posRequestSource(req, false);
+  const branchId = requiredBranchId(req.user!);
+  const preview = await buildPosPreview(branchId, input);
+  if (!preview.summary.canImport || !preview.businessDate) throw new AppError(422, "POS_IMPORT_INVALID", "Resolve every preview issue before requesting approval.");
+  const sourceRows = preview.rows.filter((row) => row.status !== "INVALID" && row.quantitySold !== null && row.unitPrice !== null);
+  const sourceSalesTotal = sourceRows.reduce((total,row)=>total+(typeof row.lineAmount==="number"?row.lineAmount:Number(row.quantitySold)*Number(row.unitPrice)),0);
+  const sourceQuantity = sourceRows.reduce((total,row)=>total+Number(row.quantitySold),0);
+  try {
+    const inserted = await pool.query<{id:string}>(`INSERT INTO pos_import_approvals
+      (branch_id,pos_source_id,source_filename,business_date,content_hash,resolution_fingerprint,source_sales_total,source_quantity,requested_by)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+      [branchId,preview.posSourceId,input.sourceFilename,preview.businessDate,preview.contentHash,preview.resolutionFingerprint,sourceSalesTotal,sourceQuantity,req.user!.id]);
+    await writeAudit(req.user!,"REQUEST_POS_IMPORT_APPROVAL","POS_IMPORT_APPROVAL",inserted.rows[0]!.id,"Requested POS import approval",{branchId,businessDate:preview.businessDate,fingerprintIndicator:preview.fingerprintIndicator});
+    const result=await pool.query(`${approvalSelect} WHERE a.id=$1`,[inserted.rows[0]!.id]);
+    res.status(201).json({success:true,data:{approval:result.rows[0]}});
+  } catch(error) {
+    if((error as {code?:string}).code==="23505") throw new AppError(409,"POS_APPROVAL_EXISTS","A pending or approved request already exists for this preview.");
+    throw error;
+  }
+};
+
+export const listPosImportApprovals: RequestHandler = async (req,res) => {
+  const status=typeof req.query.status==="string"?req.query.status:null;
+  if(status && !["PENDING","APPROVED","REJECTED","CONSUMED"].includes(status)) throw new AppError(422,"POS_APPROVAL_STATUS_INVALID","Select a valid approval status.");
+  const branchId=req.user!.role==="OWNER"?null:requiredBranchId(req.user!);
+  const result=await pool.query(`${approvalSelect} WHERE ($1::uuid IS NULL OR a.branch_id=$1) AND ($2::text IS NULL OR a.status=$2) ORDER BY a.requested_at DESC`,[branchId,status]);
+  res.json({success:true,data:{approvals:result.rows}});
+};
+
+export const reviewPosImportApproval: RequestHandler = async (req,res) => {
+  const id=idParams.parse(req.params).id;
+  const value=posImportApprovalReviewInput.parse(req.body);
+  const result=await pool.query(`UPDATE pos_import_approvals SET status=$2,reviewed_by=$3,approval_notes=$4,reviewed_at=now(),updated_at=now()
+    WHERE id=$1 AND status='PENDING' RETURNING id`,[id,value.status,req.user!.id,value.approvalNotes]);
+  if(!result.rows[0]) throw new AppError(409,"POS_APPROVAL_NOT_PENDING","Only a pending import request can be reviewed.");
+  await writeAudit(req.user!,"REVIEW_POS_IMPORT_APPROVAL","POS_IMPORT_APPROVAL",id,`${value.status} POS import request`,{approvalNotes:value.approvalNotes});
+  const approval=await pool.query(`${approvalSelect} WHERE a.id=$1`,[id]);
+  res.json({success:true,data:{approval:approval.rows[0]}});
+};
+
 export const importPosSales: RequestHandler = async (req, res) => {
   const importStartedAt = performance.now();
   const input = posRequestSource(req, true);
@@ -229,6 +305,13 @@ export const importPosSales: RequestHandler = async (req, res) => {
     if (preview.importBlockedReason) throw new AppError(422, "POS_FORMAT_IMPORT_BLOCKED", preview.importBlockedReason);
     if (input.fileBuffer && (!input.expectedResolutionFingerprint || preview.resolutionFingerprint !== input.expectedResolutionFingerprint)) throw new AppError(409, "POS_MAPPING_CHANGED", "POS source or product/variant mapping changed after preview. Preview the file again.");
     if (!preview.summary.canImport || !preview.businessDate) throw new AppError(422, "POS_IMPORT_INVALID", "POS import was not completed because the preview contains invalid or unmatched rows.");
+    const approvalResult=await client.query<{id:string;sourceSalesTotal:number;sourceQuantity:number}>(`SELECT id,source_sales_total::float8 "sourceSalesTotal",source_quantity::float8 "sourceQuantity"
+      FROM pos_import_approvals WHERE id=$1 AND branch_id=$2 AND requested_by=$3 AND status='APPROVED'
+        AND business_date=$4 AND content_hash=$5 AND resolution_fingerprint=$6
+        AND pos_source_id IS NOT DISTINCT FROM $7::uuid FOR UPDATE`,
+      [input.approvalId,branchId,req.user!.id,preview.businessDate,preview.contentHash,preview.resolutionFingerprint,preview.posSourceId]);
+    const approval=approvalResult.rows[0];
+    if(!approval) throw new AppError(422,"POS_APPROVAL_REQUIRED","This exact preview requires an approved, unused Owner review before import.");
     const importRows = preview.rows.filter((row): row is MatchedPosRow & { menuItemId: string; quantitySold: number; unitPrice: number; businessDate: string } => Boolean(row.menuItemId) && row.quantitySold !== null && row.unitPrice !== null && row.businessDate !== null && row.status !== "INVALID");
     const imported = await client.query<{ id: string }>(
       `INSERT INTO pos_imports (branch_id,business_date,source_filename,imported_by,content_hash,total_source_rows,valid_rows,warning_rows,invalid_rows,unmatched_rows,import_status,completed_at,pos_source_id)
@@ -250,7 +333,8 @@ export const importPosSales: RequestHandler = async (req, res) => {
     const ingredientUsageMs = performance.now() - usageStartedAt;
     const consumption = await client.query(
       `SELECT ii.id "inventoryItemId",ii.sku,ii.name,usage.unit,
-              sum(usage.quantity_consumed)::float8 "expectedConsumption"
+              sum(usage.quantity_consumed)::float8 "expectedConsumption",
+              sum(usage.quantity_consumed*usage.unit_cost_snapshot)::float8 "estimatedCost"
          FROM pos_sale_ingredient_usage usage
          JOIN pos_sale_items psi ON psi.id=usage.pos_sale_item_id
          JOIN inventory_items ii ON ii.id=usage.inventory_item_id
@@ -277,6 +361,25 @@ export const importPosSales: RequestHandler = async (req, res) => {
       [importId],
     );
     const meta = importMeta.rows[0];
+    const actualCogs=consumption.rows.reduce((total:number,item:{estimatedCost:number})=>total+Number(item.estimatedCost),0);
+    const expectedByIngredient=new Map(preview.simulation.ingredientConsumption.map((item)=>[`${item.inventoryItemId}:${item.unit}`,item]));
+    const actualByIngredient=new Map(consumption.rows.map((item:{inventoryItemId:string;unit:string;expectedConsumption:number})=>[`${item.inventoryItemId}:${item.unit}`,item]));
+    const recipeConsumptionMatches=expectedByIngredient.size===actualByIngredient.size && [...expectedByIngredient].every(([key,item])=>Math.abs(item.expectedConsumption-Number(actualByIngredient.get(key)?.expectedConsumption??NaN))<0.000001);
+    const salesTotalMatches=Math.abs(Number(approval.sourceSalesTotal)-Number(meta?.totalSales??0))<0.01;
+    const quantityMatches=Math.abs(Number(approval.sourceQuantity)-Number(meta?.unitsSold??0))<0.000001;
+    const cogsMatches=Math.abs(preview.simulation.estimatedCogs-actualCogs)<0.01;
+    const branchCheck=await client.query<{branchIsolated:boolean}>(`SELECT bool_and(branch_id=$2)::boolean "branchIsolated" FROM pos_sale_items WHERE pos_import_id=$1`,[importId,branchId]);
+    const branchIsolated=branchCheck.rows[0]?.branchIsolated===true;
+    if(!salesTotalMatches||!quantityMatches||!recipeConsumptionMatches||!cogsMatches||!branchIsolated) throw new AppError(409,"POS_RECONCILIATION_FAILED","The imported rows did not reconcile with the approved POS preview. No sales data was committed.");
+    const reconciliationResult=await client.query<{id:string;generatedAt:string}>(`INSERT INTO pos_import_reconciliations
+      (pos_import_id,approval_id,branch_id,pos_sales_total,imported_sales_total,pos_quantity,imported_quantity,
+       expected_consumption_cost,generated_cogs,sales_total_matches,quantity_matches,recipe_consumption_matches,cogs_matches,branch_isolated)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,true,true,true,true,true) RETURNING id,generated_at "generatedAt"`,
+      [importId,approval.id,branchId,approval.sourceSalesTotal,meta?.totalSales??0,approval.sourceQuantity,meta?.unitsSold??0,preview.simulation.estimatedCogs,actualCogs]);
+    await client.query(`UPDATE pos_import_approvals SET status='CONSUMED',consumed_at=now(),pos_import_id=$2,updated_at=now() WHERE id=$1`,[approval.id,importId]);
+    const reconciliation={id:reconciliationResult.rows[0]!.id,generatedAt:reconciliationResult.rows[0]!.generatedAt,
+      posSalesTotal:Number(approval.sourceSalesTotal),importedSalesTotal:Number(meta?.totalSales??0),posQuantity:Number(approval.sourceQuantity),importedQuantity:Number(meta?.unitsSold??0),
+      expectedCogs:preview.simulation.estimatedCogs,generatedCogs:actualCogs,salesTotalMatches,quantityMatches,recipeConsumptionMatches,cogsMatches,branchIsolated};
     if (meta) {
       const formattedSales = new Intl.NumberFormat("en-PH", {
         style: "currency",
@@ -318,6 +421,8 @@ export const importPosSales: RequestHandler = async (req, res) => {
           fingerprintIndicator: preview.fingerprintIndicator,
           quality: preview.summary.quality,
           consumption: consumption.rows,
+          approvalId: approval.id,
+          reconciliation,
           ...(env.BENCHMARK_MODE ? { benchmark: { ...preview.benchmark, salesInsertMs, ingredientUsageMs, databaseTransactionMs: performance.now() - importStartedAt } } : {}),
         },
       });

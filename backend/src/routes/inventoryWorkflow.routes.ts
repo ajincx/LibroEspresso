@@ -14,6 +14,9 @@ import {
   listNotifications,
   markAllNotificationsRead,
   previewPosSales,
+  requestPosImportApproval,
+  listPosImportApprovals,
+  reviewPosImportApproval,
   listShrinkageReports,
   markNotificationRead,
   reviewShrinkageReport,
@@ -38,6 +41,9 @@ posSalesRouter.get("/", asyncHandler(listPosImports));
 posSalesRouter.delete("/:id", authorize("OWNER"), asyncHandler(deletePosImport));
 const posFileBody = raw({ type: "application/octet-stream", limit: "4mb" });
 posSalesRouter.post("/preview", authorize("BRANCH_MANAGER"), posFileBody, asyncHandler(previewPosSales));
+posSalesRouter.get("/approvals", asyncHandler(listPosImportApprovals));
+posSalesRouter.post("/approvals", authorize("BRANCH_MANAGER"), posFileBody, asyncHandler(requestPosImportApproval));
+posSalesRouter.patch("/approvals/:id", authorize("OWNER"), asyncHandler(reviewPosImportApproval));
 posSalesRouter.post("/import", authorize("BRANCH_MANAGER"), posFileBody, asyncHandler(importPosSales));
 
 export const inventoryWorkflowRouter = Router();

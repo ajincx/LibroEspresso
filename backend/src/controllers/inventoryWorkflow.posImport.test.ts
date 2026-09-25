@@ -21,6 +21,7 @@ const branchId = "00000000-0000-4000-8000-000000000002";
 const importId = "00000000-0000-4000-8000-000000000010";
 const sourceId = "00000000-0000-4000-8000-000000000030";
 const variantId = "00000000-0000-4000-8000-000000000031";
+const approvalId = "00000000-0000-4000-8000-000000000032";
 const mappingRow = { id: "map-1", status: "ACTIVE", branchId: null, sourceProductName: "Iced Latte, Large", sourceProductCode: null,
   menuItemVariantId: variantId, menuItemId: "menu-1", menuItemName: "Iced Latte, Large", variantName: "Standard", variantStatus: "ACTIVE",
   productStatus: "ACTIVE", approvalStatus: "APPROVED", branchAvailable: true, recipeValid: true, updatedAt: "2026-09-16T00:00:00Z" };
@@ -32,6 +33,7 @@ const request = () =>
       sourceFilename: "sales.csv",
       csvText,
       expectedContentHash: parsePosCsv(csvText).contentHash,
+      approvalId,
       branchId: "00000000-0000-4000-8000-000000000099",
     },
     user: { id: "manager-1", role: "BRANCH_MANAGER", branchId },
@@ -75,6 +77,7 @@ function excelRequest(fileBuffer: Buffer, filename: string, expectedContentHash?
       ...(expectedContentHash ? { "x-pos-content-hash": expectedContentHash } : {}),
       ...(expectedResolutionFingerprint ? { "x-pos-resolution-fingerprint": expectedResolutionFingerprint } : {}),
       ...(posSourceId ? { "x-pos-source-id": posSourceId } : {}),
+      ...(expectedContentHash ? { "x-pos-approval-id": approvalId } : {}),
     },
     user: { id: "manager-1", role: "BRANCH_MANAGER", branchId },
   }) as never;
@@ -86,7 +89,7 @@ function response() {
   return res;
 }
 
-function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate", mappingVersion?: string,
+function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate" | "reconciliation", mappingVersion?: string,
   variantRows?: Array<{id:string;menuItemId:string;name:string;status:"ACTIVE"|"INACTIVE";recipeVersionId:string|null;recipeUnits:Array<{recipeUnit:string;inventoryUnit:string}>}>) {
   const queries: Array<{ sql: string; values?: unknown[] }> = [];
   const query = vi.fn(async (statement: unknown, values?: unknown[]) => {
@@ -111,8 +114,10 @@ function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate", mappin
     }
     if (sql.includes("FROM menu_item_variants v")) return { rows: variantRows ?? [{
       id: variantId, menuItemId: "menu-1", name: "Standard", status: "ACTIVE",
-      recipeVersionId: "recipe-v1", recipeUnits: [{ recipeUnit: "g", inventoryUnit: "kg" }],
+      recipeVersionId: "recipe-v1", recipeVersion:1, recipeUnits: [{ recipeUnit: "g", inventoryUnit: "kg" }],
     }] };
+    if (sql.includes('r.id "recipeVersionId",ri.inventory_item_id')) return { rows: [{recipeVersionId:"recipe-v1",inventoryItemId:"ingredient-1",sku:"BEANS",name:"Coffee Beans",recipeQuantity:18,recipeUnit:"g",inventoryUnit:"kg",unitCost:800,yieldQuantity:1}] };
+    if (sql.includes("FROM pos_import_approvals WHERE")) return { rows: [{id:approvalId,sourceSalesTotal:380,sourceQuantity:2}] };
     if (sql.includes("FROM pos_sources WHERE")) return { rows: [{ id: sourceId, sourceCode: "VERIFIED", displayName: "Verified POS", supportedFormat: "SUMMARY_ITEMS_SOLD_LEGACY_XLS" }] };
     if (sql.includes("FROM pos_product_variant_mappings pm")) return { rows: [{ ...mappingRow, updatedAt: mappingVersion ?? mappingRow.updatedAt }] };
     if (sql.includes("SELECT id FROM pos_imports")) return { rows: [] };
@@ -136,10 +141,11 @@ function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate", mappin
         rows: [
           {
             inventoryItemId: "ingredient-1",
-            sku: "MILK",
-            name: "Milk",
-            unit: "ml",
-            expectedConsumption: 300,
+            sku: "BEANS",
+            name: "Coffee Beans",
+            unit: "kg",
+            expectedConsumption: 0.036,
+            estimatedCost: 28.8,
           },
         ],
       };
@@ -156,6 +162,8 @@ function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate", mappin
         ],
       };
     }
+    if(sql.includes('bool_and(branch_id=$2)'))return{rows:[{branchIsolated:failAt!=="reconciliation"}]};
+    if(sql.includes("INSERT INTO pos_import_reconciliations"))return{rows:[{id:"reconciliation-1",generatedAt:"2026-09-08T10:00:00Z"}]};
     return { rows: [] };
   });
   const client = { query, release: vi.fn() };
@@ -174,7 +182,7 @@ describe("Excel POS preview and canonical import integration", () => {
       const sql = String(statement);
       if (sql.includes("SELECT name \"branchName\" FROM branches")) return { rows: [{ branchName: "Lipa" }] };
       if (sql.includes("FROM menu_items mi")) return { rows: [{ id: "menu-1", code: "LATTE-L", name: "Iced Latte, Large", sellingPrice: 190, recipeVersionId: "recipe-v1", recipeUnits: [{ recipeUnit: "g", inventoryUnit: "kg" }] }] };
-      if (sql.includes("FROM menu_item_variants v")) return { rows: [{ id: variantId, menuItemId: "menu-1", name: "Standard", status: "ACTIVE", recipeVersionId: "recipe-v1", recipeUnits: [{ recipeUnit: "g", inventoryUnit: "kg" }] }] };
+      if (sql.includes("FROM menu_item_variants v")) return { rows: [{ id: variantId, menuItemId: "menu-1", name: "Standard", status: "ACTIVE", recipeVersionId: "recipe-v1", recipeVersion: 1, recipeUnits: [{ recipeUnit: "g", inventoryUnit: "kg" }] }] };
       return { rows: [] };
     });
     const res = response();
@@ -193,14 +201,22 @@ describe("Excel POS preview and canonical import integration", () => {
       const sql = String(statement);
       if (sql.includes("SELECT name \"branchName\" FROM branches")) return { rows: [{ branchName: "Lipa" }] };
       if (sql.includes("FROM menu_items mi")) return { rows: [{ id: "menu-1", code: "LATTE-L", name: "Iced Latte, Large", sellingPrice: 190, recipeVersionId: "recipe-v1", recipeUnits: [{ recipeUnit: "g", inventoryUnit: "kg" }] }] };
-      if (sql.includes("FROM menu_item_variants v")) return { rows: [{ id: variantId, menuItemId: "menu-1", name: "Standard", status: "ACTIVE", recipeVersionId: "recipe-v1", recipeUnits: [{ recipeUnit: "g", inventoryUnit: "kg" }] }] };
+      if (sql.includes("FROM menu_item_variants v")) return { rows: [{ id: variantId, menuItemId: "menu-1", name: "Standard", status: "ACTIVE", recipeVersionId: "recipe-v1", recipeVersion: 1, recipeUnits: [{ recipeUnit: "g", inventoryUnit: "kg" }] }] };
       if (sql.includes("FROM pos_sources WHERE")) return { rows: [{ id: sourceId, sourceCode: "VERIFIED", displayName: "Verified POS", supportedFormat: "SUMMARY_ITEMS_SOLD_LEGACY_XLS" }] };
       if (sql.includes("FROM pos_product_variant_mappings pm")) return { rows: [mappingRow] };
+      if (sql.includes('r.id "recipeVersionId",ri.inventory_item_id')) return { rows: [{
+        recipeVersionId:"recipe-v1",inventoryItemId:"ingredient-1",sku:"BEANS",name:"Coffee Beans",
+        recipeQuantity:18,recipeUnit:"g",inventoryUnit:"kg",unitCost:800,yieldQuantity:1,
+      }] };
       return { rows: [] };
     });
     await previewPosSales(excelRequest(buffer, "sales.xls", undefined, undefined, sourceId), preview as never, vi.fn());
-    const resolved = (preview.json.mock.calls[0]?.[0] as { data: { preview: { resolutionFingerprint: string; summary: { canImport: boolean } } } }).data.preview;
+    const resolved = (preview.json.mock.calls[0]?.[0] as { data: { preview: { resolutionFingerprint: string; summary: { canImport: boolean }; rows:Array<{mappingStatus:string;mappingScope:string;menuItemVariantId:string;recipeVersion:number}>; simulation: { estimatedSales:number;estimatedCogs:number;estimatedGrossProfit:number;ingredientConsumption:Array<{expectedConsumption:number}> } } } }).data.preview;
     expect(resolved.summary.canImport).toBe(true);
+    expect(resolved.rows[0]).toMatchObject({mappingStatus:"APPROVED",mappingScope:"GLOBAL",menuItemVariantId:variantId,recipeVersion:1});
+    expect(resolved.simulation).toMatchObject({estimatedSales:380,estimatedCogs:28.8,estimatedGrossProfit:351.2});
+    expect(resolved.simulation.ingredientConsumption[0]?.expectedConsumption).toBe(0.036);
+    expect(mocks.poolQuery).toHaveBeenCalledWith(expect.stringContaining("bis.branch_id=$2"), [["recipe-v1"], branchId]);
     await importPosSales(excelRequest(buffer, "sales.xls", hash, resolved.resolutionFingerprint, sourceId), response() as never, vi.fn());
     const sale = queries.find(({ sql }) => sql.includes("INSERT INTO pos_sale_items"));
     expect(sale?.values).toEqual(["import-1", branchId, "2026-09-08", ["menu-1"], [2], [190], ["Iced Latte, Large"], ["R-1"], ["11"], [null], [variantId]]);
@@ -276,6 +292,15 @@ describe("transactional POS import persistence", () => {
     expect(queries.some(({ sql }) => sql === "COMMIT")).toBe(false);
   });
 
+  it("rolls back every imported row when reconciliation fails",async()=>{
+    const {client,queries}=createClient("reconciliation");
+    mocks.connect.mockResolvedValue(client);
+    await expect(importPosSales(request(),response() as never,vi.fn())).rejects.toMatchObject({code:"POS_RECONCILIATION_FAILED"});
+    expect(queries.some(({sql})=>sql==="ROLLBACK")).toBe(true);
+    expect(queries.some(({sql})=>sql==="COMMIT")).toBe(false);
+    expect(queries.some(({sql})=>sql.includes("INSERT INTO pos_import_reconciliations"))).toBe(false);
+  });
+
   it("stores sale and ingredient snapshots before committing a successful import", async () => {
     const { client, queries } = createClient();
     mocks.connect.mockResolvedValue(client);
@@ -307,12 +332,15 @@ describe("transactional POS import persistence", () => {
     expect(previewVariants?.sql).toContain("candidate.menu_item_variant_id=v.id");
     expect(previewVariants?.values).toEqual([["menu-1"],"2026-09-08"]);
     expect(usageSource?.sql).toContain("candidate.effective_from<=psi.business_date");
+    expect(queries.some(({sql})=>sql.includes("FROM pos_import_approvals WHERE"))).toBe(true);
+    expect(queries.some(({sql})=>sql.includes("INSERT INTO pos_import_reconciliations"))).toBe(true);
+    expect(queries.some(({sql})=>sql.includes("UPDATE pos_import_approvals SET status='CONSUMED'"))).toBe(true);
     expect(queries.at(-1)?.sql).toBe("COMMIT");
     expect(res.status).toHaveBeenCalledWith(201);
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({
         success: true,
-        data: expect.objectContaining({ rowsImported: 1, totalSales: 380 }),
+        data: expect.objectContaining({ rowsImported: 1, totalSales: 380,approvalId,reconciliation:expect.objectContaining({salesTotalMatches:true,quantityMatches:true,recipeConsumptionMatches:true,cogsMatches:true,branchIsolated:true}) }),
       }),
     );
   });

@@ -20,7 +20,12 @@ describe("Inventory Workflow Input Validation (QA Suite)", () => {
 
     it("requires a preview fingerprint for final import", () => {
       expect(() => posImportInput.parse({ sourceFilename: "pos_sales.csv", csvText })).toThrow();
-      expect(posImportInput.parse({ sourceFilename: "pos_sales.csv", csvText, expectedContentHash: "a".repeat(64) }).expectedContentHash).toHaveLength(64);
+      expect(posImportInput.parse({
+        sourceFilename: "pos_sales.csv",
+        csvText,
+        expectedContentHash: "a".repeat(64),
+        approvalId: sampleUuid1,
+      }).expectedContentHash).toHaveLength(64);
     });
 
     it("rejects non-CSV filenames and oversized source content", () => {

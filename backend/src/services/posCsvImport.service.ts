@@ -70,6 +70,7 @@ export interface MatchedPosRow extends ParsedPosRow {
   menuItemVariantId?: string | null;
   matchedVariant?: string | null;
   recipeVersionId?: string | null;
+  recipeVersion?: number | null;
   mappingId?: string | null;
   mappingVersion?: string | null;
   mappingStatus?: "APPROVED" | "UNMATCHED" | "AMBIGUOUS" | "DIRECT";

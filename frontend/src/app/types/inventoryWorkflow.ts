@@ -39,6 +39,7 @@ export interface PosImportPreviewRow {
   menuItemId: string | null;
   menuItemVariantId?: string | null;
   matchedVariant?: string | null;
+  recipeVersion?: number | null;
   mappingStatus?: "APPROVED" | "UNMATCHED" | "AMBIGUOUS" | "DIRECT";
   mappingScope?: "GLOBAL" | "BRANCH" | null;
   mappingId?: string | null;
@@ -85,6 +86,36 @@ export interface PosImportPreview {
     quality: "COMPLETE" | "NEEDS_REVIEW" | "REJECTED";
     canImport: boolean;
   };
+  simulation: {
+    complete: boolean;
+    validResolvedRows: number;
+    estimatedSales: number;
+    estimatedCogs: number;
+    estimatedGrossProfit: number;
+    estimatedGrossMargin: number;
+    ingredientConsumption: Array<{
+      inventoryItemId: string;
+      sku: string;
+      name: string;
+      unit: string;
+      expectedConsumption: number;
+      estimatedCost: number;
+    }>;
+  };
+}
+
+export type PosImportApprovalStatus = "PENDING" | "APPROVED" | "REJECTED" | "CONSUMED";
+export interface PosImportApproval {
+  id:string; branchId:string; branchName:string; posSourceId:string|null; sourceFilename:string;
+  businessDate:string; contentHash:string; resolutionFingerprint:string; sourceSalesTotal:number;
+  sourceQuantity:number; status:PosImportApprovalStatus; requestedBy:string; requestedByName:string;
+  requestedAt:string; reviewedBy:string|null; reviewedByName:string|null; approvalNotes:string|null;
+  reviewedAt:string|null; consumedAt:string|null; posImportId:string|null;
+}
+export interface PosImportReconciliation {
+  id:string; generatedAt:string; posSalesTotal:number; importedSalesTotal:number; posQuantity:number;
+  importedQuantity:number; expectedCogs:number; generatedCogs:number; salesTotalMatches:boolean;
+  quantityMatches:boolean; recipeConsumptionMatches:boolean; cogsMatches:boolean; branchIsolated:boolean;
 }
 
 export interface PosSource {
@@ -93,8 +124,12 @@ export interface PosSource {
   displayName: string;
   supportedFormat: "CANONICAL_CSV" | "SUMMARY_ITEMS_SOLD_LEGACY_XLS" | "TRANSACTION_SUMMARY_XLSX";
   status: "ACTIVE" | "INACTIVE";
+  formatVerifiedBy: string | null;
+  formatVerifiedByName?: string | null;
+  formatVerifiedAt: string | null;
 }
 
+export type PosMappingReviewStatus = "PENDING" | "APPROVED" | "REJECTED" | "AMBIGUOUS";
 export interface PosMapping {
   id: string;
   posSourceId: string;
@@ -106,8 +141,14 @@ export interface PosMapping {
   menuItemName: string;
   variantName: string;
   status: "ACTIVE" | "INACTIVE";
+  reviewStatus: PosMappingReviewStatus;
+  reviewComment: string | null;
   reviewedBy: string | null;
   reviewedAt: string | null;
+  branchName: string | null;
+  recipeId: string | null;
+  recipeVersion: number | null;
+  recipeAvailable: boolean;
 }
 
 export interface PosAnalytics {
