@@ -21,6 +21,7 @@ const businessSchema = z.object({
   taxIdentifier: z.string().trim().max(80),
   reportingCycle: z.enum(["WEEKLY", "MONTHLY", "QUARTERLY"]),
   varianceToleranceQuantity: z.coerce.number().min(0).max(100000),
+  varianceTolerancePercent: z.coerce.number().min(0).max(100),
   highCogsPercent: z.coerce.number().min(0).max(100),
   shrinkageAlertPercent: z.coerce.number().min(0).max(100),
   defaultReorderDays: z.coerce.number().int().min(1).max(365),
@@ -42,7 +43,7 @@ export const getSettings: RequestHandler = async (req, res) => {
   let organization = null;
   if (req.user!.role === "OWNER") {
     const result = await pool.query(
-      `SELECT b.business_name "businessName",b.legal_name "legalName",COALESCE(b.contact_email,'') "contactEmail",COALESCE(b.contact_phone,'') "contactPhone",COALESCE(b.head_office_address,'') "headOfficeAddress",COALESCE(b.tax_identifier,'') "taxIdentifier",b.reporting_cycle "reportingCycle",c.variance_tolerance_quantity::float8 "varianceToleranceQuantity",c.high_cogs_percent::float8 "highCogsPercent",c.shrinkage_alert_percent::float8 "shrinkageAlertPercent",c.default_reorder_days "defaultReorderDays",(SELECT count(*)::int FROM branches) "branchCount",(SELECT count(*)::int FROM branches WHERE status='ACTIVE') "activeBranchCount" FROM business_settings b CROSS JOIN calculation_settings c WHERE b.singleton=true AND c.singleton=true`,
+      `SELECT b.business_name "businessName",b.legal_name "legalName",COALESCE(b.contact_email,'') "contactEmail",COALESCE(b.contact_phone,'') "contactPhone",COALESCE(b.head_office_address,'') "headOfficeAddress",COALESCE(b.tax_identifier,'') "taxIdentifier",b.reporting_cycle "reportingCycle",c.variance_tolerance_quantity::float8 "varianceToleranceQuantity",c.variance_tolerance_percent::float8 "varianceTolerancePercent",c.high_cogs_percent::float8 "highCogsPercent",c.shrinkage_alert_percent::float8 "shrinkageAlertPercent",c.default_reorder_days "defaultReorderDays",(SELECT count(*)::int FROM branches) "branchCount",(SELECT count(*)::int FROM branches WHERE status='ACTIVE') "activeBranchCount" FROM business_settings b CROSS JOIN calculation_settings c WHERE b.singleton=true AND c.singleton=true`,
     );
     organization = result.rows[0] ?? null;
   }
@@ -99,9 +100,10 @@ export const updateBusinessSettings: RequestHandler = async (req, res) => {
       ],
     );
     await client.query(
-      `UPDATE calculation_settings SET variance_tolerance_quantity=$1,high_cogs_percent=$2,shrinkage_alert_percent=$3,default_reorder_days=$4,updated_by=$5,updated_at=now() WHERE singleton=true`,
+      `UPDATE calculation_settings SET variance_tolerance_quantity=$1,variance_tolerance_percent=$2,high_cogs_percent=$3,shrinkage_alert_percent=$4,default_reorder_days=$5,updated_by=$6,updated_at=now() WHERE singleton=true`,
       [
         input.varianceToleranceQuantity,
+        input.varianceTolerancePercent,
         input.highCogsPercent,
         input.shrinkageAlertPercent,
         input.defaultReorderDays,

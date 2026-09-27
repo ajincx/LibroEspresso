@@ -11,8 +11,8 @@ import {
 } from "./posCsvImport.service.js";
 
 export const MAX_POS_FILE_BYTES = 4_000_000;
-export const TRANSACTION_SUMMARY_BLOCK_REASON =
-  "This POS export contains transaction-level totals but does not contain item-level selling prices or line amounts. Please upload the supplier's detailed line-item sales export.";
+export const TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE =
+  "Supplier file does not contain item-level selling prices. Menu selling prices are used for this CAPSTONE demonstration.";
 
 const REQUIRED_TRANSACTION_HEADERS = [
   "store", "machine id", "or no.", "date", "payment time", "item name(s)",
@@ -254,7 +254,7 @@ function parseTransactionSummary(rows: SheetRows, worksheet: string, headerRowNu
     const quantityMismatch = expectedQuantity !== null && Math.abs(expectedQuantity - parsedQuantity) > 0.0001;
     if (!tokens.length) tokens.push({ raw: "", name: "", quantity: null });
     tokens.forEach((token) => {
-      const issues = [TRANSACTION_SUMMARY_BLOCK_REASON];
+      const issues = [TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE];
       if (!token.name || token.quantity === null || token.quantity <= 0) issues.unshift("The Item Name(s) value contains a malformed product token.");
       if (quantityMismatch) issues.push("Parsed product quantities do not match Item Qty.");
       if (!date) issues.push("The transaction has no valid business date.");
@@ -266,7 +266,8 @@ function parseTransactionSummary(rows: SheetRows, worksheet: string, headerRowNu
         unitPrice: null, businessDate: date, transactionId, sourceLineId: null, transactionTimestamp: null,
         sourceFormat: POS_SOURCE_FORMATS.TRANSACTION_SUMMARY, sourceWorksheet: worksheet, sourceRow,
         lineAmount: null, sourceOrNumber: transactionId, sourceTransactionNumber: null,
-        transactionStatus: status, transactionTimestampRaw: timestampRaw, status: "INVALID", issues,
+        transactionStatus: status, transactionTimestampRaw: timestampRaw,
+        status: issues.length === 1 ? "WARNING" : "INVALID", issues,
       });
     });
   });
@@ -276,7 +277,7 @@ function parseTransactionSummary(rows: SheetRows, worksheet: string, headerRowNu
   return {
     headers: header.map((cell) => text(cell)), rows: parsedRows, contentHash: hashCanonicalPosRows(parsedRows),
     businessDate: singleDate, sourceFormat: POS_SOURCE_FORMATS.TRANSACTION_SUMMARY,
-    formatLabel: "Transaction Summary (XLSX)", importBlockedReason: TRANSACTION_SUMMARY_BLOCK_REASON,
+    formatLabel: "Transaction Summary (XLSX)", importBlockedReason: null,
   };
 }
 

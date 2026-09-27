@@ -6,19 +6,75 @@ import { toast } from "sonner";
 import type { Page, Role } from "../../types/navigation";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
 import { masterDataService } from "../../services/masterData.service";
-import type { PosAnalytics, PosImportApproval, PosImportPreview, PosImportReconciliation, PosImportRecord, PosMapping, PosMappingReviewStatus, PosSource } from "../../types/inventoryWorkflow";
+import type { DailyPosUploadStatus, PosAnalytics, PosImportPreview, PosImportReconciliation, PosImportRecord, PosMapping, PosMappingReviewStatus, PosSource } from "../../types/inventoryWorkflow";
 import type { Branch, MenuProduct } from "../../types/masterData";
 import { useAuth } from "../../contexts/AuthContext";
-import { businessDate, periodDates } from "../../utils/businessDate";
+import { addDateDays, businessDate, periodDates } from "../../utils/businessDate";
 import { formatAppDate } from "../../utils/appPreferences";
 
 export const marginValueColor = (margin:number) => margin > 0 ? C.green : margin < 0 ? C.red : "var(--app-text-muted)";
+export function PosPricingNotice({ notice }: { notice: string | null | undefined }) {
+  if (!notice) return null;
+  return <div className="mb-4 rounded-xl border p-3 text-sm" style={{ borderColor: C.amber, background: C.amberBg, color: C.primary }}>{notice}</div>;
+}
+export const posSalesAmountLabel = (row: Pick<PosImportPreview["rows"][number], "calculatedSalesAmount" | "lineAmount">) => {
+  const amount = row.calculatedSalesAmount ?? row.lineAmount;
+  return amount == null ? "Unavailable" : `₱${amount.toFixed(2)}`;
+};
 export const canDeletePosImport = (role:Role) => role === "owner";
 export const isSupportedPosFilename = (filename:string) => /\.(csv|xls|xlsx)$/i.test(filename.trim());
+export const hasInvalidCsvEncoding = (csvText:string) => csvText.includes("\uFFFD");
+export const DAILY_POS_MONITORING_LOCATION="import_history" as const;
+export const OWNER_POS_IMPORT_HISTORY_COLUMNS=["File Name","Branch","Business Date","Uploaded Date / Time","Uploaded By","Processed / Total Rows","Units Sold","Total Sales","Fingerprint","Status","Action"];
+export const MANAGER_POS_IMPORT_HISTORY_COLUMNS=OWNER_POS_IMPORT_HISTORY_COLUMNS.filter((column)=>column!=="Branch"&&column!=="Action");
+export const dailyPosStatusLabel = (status:DailyPosUploadStatus["status"]) => ({
+  UPLOADED:"Uploaded",DUE_TODAY:"Due Today",MISSING_UPLOAD:"Missing Upload",LATE_UPLOAD:"Late Upload",UPCOMING:"Upcoming",
+  NO_SALES_CLOSED:"No Sales / Closed",POS_SOURCE_NOT_CONFIGURED:"POS Source Not Configured",
+})[status];
+export const filterDailyPosStatuses = (rows:DailyPosUploadStatus[],sourceId:string) => sourceId === "ALL" ? rows : rows.filter((row)=>row.posSourceId===sourceId);
 export const canApprovePosMapping = (
   mapping: Pick<PosMapping, "recipeAvailable">,
   source: Pick<PosSource, "status" | "formatVerifiedAt"> | null,
 ) => Boolean(mapping.recipeAvailable && source?.status === "ACTIVE" && source.formatVerifiedAt);
+export const canEditPosMapping = (mapping: Pick<PosMapping, "reviewStatus" | "status">) => mapping.reviewStatus === "PENDING" && mapping.status === "INACTIVE";
+type MappingRevision = { branchId:string|null;sourceProductCode:string|null;menuItemId:string;menuItemVariantId:string;revisionReason?:string };
+
+export function PosMappingEditDialog({mapping,products,branches,busy,onCancel,onSave}:{
+  mapping:PosMapping;products:MenuProduct[];branches:Branch[];busy:boolean;onCancel:()=>void;onSave:(input:MappingRevision)=>void;
+}) {
+  const [productId,setProductId]=useState(mapping.menuItemId);
+  const [variantId,setVariantId]=useState(mapping.menuItemVariantId);
+  const [branchId,setBranchId]=useState(mapping.branchId??"");
+  const [posCode,setPosCode]=useState(mapping.sourceProductCode??"");
+  const [revisionReason,setRevisionReason]=useState("");
+  const eligibleProducts=products.filter(product=>product.status==="ACTIVE"&&product.approvalStatus==="APPROVED");
+  const selectedProduct=eligibleProducts.find(product=>product.id===productId);
+  const variants=selectedProduct?.variants.filter(variant=>variant.status==="ACTIVE")??[];
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-labelledby="edit-pos-mapping-title">
+    <form className="w-full max-w-xl rounded-2xl border bg-[var(--app-surface)] p-6 shadow-2xl" style={{borderColor:C.border}} onSubmit={(event)=>{event.preventDefault();onSave({branchId:branchId||null,sourceProductCode:posCode.trim()||null,menuItemId:productId,menuItemVariantId:variantId,...(revisionReason.trim()?{revisionReason:revisionReason.trim()}:{})});}}>
+      <h3 id="edit-pos-mapping-title" className="text-lg font-bold">Edit Pending Mapping</h3>
+      <p className="mt-1 text-sm" style={{color:C.secondary}}>Saving returns this mapping to Pending Approval. It will not be activated automatically.</p>
+      <div className="mt-5 grid gap-4">
+        <label className="grid gap-1 text-sm font-semibold">POS Name<input aria-label="POS Name" readOnly value={mapping.sourceProductName} className="rounded-lg border bg-[var(--app-surface-muted)] p-2 font-normal"/></label>
+        <label className="grid gap-1 text-sm font-semibold">POS Code<input aria-label="Edit POS code" value={posCode} onChange={event=>setPosCode(event.target.value)} className="rounded-lg border p-2 font-normal" placeholder="Optional POS code"/></label>
+        <label className="grid gap-1 text-sm font-semibold">Branch Scope<select aria-label="Edit mapping branch" value={branchId} onChange={event=>setBranchId(event.target.value)} className="rounded-lg border p-2 font-normal"><option value="">All branches</option>{branches.map(branch=><option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
+        <label className="grid gap-1 text-sm font-semibold">Target Product<select aria-label="Edit target product" value={productId} onChange={event=>{setProductId(event.target.value);setVariantId("");}} className="rounded-lg border p-2 font-normal"><option value="">Select product</option>{eligibleProducts.map(product=><option key={product.id} value={product.id}>{product.category} / {product.name}</option>)}</select></label>
+        <label className="grid gap-1 text-sm font-semibold">Target Variant<select aria-label="Edit target variant" value={variantId} onChange={event=>setVariantId(event.target.value)} className="rounded-lg border p-2 font-normal"><option value="">Select variant</option>{variants.map(variant=><option key={variant.id} value={variant.id}>{variant.name} — {variant.recipeId?`Recipe v${variant.recipeVersion??1}`:"No recipe"}</option>)}</select></label>
+        <label className="grid gap-1 text-sm font-semibold">Revision Note <span className="font-normal" style={{color:C.secondary}}>(optional)</span><textarea aria-label="Mapping revision note" value={revisionReason} onChange={event=>setRevisionReason(event.target.value)} className="min-h-20 rounded-lg border p-2 font-normal" placeholder="Why is this target being corrected?"/></label>
+      </div>
+      <div className="mt-6 flex justify-end gap-2"><Btn variant="outline" disabled={busy} onClick={onCancel}>Cancel</Btn><button disabled={busy||!productId||!variantId} type="submit" className="rounded-xl px-3.5 py-2 text-sm font-semibold text-white disabled:opacity-40" style={{background:C.maroon}}>Save Changes</button></div>
+    </form>
+  </div>;
+}
+
+export function PosMappingActions({mapping,busy,canApprove,reviewNote,onEdit,onReview,onDeactivate}:{
+  mapping:PosMapping;busy:boolean;canApprove:boolean;reviewNote:string;onEdit:()=>void;
+  onReview:(status:PosMappingReviewStatus)=>void;onDeactivate:()=>void;
+}) {
+  if(mapping.reviewStatus==="APPROVED") return <div className="flex flex-wrap items-center gap-2"><span className="font-semibold" style={{color:C.green}}>Approved</span>{mapping.status==="ACTIVE"?<button type="button" disabled={busy} className="rounded-lg border px-2 py-1" onClick={onDeactivate}>Deactivate</button>:<span style={{color:C.secondary}}>Deactivated</span>}</div>;
+  if(mapping.reviewStatus==="REJECTED"||mapping.reviewStatus==="AMBIGUOUS") return <button type="button" disabled={busy} className="rounded-lg border px-2 py-1" onClick={()=>onReview("PENDING")}>Return to Pending</button>;
+  return <div className="flex flex-wrap gap-1">{canEditPosMapping(mapping)&&<button type="button" disabled={busy} className="rounded-lg border px-2 py-1" onClick={onEdit}>Edit Mapping</button>}<button type="button" disabled={busy||!canApprove} className="rounded-lg border px-2 py-1 disabled:opacity-40" onClick={()=>onReview("APPROVED")}>Approve</button><button type="button" disabled={busy||!reviewNote.trim()} className="rounded-lg border px-2 py-1 disabled:opacity-40" onClick={()=>onReview("REJECTED")}>Reject</button><button type="button" disabled={busy||!reviewNote.trim()} className="rounded-lg border px-2 py-1 disabled:opacity-40" onClick={()=>onReview("AMBIGUOUS")}>Ambiguous</button></div>;
+}
 
 export function PosImportDeleteDialog({target,deleting,onCancel,onConfirm}:{target:PosImportRecord;deleting:boolean;onCancel:()=>void;onConfirm:()=>void}) {
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-labelledby="delete-pos-import-title">
@@ -39,8 +95,6 @@ function dateRange(range: DashboardRange, customStart: string, customEnd: string
 function PosMappingSetup() {
   const [open, setOpen] = useState(false);
   const [sources, setSources] = useState<PosSource[]>([]);
-  const [importApprovals,setImportApprovals]=useState<PosImportApproval[]>([]);
-  const [approvalNotes,setApprovalNotes]=useState<Record<string,string>>({});
   const [mappings, setMappings] = useState<PosMapping[]>([]);
   const [products, setProducts] = useState<MenuProduct[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -48,20 +102,24 @@ function PosMappingSetup() {
   const [sourceCode, setSourceCode] = useState("");
   const [sourceName, setSourceName] = useState("");
   const [sourceFormat, setSourceFormat] = useState<PosSource["supportedFormat"]>("SUMMARY_ITEMS_SOLD_LEGACY_XLS");
+  const [sourceBranchId, setSourceBranchId] = useState("");
   const [posName, setPosName] = useState("");
   const [posCode, setPosCode] = useState("");
   const [variantId, setVariantId] = useState("");
   const [branchId, setBranchId] = useState("");
   const [mappingFilter, setMappingFilter] = useState<"ALL" | PosMappingReviewStatus>("ALL");
+  const [copyFromSourceId, setCopyFromSourceId] = useState("");
+  const [copyResult, setCopyResult] = useState<{ copied:number;skipped:number;eligible:number } | null>(null);
   const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
+  const [editMapping,setEditMapping]=useState<PosMapping|null>(null);
   const [sourceFormatConfirmed, setSourceFormatConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const refresh = async () => setSources(await inventoryWorkflowService.posSources());
   useEffect(() => {
     if (!open) return;
-    void Promise.all([inventoryWorkflowService.posSources(), masterDataService.menuProducts(), masterDataService.branches(),inventoryWorkflowService.posImportApprovals("PENDING")])
-      .then(([nextSources, nextProducts, nextBranches,nextApprovals]) => { setSources(nextSources); setProducts(nextProducts); setBranches(nextBranches);setImportApprovals(nextApprovals); })
+    void Promise.all([inventoryWorkflowService.posSources(), masterDataService.menuProducts(), masterDataService.branches()])
+      .then(([nextSources, nextProducts, nextBranches]) => { setSources(nextSources); setProducts(nextProducts); setBranches(nextBranches); })
       .catch(() => setError("Unable to load POS mapping setup."));
   }, [open]);
   useEffect(() => {
@@ -70,8 +128,8 @@ function PosMappingSetup() {
   }, [sourceId, mappingFilter]);
   const run = async (action: () => Promise<unknown>) => {
     setBusy(true); setError("");
-    try { await action(); await refresh(); setImportApprovals(await inventoryWorkflowService.posImportApprovals("PENDING")); if (sourceId) setMappings(await inventoryWorkflowService.posMappings(sourceId, mappingFilter === "ALL" ? undefined : mappingFilter)); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to save POS setup."); }
+    try { await action(); await refresh(); if (sourceId) setMappings(await inventoryWorkflowService.posMappings(sourceId, mappingFilter === "ALL" ? undefined : mappingFilter)); return true; }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to save POS setup."); return false; }
     finally { setBusy(false); }
   };
   const selectedSource = sources.find((source) => source.id === sourceId) ?? null;
@@ -81,21 +139,21 @@ function PosMappingSetup() {
     {open && <div className="mt-4 space-y-4 text-sm">
       <p style={{ color: C.secondary }}>Owner review only. No supplier identity or product mapping is inferred from an uploaded file.</p>
       {error && <p role="alert" style={{ color: C.red }}>{error}</p>}
-      <section className="rounded-xl border p-4" style={{borderColor:C.border,background:C.surface}}><h4 className="font-semibold">Pending import approvals</h4>{importApprovals.length===0?<p className="mt-2" style={{color:C.secondary}}>No pending import approval requests.</p>:<div className="mt-3 space-y-2">{importApprovals.map((approval)=><div key={approval.id} className="rounded-lg border p-3" style={{borderColor:C.border}}><div className="flex flex-wrap justify-between gap-2"><span className="font-semibold">{approval.sourceFilename} · {approval.branchName}</span><span>{approval.sourceQuantity} units · {formatPeso(approval.sourceSalesTotal)}</span></div><p className="mt-1" style={{color:C.secondary}}>Requested by {approval.requestedByName} for {approval.businessDate}</p><div className="mt-2 flex flex-wrap gap-2"><input aria-label={`Approval notes for ${approval.sourceFilename}`} className="min-w-[260px] flex-1 rounded-lg border p-2" placeholder="Required approval or rejection notes" value={approvalNotes[approval.id]??""} onChange={(event)=>setApprovalNotes((current)=>({...current,[approval.id]:event.target.value}))}/><button disabled={busy||(approvalNotes[approval.id]??"").trim().length<3} className="rounded-lg border px-3 py-2 disabled:opacity-40" onClick={()=>void run(()=>inventoryWorkflowService.reviewPosImportApproval(approval.id,"APPROVED",approvalNotes[approval.id]??""))}>Approve</button><button disabled={busy||(approvalNotes[approval.id]??"").trim().length<3} className="rounded-lg border px-3 py-2 disabled:opacity-40" onClick={()=>void run(()=>inventoryWorkflowService.reviewPosImportApproval(approval.id,"REJECTED",approvalNotes[approval.id]??""))}>Reject</button></div></div>)}</div>}</section>
-      <div className="grid gap-2 md:grid-cols-4">
+      <div className="grid gap-2 md:grid-cols-5">
         <input aria-label="POS source code" placeholder="Verified source code" value={sourceCode} onChange={(event) => setSourceCode(event.target.value)} className="rounded-lg border p-2" />
         <input aria-label="POS source name" placeholder="Display name" value={sourceName} onChange={(event) => setSourceName(event.target.value)} className="rounded-lg border p-2" />
         <select aria-label="Supported POS format" value={sourceFormat} onChange={(event) => setSourceFormat(event.target.value as PosSource["supportedFormat"])} className="rounded-lg border p-2">
           <option value="SUMMARY_ITEMS_SOLD_LEGACY_XLS">Summary Items Sold XLS</option><option value="TRANSACTION_SUMMARY_XLSX">Transaction Summary XLSX</option><option value="CANONICAL_CSV">Canonical CSV</option>
         </select>
-        <button type="button" disabled={busy || !sourceCode.trim() || !sourceName.trim()} className="rounded-lg px-3 py-2 text-white disabled:opacity-50" style={{ background: C.maroon }} onClick={() => void run(async () => { await inventoryWorkflowService.createPosSource({ sourceCode, displayName: sourceName, supportedFormat: sourceFormat }); setSourceCode(""); setSourceName(""); })}>Add source (inactive)</button>
+        <select aria-label="POS source branch" value={sourceBranchId} onChange={(event)=>setSourceBranchId(event.target.value)} className="rounded-lg border p-2"><option value="">Select branch</option>{branches.map((branch)=><option key={branch.id} value={branch.id}>{branch.name}</option>)}</select>
+        <button type="button" disabled={busy || !sourceCode.trim() || !sourceName.trim() || !sourceBranchId} className="rounded-lg px-3 py-2 text-white disabled:opacity-50" style={{ background: C.maroon }} onClick={() => void run(async () => { await inventoryWorkflowService.createPosSource({ sourceCode, displayName: sourceName, supportedFormat: sourceFormat, branchId: sourceBranchId }); setSourceCode(""); setSourceName(""); setSourceBranchId(""); })}>Add source (inactive)</button>
       </div>
       <div className="flex flex-wrap gap-2 items-center">
         <select aria-label="Source to review" value={sourceId} onChange={(event) => { setSourceId(event.target.value); setSourceFormatConfirmed(false); }} className="rounded-lg border p-2"><option value="">Select source</option>{sources.map((source) => <option key={source.id} value={source.id}>{source.displayName} — {source.status}</option>)}</select>
       </div>
       {selectedSource && <section aria-label="Source activation review" className="rounded-xl border p-4" style={{ borderColor: C.border, background: C.surface }}>
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div><h4 className="font-semibold">Source activation review</h4><p className="mt-1" style={{ color: C.secondary }}>{selectedSource.displayName} · {selectedSource.sourceCode} · {selectedSource.supportedFormat}</p></div>
+          <div><h4 className="font-semibold">Source activation review</h4><p className="mt-1" style={{ color: C.secondary }}>{selectedSource.displayName} · {selectedSource.sourceCode} · {selectedSource.supportedFormat} · {selectedSource.branchName}</p></div>
           <StatusChip status={selectedSource.status}/>
         </div>
         {selectedSource.status === "INACTIVE" ? <div className="mt-3 flex flex-wrap items-center gap-3">
@@ -105,6 +163,12 @@ function PosMappingSetup() {
       </section>}
       {sourceId && <div className="space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2"><h4 className="font-semibold">Product and variant mapping review</h4><span style={{ color: C.secondary }}>New mappings begin as Pending.</span></div>
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border p-3" style={{borderColor:C.border,background:C.surface}}>
+          <select aria-label="Copy mappings from source" value={copyFromSourceId} onChange={(event)=>{setCopyFromSourceId(event.target.value);setCopyResult(null);}} className="rounded-lg border p-2"><option value="">Copy approved global mappings from…</option>{sources.filter((source)=>source.id!==sourceId).map((source)=><option key={source.id} value={source.id}>{source.displayName} · {source.supportedFormat}</option>)}</select>
+          <button type="button" disabled={busy||!copyFromSourceId} className="rounded-lg border px-3 py-2 font-semibold disabled:opacity-50" onClick={()=>void run(async()=>{const result=await inventoryWorkflowService.copyPosMappings(copyFromSourceId,sourceId);setCopyResult(result);})}>Copy as pending</button>
+          <span style={{color:C.secondary}}>Copied mappings remain inactive until Owner review.</span>
+          {copyResult&&<span role="status" className="w-full" style={{color:C.green}}>{copyResult.copied} copied · {copyResult.skipped} skipped as already present · {copyResult.eligible} eligible</span>}
+        </div>
         <div className="grid gap-2 md:grid-cols-5">
           <input aria-label="Exact POS product name" placeholder="Exact POS product name" value={posName} onChange={(event) => setPosName(event.target.value)} className="rounded-lg border p-2" />
           <input aria-label="Optional POS product code" placeholder="Separate POS code (optional)" value={posCode} onChange={(event) => setPosCode(event.target.value)} className="rounded-lg border p-2" />
@@ -116,11 +180,20 @@ function PosMappingSetup() {
         <div className="flex flex-wrap gap-2" aria-label="Mapping status filters">{(["ALL", "PENDING", "APPROVED", "REJECTED", "AMBIGUOUS"] as const).map((status) => <button key={status} type="button" className="rounded-full border px-3 py-1.5 font-semibold" style={{ borderColor: mappingFilter === status ? C.maroon : C.border, color: mappingFilter === status ? C.maroon : C.secondary, background: mappingFilter === status ? "var(--app-primary-soft)" : C.surface }} onClick={() => setMappingFilter(status)}>{status === "ALL" ? "All" : status.charAt(0) + status.slice(1).toLowerCase()}</button>)}</div>
         {mappings.length === 0 ? <p className="rounded-xl border p-4" style={{ borderColor: C.border, color: C.secondary }}>No {mappingFilter === "ALL" ? "" : `${mappingFilter.toLowerCase()} `}mappings for this source.</p> : <div className="overflow-x-auto rounded-xl border" style={{ borderColor: C.border }}>
           <table className="min-w-[1120px] w-full text-left"><thead style={{ background: "var(--app-surface-muted)" }}><tr><th className="p-3">POS name</th><th className="p-3">POS code</th><th className="p-3">Target product</th><th className="p-3">Target variant</th><th className="p-3">Recipe</th><th className="p-3">Branch scope</th><th className="p-3">Status</th><th className="p-3">Review</th></tr></thead>
-            <tbody>{mappings.map((mapping) => <tr key={mapping.id} className="border-t align-top" style={{ borderColor: C.border }}><td className="p-3 font-semibold">{mapping.sourceProductName}</td><td className="p-3">{mapping.sourceProductCode || "—"}</td><td className="p-3">{mapping.menuItemName}</td><td className="p-3">{mapping.variantName}</td><td className="p-3">{mapping.recipeAvailable ? <span style={{ color: C.green }}>Available · v{mapping.recipeVersion}</span> : <span style={{ color: C.red }}>Unavailable</span>}</td><td className="p-3">{mapping.branchName || "All branches"}</td><td className="p-3"><StatusChip status={mapping.reviewStatus}/></td><td className="p-3"><div className="min-w-[230px] space-y-2"><input aria-label={`Review note for ${mapping.sourceProductName}`} placeholder="Reason for rejection or ambiguity" value={reviewNotes[mapping.id] ?? mapping.reviewComment ?? ""} onChange={(event) => setReviewNotes((current) => ({ ...current, [mapping.id]: event.target.value }))} className="w-full rounded-lg border p-2"/><div className="flex flex-wrap gap-1"><button type="button" disabled={busy || !canApprovePosMapping(mapping, selectedSource)} className="rounded-lg border px-2 py-1 disabled:opacity-40" title={!mapping.recipeAvailable ? "An active recipe is required" : selectedSource?.status !== "ACTIVE" ? "Activate and verify the source first" : undefined} onClick={() => void run(() => inventoryWorkflowService.reviewPosMapping(mapping.id, "APPROVED", reviewNotes[mapping.id]))}>Approve</button><button type="button" disabled={busy || !(reviewNotes[mapping.id] ?? mapping.reviewComment ?? "").trim()} className="rounded-lg border px-2 py-1 disabled:opacity-40" onClick={() => void run(() => inventoryWorkflowService.reviewPosMapping(mapping.id, "REJECTED", reviewNotes[mapping.id] ?? mapping.reviewComment ?? ""))}>Reject</button><button type="button" disabled={busy || !(reviewNotes[mapping.id] ?? mapping.reviewComment ?? "").trim()} className="rounded-lg border px-2 py-1 disabled:opacity-40" onClick={() => void run(() => inventoryWorkflowService.reviewPosMapping(mapping.id, "AMBIGUOUS", reviewNotes[mapping.id] ?? mapping.reviewComment ?? ""))}>Ambiguous</button><button type="button" disabled={busy} className="rounded-lg border px-2 py-1" onClick={() => void run(() => inventoryWorkflowService.reviewPosMapping(mapping.id, "PENDING", reviewNotes[mapping.id]))}>Pending</button></div></div></td></tr>)}</tbody>
+            <tbody>{mappings.map((mapping) => {const note=reviewNotes[mapping.id]??mapping.reviewComment??"";return <tr key={mapping.id} className="border-t align-top" style={{ borderColor: C.border }}><td className="p-3 font-semibold">{mapping.sourceProductName}</td><td className="p-3">{mapping.sourceProductCode || "—"}</td><td className="p-3">{mapping.menuItemName}</td><td className="p-3">{mapping.variantName}</td><td className="p-3">{mapping.recipeAvailable ? <span style={{ color: C.green }}>Available · v{mapping.recipeVersion}</span> : <span style={{ color: C.red }}>Unavailable</span>}</td><td className="p-3">{mapping.branchName || "All branches"}</td><td className="p-3"><StatusChip status={mapping.reviewStatus}/>{mapping.reviewStatus==="APPROVED"&&mapping.status==="INACTIVE"&&<div className="mt-1 text-xs" style={{color:C.secondary}}>Inactive</div>}</td><td className="p-3"><div className="min-w-[250px] space-y-2">{mapping.reviewStatus==="PENDING"?<input aria-label={`Review note for ${mapping.sourceProductName}`} placeholder="Reason for rejection or ambiguity" value={note} onChange={(event) => setReviewNotes((current) => ({ ...current, [mapping.id]: event.target.value }))} className="w-full rounded-lg border p-2"/>:mapping.reviewComment&&<p className="rounded-lg bg-[var(--app-surface-muted)] p-2" style={{color:C.secondary}}>{mapping.reviewComment}</p>}<PosMappingActions mapping={mapping} busy={busy} canApprove={canApprovePosMapping(mapping,selectedSource)} reviewNote={note} onEdit={()=>setEditMapping(mapping)} onReview={(status)=>void run(()=>inventoryWorkflowService.reviewPosMapping(mapping.id,status,note))} onDeactivate={()=>void run(()=>inventoryWorkflowService.deactivatePosMapping(mapping.id))}/></div></td></tr>;})}</tbody>
           </table>
         </div>}
       </div>}
     </div>}
+    {editMapping&&<PosMappingEditDialog
+      key={editMapping.id}
+      mapping={editMapping}
+      products={products}
+      branches={branches}
+      busy={busy}
+      onCancel={()=>setEditMapping(null)}
+      onSave={(input)=>void run(()=>inventoryWorkflowService.revisePendingPosMapping(editMapping.id,input)).then(saved=>{if(saved)setEditMapping(null);})}
+    />}
   </div>;
 }
 
@@ -138,14 +211,21 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
   const [selectedPosSourceId, setSelectedPosSourceId] = useState("");
   const [posImportError, setPosImportError] = useState("");
   const [posImporting, setPosImporting] = useState(false);
-  const [posApproval, setPosApproval] = useState<PosImportApproval|null>(null);
+  const [stagedFile, setStagedFile] = useState<File | null>(null);
+  const [posValidating, setPosValidating] = useState(false);
   const [posConsumption, setPosConsumption] = useState<{ name: string; unit: string; expectedConsumption: number }[]>([]);
-  const [posImportResult, setPosImportResult] = useState<{ rowsImported: number; productsMatched: number; totalQuantitySold: number; totalSales: number; businessDate: string; fingerprintIndicator: string; reconciliation:PosImportReconciliation } | null>(null);
+  const [posImportResult, setPosImportResult] = useState<{ rowsImported: number; productsMatched: number; totalQuantitySold: number; totalSales: number; businessDate: string; fingerprintIndicator: string; pricing: PosImportPreview["pricing"]; reconciliation:PosImportReconciliation } | null>(null);
   const [posImports, setPosImports] = useState<PosImportRecord[]>([]);
   const [posHistoryLoading, setPosHistoryLoading] = useState(true);
   const [posHistoryPage, setPosHistoryPage] = useState(1);
   const [posHistoryTotal, setPosHistoryTotal] = useState(0);
   const [historyRefresh, setHistoryRefresh] = useState(0);
+  const [monitoringStart,setMonitoringStart]=useState(addDateDays(localToday,-6));
+  const [monitoringEnd,setMonitoringEnd]=useState(localToday);
+  const [dailyPosStatuses,setDailyPosStatuses]=useState<DailyPosUploadStatus[]>([]);
+  const [dailyPosLoading,setDailyPosLoading]=useState(false);
+  const [dailyPosError,setDailyPosError]=useState("");
+  const [monitoringSourceId,setMonitoringSourceId]=useState("ALL");
   const [deleteTarget, setDeleteTarget] = useState<PosImportRecord|null>(null);
   const [deletingImport, setDeletingImport] = useState(false);
   const [posImportSearch, setPosImportSearch] = useState("");
@@ -172,7 +252,14 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
     if (role !== "manager" && role !== "owner") return;
     void inventoryWorkflowService.posSources().then(setPosSources).catch(() => setPosSources([]));
   }, [role]);
+
   useEffect(() => { if (role === "owner") setPosBranchFilter(scopeBranchName); }, [role, scopeBranchName]);
+  useEffect(() => { setMonitoringSourceId("ALL"); }, [posBranchFilter]);
+  useEffect(() => {
+    const handleDataChanged = () => setHistoryRefresh((value) => value + 1);
+    window.addEventListener("libro-data-changed", handleDataChanged);
+    return () => window.removeEventListener("libro-data-changed", handleDataChanged);
+  }, []);
 
   useEffect(() => {
     const dates = dateRange(range, customStart, customEnd);
@@ -194,6 +281,19 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
       .finally(()=>{if(!cancelled)setPosHistoryLoading(false);}),200);
     return()=>{cancelled=true;window.clearTimeout(timer);};
   }, [branches, historyRefresh, posBranchFilter, posHistoryPage, posImportSearch, role]);
+  useEffect(()=>{
+    if(tab!=="import_history")return;
+    let cancelled=false;
+    const branchId=role==="owner"?branches.find((branch)=>branch.name===posBranchFilter)?.id:undefined;
+    setDailyPosLoading(true);setDailyPosError("");
+    void inventoryWorkflowService.dailyPosStatus({startDate:monitoringStart,endDate:monitoringEnd,branchId})
+      .then((result)=>{if(!cancelled)setDailyPosStatuses(result.statuses);})
+      .catch((reason)=>{if(!cancelled){setDailyPosStatuses([]);setDailyPosError(reason instanceof Error?reason.message:"Unable to load daily upload monitoring.");}})
+      .finally(()=>{if(!cancelled)setDailyPosLoading(false);});
+    return()=>{cancelled=true;};
+  },[branches,historyRefresh,monitoringEnd,monitoringStart,posBranchFilter,role,tab]);
+  const monitoringSources=Array.from(new Map(dailyPosStatuses.filter((row)=>row.posSourceId).map((row)=>[row.posSourceId!,row.posSourceName??row.sourceCode??"POS Source"])).entries());
+  const visibleDailyStatuses=filterDailyPosStatuses(dailyPosStatuses,monitoringSourceId);
   const productCategories = [...new Set((analytics?.products ?? []).map((product) => product.category))];
   const visibleProducts = (analytics?.products ?? []).filter((product) => {
     const matchesCategory = productCategory === "All Categories" || product.category === productCategory;
@@ -201,10 +301,29 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
     return matchesCategory && (!query || product.name.toLowerCase().includes(query));
   });
 
-  const selectPosFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
+  const handleFileChosen = (file: File | undefined) => {
     if (!file) return;
     setPosImportError("");
+    if (file.size > 4_000_000) {
+      setPosImportError("POS files must be 4 MB or smaller.");
+      return;
+    }
+    const extension = file.name.toLowerCase().split(".").pop();
+    if (!extension || !isSupportedPosFilename(file.name)) {
+      setPosImportError("Select a CSV, XLS, or XLSX POS file.");
+      return;
+    }
+    setStagedFile(file);
+  };
+
+  const validatePosFile = async (fileToValidate?: File | null) => {
+    const file = fileToValidate ?? stagedFile;
+    if (!file) {
+      setPosImportError("Please select a POS file first.");
+      return;
+    }
+    setPosImportError("");
+    setPosValidating(true);
     try {
       if (file.size > 4_000_000) throw new Error("POS files must be 4 MB or smaller.");
       const extension = file.name.toLowerCase().split(".").pop();
@@ -213,12 +332,11 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
       const preview = extension === "csv"
         ? await (async () => {
             csvText = await file.text();
-            if (csvText.includes("�")) throw new Error("The CSV contains unsupported or invalid text encoding. Export it as UTF-8 and try again.");
+            if (hasInvalidCsvEncoding(csvText)) throw new Error("The CSV contains unsupported or invalid text encoding. Export it as UTF-8 and try again.");
             return inventoryWorkflowService.previewPosSales({ sourceFilename: file.name, csvText });
           })()
         : await inventoryWorkflowService.previewPosSales({ sourceFilename: file.name, file, posSourceId: selectedPosSourceId || undefined });
       setPosPreview(preview);
-      setPosApproval(null);
       setPosCsvText(csvText);
       setPosExcelFile(extension === "csv" ? null : file);
       setPosFilename(file.name);
@@ -229,36 +347,23 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
       setPosExcelFile(null);
       setPosImportError(reason instanceof Error ? reason.message : "Unable to read the POS file.");
     } finally {
-      event.target.value = "";
+      setPosValidating(false);
     }
   };
 
-  const requestImportApproval = async () => {
-    if(!posPreview?.summary.canImport||(!posCsvText&&!posExcelFile))return;
-    setPosImporting(true);setPosImportError("");
-    try{setPosApproval(await inventoryWorkflowService.requestPosImportApproval(posExcelFile
-      ?{sourceFilename:posFilename,file:posExcelFile,posSourceId:selectedPosSourceId||undefined}
-      :{sourceFilename:posFilename,csvText:posCsvText}));}
-    catch(reason){setPosImportError(reason instanceof Error?reason.message:"Unable to request import approval.");}
-    finally{setPosImporting(false);}
-  };
-  const refreshImportApproval=async()=>{
-    if(!posApproval)return;
-    try{const approvals=await inventoryWorkflowService.posImportApprovals();setPosApproval(approvals.find((item)=>item.id===posApproval.id)??posApproval);}
-    catch(reason){setPosImportError(reason instanceof Error?reason.message:"Unable to refresh approval status.");}
-  };
   const confirmPosImport = async () => {
-    if (!posPreview?.summary.canImport || posApproval?.status!=="APPROVED" || (!posCsvText && !posExcelFile)) return;
+    if (!posPreview?.summary.canImport || (!posCsvText && !posExcelFile)) return;
     setPosImporting(true); setPosImportError("");
     try {
       const result = await inventoryWorkflowService.importPosSales(posExcelFile
-        ? { sourceFilename: posFilename, file: posExcelFile, posSourceId: selectedPosSourceId || undefined, expectedContentHash: posPreview.contentHash, expectedResolutionFingerprint: posPreview.resolutionFingerprint, approvalId:posApproval.id }
-        : { sourceFilename: posFilename, csvText: posCsvText, expectedContentHash: posPreview.contentHash, approvalId:posApproval.id });
+        ? { sourceFilename: posFilename, file: posExcelFile, posSourceId: selectedPosSourceId || undefined, expectedContentHash: posPreview.contentHash, expectedResolutionFingerprint: posPreview.resolutionFingerprint }
+        : { sourceFilename: posFilename, csvText: posCsvText, expectedContentHash: posPreview.contentHash });
       setPosConsumption(result.consumption);
       setPosImportResult(result);
       setPosHistoryPage(1);
       setHistoryRefresh(value=>value+1);
       setUploadStep("done");
+      window.dispatchEvent(new CustomEvent("libro-data-changed", { detail: { businessDate: result.businessDate } }));
     } catch (reason) {
       setPosImportError(reason instanceof Error ? reason.message : "Unable to import POS sales.");
     } finally { setPosImporting(false); }
@@ -273,6 +378,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
       setDeleteTarget(null);
       setPosHistoryPage(1);
       setHistoryRefresh(value=>value+1);
+      window.dispatchEvent(new CustomEvent("libro-data-changed"));
     }catch(reason){toast.error(reason instanceof Error?reason.message:"Unable to delete the POS import.");}
     finally{setDeletingImport(false);}
   };
@@ -394,9 +500,27 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
         </TableCard>
       )}
 
-      {tab === "import_history" && (
+      {tab === DAILY_POS_MONITORING_LOCATION && (<div className="space-y-4">
+        <section aria-label="Daily Upload Monitoring" className="rounded-2xl border p-4" style={{borderColor:C.border,background:C.surface}}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div><h3 className="font-semibold" style={{color:C.primary}}>Daily Upload Monitoring</h3><p className="mt-1 text-xs" style={{color:C.secondary}}>Expected branch/POS uploads compared with committed imports. The 10:00 PM reminder does not mark today as missing.</p></div>
+            <div className="flex flex-wrap gap-2">
+              <CalendarDateField label="From" value={monitoringStart} max={monitoringEnd} onChange={(value)=>value&&setMonitoringStart(value)}/>
+              <CalendarDateField label="To" value={monitoringEnd} min={monitoringStart} max={localToday} onChange={(value)=>value&&setMonitoringEnd(value)}/>
+              {role === "owner" && <Select ariaLabel="Monitoring branch" options={["All Branches", ...branches.map((branch) => branch.name)]} value={posBranchFilter} onChange={value=>{setPosBranchFilter(value);setPosHistoryPage(1);}} />}
+              <Select ariaLabel="Monitoring POS source" options={[{value:"ALL",label:"All POS Sources"},...monitoringSources.map(([value,label])=>({value,label}))]} value={monitoringSourceId} onChange={setMonitoringSourceId}/>
+            </div>
+          </div>
+          {dailyPosError&&<p role="alert" className="mt-3 text-sm" style={{color:C.red}}>{dailyPosError}</p>}
+          <div className="mt-3 overflow-x-auto"><table className="data-table w-full min-w-[900px] text-sm"><thead><tr>{role==="owner"&&<th>Branch</th>}<th>POS Source</th><th>Business Date</th><th>Upload Status</th><th>Uploaded File</th><th>Uploaded By</th><th>Uploaded Date / Time</th>{role==="manager"&&<th>Action</th>}</tr></thead><tbody>
+            {dailyPosLoading?<tr><td colSpan={role==="owner"?7:7}>Loading daily upload monitoring…</td></tr>:visibleDailyStatuses.length===0?<tr><td colSpan={role==="owner"?7:7}>No monitoring rows found for this date range.</td></tr>:visibleDailyStatuses.map((row)=><tr key={`${row.businessDate}-${row.branchId}-${row.posSourceId??"none"}`}>
+              {role==="owner"&&<td className="font-semibold">{row.branchName}</td>}<td>{row.posSourceName??"Not configured"}</td><td>{formatAppDate(row.businessDate)}</td><td><StatusChip status={dailyPosStatusLabel(row.status).toLowerCase()}/></td><td>{row.sourceFilename??"—"}</td><td>{row.uploadedBy??"—"}</td><td>{row.importedAt?formatAppDate(row.importedAt,true):"—"}</td>
+              {role==="manager"&&<td>{row.posSourceId&&(row.status==="DUE_TODAY"||row.status==="MISSING_UPLOAD")?<Btn variant="outline" onClick={()=>void inventoryWorkflowService.declareClosedPosDay(row.businessDate,"Branch closed / no sales declared by Manager").then(()=>setHistoryRefresh((value)=>value+1)).catch((reason)=>setDailyPosError(reason instanceof Error?reason.message:"Unable to record the closed day."))}>Record No Sales / Closed</Btn>:"—"}</td>}
+            </tr>)}
+          </tbody></table></div>
+        </section>
         <TableCard
-          title="POS Import History"
+          title="Actual POS Import History"
           subtitle={`Audit log of imported daily sales files for ${branchLabel}`}
           toolbar={
             <>
@@ -406,9 +530,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
           }
         >
           <TableWrapper minWidth={1080}>
-            <THead cols={role === "owner"
-              ? ["File Name", "Branch", "Business Date", "Uploaded Date / Time", "Uploaded By", "Valid / Total Rows", "Units Sold", "Total Sales", "Fingerprint", "Status", "Action"]
-              : ["File Name", "Business Date", "Uploaded Date / Time", "Uploaded By", "Valid / Total Rows", "Units Sold", "Total Sales", "Fingerprint", "Status"]} />
+            <THead cols={role === "owner" ? OWNER_POS_IMPORT_HISTORY_COLUMNS : MANAGER_POS_IMPORT_HISTORY_COLUMNS} />
             <tbody>
               {posHistoryLoading ? (
                 <TableLoadingRow colSpan={role === "owner" ? 11 : 9} label="Loading import history…" />
@@ -421,11 +543,27 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
                   <TD center muted>{formatAppDate(row.businessDate)}</TD>
                   <TD center muted>{formatAppDate(row.importedAt,true)}</TD>
                   <TD>{row.importedBy}</TD>
-                  <TD center>{row.validRows} / {row.totalRows}</TD>
+                  <TD center>{row.validRows + row.warningRows} / {row.totalRows}</TD>
                   <TD right>{row.unitsSold.toLocaleString()}</TD>
                   <TD right>{formatPeso(row.totalSales)}</TD>
                   <TD center mono>{row.fingerprintIndicator ?? "Legacy"}</TD>
-                  <TD center><StatusChip status={row.status === "NEEDS_REVIEW" ? "pending_review" : "imported"} /></TD>
+                  <TD center>
+                    {row.status === "NEEDS_REVIEW" ? (
+                      <span
+                        className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold whitespace-nowrap border"
+                        style={{
+                          background: C.amberBg,
+                          color: C.amber,
+                          borderColor: `color-mix(in srgb, ${C.amber} 25%, transparent)`,
+                        }}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: C.amber }} />
+                        <span>Imported · Warnings</span>
+                      </span>
+                    ) : (
+                      <StatusChip status={(row.status as string) === "REJECTED" ? "rejected" : "imported"} />
+                    )}
+                  </TD>
                   {canDeletePosImport(role)&&<TD center><button type="button" aria-label={`Delete import ${row.sourceFilename}`} onClick={()=>setDeleteTarget(row)} className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--app-border)] text-[var(--app-danger)] transition-colors hover:bg-[var(--app-danger-bg)]"><Trash2 size={15}/></button></TD>}
                 </TR>
               ))}
@@ -433,7 +571,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
           </TableWrapper>
           <Pagination total={posHistoryTotal} page={posHistoryPage} perPage={10} onPageChange={setPosHistoryPage} />
         </TableCard>
-      )}
+      </div>)}
 
       {deleteTarget&&canDeletePosImport(role)&&(
         <PosImportDeleteDialog target={deleteTarget} deleting={deletingImport} onCancel={()=>setDeleteTarget(null)} onConfirm={()=>void deleteImport()}/>
@@ -485,20 +623,40 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
                   <p className="mt-2 text-xs" style={{ color: C.secondary }}>{posSources.some((source) => source.status === "ACTIVE") ? "CSV imports keep their current direct matching. Excel requires a reviewed source and product/variant mappings." : "No verified POS source is configured. Excel files may be previewed, but cannot be confirmed until an Owner configures the source and mappings."}</p>
                 </div>
                 <label className="block border-2 border-dashed rounded-xl p-8 text-center mb-4 cursor-pointer transition-all"
-                  style={{ borderColor: C.border }}>
+                  style={{ borderColor: stagedFile ? C.maroon : C.border, background: stagedFile ? "rgba(128,0,32,0.03)" : "transparent" }}>
                   <div className="w-12 h-12 rounded-xl flex items-center justify-center mx-auto mb-3" style={{ background: C.grayBg }}>
-                    <Upload size={20} style={{ color: C.muted }} />
+                    <Upload size={20} style={{ color: stagedFile ? C.maroon : C.muted }} />
                   </div>
-                  <p className="text-sm font-semibold" style={{ color: C.primary }}>Drop your POS CSV or Excel file here</p>
-                  <p className="text-xs mt-1" style={{ color: C.secondary }}>Accepted formats: CSV, XLS, and XLSX. Product-level quantity, selling price, and business date are required for import.</p>
-                  <input type="file" accept=".csv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" className="sr-only" onChange={(event) => void selectPosFile(event)} />
+                  {stagedFile ? (
+                    <>
+                      <p className="text-sm font-semibold" style={{ color: C.primary }}>{stagedFile.name}</p>
+                      <p className="text-xs mt-1" style={{ color: C.secondary }}>{(stagedFile.size / 1024).toFixed(1)} KB · File ready. Click Proceed to validate.</p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-sm font-semibold" style={{ color: C.primary }}>Drop your POS CSV or Excel file here</p>
+                      <p className="text-xs mt-1" style={{ color: C.secondary }}>Accepted formats: CSV, XLS, and XLSX. Product-level quantity, selling price, and business date are required for import.</p>
+                    </>
+                  )}
+                  <input type="file" accept=".csv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" className="sr-only" onChange={(event) => { handleFileChosen(event.target.files?.[0]); event.target.value = ""; }} />
                 </label>
                 {posImportError && <div className="mb-4 p-3 rounded-xl text-sm" style={{ color: C.red, background: C.redBg }}>{posImportError}</div>}
                 <div className="flex gap-3">
-                  <Btn variant="outline" onClick={() => setUploadStep("idle")}>Cancel</Btn>
-                  <label className="flex-1 py-2.5 rounded-xl text-sm font-bold text-white text-center cursor-pointer" style={{ background: C.maroon }}>
-                    Select File<input type="file" accept=".csv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" className="sr-only" onChange={(event) => void selectPosFile(event)} />
-                  </label>
+                  <Btn variant="outline" onClick={() => { setUploadStep("idle"); setStagedFile(null); }}>Cancel</Btn>
+                  {stagedFile ? (
+                    <button
+                      disabled={posValidating}
+                      className="flex-1 py-2.5 rounded-xl text-sm font-bold text-white disabled:opacity-50"
+                      style={{ background: C.maroon }}
+                      onClick={() => void validatePosFile(stagedFile)}
+                    >
+                      {posValidating ? "Validating…" : "Proceed"}
+                    </button>
+                  ) : (
+                    <label className="flex-1 py-2.5 rounded-xl text-sm font-bold text-white text-center cursor-pointer" style={{ background: C.maroon }}>
+                      Select File<input type="file" accept=".csv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" className="sr-only" onChange={(event) => { handleFileChosen(event.target.files?.[0]); event.target.value = ""; }} />
+                    </label>
+                  )}
                 </div>
               </>
             )}
@@ -506,50 +664,41 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
             {uploadStep === "preview" && (
               <>
                 <div className="p-4 rounded-xl border mb-4" style={{ borderColor: C.border, background: C.mainBg }}>
-                  <p className="text-sm font-semibold mb-3" style={{ color: C.primary }}>Validation Preview</p>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-y-2 gap-x-4 text-sm">
+                  <p className="text-sm font-semibold mb-3" style={{ color: C.primary }}>Validation Summary</p>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                     {[
-                      ["File", posFilename],
-                      ["Detected Format", posPreview?.formatLabel ?? "Unknown"],
-                      ["POS Source", posPreview?.posSourceName ?? "Not configured"],
-                      ["Branch", posPreview?.branchName ?? "Assigned Branch"],
-                      ["Business Date", posPreview?.businessDate ?? "Invalid"],
-                      ["Source Rows", String(posPreview?.summary.totalSourceRows ?? 0)],
-                      ["Valid", String(posPreview?.summary.validRows ?? 0)],
-                      ["Warnings", String(posPreview?.summary.warningRows ?? 0)],
-                      ["Invalid", String(posPreview?.summary.invalidRows ?? 0)],
-                      ["Unmatched", String(posPreview?.summary.unmatchedRows ?? 0)],
-                      ["Duplicate", posPreview?.summary.duplicate ? "Yes" : "No"],
-                      ["Import Quality", posPreview?.summary.quality.replaceAll("_", " ") ?? "Rejected"],
-                      ["Fingerprint", posPreview?.fingerprintIndicator ?? "Not available"],
+                      ["Valid Rows", String(posPreview?.summary.validRows ?? posPreview?.summary.sellableRows ?? 0)],
+                      ["Operational Rows Excluded", String(posPreview?.summary.operationalRows ?? 0)],
+                      ["Invalid Rows", String((posPreview?.summary.invalidRows ?? 0) + (posPreview?.summary.unknownReviewRows ?? 0))],
                       ["Estimated Sales", formatPeso(posPreview?.simulation.estimatedSales ?? 0)],
                       ["Estimated COGS", formatPeso(posPreview?.simulation.estimatedCogs ?? 0)],
                       ["Estimated Gross Profit", formatPeso(posPreview?.simulation.estimatedGrossProfit ?? 0)],
                       ["Estimated Gross Margin", `${(posPreview?.simulation.estimatedGrossMargin ?? 0).toFixed(2)}%`],
                     ].map(([label, value]) => (
-                      <div key={label}>
-                        <span style={{ color: C.secondary }}>{label}: </span>
-                        <span className="font-semibold" style={{ color: label === "Duplicate" ? (value === "Yes" ? C.red : C.green) : C.primary }}>{value}</span>
+                      <div key={label} className="rounded-xl border p-3" style={{ borderColor: C.border, background: C.surface }}>
+                        <span className="block text-xs" style={{ color: C.secondary }}>{label}</span>
+                        <span className="mt-1 block font-semibold" style={{ color: C.primary }}>{value}</span>
                       </div>
                     ))}
                   </div>
-                  <div className="mt-4 rounded-xl border p-3" style={{ borderColor: C.border, background: C.mainBg }}>
-                    <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-xs font-bold uppercase tracking-wide" style={{ color: C.secondary }}>Read-only ingredient consumption preview</p><span className="text-xs" style={{ color: posPreview?.simulation.complete ? C.green : C.amber }}>{posPreview?.simulation.complete ? "Complete preview" : "Partial preview — resolve all validation issues"}</span></div>
-                    {posPreview?.simulation.ingredientConsumption.length ? <div className="mt-2 grid gap-2 md:grid-cols-2">{posPreview.simulation.ingredientConsumption.map((item) => <div key={`${item.inventoryItemId}-${item.unit}`} className="flex items-center justify-between gap-3 rounded-lg p-2" style={{ background: C.surface }}><span>{item.name} <span style={{ color: C.secondary }}>({item.sku})</span></span><strong>{item.expectedConsumption.toFixed(3)} {item.unit} · {formatPeso(item.estimatedCost)}</strong></div>)}</div> : <p className="mt-2 text-xs" style={{ color: C.secondary }}>No recipe-backed rows are available for simulation.</p>}
-                  </div>
-                   <div className="mt-4 pt-3 border-t overflow-x-auto" style={{ borderColor: C.border }}><table className="w-full text-xs min-w-[1180px]"><thead><tr>{["Row","Original POS Product","POS Code","Resolved Product","Variant","Recipe Version","Mapping Status","Mapping Scope","Quantity","Price","Line Amount","Sales Date","Validation Status","Issue"].map((heading)=><th key={heading} className="text-left px-2 py-2" style={{ color: C.secondary }}>{heading}</th>)}</tr></thead><tbody>{posPreview?.rows.map((row,index)=><tr key={`${row.sourceWorksheet ?? "source"}-${row.sourceRow ?? row.rowNumber}-${index}`} className="border-t" style={{ borderColor: C.border }}><td className="px-2 py-2">{row.sourceWorksheet ? `${row.sourceWorksheet}!${row.sourceRow ?? row.rowNumber}` : row.rowNumber}</td><td className="px-2 py-2">{row.sourceProduct || "Blank"}</td><td className="px-2 py-2">{row.sourceProductId ?? "—"}</td><td className="px-2 py-2">{row.matchedMenuProduct ?? "—"}</td><td className="px-2 py-2">{row.matchedVariant ?? "—"}</td><td className="px-2 py-2">{row.recipeVersion ? `v${row.recipeVersion}` : "—"}</td><td className="px-2 py-2">{row.mappingStatus ?? "Unmatched"}</td><td className="px-2 py-2">{row.mappingScope ?? "—"}</td><td className="px-2 py-2">{row.quantitySold ?? "Invalid"}</td><td className="px-2 py-2">{row.unitPrice == null ? "Unavailable" : `₱${row.unitPrice.toFixed(2)}`}</td><td className="px-2 py-2">{row.lineAmount == null ? "Unavailable" : `₱${row.lineAmount.toFixed(2)}`}</td><td className="px-2 py-2">{row.businessDate ?? "Invalid"}</td><td className="px-2 py-2 font-semibold" style={{ color: row.status === "INVALID" ? C.red : row.status === "WARNING" ? C.amber : C.green }}>{row.status}</td><td className="px-2 py-2 max-w-xs">{row.issues.join(" ") || "Ready"}</td></tr>)}</tbody></table></div>
+                  <PosPricingNotice notice={posPreview?.pricing.notice} />
+                   <div className="mt-4 pt-3 border-t overflow-x-auto" style={{ borderColor: C.border }}><table className="w-full text-xs min-w-[1260px]"><thead><tr>{["Row","Original POS Product","Classification","POS Code","Resolved Product","Variant","Recipe Version","Mapping Status","Mapping Scope","Quantity","Unit Price","Sales Amount","Sales Date","Validation Status","Issue"].map((heading)=><th key={heading} className="text-left px-2 py-2" style={{ color: C.secondary }}>{heading}</th>)}</tr></thead><tbody>{posPreview?.rows.map((row,index)=><tr key={`${row.sourceWorksheet ?? "source"}-${row.sourceRow ?? row.rowNumber}-${index}`} className="border-t" style={{ borderColor: C.border }}><td className="px-2 py-2">{row.sourceWorksheet ? `${row.sourceWorksheet}!${row.sourceRow ?? row.rowNumber}` : row.rowNumber}</td><td className="px-2 py-2">{row.sourceProduct || "Blank"}</td><td className="px-2 py-2 font-semibold">{row.itemClassification?.replaceAll("_", " ") ?? "UNKNOWN REVIEW"}</td><td className="px-2 py-2">{row.sourceProductId ?? "—"}</td><td className="px-2 py-2">{row.matchedMenuProduct ?? "—"}</td><td className="px-2 py-2">{row.matchedVariant ?? "—"}</td><td className="px-2 py-2">{row.recipeVersion ? `v${row.recipeVersion}` : "—"}</td><td className="px-2 py-2">{row.mappingStatus ?? "Unmatched"}</td><td className="px-2 py-2">{row.mappingScope ?? "—"}</td><td className="px-2 py-2">{row.quantitySold ?? "Invalid"}</td><td className="px-2 py-2">{row.unitPrice == null ? "Unavailable" : <>{`₱${row.unitPrice.toFixed(2)}`}{row.pricingSource === "MENU_VARIANT_CAPSTONE_FALLBACK" && <span className="block" style={{ color: C.amber }}>Menu price</span>}</>}</td><td className="px-2 py-2">{posSalesAmountLabel(row)}</td><td className="px-2 py-2">{row.businessDate ?? "Invalid"}</td><td className="px-2 py-2 font-semibold" style={{ color: row.itemClassification === "OPERATIONAL_ITEM" ? C.secondary : row.status === "INVALID" ? C.red : row.status === "WARNING" ? C.amber : C.green }}>{row.itemClassification === "OPERATIONAL_ITEM" ? "EXCLUDED" : row.status}</td><td className="px-2 py-2 max-w-xs">{row.issues.join(" ") || "Ready"}</td></tr>)}</tbody></table></div>
                 </div>
                 {posImportError && <div className="mb-4 p-3 rounded-xl text-sm" style={{ color: C.red, background: C.redBg }}>{posImportError}</div>}
                 <div className="flex items-center gap-2 mb-4 p-3 rounded-xl" style={{ background: posPreview?.summary.canImport ? C.greenBg : C.redBg }}>
                   <CheckCircle size={14} style={{ color: posPreview?.summary.canImport ? C.green : C.red }} />
                   <span className="text-sm font-medium" style={{ color: posPreview?.summary.canImport ? C.green : C.red }}>{posPreview?.summary.canImport ? "Validation complete. Review warnings, then confirm the atomic import." : posPreview?.importBlockedReason ?? "POS import cannot continue until invalid, unmatched, or duplicate data is corrected."}</span>
                 </div>
-                {posApproval&&<div className="mb-4 rounded-xl border p-3 text-sm" style={{borderColor:C.border}}><strong>Import approval: {posApproval.status}</strong>{posApproval.reviewedByName&&<p className="mt-1" style={{color:C.secondary}}>Reviewed by {posApproval.reviewedByName}{posApproval.reviewedAt?` on ${formatAppDate(posApproval.reviewedAt)}`:""}</p>}{posApproval.approvalNotes&&<p className="mt-1">Notes: {posApproval.approvalNotes}</p>}</div>}
                 <div className="flex gap-3">
                   <Btn variant="outline" onClick={() => setUploadStep("select")}>Back</Btn>
-                  {!posApproval&&<button disabled={posImporting || !posPreview?.summary.canImport} className="flex-1 py-2.5 rounded-xl text-sm font-bold text-white disabled:opacity-50" style={{ background: C.maroon }} onClick={()=>void requestImportApproval()}>{posImporting?"Requesting…":"Request Owner Approval"}</button>}
-                  {posApproval&&posApproval.status!=="APPROVED"&&<button className="flex-1 py-2.5 rounded-xl border text-sm font-bold" onClick={()=>void refreshImportApproval()}>Approval: {posApproval.status} · Refresh</button>}
-                  {posApproval?.status==="APPROVED"&&<button disabled={posImporting} className="flex-1 py-2.5 rounded-xl text-sm font-bold text-white disabled:opacity-50" style={{ background: C.maroon }} onClick={() => void confirmPosImport()}>{posImporting ? "Importing…" : "Confirm Approved Import"}</button>}
+                  <button
+                    disabled={posImporting || !posPreview?.summary.canImport}
+                    className="flex-1 py-2.5 rounded-xl text-sm font-bold text-white disabled:opacity-50"
+                    style={{ background: C.maroon }}
+                    onClick={() => void confirmPosImport()}
+                  >
+                    {posImporting ? "Importing…" : "Import Sales"}
+                  </button>
                 </div>
               </>
             )}
@@ -560,10 +709,11 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
                   <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4" style={{ background: C.greenBg }}>
                     <CheckCircle size={32} style={{ color: C.green }} />
                   </div>
-                  <h4 className="font-bold text-lg mb-1" style={{ color: C.primary }}>POS Import Complete</h4>
+                  <h4 className="font-bold text-lg mb-1" style={{ color: C.primary }}>Import Completed</h4>
                   <p className="text-sm" style={{ color: C.secondary }}>{posImportResult?.rowsImported ?? 0} sales rows were connected to their configured recipes.</p>
                   <p className="text-xs mt-1" style={{ color: C.muted }}>{posFilename} · {posImportResult?.businessDate ?? ""}</p>
                   <div className="grid grid-cols-2 gap-2 mt-4 text-left text-xs">{[["Rows Imported",posImportResult?.rowsImported ?? 0],["Products Matched",posImportResult?.productsMatched ?? 0],["Total Quantity",posImportResult?.totalQuantitySold ?? 0],["Total Sales",`₱${(posImportResult?.totalSales ?? 0).toLocaleString("en-PH",{minimumFractionDigits:2})}`]].map(([label,value])=><div key={label} className="p-2 rounded-lg" style={{ background:C.mainBg }}><span style={{color:C.secondary}}>{label}: </span><strong>{value}</strong></div>)}</div>
+                  <div className="mt-4"><PosPricingNotice notice={posImportResult?.pricing.notice} /></div>
                   {posImportResult?.reconciliation&&<div className="mt-4 rounded-xl border p-3 text-left text-xs" style={{borderColor:C.border}}><p className="font-bold uppercase tracking-wide" style={{color:C.secondary}}>POS Import Reconciliation Report</p><div className="mt-2 grid grid-cols-2 gap-2">{[["Sales total",posImportResult.reconciliation.salesTotalMatches],["Quantity",posImportResult.reconciliation.quantityMatches],["Recipe consumption",posImportResult.reconciliation.recipeConsumptionMatches],["COGS",posImportResult.reconciliation.cogsMatches],["Branch isolation",posImportResult.reconciliation.branchIsolated]].map(([label,passed])=><div key={String(label)}><span>{label}: </span><strong style={{color:passed?C.green:C.red}}>{passed?"MATCHED":"FAILED"}</strong></div>)}</div></div>}
                   <div className="mt-4 p-3 rounded-xl text-left space-y-1.5" style={{ background: C.mainBg }}>
                     <p className="text-xs font-bold uppercase tracking-wide" style={{ color: C.secondary }}>Expected ingredient consumption</p>
@@ -571,7 +721,19 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role;
                   </div>
                 </div>
                 <button className="w-full py-2.5 rounded-xl text-sm font-bold text-white" style={{ background: C.maroon }}
-                  onClick={() => { setUploadStep("idle"); setPosPreview(null); setPosApproval(null); setPosCsvText(""); setPosExcelFile(null); setPosConsumption([]); setPosImportResult(null); setPosFilename(""); toast.success("POS sales imported successfully"); }}>
+                  onClick={() => {
+                    const importedDate = posImportResult?.businessDate;
+                    setUploadStep("idle");
+                    setStagedFile(null);
+                    setPosPreview(null);
+                    setPosCsvText("");
+                    setPosExcelFile(null);
+                    setPosConsumption([]);
+                    setPosImportResult(null);
+                    setPosFilename("");
+                    toast.success("POS sales imported successfully");
+                    window.dispatchEvent(new CustomEvent("libro-data-changed", { detail: { businessDate: importedDate } }));
+                  }}>
                   Done
                 </button>
               </>
@@ -600,6 +762,13 @@ function COGSAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role; 
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("All Categories");
+  const [refresh, setRefresh] = useState(0);
+
+  useEffect(() => {
+    const handleDataChanged = () => setRefresh((value) => value + 1);
+    window.addEventListener("libro-data-changed", handleDataChanged);
+    return () => window.removeEventListener("libro-data-changed", handleDataChanged);
+  }, []);
 
   useEffect(() => {
     if (role !== "owner") return;
@@ -614,7 +783,7 @@ function COGSAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role; 
       .then(setAnalytics)
       .catch(() => setAnalytics(null))
       .finally(() => setLoading(false));
-  }, [branchFilter, branches, customEnd, customStart, range, role]);
+  }, [branchFilter, branches, customEnd, customStart, range, role, refresh]);
 
   const summary = analytics?.summary;
   const branchLabel = role === "manager" ? (user?.branch?.name ?? "Assigned Branch") : branchFilter;

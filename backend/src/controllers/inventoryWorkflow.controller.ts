@@ -3,17 +3,17 @@ import type { PoolClient } from "pg";
 import { pool } from "../config/database.js";
 import { env } from "../config/env.js";
 import { calculateExpectedInventory } from "../services/inventoryCalculation.service.js";
-import { calculateFinancialSummary } from "../services/financialMetrics.service.js";
-import { matchPosRows, parsePosCsv, PosCsvError, summarizePosRows, type MatchedPosRow, type PosMenuCandidate } from "../services/posCsvImport.service.js";
-import { parsePosExcel } from "../services/posExcelImport.service.js";
+import { calculateFinancialSummary, roundMoney } from "../services/financialMetrics.service.js";
+import { classifyUnmatchedPosIdentity, matchPosRows, parsePosCsv, POS_SOURCE_FORMATS, PosCsvError, summarizePosRows, type MatchedPosRow, type PosMenuCandidate } from "../services/posCsvImport.service.js";
+import { parsePosExcel, TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE } from "../services/posExcelImport.service.js";
 import { loadPosMappings, loadPosSource, posResolutionFingerprint, resolvePosMapping } from "../services/posProductVariantMapping.service.js";
 import { getEffectiveBranchId } from "../services/branchScope.js";
 import { writeAudit } from "../services/audit.service.js";
-import { VERIFIED_SHRINKAGE_CLASSIFICATIONS_SQL } from "../services/shrinkageWorkflow.service.js";
 import { createIngredientUsageSnapshots } from "../services/recipeVersion.service.js";
 import { calculatePosImportSimulation, type PosSimulationRecipeItem } from "../services/posImportSimulation.service.js";
 import { manilaBusinessDate } from "../services/businessTime.service.js";
 import { areUnitsCompatible } from "../services/unitConversion.service.js";
+import { requiresVarianceInvestigation } from "../services/varianceMateriality.service.js";
 import { AppError } from "../utils/appError.js";
 import { idParams } from "../validators/masterData.js";
 import { paginatedRows, paginationQuery } from "../validators/pagination.js";
@@ -53,6 +53,7 @@ type PosPreviewVariantRow = {
   status: "ACTIVE" | "INACTIVE";
   recipeVersionId: string | null;
   recipeVersion: number | null;
+  sellingPrice: number;
   recipeUnits: Array<{ recipeUnit: string; inventoryUnit: string }>;
 };
 
@@ -72,21 +73,19 @@ function decodedPosFilename(value: string | string[] | undefined) {
 }
 
 function posRequestSource(req: Request, confirmation: false): PosImportSource;
-function posRequestSource(req: Request, confirmation: true): PosImportSource & { expectedContentHash: string; expectedResolutionFingerprint?: string; approvalId: string };
+function posRequestSource(req: Request, confirmation: true): PosImportSource & { expectedContentHash: string; expectedResolutionFingerprint?: string };
 function posRequestSource(req: Request, confirmation: boolean) {
   if (Buffer.isBuffer(req.body)) {
     const sourceFilename = decodedPosFilename(req.headers["x-pos-filename"]);
     const expectedContentHash = req.headers["x-pos-content-hash"];
     const posSourceId = req.headers["x-pos-source-id"];
     const expectedResolutionFingerprint = req.headers["x-pos-resolution-fingerprint"];
-    const approvalId = req.headers["x-pos-approval-id"];
     if (posSourceId !== undefined && (typeof posSourceId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(posSourceId))) throw new AppError(422, "POS_SOURCE_INVALID", "Select a valid POS source.");
     if (expectedResolutionFingerprint !== undefined && (typeof expectedResolutionFingerprint !== "string" || !/^[a-f0-9]{64}$/i.test(expectedResolutionFingerprint))) throw new AppError(422, "POS_RESOLUTION_INVALID", "Preview the POS file again before importing.");
     if (confirmation && (typeof expectedContentHash !== "string" || !/^[a-f0-9]{64}$/i.test(expectedContentHash))) {
       throw new AppError(422, "POS_PREVIEW_REQUIRED", "Preview the POS file again before importing.");
     }
-    if (confirmation && (typeof approvalId !== "string" || !/^[0-9a-f-]{36}$/i.test(approvalId))) throw new AppError(422, "POS_APPROVAL_REQUIRED", "Obtain Owner approval before importing.");
-    return { sourceFilename, fileBuffer: req.body, ...(posSourceId ? { posSourceId } : {}), ...(confirmation ? { expectedContentHash, expectedResolutionFingerprint, approvalId } : {}) };
+    return { sourceFilename, fileBuffer: req.body, ...(posSourceId ? { posSourceId } : {}), ...(confirmation ? { expectedContentHash, expectedResolutionFingerprint } : {}) };
   }
   return confirmation ? posImportInput.parse(req.body) : posPreviewInput.parse(req.body);
 }
@@ -123,7 +122,7 @@ async function buildPosPreview(
   const productLookupMs = performance.now() - lookupStartedAt;
   const matchingStartedAt = performance.now();
   const variantResult = await client.query<PosPreviewVariantRow>(
-    `SELECT v.id,v.menu_item_id "menuItemId",v.name,v.status,r.id "recipeVersionId",r.version "recipeVersion",
+    `SELECT v.id,v.menu_item_id "menuItemId",v.name,v.status,v.selling_price::float8 "sellingPrice",r.id "recipeVersionId",r.version "recipeVersion",
        COALESCE(json_agg(json_build_object('recipeUnit',ri.unit,'inventoryUnit',ii.unit))
          FILTER (WHERE ri.id IS NOT NULL),'[]') "recipeUnits"
      FROM menu_item_variants v
@@ -134,21 +133,35 @@ async function buildPosPreview(
      LEFT JOIN recipe_items ri ON ri.recipe_id=r.id
      LEFT JOIN inventory_items ii ON ii.id=ri.inventory_item_id
      WHERE v.menu_item_id=ANY($1::uuid[])
-     GROUP BY v.id,r.id`,
+     GROUP BY v.id,r.id,r.version`,
     [products.rows.map((product)=>product.id), parsed.businessDate],
   );
   const variantsByProduct = new Map<string, PosPreviewVariantRow[]>();
   const variantById = new Map(variantResult.rows.map((variant)=>[variant.id,variant]));
   for (const variant of variantResult.rows) variantsByProduct.set(variant.menuItemId,[...(variantsByProduct.get(variant.menuItemId)??[]),variant]);
   const sourceId = source.fileBuffer ? source.posSourceId ?? null : null;
-  const selectedSource = sourceId ? await loadPosSource(client, sourceId, parsed.sourceFormat) : null;
+  const selectedSource = sourceId ? await loadPosSource(client, sourceId, parsed.sourceFormat, branchId) : null;
   const mappings = selectedSource ? await loadPosMappings(client, selectedSource.id, branchId, parsed.businessDate) : [];
   const preliminaryRows: MatchedPosRow[] = source.fileBuffer
     ? parsed.rows.map((row) => {
+        if (classifyUnmatchedPosIdentity(row.sourceProduct) === "OPERATIONAL_ITEM") return {
+          ...row,
+          menuItemId: null,
+          matchedMenuProduct: null,
+          menuItemVariantId: null,
+          matchedVariant: null,
+          mappingId: null,
+          mappingStatus: "UNMATCHED",
+          mappingScope: null,
+          itemClassification: "OPERATIONAL_ITEM",
+          status: "VALID",
+          issues: ["Operational POS line excluded from sellable-item mapping and COGS validation."],
+        };
         const resolution = selectedSource ? resolvePosMapping(row, branchId, mappings) : null;
         if (!resolution || resolution.status !== "APPROVED") return {
           ...row, menuItemId: null, matchedMenuProduct: null, menuItemVariantId: null, matchedVariant: null,
           mappingId: null, mappingStatus: resolution?.status ?? "UNMATCHED", mappingScope: null,
+          itemClassification: "UNKNOWN_REVIEW",
           status: "INVALID", issues: [...row.issues, resolution?.issue ?? "Select a configured POS source before importing this Excel file."],
         };
         return {
@@ -156,23 +169,45 @@ async function buildPosPreview(
           menuItemVariantId: resolution.menuItemVariantId, matchedVariant: resolution.variantName,
           mappingId: resolution.mappingId, mappingVersion: resolution.version,
           mappingStatus: resolution.status, mappingScope: resolution.scope,
+          itemClassification: "SELLABLE_ITEM",
         };
       })
     : matchPosRows(parsed.rows, products.rows).map((row) => {
-        if (!row.menuItemId) return { ...row, mappingStatus: "UNMATCHED" as const };
+        if (!row.menuItemId) {
+          const itemClassification = classifyUnmatchedPosIdentity(row.sourceProduct);
+          if (itemClassification === "OPERATIONAL_ITEM") return {
+            ...row,
+            itemClassification,
+            mappingStatus: "UNMATCHED" as const,
+            status: "VALID" as const,
+            issues: ["Operational POS line excluded from sellable-item mapping and COGS validation."],
+          };
+          return { ...row, itemClassification, mappingStatus: "UNMATCHED" as const };
+        }
         const active = (variantsByProduct.get(row.menuItemId)??[]).filter((variant)=>variant.status==="ACTIVE");
         if (active.length!==1 || active[0]!.name.toLowerCase()!=="standard") return {
           ...row,menuItemId:null,matchedMenuProduct:null,menuItemVariantId:null,matchedVariant:null,
-          mappingStatus:"UNMATCHED" as const,status:"INVALID" as const,
+          itemClassification:"UNKNOWN_REVIEW" as const,mappingStatus:"UNMATCHED" as const,status:"INVALID" as const,
           issues:[...row.issues,"The CSV product does not identify an unambiguous Standard variant. Review the product/variant mapping."],
         };
-        return {...row,menuItemVariantId:active[0]!.id,matchedVariant:active[0]!.name,mappingStatus:"DIRECT" as const};
+        return {...row,itemClassification:"SELLABLE_ITEM" as const,menuItemVariantId:active[0]!.id,matchedVariant:active[0]!.name,mappingStatus:"DIRECT" as const};
       });
   const rows = preliminaryRows.map((row): MatchedPosRow => {
+    if (row.itemClassification === "OPERATIONAL_ITEM") return row;
     if (!row.menuItemId || row.status === "INVALID") return row;
     const variant = row.menuItemVariantId ? variantById.get(row.menuItemVariantId) : null;
     if (variant?.menuItemId===row.menuItemId && variant.status==="ACTIVE" && variant.recipeVersionId
-      && variant.recipeUnits.length>0 && variant.recipeUnits.every((item)=>areUnitsCompatible(item.recipeUnit,item.inventoryUnit))) return {...row,recipeVersionId:variant.recipeVersionId,recipeVersion:variant.recipeVersion};
+      && variant.recipeUnits.length>0 && variant.recipeUnits.every((item)=>areUnitsCompatible(item.recipeUnit,item.inventoryUnit))) {
+      const usesMenuPrice = parsed.sourceFormat === POS_SOURCE_FORMATS.TRANSACTION_SUMMARY && row.unitPrice === null;
+      return {
+        ...row,
+        unitPrice: usesMenuPrice ? variant.sellingPrice : row.unitPrice,
+        calculatedSalesAmount: usesMenuPrice && row.quantitySold !== null ? row.quantitySold * variant.sellingPrice : row.lineAmount ?? null,
+        pricingSource: usesMenuPrice ? "MENU_VARIANT_CAPSTONE_FALLBACK" : "SUPPLIER_ITEM_PRICE",
+        recipeVersionId:variant.recipeVersionId,
+        recipeVersion:variant.recipeVersion,
+      };
+    }
     return { ...row, status: "INVALID", issues: [...row.issues, "Matched variant does not have a valid active recipe with matching ingredient units."] };
   });
   const matchAndValidationMs = performance.now() - matchingStartedAt;
@@ -190,7 +225,7 @@ async function buildPosPreview(
     summary.canImport = false;
     summary.quality = "REJECTED";
   }
-  const simulationLines = rows.flatMap((row) => row.status !== "INVALID" && row.recipeVersionId
+  const simulationLines = rows.flatMap((row) => row.itemClassification === "SELLABLE_ITEM" && row.status !== "INVALID" && row.recipeVersionId
     && typeof row.quantitySold === "number" && typeof row.unitPrice === "number"
     ? [{ quantitySold: row.quantitySold, unitPrice: row.unitPrice, recipeVersionId: row.recipeVersionId }]
     : []);
@@ -208,6 +243,12 @@ async function buildPosPreview(
     )
     : { rows: [] as PosSimulationRecipeItem[] };
   const simulation = calculatePosImportSimulation(simulationLines, simulationRecipeItems.rows);
+  const fallbackPricingRows = rows.filter((row) => row.pricingSource === "MENU_VARIANT_CAPSTONE_FALLBACK").length;
+  const pricing = {
+    method: fallbackPricingRows > 0 ? "MENU_VARIANT_CAPSTONE_FALLBACK" as const : "SUPPLIER_ITEM_PRICE" as const,
+    notice: fallbackPricingRows > 0 ? TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE : null,
+    fallbackRows: fallbackPricingRows,
+  };
   return {
     sourceFilename: source.sourceFilename,
     branchId,
@@ -223,6 +264,7 @@ async function buildPosPreview(
     importBlockedReason,
     rows,
     summary,
+    pricing,
     simulation: { ...simulation, complete: summary.canImport, validResolvedRows: simulationLines.length },
     benchmark: { parseMs, productLookupMs, matchAndValidationMs, duplicateCheckMs, previewTotalMs: performance.now() - previewStartedAt },
   };
@@ -256,20 +298,40 @@ export const requestPosImportApproval: RequestHandler = async (req, res) => {
   const branchId = requiredBranchId(req.user!);
   const preview = await buildPosPreview(branchId, input);
   if (!preview.summary.canImport || !preview.businessDate) throw new AppError(422, "POS_IMPORT_INVALID", "Resolve every preview issue before requesting approval.");
-  const sourceRows = preview.rows.filter((row) => row.status !== "INVALID" && row.quantitySold !== null && row.unitPrice !== null);
+  const sourceRows = preview.rows.filter((row) => row.itemClassification === "SELLABLE_ITEM" && row.status !== "INVALID" && row.quantitySold !== null && row.unitPrice !== null);
   const sourceSalesTotal = sourceRows.reduce((total,row)=>total+(typeof row.lineAmount==="number"?row.lineAmount:Number(row.quantitySold)*Number(row.unitPrice)),0);
   const sourceQuantity = sourceRows.reduce((total,row)=>total+Number(row.quantitySold),0);
+  const client=await pool.connect();
   try {
-    const inserted = await pool.query<{id:string}>(`INSERT INTO pos_import_approvals
+    await client.query("BEGIN");
+    const inserted = await client.query<{id:string}>(`INSERT INTO pos_import_approvals
       (branch_id,pos_source_id,source_filename,business_date,content_hash,resolution_fingerprint,source_sales_total,source_quantity,requested_by)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
       [branchId,preview.posSourceId,input.sourceFilename,preview.businessDate,preview.contentHash,preview.resolutionFingerprint,sourceSalesTotal,sourceQuantity,req.user!.id]);
-    await writeAudit(req.user!,"REQUEST_POS_IMPORT_APPROVAL","POS_IMPORT_APPROVAL",inserted.rows[0]!.id,"Requested POS import approval",{branchId,businessDate:preview.businessDate,fingerprintIndicator:preview.fingerprintIndicator});
-    const result=await pool.query(`${approvalSelect} WHERE a.id=$1`,[inserted.rows[0]!.id]);
+    const approvalId=inserted.rows[0]!.id;
+    await client.query(`INSERT INTO notifications (recipient_user_id,branch_id,type,title,message,entity_type,entity_id)
+      SELECT owner_user.id,$1,'POS_IMPORT_APPROVAL_REQUESTED','POS Import Approval Required',
+             concat(requester.first_name,' ',requester.last_name,' requested approval for ',$2::text,' (',$3::text,') at ',$4::text,'.'),
+             'POS_IMPORT_APPROVAL',$5
+      FROM users owner_user JOIN users requester ON requester.id=$6
+      WHERE owner_user.role='OWNER' AND owner_user.status='ACTIVE'`,[
+      branchId,
+      input.sourceFilename,
+      preview.businessDate,
+      preview.branchName,
+      approvalId,
+      req.user!.id,
+    ]);
+    await writeAudit(req.user!,"REQUEST_POS_IMPORT_APPROVAL","POS_IMPORT_APPROVAL",approvalId,"Requested POS import approval",{branchId,businessDate:preview.businessDate,fingerprintIndicator:preview.fingerprintIndicator},client);
+    const result=await client.query(`${approvalSelect} WHERE a.id=$1`,[approvalId]);
+    await client.query("COMMIT");
     res.status(201).json({success:true,data:{approval:result.rows[0]}});
   } catch(error) {
+    await client.query("ROLLBACK");
     if((error as {code?:string}).code==="23505") throw new AppError(409,"POS_APPROVAL_EXISTS","A pending or approved request already exists for this preview.");
     throw error;
+  } finally {
+    client.release();
   }
 };
 
@@ -284,12 +346,31 @@ export const listPosImportApprovals: RequestHandler = async (req,res) => {
 export const reviewPosImportApproval: RequestHandler = async (req,res) => {
   const id=idParams.parse(req.params).id;
   const value=posImportApprovalReviewInput.parse(req.body);
-  const result=await pool.query(`UPDATE pos_import_approvals SET status=$2,reviewed_by=$3,approval_notes=$4,reviewed_at=now(),updated_at=now()
-    WHERE id=$1 AND status='PENDING' RETURNING id`,[id,value.status,req.user!.id,value.approvalNotes]);
-  if(!result.rows[0]) throw new AppError(409,"POS_APPROVAL_NOT_PENDING","Only a pending import request can be reviewed.");
-  await writeAudit(req.user!,"REVIEW_POS_IMPORT_APPROVAL","POS_IMPORT_APPROVAL",id,`${value.status} POS import request`,{approvalNotes:value.approvalNotes});
-  const approval=await pool.query(`${approvalSelect} WHERE a.id=$1`,[id]);
-  res.json({success:true,data:{approval:approval.rows[0]}});
+  const client=await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result=await client.query<{id:string;requestedBy:string;branchId:string;sourceFilename:string}>(`UPDATE pos_import_approvals SET status=$2,reviewed_by=$3,approval_notes=$4,reviewed_at=now(),updated_at=now()
+      WHERE id=$1 AND status='PENDING' RETURNING id,requested_by "requestedBy",branch_id "branchId",source_filename "sourceFilename"`,[id,value.status,req.user!.id,value.approvalNotes]);
+    const reviewed=result.rows[0];
+    if(!reviewed) throw new AppError(409,"POS_APPROVAL_NOT_PENDING","Only a pending import request can be reviewed.");
+    await client.query(`INSERT INTO notifications (recipient_user_id,branch_id,type,title,message,entity_type,entity_id)
+      VALUES($1,$2,'POS_IMPORT_APPROVAL_REVIEWED',$3,$4,'POS_IMPORT_APPROVAL',$5)`,[
+      reviewed.requestedBy,
+      reviewed.branchId,
+      value.status==="APPROVED"?"POS Import Approved":"POS Import Rejected",
+      `${reviewed.sourceFilename} was ${value.status.toLowerCase()} by the Owner. ${value.status==="APPROVED"?"Return to POS Sales and confirm the import.":"Review the Owner notes before requesting approval again."}`,
+      id,
+    ]);
+    await writeAudit(req.user!,"REVIEW_POS_IMPORT_APPROVAL","POS_IMPORT_APPROVAL",id,`${value.status} POS import request`,{approvalNotes:value.approvalNotes},client);
+    const approval=await client.query(`${approvalSelect} WHERE a.id=$1`,[id]);
+    await client.query("COMMIT");
+    res.json({success:true,data:{approval:approval.rows[0]}});
+  } catch(error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 };
 
 export const importPosSales: RequestHandler = async (req, res) => {
@@ -305,14 +386,9 @@ export const importPosSales: RequestHandler = async (req, res) => {
     if (preview.importBlockedReason) throw new AppError(422, "POS_FORMAT_IMPORT_BLOCKED", preview.importBlockedReason);
     if (input.fileBuffer && (!input.expectedResolutionFingerprint || preview.resolutionFingerprint !== input.expectedResolutionFingerprint)) throw new AppError(409, "POS_MAPPING_CHANGED", "POS source or product/variant mapping changed after preview. Preview the file again.");
     if (!preview.summary.canImport || !preview.businessDate) throw new AppError(422, "POS_IMPORT_INVALID", "POS import was not completed because the preview contains invalid or unmatched rows.");
-    const approvalResult=await client.query<{id:string;sourceSalesTotal:number;sourceQuantity:number}>(`SELECT id,source_sales_total::float8 "sourceSalesTotal",source_quantity::float8 "sourceQuantity"
-      FROM pos_import_approvals WHERE id=$1 AND branch_id=$2 AND requested_by=$3 AND status='APPROVED'
-        AND business_date=$4 AND content_hash=$5 AND resolution_fingerprint=$6
-        AND pos_source_id IS NOT DISTINCT FROM $7::uuid FOR UPDATE`,
-      [input.approvalId,branchId,req.user!.id,preview.businessDate,preview.contentHash,preview.resolutionFingerprint,preview.posSourceId]);
-    const approval=approvalResult.rows[0];
-    if(!approval) throw new AppError(422,"POS_APPROVAL_REQUIRED","This exact preview requires an approved, unused Owner review before import.");
     const importRows = preview.rows.filter((row): row is MatchedPosRow & { menuItemId: string; quantitySold: number; unitPrice: number; businessDate: string } => Boolean(row.menuItemId) && row.quantitySold !== null && row.unitPrice !== null && row.businessDate !== null && row.status !== "INVALID");
+    const sourceSalesTotal=importRows.reduce((total,row)=>total+(typeof row.lineAmount==="number"?row.lineAmount:Number(row.quantitySold)*Number(row.unitPrice)),0);
+    const sourceQuantity=importRows.reduce((total,row)=>total+Number(row.quantitySold),0);
     const imported = await client.query<{ id: string }>(
       `INSERT INTO pos_imports (branch_id,business_date,source_filename,imported_by,content_hash,total_source_rows,valid_rows,warning_rows,invalid_rows,unmatched_rows,import_status,completed_at,pos_source_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,0,0,$9,now(),$10) RETURNING id`,
@@ -365,20 +441,19 @@ export const importPosSales: RequestHandler = async (req, res) => {
     const expectedByIngredient=new Map(preview.simulation.ingredientConsumption.map((item)=>[`${item.inventoryItemId}:${item.unit}`,item]));
     const actualByIngredient=new Map(consumption.rows.map((item:{inventoryItemId:string;unit:string;expectedConsumption:number})=>[`${item.inventoryItemId}:${item.unit}`,item]));
     const recipeConsumptionMatches=expectedByIngredient.size===actualByIngredient.size && [...expectedByIngredient].every(([key,item])=>Math.abs(item.expectedConsumption-Number(actualByIngredient.get(key)?.expectedConsumption??NaN))<0.000001);
-    const salesTotalMatches=Math.abs(Number(approval.sourceSalesTotal)-Number(meta?.totalSales??0))<0.01;
-    const quantityMatches=Math.abs(Number(approval.sourceQuantity)-Number(meta?.unitsSold??0))<0.000001;
+    const salesTotalMatches=Math.abs(sourceSalesTotal-Number(meta?.totalSales??0))<0.01;
+    const quantityMatches=Math.abs(sourceQuantity-Number(meta?.unitsSold??0))<0.000001;
     const cogsMatches=Math.abs(preview.simulation.estimatedCogs-actualCogs)<0.01;
     const branchCheck=await client.query<{branchIsolated:boolean}>(`SELECT bool_and(branch_id=$2)::boolean "branchIsolated" FROM pos_sale_items WHERE pos_import_id=$1`,[importId,branchId]);
     const branchIsolated=branchCheck.rows[0]?.branchIsolated===true;
-    if(!salesTotalMatches||!quantityMatches||!recipeConsumptionMatches||!cogsMatches||!branchIsolated) throw new AppError(409,"POS_RECONCILIATION_FAILED","The imported rows did not reconcile with the approved POS preview. No sales data was committed.");
+    if(!salesTotalMatches||!quantityMatches||!recipeConsumptionMatches||!cogsMatches||!branchIsolated) throw new AppError(409,"POS_RECONCILIATION_FAILED","The imported rows did not reconcile with the validated POS preview. No sales data was committed.");
     const reconciliationResult=await client.query<{id:string;generatedAt:string}>(`INSERT INTO pos_import_reconciliations
       (pos_import_id,approval_id,branch_id,pos_sales_total,imported_sales_total,pos_quantity,imported_quantity,
        expected_consumption_cost,generated_cogs,sales_total_matches,quantity_matches,recipe_consumption_matches,cogs_matches,branch_isolated)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,true,true,true,true,true) RETURNING id,generated_at "generatedAt"`,
-      [importId,approval.id,branchId,approval.sourceSalesTotal,meta?.totalSales??0,approval.sourceQuantity,meta?.unitsSold??0,preview.simulation.estimatedCogs,actualCogs]);
-    await client.query(`UPDATE pos_import_approvals SET status='CONSUMED',consumed_at=now(),pos_import_id=$2,updated_at=now() WHERE id=$1`,[approval.id,importId]);
+      [importId,null,branchId,sourceSalesTotal,meta?.totalSales??0,sourceQuantity,meta?.unitsSold??0,preview.simulation.estimatedCogs,actualCogs]);
     const reconciliation={id:reconciliationResult.rows[0]!.id,generatedAt:reconciliationResult.rows[0]!.generatedAt,
-      posSalesTotal:Number(approval.sourceSalesTotal),importedSalesTotal:Number(meta?.totalSales??0),posQuantity:Number(approval.sourceQuantity),importedQuantity:Number(meta?.unitsSold??0),
+      posSalesTotal:sourceSalesTotal,importedSalesTotal:Number(meta?.totalSales??0),posQuantity:sourceQuantity,importedQuantity:Number(meta?.unitsSold??0),
       expectedCogs:preview.simulation.estimatedCogs,generatedCogs:actualCogs,salesTotalMatches,quantityMatches,recipeConsumptionMatches,cogsMatches,branchIsolated};
     if (meta) {
       const formattedSales = new Intl.NumberFormat("en-PH", {
@@ -402,7 +477,7 @@ export const importPosSales: RequestHandler = async (req, res) => {
       "POS_IMPORT",
       importId,
       `Imported ${importRows.length} POS sales rows`,
-      { branchId, businessDate: preview.businessDate, rowCount: importRows.length, totalQuantity: meta?.unitsSold ?? 0, totalSales: meta?.totalSales ?? 0, fingerprintIndicator: preview.fingerprintIndicator },
+      { branchId, businessDate: preview.businessDate, rowCount: importRows.length, totalQuantity: meta?.unitsSold ?? 0, totalSales: meta?.totalSales ?? 0, fingerprintIndicator: preview.fingerprintIndicator, pricingMethod: preview.pricing.method, pricingNotice: preview.pricing.notice, fallbackPricingRows: preview.pricing.fallbackRows },
       client,
     );
     await client.query("COMMIT");
@@ -420,8 +495,8 @@ export const importPosSales: RequestHandler = async (req, res) => {
           totalSales: meta?.totalSales ?? 0,
           fingerprintIndicator: preview.fingerprintIndicator,
           quality: preview.summary.quality,
+          pricing: preview.pricing,
           consumption: consumption.rows,
-          approvalId: approval.id,
           reconciliation,
           ...(env.BENCHMARK_MODE ? { benchmark: { ...preview.benchmark, salesInsertMs, ingredientUsageMs, databaseTransactionMs: performance.now() - importStartedAt } } : {}),
         },
@@ -477,10 +552,11 @@ export const deletePosImport: RequestHandler = async (req, res) => {
   try {
     await client.query("BEGIN");
     const imported = await client.query<{
-      branchId:string;branchName:string;businessDate:string;sourceFilename:string;importedByUserId:string;
+      branchId:string;branchName:string;businessDate:string;importedAt:string;sourceFilename:string;importedByUserId:string;
       totalRows:number;saleRowCount:number;ingredientUsageRowCount:number;
     }>(
       `SELECT pi.branch_id "branchId",b.name "branchName",pi.business_date::text "businessDate",
+              pi.imported_at::text "importedAt",
               pi.source_filename "sourceFilename",pi.imported_by "importedByUserId",pi.total_source_rows "totalRows",
               (SELECT count(*)::int FROM pos_sale_items psi WHERE psi.pos_import_id=pi.id) "saleRowCount",
               (SELECT count(*)::int FROM pos_sale_ingredient_usage usage JOIN pos_sale_items psi ON psi.id=usage.pos_sale_item_id WHERE psi.pos_import_id=pi.id) "ingredientUsageRowCount"
@@ -490,11 +566,22 @@ export const deletePosImport: RequestHandler = async (req, res) => {
     const record=imported.rows[0];
     if(!record) throw new AppError(404,"POS_IMPORT_NOT_FOUND","POS import not found");
     const reconciled=await client.query(
-      `SELECT 1 FROM inventory_counts WHERE branch_id=$1 AND count_date >= $2::date LIMIT 1`,
-      [record.branchId,record.businessDate],
+      `SELECT 1
+         FROM inventory_counts
+        WHERE branch_id=$1
+          AND NOT is_test_data
+          AND count_date >= $2::date
+          AND submitted_at >= $3::timestamptz
+        LIMIT 1`,
+      [record.branchId,record.businessDate,record.importedAt],
     );
     if(reconciled.rows[0]) throw new AppError(409,"POS_IMPORT_RECONCILED","This import cannot be deleted because a physical inventory count already includes its business date.");
     await client.query(`DELETE FROM notifications WHERE entity_type='POS_IMPORT' AND entity_id=$1`,[id]);
+    await client.query(`DELETE FROM pos_import_reconciliations WHERE pos_import_id=$1`,[id]);
+    await client.query(`DELETE FROM pos_import_approvals WHERE pos_import_id=$1`,[id]);
+    await client.query(`DELETE FROM pos_sale_ingredient_usage
+      WHERE pos_sale_item_id IN (SELECT id FROM pos_sale_items WHERE pos_import_id=$1)`,[id]);
+    await client.query(`DELETE FROM pos_sale_items WHERE pos_import_id=$1`,[id]);
     await client.query(`DELETE FROM pos_imports WHERE id=$1`,[id]);
     await writeAudit(req.user!,"POS_IMPORT_DELETED","POS_IMPORT",id,`Deleted POS import ${record.sourceFilename}`,{
       branchId:record.branchId,
@@ -530,7 +617,7 @@ export const getPosAnalytics: RequestHandler = async (req, res) => {
     ? `AND pi.branch_id=$${params.push(branchId)}`
     : "";
 
-  const [scope, summary, trends, products, ingredients, variance, verifiedVariance] =
+  const [scope, summary, trends, products, ingredients, variance, verifiedCauses] =
     await Promise.all([
       branchId
         ? pool.query<{ branchName: string }>(
@@ -590,16 +677,19 @@ export const getPosAnalytics: RequestHandler = async (req, res) => {
       pool.query(
         `SELECT coalesce(sum(greatest(ici.variance_value,0)),0)::float8 "detectedShortageValue"
          FROM inventory_counts ic JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id
-        WHERE ic.count_date BETWEEN $1::date AND $2::date ${branchId ? `AND ic.branch_id=$3` : ""}`,
+        WHERE NOT ic.is_test_data AND ic.count_date BETWEEN $1::date AND $2::date ${branchId ? `AND ic.branch_id=$3` : ""}`,
         params,
       ),
-      pool.query(
-        `SELECT coalesce(sum(greatest(sr.variance_value,0)),0)::float8 "verifiedShrinkageCost"
-         FROM shrinkage_reports sr
-        WHERE sr.detected_at::date BETWEEN $1::date AND $2::date
-          AND sr.status IN ('VERIFIED', 'REVIEWED')
-           AND sr.classification IN (${VERIFIED_SHRINKAGE_CLASSIFICATIONS_SQL})
-          ${branchId ? `AND sr.branch_id=$3` : ""}`,
+      pool.query<{ name: string; value: number }>(
+        `SELECT replace(ir.incident_type::text, '_', ' ') "name",
+                round(coalesce(sum(ir.quantity * ii.unit_cost), 0)::numeric, 2)::float8 "value"
+         FROM incident_reports ir
+         JOIN inventory_items ii ON ii.id = ir.inventory_item_id
+        WHERE NOT ir.is_test_data AND ir.status = 'VERIFIED'
+          AND ir.occurred_at::date BETWEEN $1::date AND $2::date
+          ${branchId ? `AND ir.branch_id=$3` : ""}
+        GROUP BY ir.incident_type
+        ORDER BY "value" DESC`,
         params,
       ),
     ]);
@@ -613,8 +703,12 @@ export const getPosAnalytics: RequestHandler = async (req, res) => {
   const detectedShortageValue = Number(
     (variance.rows[0] as { detectedShortageValue: number }).detectedShortageValue ?? 0,
   );
-  const verifiedShrinkageCost = Number(
-    (verifiedVariance.rows[0] as { verifiedShrinkageCost: number }).verifiedShrinkageCost ?? 0,
+  const shrinkageCauses = verifiedCauses.rows.map((row) => ({
+    name: row.name,
+    value: Number(row.value ?? 0),
+  }));
+  const verifiedShrinkageCost = roundMoney(
+    shrinkageCauses.reduce((sum, item) => sum + item.value, 0),
   );
   const theoreticalCogs = Number(totals.theoreticalCogs ?? 0);
   const sales = Number(totals.sales ?? 0);
@@ -652,6 +746,7 @@ export const getPosAnalytics: RequestHandler = async (req, res) => {
       trends: trends.rows,
       products: products.rows,
       ingredients: ingredients.rows,
+      shrinkageCauses,
     },
   });
 };
@@ -735,10 +830,15 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const rulesResult = await client.query<{ tolerance: number }>(
-      `SELECT variance_tolerance_quantity::float8 tolerance FROM calculation_settings WHERE singleton=true`,
+    const rulesResult = await client.query<{ absoluteTolerance: number; relativeTolerance: number }>(
+      `SELECT variance_tolerance_quantity::float8 "absoluteTolerance",
+              variance_tolerance_percent::float8 "relativeTolerance"
+         FROM calculation_settings WHERE singleton=true`,
     );
-    const varianceTolerance = Number(rulesResult.rows[0]?.tolerance ?? 0.0001);
+    const varianceTolerance = {
+      absoluteQuantity: Number(rulesResult.rows[0]?.absoluteTolerance ?? 1),
+      relativePercent: Number(rulesResult.rows[0]?.relativeTolerance ?? 2),
+    };
     const existingCount = await client.query<{ countNo: string }>(
       `SELECT count_no "countNo" FROM inventory_counts WHERE branch_id=$1 AND count_date=$2 LIMIT 1`,
       [branchId, input.countDate],
@@ -791,9 +891,9 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
         ],
       );
       await client.query(
-        `INSERT INTO branch_inventory_balances (branch_id,inventory_item_id,actual_quantity,as_of)
-         VALUES ($1,$2,$3,$4::date + time '23:59:59')
-         ON CONFLICT (branch_id,inventory_item_id) DO UPDATE SET actual_quantity=excluded.actual_quantity,as_of=excluded.as_of,updated_at=now()`,
+        `INSERT INTO branch_inventory_balances (branch_id,inventory_item_id,actual_quantity,as_of,is_test_data)
+         VALUES ($1,$2,$3,$4::date + time '23:59:59',false)
+         ON CONFLICT (branch_id,inventory_item_id) DO UPDATE SET actual_quantity=excluded.actual_quantity,as_of=excluded.as_of,is_test_data=false,updated_at=now()`,
         [
           branchId,
           submitted.inventoryItemId,
@@ -803,7 +903,7 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
       );
       const countItem = inserted.rows[0] as { id: string };
       let shrinkageReportId: string | null = null;
-      if (varianceQuantity > varianceTolerance) {
+      if (requiresVarianceInvestigation(expected.expectedQuantity, varianceQuantity, varianceTolerance)) {
         const reportNo = await client.query<{ reportNo: string }>(
           `SELECT 'SR-'||to_char(now(),'YYYY')||'-'||lpad(nextval('shrinkage_report_number_seq')::text,5,'0') "reportNo"`,
         );
@@ -891,8 +991,8 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const count = await client.query<{ countNo: string; countDate: string }>(
-      `SELECT count_no "countNo",count_date::text "countDate" FROM inventory_counts
+    const count = await client.query<{ countNo: string; countDate: string; isTestData: boolean }>(
+      `SELECT count_no "countNo",count_date::text "countDate",is_test_data "isTestData" FROM inventory_counts
         WHERE id=$1 AND branch_id=$2 AND submitted_by=$3 FOR UPDATE`,
       [id, branchId, req.user!.id],
     );
@@ -909,7 +1009,7 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
         "The submitted count date cannot be changed",
       );
     const later = await client.query(
-      `SELECT 1 FROM inventory_counts WHERE branch_id=$1 AND count_date>$2::date LIMIT 1`,
+      `SELECT 1 FROM inventory_counts WHERE branch_id=$1 AND NOT is_test_data AND count_date>$2::date LIMIT 1`,
       [branchId, input.countDate],
     );
     if (later.rows[0])
@@ -929,10 +1029,15 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
         "COUNT_CORRECTION_LOCKED",
         "This count can no longer be edited because its variance investigation has been submitted",
       );
-    const rulesResult = await client.query<{ tolerance: number }>(
-      `SELECT variance_tolerance_quantity::float8 tolerance FROM calculation_settings WHERE singleton=true`,
+    const rulesResult = await client.query<{ absoluteTolerance: number; relativeTolerance: number }>(
+      `SELECT variance_tolerance_quantity::float8 "absoluteTolerance",
+              variance_tolerance_percent::float8 "relativeTolerance"
+         FROM calculation_settings WHERE singleton=true`,
     );
-    const varianceTolerance = Number(rulesResult.rows[0]?.tolerance ?? 0.0001);
+    const varianceTolerance = {
+      absoluteQuantity: Number(rulesResult.rows[0]?.absoluteTolerance ?? 1),
+      relativePercent: Number(rulesResult.rows[0]?.relativeTolerance ?? 2),
+    };
     const existing = await client.query<{
       id: string;
       inventoryItemId: string;
@@ -982,17 +1087,23 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
         [row.id, submitted.actualQuantity, varianceQuantity, varianceValue],
       );
       await client.query(
-        `UPDATE branch_inventory_balances SET actual_quantity=$3,as_of=$4::date+time '23:59:59',updated_at=now()
+        `UPDATE branch_inventory_balances SET actual_quantity=$3,as_of=$4::date+time '23:59:59',is_test_data=$5,updated_at=now()
           WHERE branch_id=$1 AND inventory_item_id=$2`,
         [
           branchId,
           row.inventoryItemId,
           submitted.actualQuantity,
           input.countDate,
+          count.rows[0].isTestData,
         ],
       );
       let shrinkageReportId = row.shrinkageReportId;
-      if (varianceQuantity > varianceTolerance && shrinkageReportId) {
+      const requiresInvestigation = requiresVarianceInvestigation(
+        expectedQty,
+        varianceQuantity,
+        varianceTolerance,
+      );
+      if (requiresInvestigation && shrinkageReportId) {
         await client.query(
           `UPDATE shrinkage_reports SET actual_quantity=$2,variance_quantity=$3,variance_value=$4,updated_at=now() WHERE id=$1 AND status='DETECTED'`,
           [
@@ -1002,14 +1113,14 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
             varianceValue,
           ],
         );
-      } else if (varianceQuantity > varianceTolerance) {
+      } else if (requiresInvestigation) {
         const reportNo = await client.query<{ reportNo: string }>(
           `SELECT 'SR-'||to_char(now(),'YYYY')||'-'||lpad(nextval('shrinkage_report_number_seq')::text,5,'0') "reportNo"`,
         );
         const anomaly = await client.query<{ id: string }>(
           `INSERT INTO shrinkage_reports
-            (report_no,branch_id,inventory_item_id,inventory_count_item_id,expected_quantity,actual_quantity,variance_quantity,variance_value,unit,status,submitted_by,detected_at)
-           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'DETECTED',$10,now()) RETURNING id`,
+            (report_no,branch_id,inventory_item_id,inventory_count_item_id,expected_quantity,actual_quantity,variance_quantity,variance_value,unit,status,submitted_by,detected_at,is_test_data)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'DETECTED',$10,now(),$11) RETURNING id`,
           [
             reportNo.rows[0]!.reportNo,
             branchId,
@@ -1021,6 +1132,7 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
             varianceValue,
             row.unit,
             req.user!.id,
+            count.rows[0].isTestData,
           ],
         );
         shrinkageReportId = anomaly.rows[0]!.id;
@@ -1103,13 +1215,13 @@ export const listInventoryCounts: RequestHandler = async (req, res) => {
   );
   const result = await pool.query(
     `SELECT ic.id,ic.count_no "countNo",ic.count_date::text "countDate",ic.submitted_at "submittedAt",b.id "branchId",b.name "branchName",
-              (ic.submitted_by=$1 AND NOT EXISTS(SELECT 1 FROM inventory_counts newer WHERE newer.branch_id=ic.branch_id AND (newer.count_date,newer.submitted_at)>(ic.count_date,ic.submitted_at))
+              (ic.submitted_by=$1 AND NOT EXISTS(SELECT 1 FROM inventory_counts newer WHERE newer.branch_id=ic.branch_id AND NOT newer.is_test_data AND (newer.count_date,newer.submitted_at)>(ic.count_date,ic.submitted_at))
                 AND NOT EXISTS(SELECT 1 FROM inventory_count_items ci JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ci.id WHERE ci.inventory_count_id=ic.id AND sr.status<>'DETECTED')) "canEdit",
               concat(u.first_name,' ',u.last_name) "submittedBy",count(ici.id)::int "itemCount",count(*) OVER()::int "__total",
               (count(ici.id) FILTER (WHERE abs(ici.variance_quantity)>0.0001))::int "varianceCount"
        FROM inventory_counts ic JOIN branches b ON b.id=ic.branch_id JOIN users u ON u.id=ic.submitted_by
        LEFT JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id
-      WHERE ($2::uuid IS NULL OR ic.branch_id=$2)
+      WHERE NOT ic.is_test_data AND ($2::uuid IS NULL OR ic.branch_id=$2)
       GROUP BY ic.id,b.id,u.id ORDER BY ic.count_date DESC,ic.submitted_at DESC LIMIT $3 OFFSET $4`,
     [req.user!.id, branchId ?? null, pagination.pageSize, (pagination.page-1)*pagination.pageSize],
   );
@@ -1122,9 +1234,9 @@ export const getInventoryCount: RequestHandler = async (req, res) => {
   const branchId = getEffectiveBranchId(req.user!);
   const count = await pool.query(
     `SELECT ic.id,ic.count_no "countNo",ic.count_date::text "countDate",ic.branch_id "branchId",
-      (ic.submitted_by=$3 AND NOT EXISTS(SELECT 1 FROM inventory_counts n WHERE n.branch_id=ic.branch_id AND (n.count_date,n.submitted_at)>(ic.count_date,ic.submitted_at))
+      (ic.submitted_by=$3 AND NOT EXISTS(SELECT 1 FROM inventory_counts n WHERE n.branch_id=ic.branch_id AND NOT n.is_test_data AND (n.count_date,n.submitted_at)>(ic.count_date,ic.submitted_at))
        AND NOT EXISTS(SELECT 1 FROM inventory_count_items ci JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ci.id WHERE ci.inventory_count_id=ic.id AND sr.status<>'DETECTED')) "canEdit"
-     FROM inventory_counts ic WHERE ic.id=$1 AND ($2::uuid IS NULL OR ic.branch_id=$2)`, [id,branchId ?? null,req.user!.id]);
+     FROM inventory_counts ic WHERE ic.id=$1 AND NOT ic.is_test_data AND ($2::uuid IS NULL OR ic.branch_id=$2)`, [id,branchId ?? null,req.user!.id]);
   if (!count.rows[0]) throw new AppError(404,"INVENTORY_COUNT_NOT_FOUND","Count not found for your branch");
   const items = await pool.query(`SELECT ici.id,ici.inventory_item_id "inventoryItemId",ii.sku,ii.name "itemName",ici.unit,
     ici.previous_actual_quantity::float8 "previousActualQuantity",ici.stock_received::float8 "stockReceived",
@@ -1143,7 +1255,7 @@ export const listInventoryVariances: RequestHandler = async (req, res) => {
   const filters = varianceFilters.parse(req.query);
   const pagination = paginationQuery.parse(req.query);
   const branchId = getEffectiveBranchId(req.user!, filters.branchId);
-  const clauses: string[] = [];
+  const clauses: string[] = ["NOT ic.is_test_data"];
   const values: unknown[] = [];
   if (branchId) {
     values.push(branchId);
@@ -1187,7 +1299,7 @@ export const listShrinkageReports: RequestHandler = async (req, res) => {
   const filters = shrinkageFilters.parse(req.query);
   const pagination = paginationQuery.parse(req.query);
   const branchId = getEffectiveBranchId(req.user!, filters.branchId);
-  const clauses: string[] = [];
+  const clauses: string[] = ["NOT sr.is_test_data"];
   const values: unknown[] = [];
   if (branchId) {
     values.push(branchId);
@@ -1215,7 +1327,7 @@ export const listShrinkageReports: RequestHandler = async (req, res) => {
   }
   if (filters.incidentType) {
     values.push(filters.incidentType);
-    clauses.push(`EXISTS (SELECT 1 FROM incident_reports ir WHERE ir.shrinkage_report_id=sr.id AND ir.incident_type=$${values.length})`);
+    clauses.push(`EXISTS (SELECT 1 FROM incident_reports ir WHERE NOT ir.is_test_data AND ir.shrinkage_report_id=sr.id AND ir.incident_type=$${values.length})`);
   }
   const result = await pool.query(
     `${shrinkageSelection.replace("SELECT ","SELECT count(*) OVER()::int \"__total\",")} ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""} ORDER BY CASE sr.status WHEN 'DETECTED' THEN 0 WHEN 'PENDING_REVIEW' THEN 1 ELSE 2 END,sr.detected_at DESC LIMIT $${values.length+1} OFFSET $${values.length+2}`,
@@ -1229,7 +1341,7 @@ export const getShrinkageReport: RequestHandler = async (req, res) => {
   const { id } = idParams.parse(req.params);
   const branchId = getEffectiveBranchId(req.user!);
   const result = await pool.query(
-    `${shrinkageSelection} WHERE sr.id=$1 ${branchId ? "AND sr.branch_id=$2" : ""}`,
+    `${shrinkageSelection} WHERE sr.id=$1 AND NOT sr.is_test_data ${branchId ? "AND sr.branch_id=$2" : ""}`,
     branchId ? [id, branchId] : [id],
   );
   if (!result.rows[0])
@@ -1253,7 +1365,7 @@ export const getShrinkageEvidence: RequestHandler = async (req, res) => {
        FROM shrinkage_reports sr
        JOIN inventory_count_items ici ON ici.id=sr.inventory_count_item_id
        JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
-      WHERE sr.id=$1 ${branchId ? "AND sr.branch_id=$2" : ""}`,
+      WHERE sr.id=$1 AND NOT sr.is_test_data ${branchId ? "AND sr.branch_id=$2" : ""}`,
     branchId ? [id, branchId] : [id],
   );
   const context = report.rows[0];
@@ -1266,15 +1378,22 @@ export const getShrinkageEvidence: RequestHandler = async (req, res) => {
               concat(u.first_name,' ',u.last_name) "submittedByName",
               (ir.shrinkage_report_id=$1) "explicitlyLinked"
          FROM incident_reports ir JOIN users u ON u.id=ir.submitted_by
-        WHERE ir.branch_id=$2 AND ir.inventory_item_id=$3
-          AND (ir.shrinkage_report_id=$1 OR (ir.shrinkage_report_id IS NULL AND ir.occurred_at::date BETWEEN $4::date-7 AND $4::date+7))
+        WHERE ir.branch_id=$2 AND ir.inventory_item_id=$3 AND NOT ir.is_test_data
+          AND (
+            ir.shrinkage_report_id=$1
+            OR (
+              ir.shrinkage_report_id IS NULL
+              AND ir.status IN ('PENDING','VERIFIED')
+              AND (ir.occurred_at AT TIME ZONE 'Asia/Manila')::date BETWEEN $4::date-7 AND $4::date+1
+            )
+          )
         ORDER BY (ir.shrinkage_report_id=$1) DESC,ir.occurred_at DESC`,
       [id, context.branchId, context.inventoryItemId, context.countDate],
     ),
     pool.query(
       `SELECT movement_type "movementType",quantity::float8,occurred_at "occurredAt",reference_no "referenceNo",notes
          FROM inventory_movements
-        WHERE branch_id=$1 AND inventory_item_id=$2 AND occurred_at::date BETWEEN $3::date-7 AND $3::date+7
+        WHERE branch_id=$1 AND inventory_item_id=$2 AND NOT is_test_data AND occurred_at::date BETWEEN $3::date-7 AND $3::date+7
         ORDER BY occurred_at DESC`,
       [context.branchId, context.inventoryItemId, context.countDate],
     ),

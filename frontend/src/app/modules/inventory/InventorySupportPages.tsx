@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Activity, ClipboardCheck, Edit3, FileWarning, RefreshCw, Search, Users } from "lucide-react";
+import { Activity, ClipboardCheck, Edit3, FileWarning, Plus, RefreshCw, Search, Users } from "lucide-react";
 import { useNavigate } from "react-router";
 import { useAuth } from "../../contexts/AuthContext";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
@@ -146,7 +146,7 @@ export function ExpectedInventoryPage({ role, view, scopeBranchId = "ALL" }: { r
   );
 }
 
-export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCount }: { role: AppRole; scopeBranchId?: string; onEditCount?: (countId: string) => void }) {
+export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCount, onRecordCount }: { role: AppRole; scopeBranchId?: string; onEditCount?: (countId: string) => void; onRecordCount?: () => void }) {
   const owner = role === "owner";
   const navigate = useNavigate();
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -201,6 +201,7 @@ export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCo
             <SearchInput placeholder="Search count records…" value={search} onChange={setSearch} />
             <BranchScope owner={owner} branches={branches} branchId={branchId} onChange={setBranchId} />
             <div className="ml-auto">
+              {role === "manager" && onRecordCount && <Btn size="sm" icon={Plus} onClick={onRecordCount}>Record Stock Count</Btn>}
               <Btn variant="outline" size="sm" icon={RefreshCw} onClick={() => void load()}>
                 Refresh
               </Btn>

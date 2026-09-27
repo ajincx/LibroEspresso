@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ReportExportActions, ReportSelector, selectAllReportTypes, shouldApplyPreviewResponse, toggleReportType } from "./ReportsPage";
+import { initialReportSelection, ReportExportActions, ReportSelector, selectAllReportTypes, shouldApplyPreviewResponse, toggleReportType } from "./ReportsPage";
 
 describe("report multi-selection",()=>{
+  it("opens with no report selected",()=>expect(initialReportSelection()).toEqual([]));
   it("selects one and multiple report types in official order",()=>{
     expect(toggleReportType([],"SALES")).toEqual(["SALES"]);
     expect(toggleReportType(["INVENTORY_STATUS"],"SALES")).toEqual(["SALES","INVENTORY_STATUS"]);

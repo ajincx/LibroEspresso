@@ -426,7 +426,7 @@ export async function buildReportDataset(
       ici.expected_quantity::float8 "expectedQuantity",ici.actual_quantity::float8 "actualQuantity",ici.variance_quantity::float8 "varianceQuantity",
       ici.variance_value::float8 "varianceValue",CASE WHEN ici.expected_quantity>0 THEN (ici.variance_quantity/ici.expected_quantity*100)::float8 ELSE NULL END "variancePercentage"
       FROM inventory_counts ic JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id JOIN branches b ON b.id=ic.branch_id JOIN inventory_items ii ON ii.id=ici.inventory_item_id
-      WHERE ic.count_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR ic.branch_id=$3::uuid) AND ($4::uuid IS NULL OR ii.id=$4::uuid)
+      WHERE NOT ic.is_test_data AND ic.count_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR ic.branch_id=$3::uuid) AND ($4::uuid IS NULL OR ii.id=$4::uuid)
       ORDER BY ic.count_date DESC,abs(ici.variance_value) DESC LIMIT 5001`,
       [
         request.startDate,
@@ -499,7 +499,7 @@ export async function buildReportDataset(
       CASE WHEN sr.status IN ('VERIFIED','REVIEWED') THEN concat(mu.first_name,' ',mu.last_name) ELSE NULL END "branchManagerVerification",
       CASE WHEN sr.status='REVIEWED' THEN 'REVIEWED' WHEN sr.status='VERIFIED' THEN 'AWAITING OWNER REVIEW' ELSE 'NOT YET SUBMITTED' END "ownerReviewState"
       FROM shrinkage_reports sr JOIN branches b ON b.id=sr.branch_id JOIN inventory_items ii ON ii.id=sr.inventory_item_id LEFT JOIN users mu ON mu.id=sr.submitted_by
-      WHERE sr.detected_at::date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR sr.branch_id=$3::uuid) AND ($4::uuid IS NULL OR ii.id=$4::uuid)
+      WHERE NOT sr.is_test_data AND sr.detected_at::date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR sr.branch_id=$3::uuid) AND ($4::uuid IS NULL OR ii.id=$4::uuid)
         AND ($5::text IS NULL OR sr.classification::text=$5::text) ORDER BY sr.detected_at DESC LIMIT 5001`,
       [
         request.startDate,
@@ -592,7 +592,7 @@ export async function buildReportDataset(
       po.status::text,ii.name ingredient,poi.quantity_ordered::float8 "orderedQuantity",poi.quantity_received::float8 "receivedQuantity",
       (poi.quantity_ordered-poi.quantity_received)::float8 "outstandingQuantity",(poi.quantity_ordered*poi.unit_cost)::float8 total
       FROM purchase_orders po JOIN purchase_order_items poi ON poi.purchase_order_id=po.id JOIN branches b ON b.id=po.branch_id JOIN inventory_items ii ON ii.id=poi.inventory_item_id
-      WHERE po.order_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR po.branch_id=$3::uuid) AND ($4::text IS NULL OR po.status::text=$4::text)
+      WHERE NOT po.is_test_data AND po.order_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR po.branch_id=$3::uuid) AND ($4::text IS NULL OR po.status::text=$4::text)
         AND ($5::uuid IS NULL OR ii.id=$5::uuid) ORDER BY po.order_date DESC,po.po_no,ii.name LIMIT 5001`,
       [
         request.startDate,

@@ -144,7 +144,7 @@ export function MenuRecipesPage() {
   };
 
   return <div className="p-4 md:p-6 space-y-5">
-    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4"><div><h1 className="text-xl font-bold" style={{ color: "var(--app-text)" }}>Menu &amp; Recipe Management</h1><p className="text-sm mt-1" style={{ color: "var(--app-text-muted)" }}>{owner ? "Create global products and monitor each branch's availability decision." : "Manage branch product proposals and review global products for your branch."}</p></div><div className="flex gap-2 flex-wrap"><button onClick={() => void load()} className="inline-flex items-center gap-2 px-3 py-2.5 rounded-xl border text-sm font-semibold" style={{ borderColor: "var(--app-border)", background: "var(--app-surface)" }}><RefreshCw size={14} />Refresh</button>{(manager || owner) && <button onClick={openCreate} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white" style={{ background: "var(--app-primary)" }}><Plus size={16} />Add Product</button>}</div></div>
+    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4"><div><h1 className="text-xl font-bold" style={{ color: "var(--app-text)" }}>Menu &amp; Recipe Management</h1><p className="text-sm mt-1" style={{ color: "var(--app-text-muted)" }}>{owner ? "Create global products and monitor each branch's availability decision." : "Manage approved products for your assigned branch."}</p></div><div className="flex gap-2 flex-wrap"><button onClick={() => void load()} className="inline-flex items-center gap-2 px-3 py-2.5 rounded-xl border text-sm font-semibold" style={{ borderColor: "var(--app-border)", background: "var(--app-surface)" }}><RefreshCw size={14} />Refresh</button>{owner && <button onClick={openCreate} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white" style={{ background: "var(--app-primary)" }}><Plus size={16} />Add Product</button>}</div></div>
         <div className="flex items-center gap-2.5 px-4 py-3 rounded-xl border" style={{ borderColor: "var(--app-border)", background: "var(--app-primary-faint)", color: "var(--app-text-muted)" }}><BookOpen size={15} style={{ color: "var(--app-primary)" }} /><p className="text-sm">POS quantity sold × the sold variant's verified recipe determines expected inventory consumption.</p></div>
     <TableCard
       title="Menu Products & Recipes"
@@ -154,24 +154,6 @@ export function MenuRecipesPage() {
         <div className="flex flex-col md:flex-row gap-3 w-full">
           <SearchInput placeholder="Search menu products..." width={280} value={search} onChange={setSearch} />
           <Select className="md:w-52" value={category} onChange={setCategory} options={["All", ...visibleCategories.map((item) => item.name)]}/>
-          <div className="flex gap-1.5 overflow-x-auto pb-1 md:ml-auto">
-            {["All", ...visibleCategories.map((item) => item.name)].map((name) => (
-              <button
-                key={name}
-                type="button"
-                onClick={() => setCategory(name)}
-                className="px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap transition-colors"
-                style={{
-                  borderColor: category === name ? "var(--app-primary)" : "var(--app-border)",
-                  borderWidth: "1px",
-                  color: category === name ? "#fff" : "var(--app-text-muted)",
-                  background: category === name ? "var(--app-primary)" : "transparent",
-                }}
-              >
-                {name}
-              </button>
-            ))}
-          </div>
         </div>
       }
     >

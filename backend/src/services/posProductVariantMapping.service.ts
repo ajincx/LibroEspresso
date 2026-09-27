@@ -7,6 +7,7 @@ export const normalizePosIdentity = (value: string) => value.trim().replace(/\s+
 
 export interface PosSourceRecord {
   id: string;
+  branchId: string;
   sourceCode: string;
   displayName: string;
   supportedFormat: PosSourceFormat;
@@ -74,17 +75,17 @@ export function resolvePosMapping(row: ParsedPosRow, branchId: string, mappings:
   };
 }
 
-export function posResolutionFingerprint(sourceId: string | null, rows: readonly { menuItemId: string | null; menuItemVariantId?: string | null; mappingId?: string | null; mappingVersion?: string | null; recipeVersionId?: string | null }[]) {
-  return createHash("sha256").update(JSON.stringify({ sourceId, rows: rows.map((row) => [row.menuItemId, row.menuItemVariantId ?? null, row.mappingId ?? null, row.mappingVersion ?? null, row.recipeVersionId ?? null]) })).digest("hex");
+export function posResolutionFingerprint(sourceId: string | null, rows: readonly { menuItemId: string | null; menuItemVariantId?: string | null; mappingId?: string | null; mappingVersion?: string | null; recipeVersionId?: string | null; itemClassification?: string }[]) {
+  return createHash("sha256").update(JSON.stringify({ sourceId, rows: rows.map((row) => [row.itemClassification ?? null, row.menuItemId, row.menuItemVariantId ?? null, row.mappingId ?? null, row.mappingVersion ?? null, row.recipeVersionId ?? null]) })).digest("hex");
 }
 
-export async function loadPosSource(client: Pick<PoolClient, "query">, id: string, format: PosSourceFormat): Promise<PosSourceRecord> {
+export async function loadPosSource(client: Pick<PoolClient, "query">, id: string, format: PosSourceFormat, branchId: string): Promise<PosSourceRecord> {
   const result = await client.query<PosSourceRecord>(
-    `SELECT id,source_code "sourceCode",display_name "displayName",supported_format "supportedFormat"
-       FROM pos_sources WHERE id=$1 AND status='ACTIVE' FOR SHARE`, [id],
+    `SELECT id,branch_id "branchId",source_code "sourceCode",display_name "displayName",supported_format "supportedFormat"
+       FROM pos_sources WHERE id=$1 AND branch_id=$2 AND status='ACTIVE' FOR SHARE`, [id, branchId],
   );
   const source = result.rows[0];
-  if (!source) throw new AppError(422, "POS_SOURCE_UNAVAILABLE", "Select a configured, active POS source before previewing or importing.");
+  if (!source) throw new AppError(422, "POS_SOURCE_UNAVAILABLE", "Select an active POS source configured for your assigned branch.");
   if (source.supportedFormat !== format) throw new AppError(422, "POS_SOURCE_FORMAT_MISMATCH", "The selected POS source does not use the detected file format.");
   return source;
 }

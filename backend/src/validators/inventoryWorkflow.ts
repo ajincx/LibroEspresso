@@ -16,7 +16,6 @@ export const posImportInput = posCsvSourceInput.extend({
   expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/i, "Preview the CSV again before importing"),
   expectedResolutionFingerprint: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
   posSourceId: z.string().uuid().optional(),
-  approvalId: z.string().uuid(),
 });
 export const posImportApprovalReviewInput = z.object({
   status: z.enum(["APPROVED", "REJECTED"]),

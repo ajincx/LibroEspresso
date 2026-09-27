@@ -1,5 +1,5 @@
 import React, { Suspense, useEffect, useState } from "react";
-import { Search, ChevronDown, ChevronRight, ArrowUp, ArrowDown, ChevronLeft, GitCompare, Minus, Calendar } from "lucide-react";
+import { Search, ChevronDown, ChevronRight, ArrowUp, ArrowDown, ChevronLeft, GitCompare, Minus, Calendar, Info } from "lucide-react";
 import * as Popover from "@radix-ui/react-popover";
 import { format, isValid, parseISO } from "date-fns";
 import { DayPicker } from "react-day-picker";
@@ -212,10 +212,10 @@ export function StatusChip({ status, kind = "status", className = "" }: { status
 export const StatusBadge = StatusChip;
 
 // ─── KPI Card ──────────────────────────────────────────────────────────────────
-export function KPICard({ label, value, change, changeDir, sub, color = C.maroon, icon: Icon, sparkData: _sparkData, comparisonLabel = "previous period", onClick, active = false }: {
+export function KPICard({ label, value, change, changeDir, sub, color = C.maroon, icon: Icon, sparkData: _sparkData, comparisonLabel = "previous period", onClick, onInfo, infoLabel, active = false }: {
   label: string; value: string; change?: string; changeDir?: "up" | "down" | "neutral";
   sub?: string; color?: string; icon?: React.ElementType; sparkData?: number[]; comparisonLabel?: string;
-  onClick?: () => void; active?: boolean;
+  onClick?: () => void; onInfo?: () => void; infoLabel?: string; active?: boolean;
 }) {
   const isPositiveChange = changeDir === "up";
   const isNegativeChange = changeDir === "down";
@@ -231,13 +231,15 @@ export function KPICard({ label, value, change, changeDir, sub, color = C.maroon
         <span className="kpi-card__label min-w-0 text-xs font-semibold uppercase tracking-wider leading-tight" style={{ color: C.secondary }}>
           {label}
         </span>
+        <div className="flex items-center gap-1.5">
+        {onInfo && <button type="button" className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--app-primary)] hover:bg-[var(--app-primary-faint)]" title={infoLabel} aria-label={infoLabel ?? `About ${label}`} onClick={event=>{event.stopPropagation();onInfo();}}><Info size={14}/></button>}
         {Icon && (
           <div className="kpi-card__badge inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10px] font-semibold uppercase tracking-wide flex-shrink-0 max-w-full"
             style={{ background: `color-mix(in srgb, ${color} 10%, transparent)`, color }}>
             <Icon size={12} strokeWidth={1.8} />
             <span className="kpi-card__badge-text whitespace-nowrap">{label.includes("Sales") ? "Revenue" : label.includes("COGS") ? "Direct costs" : label.includes("Margin") || label.includes("Profit") ? "Margin" : label.includes("Shrinkage") ? "Variance" : "Overview"}</span>
           </div>
-        )}
+        )}</div>
       </div>
       <div>
         <div className="kpi-card__value text-[24px] font-bold leading-tight tracking-tight" style={{ color: C.primary }}>{value}</div>
@@ -315,7 +317,7 @@ export function SearchInput({ placeholder = "Search...", width = 220, value, onC
 
 type SelectOption = string | { value: string; label: string };
 
-export function Select({ options, value, onChange, small, icon: Icon, disabled = false, className = "", ariaLabel }: { options: SelectOption[]; value?: string; onChange?: (v: string) => void; small?: boolean; icon?: React.ElementType; disabled?: boolean; className?: string; ariaLabel?: string }) {
+export function Select({ options, value, onChange, small, icon: Icon, disabled = false, className = "", ariaLabel, "aria-label": ariaLabelAttribute }: { options: SelectOption[]; value?: string; onChange?: (v: string) => void; small?: boolean; icon?: React.ElementType; disabled?: boolean; className?: string; ariaLabel?: string; "aria-label"?: string }) {
   const [open, setOpen] = useState(false);
   const normalized = options.map((option) => typeof option === "string" ? { value: option, label: option } : option);
   const selected = normalized.find((option) => option.value === value) ?? normalized[0];
@@ -324,7 +326,7 @@ export function Select({ options, value, onChange, small, icon: Icon, disabled =
       <button type="button" disabled={disabled} onClick={() => setOpen((current) => !current)}
         className={cn("custom-select-trigger w-full min-w-[150px] flex items-center gap-2 rounded-xl border text-left font-semibold",
           small ? "min-h-9 px-3 py-1.5 text-xs" : "min-h-10 px-3 py-2 text-sm")}
-        aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel}>
+        aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel ?? ariaLabelAttribute}>
         {Icon && <Icon size={13} className="flex-shrink-0 text-[var(--app-primary)]"/>}
         <span className="min-w-0 flex-1 truncate">{selected?.label ?? "Select"}</span>
         <span className={cn("dropdown-chevron flex flex-shrink-0 items-center justify-center", open && "is-open")}><ChevronDown size={12}/></span>
@@ -430,14 +432,10 @@ export type TableColDef = string | {
   colSpan?: number;
 };
 
-const numericTableHeaders = new Set(["sales", "theoretical cost", "actual cost", "cogs variance", "gross profit", "margin", "cogs", "recipe cogs", "recipe cost", "selling price", "total", "total sales", "total amount", "units sold", "system stock", "current stock", "reorder level", "shortfall", "stock value", "inventory value", "unit cost", "expected", "actual", "variance", "variance %", "variance value", "value", "loss value", "quantity", "quantity ordered", "quantity received", "coverage", "days", "reorder", "suggested reorder", "recent daily use", "items", "items counted", "variances", "price"]);
-const centeredTableHeaders = new Set(["health status", "status", "health", "action", "actions", "date", "business date", "count date", "order date", "expected delivery", "last count", "last updated", "created", "updated"]);
 export const tableHeaderAlignment = (label:React.ReactNode,align?:"left"|"right"|"center") => {
-  if (align === "left") return "left";
-  const text=typeof label==="string"?label.trim().toLowerCase():"";
-  const dataLabel=/\b(quantity|cost|price|sales|revenue|profit|margin|variance|stock|total|amount|value|days?|counts?|coverage|reorder|mae|percentage)\b|%/.test(text);
-  const compactIdentifier=/^(id|sku|code|po number|product code|ingredient code)$/.test(text);
-  return align === "right" || align === "center" || numericTableHeaders.has(text) || centeredTableHeaders.has(text) || dataLabel || compactIdentifier ? "center" : "left";
+  void label;
+  void align;
+  return "center";
 };
 export const isTableDataValue = (children:React.ReactNode) => {
   const textValue=typeof children==="string"?children.trim():"";
@@ -528,15 +526,15 @@ export function TD({
   colSpan?: number;
   onClick?: React.MouseEventHandler<HTMLTableCellElement>;
 }) {
-  const inferredDataValue = isTableDataValue(children);
-  const alignCenter = Boolean(right || center || mono || inferredDataValue || (React.isValidElement(children) && (children.type === StatusChip || children.type === Btn)));
+  void right;
+  void center;
   return (
     <td
       colSpan={colSpan}
       onClick={onClick}
       className={cn(
         "py-3.5 px-4 text-sm transition-colors",
-        alignCenter ? "text-center" : "text-left",
+        "text-center",
         mono && "font-mono text-xs",
         bold && "font-bold",
         muted ? "text-[var(--app-text-muted)] font-medium" : "text-[var(--app-text)]",
@@ -627,7 +625,7 @@ export function TableWrapper({
 }) {
   return (
     <div className={cn("overflow-x-auto border-t border-[var(--app-border)]", className)}>
-      <table className="data-table w-full text-left border-collapse" style={{ minWidth }}>
+      <table className="data-table w-full text-center border-collapse" style={{ minWidth }}>
         {children}
       </table>
     </div>

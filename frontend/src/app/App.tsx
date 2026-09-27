@@ -271,7 +271,7 @@ export default function App() {
                   ? "Incident"
                   : notification.type.startsWith("MENU_PRODUCT")
                     ? "Menu & Recipe"
-                    : notification.type.startsWith("POS_SALES")
+                    : notification.type.startsWith("POS_")
                       ? "Sales Import"
                       : "Shrinkage",
             title: notification.title,
@@ -285,7 +285,7 @@ export default function App() {
                   ? "report"
                   : notification.type.startsWith("MENU_PRODUCT")
                     ? "menu"
-                    : notification.type.startsWith("POS_SALES")
+                    : notification.type.startsWith("POS_")
                       ? "sales"
                       : "shrink",
             entityId: notification.entityId,
@@ -457,7 +457,17 @@ export default function App() {
       case "settings":
         return <AccountSettingsPage />;
       default:
-        return <DashboardPage role={role} onNavigate={setPage} />;
+        return (
+          <DashboardPage
+            role={role}
+            scopeBranchId={branch}
+            onNavigate={setPage}
+            scopeBranchName={
+              branches.find((item) => item.id === branch)?.name ??
+              "All Branches"
+            }
+          />
+        );
     }
   };
 
@@ -512,7 +522,7 @@ export default function App() {
             setMessageOpen(true);
           } else if (!isStaff && notification.entityType === "MENU_ITEM")
             navigate("/cogs/menu-recipes");
-          else if (!isStaff && notification.entityType === "POS_IMPORT")
+          else if (!isStaff && (notification.entityType === "POS_IMPORT" || notification.entityType === "POS_IMPORT_APPROVAL"))
             navigate("/sales");
           else if (!isStaff)
             navigate(

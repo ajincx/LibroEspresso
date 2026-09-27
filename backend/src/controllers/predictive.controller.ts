@@ -126,10 +126,10 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
               coalesce(bis.reorder_level,ii.reorder_level)::float8 "reorderLevel",
               coalesce(bis.reorder_days,7)::int "reorderDays",
               (coalesce(bal.actual_quantity,0)
-                + coalesce((SELECT sum(im.quantity) FROM inventory_movements im WHERE im.branch_id=b.id AND im.inventory_item_id=ii.id AND im.movement_type='RECEIPT' AND im.occurred_at>coalesce(bal.as_of,'1970-01-01'::timestamptz)),0)
+                + coalesce((SELECT sum(im.quantity) FROM inventory_movements im WHERE im.branch_id=b.id AND im.inventory_item_id=ii.id AND NOT im.is_test_data AND im.movement_type='RECEIPT' AND im.occurred_at>coalesce(bal.as_of,'1970-01-01'::timestamptz)),0)
                 - coalesce((SELECT sum(u.quantity_consumed) FROM pos_sale_ingredient_usage u JOIN pos_sale_items psi ON psi.id=u.pos_sale_item_id JOIN pos_imports pi ON pi.id=psi.pos_import_id WHERE pi.branch_id=b.id AND u.inventory_item_id=ii.id AND pi.business_date>coalesce(bal.as_of::date,'1970-01-01'::date)),0)
-                + coalesce((SELECT sum(im.quantity) FROM inventory_movements im WHERE im.branch_id=b.id AND im.inventory_item_id=ii.id AND im.movement_type='APPROVED_ADJUSTMENT_INCREASE' AND im.occurred_at>coalesce(bal.as_of,'1970-01-01'::timestamptz)),0)
-                - coalesce((SELECT sum(im.quantity) FROM inventory_movements im WHERE im.branch_id=b.id AND im.inventory_item_id=ii.id AND im.movement_type IN ('APPROVED_ADJUSTMENT','APPROVED_ADJUSTMENT_DECREASE') AND im.occurred_at>coalesce(bal.as_of,'1970-01-01'::timestamptz)),0))::float8 "systemStock",
+                + coalesce((SELECT sum(im.quantity) FROM inventory_movements im WHERE im.branch_id=b.id AND im.inventory_item_id=ii.id AND NOT im.is_test_data AND im.movement_type='APPROVED_ADJUSTMENT_INCREASE' AND im.occurred_at>coalesce(bal.as_of,'1970-01-01'::timestamptz)),0)
+                - coalesce((SELECT sum(im.quantity) FROM inventory_movements im WHERE im.branch_id=b.id AND im.inventory_item_id=ii.id AND NOT im.is_test_data AND im.movement_type IN ('APPROVED_ADJUSTMENT','APPROVED_ADJUSTMENT_DECREASE') AND im.occurred_at>coalesce(bal.as_of,'1970-01-01'::timestamptz)),0))::float8 "systemStock",
               coalesce((SELECT avg(recent.daily_usage) FROM (
                 SELECT sum(u.quantity_consumed)::float8 daily_usage
                   FROM pos_sale_ingredient_usage u
@@ -141,16 +141,16 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
                  ORDER BY pi.business_date DESC
                  LIMIT 28
               ) recent),0)::float8 "dailyUsage",
-              coalesce((SELECT sum(poi.quantity_ordered-poi.quantity_received) FROM purchase_order_items poi JOIN purchase_orders po ON po.id=poi.purchase_order_id WHERE po.branch_id=b.id AND poi.inventory_item_id=ii.id AND po.status IN ('ORDERED','PARTIALLY_RECEIVED')),0)::float8 "outstandingQuantity"
+              coalesce((SELECT sum((poi.quantity_ordered-poi.quantity_received)*poi.conversion_factor) FROM purchase_order_items poi JOIN purchase_orders po ON po.id=poi.purchase_order_id WHERE po.branch_id=b.id AND NOT po.is_test_data AND poi.inventory_item_id=ii.id AND po.status IN ('ORDERED','PARTIALLY_RECEIVED')),0)::float8 "outstandingQuantity"
          FROM branches b CROSS JOIN inventory_items ii
-         LEFT JOIN branch_inventory_balances bal ON bal.branch_id=b.id AND bal.inventory_item_id=ii.id
+         LEFT JOIN branch_inventory_balances bal ON bal.branch_id=b.id AND bal.inventory_item_id=ii.id AND NOT bal.is_test_data
          LEFT JOIN branch_inventory_settings bis ON bis.branch_id=b.id AND bis.inventory_item_id=ii.id
         WHERE b.status='ACTIVE' AND ii.status='ACTIVE' AND (ii.item_scope='GLOBAL' OR ii.origin_branch_id=b.id) ${inventoryBranchClause}
         ORDER BY b.name,ii.name`, inventoryParams),
     pool.query<{ verifiedShrinkageCost: number }>(
       `SELECT coalesce(sum(greatest(sr.variance_value,0)),0)::float8 "verifiedShrinkageCost"
          FROM shrinkage_reports sr
-        WHERE sr.detected_at::date BETWEEN $1::date AND $2::date
+        WHERE NOT sr.is_test_data AND sr.detected_at::date BETWEEN $1::date AND $2::date
           AND sr.status IN ('VERIFIED', 'REVIEWED')
           AND sr.classification IN (${VERIFIED_SHRINKAGE_CLASSIFICATIONS_SQL})
           ${shrinkageBranchClause}`, shrinkageParams),
@@ -178,10 +178,10 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
     pool.query<IncomingOrderRow>(
       `SELECT po.branch_id "branchId",poi.inventory_item_id "inventoryItemId",
               po.expected_delivery_date::text "expectedDeliveryDate",
-              sum(poi.quantity_ordered-poi.quantity_received)::float8 quantity
+              sum((poi.quantity_ordered-poi.quantity_received)*poi.conversion_factor)::float8 quantity
          FROM purchase_orders po
          JOIN purchase_order_items poi ON poi.purchase_order_id=po.id
-        WHERE po.status IN ('ORDERED','PARTIALLY_RECEIVED')
+        WHERE NOT po.is_test_data AND po.status IN ('ORDERED','PARTIALLY_RECEIVED')
           AND poi.quantity_ordered>poi.quantity_received ${incomingBranchClause}
         GROUP BY po.branch_id,poi.inventory_item_id,po.expected_delivery_date`, incomingParams),
   ]);

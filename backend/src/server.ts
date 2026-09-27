@@ -1,14 +1,20 @@
 import { app } from "./app.js";
 import { pool, verifyDatabaseConnection } from "./config/database.js";
 import { env } from "./config/env.js";
+import { runDailyPosReminderJob } from "./controllers/posDailyMonitoring.controller.js";
 
 async function start() {
   await verifyDatabaseConnection();
   const server = app.listen(env.PORT, () => console.log(JSON.stringify({ timestamp: new Date().toISOString(), severity: "info", event: "SERVER_STARTED", port: env.PORT })));
+  const runReminder=()=>void runDailyPosReminderJob().catch((error)=>console.error(JSON.stringify({timestamp:new Date().toISOString(),severity:"error",event:"POS_REMINDER_JOB_FAILED",message:error instanceof Error?error.message:"Unknown reminder error"})));
+  runReminder();
+  const reminderTimer=setInterval(runReminder,15*60*1000);
+  reminderTimer.unref();
   let shuttingDown = false;
   const shutdown = (signal: NodeJS.Signals) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    clearInterval(reminderTimer);
     console.log(JSON.stringify({ timestamp: new Date().toISOString(), severity: "info", event: "SERVER_SHUTDOWN_STARTED", signal }));
     const forced = setTimeout(() => {
       console.error(JSON.stringify({ timestamp: new Date().toISOString(), severity: "error", event: "SERVER_SHUTDOWN_TIMEOUT" }));

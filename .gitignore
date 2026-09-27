@@ -31,3 +31,9 @@ yarn-error.log*
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Ignore all Markdown files
+*.md
+
+# Keep README files
+!README.md

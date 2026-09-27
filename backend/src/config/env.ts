@@ -17,6 +17,8 @@ const schema = z.object({
   BENCHMARK_MODE: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
   GEMINI_API_KEY: z.string().trim().optional().transform((value) => value || undefined),
   GEMINI_MODEL: z.string().trim().default("gemini-2.5-flash-lite"),
+  POS_REMINDER_HOUR_MANILA: z.coerce.number().int().min(0).max(23).default(22),
+  POS_REMINDER_MINUTE_MANILA: z.coerce.number().int().min(0).max(59).default(0),
 });
 
 const parsed = schema.safeParse(process.env);

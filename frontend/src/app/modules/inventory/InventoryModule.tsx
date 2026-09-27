@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
-import { AlertCircle, AlertTriangle, ChevronLeft, ClipboardList, DollarSign, Hash, History, RefreshCw, SlidersHorizontal, X, XCircle } from "lucide-react";
+import { AlertCircle, AlertTriangle, ClipboardList, DollarSign, Hash, RefreshCw, SlidersHorizontal, X, XCircle } from "lucide-react";
 import { AnimatedTabPanel, Btn, C, KPICard, ModuleLoadingFallback, ModuleTabSwitcher, Pagination, SearchInput, SectionHeader, Select, StatusChip, TableCard, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
 import { masterDataService } from "../../services/masterData.service";
 import { operationsService } from "../../services/operations.service";
@@ -119,17 +119,12 @@ export function PhysicalCountsModule({ role, initialTab = "record", scopeBranchI
     }
   }, [initialTab, role, searchParams]);
   return <div>
-    <div className="flex justify-end px-4 md:px-6 pt-4">
-      <Btn variant="outline" size="sm" icon={showHistory ? ChevronLeft : History} onClick={() => setShowHistory((current) => !current)}>
-        {showHistory ? (role === "manager" ? "Back to Physical Count" : "Back to Expected Stock") : "View History"}
-      </Btn>
-    </div>
     <AnimatedTabPanel panelKey={showHistory ? "history" : "current"}>
       <Suspense fallback={<ModuleLoadingFallback/>}>
         {showHistory
-          ? <PhysicalCountHistoryPage role={role} scopeBranchId={scopeBranchId} onEditCount={() => setShowHistory(false)}/>
+          ? <PhysicalCountHistoryPage role={role} scopeBranchId={scopeBranchId} onEditCount={() => setShowHistory(false)} onRecordCount={() => setShowHistory(false)}/>
           : role === "manager"
-            ? <InventoryCountPage/>
+            ? <InventoryCountPage onSubmitted={() => setShowHistory(true)}/>
             : <ExpectedInventoryPage role={role} view="expected" scopeBranchId={scopeBranchId}/>}
       </Suspense>
     </AnimatedTabPanel>

@@ -3,6 +3,7 @@ import type { PoolClient } from "pg";
 import { pool } from "../config/database.js";
 import { getEffectiveBranchId } from "../services/branchScope.js";
 import { writeAudit } from "../services/audit.service.js";
+import { baseStockUnitCost, receivedStockQuantity, resolvePurchaseConversion } from "../services/purchaseUom.service.js";
 import { AppError } from "../utils/appError.js";
 import { idParams } from "../validators/masterData.js";
 import { paginatedRows, paginationQuery } from "../validators/pagination.js";
@@ -47,21 +48,21 @@ export const getInventoryOverview: RequestHandler = async (req, res) => {
             COALESCE(bal.actual_quantity,0)::float8 "lastActualQuantity",bal.as_of "lastCountAt",
             (COALESCE(bal.actual_quantity,0)
               + COALESCE((SELECT sum(im.quantity) FROM inventory_movements im
-                          WHERE im.branch_id=b.id AND im.inventory_item_id=ii.id AND im.movement_type='RECEIPT'
+                          WHERE im.branch_id=b.id AND im.inventory_item_id=ii.id AND NOT im.is_test_data AND im.movement_type='RECEIPT'
                             AND im.occurred_at>COALESCE(bal.as_of,'1970-01-01'::timestamptz)),0)
               + COALESCE((SELECT sum(im.quantity) FROM inventory_movements im
-                          WHERE im.branch_id=b.id AND im.inventory_item_id=ii.id AND im.movement_type='APPROVED_ADJUSTMENT_INCREASE'
+                          WHERE im.branch_id=b.id AND im.inventory_item_id=ii.id AND NOT im.is_test_data AND im.movement_type='APPROVED_ADJUSTMENT_INCREASE'
                             AND im.occurred_at>COALESCE(bal.as_of,'1970-01-01'::timestamptz)),0)
               - COALESCE((SELECT sum(u.quantity_consumed) FROM pos_sale_ingredient_usage u
                           JOIN pos_sale_items psi ON psi.id=u.pos_sale_item_id JOIN pos_imports pi ON pi.id=psi.pos_import_id
                           WHERE pi.branch_id=b.id AND u.inventory_item_id=ii.id
                             AND pi.business_date>COALESCE(bal.as_of::date,'1970-01-01'::date)),0)
               - COALESCE((SELECT sum(im.quantity) FROM inventory_movements im
-                          WHERE im.branch_id=b.id AND im.inventory_item_id=ii.id
+                          WHERE im.branch_id=b.id AND im.inventory_item_id=ii.id AND NOT im.is_test_data
                             AND im.movement_type IN ('APPROVED_ADJUSTMENT','APPROVED_ADJUSTMENT_DECREASE')
                             AND im.occurred_at>COALESCE(bal.as_of,'1970-01-01'::timestamptz)),0))::float8 "systemStock"
        FROM branches b CROSS JOIN inventory_items ii
-       LEFT JOIN branch_inventory_balances bal ON bal.branch_id=b.id AND bal.inventory_item_id=ii.id
+       LEFT JOIN branch_inventory_balances bal ON bal.branch_id=b.id AND bal.inventory_item_id=ii.id AND NOT bal.is_test_data
        LEFT JOIN branch_inventory_settings bis ON bis.branch_id=b.id AND bis.inventory_item_id=ii.id
       WHERE b.status='ACTIVE' AND ii.status='ACTIVE'
         AND (ii.item_scope='GLOBAL' OR ii.origin_branch_id=b.id) ${branchWhere}
@@ -145,7 +146,7 @@ export const listIncidentReports: RequestHandler = async (req, res) => {
   const filters = incidentFilters.parse(req.query);
   const pagination = paginationQuery.parse(req.query);
   const branchId = getEffectiveBranchId(req.user!, filters.branchId);
-  const clauses: string[] = [];
+  const clauses: string[] = ["NOT ir.is_test_data"];
   const values: unknown[] = [];
   if (branchId) {
     values.push(branchId);
@@ -196,11 +197,17 @@ export const listIncidentItemOptions: RequestHandler = async (req, res) => {
       [branchId],
     ),
     pool.query(
-      `SELECT mi.id "productId",mi.code,mi.name
+      `SELECT mi.id "productId",mi.code,mi.name,
+              array_agg(DISTINCT ri.inventory_item_id::text) "ingredientIds"
        FROM menu_items mi
        JOIN menu_item_branches mib ON mib.menu_item_id=mi.id AND mib.branch_id=$1
+       JOIN menu_item_variants v ON v.menu_item_id=mi.id AND v.status='ACTIVE'
+       JOIN recipes r ON r.menu_item_variant_id=v.id AND r.status='ACTIVE'
+         AND r.effective_from<=CURRENT_DATE AND (r.effective_to IS NULL OR r.effective_to>CURRENT_DATE)
+       JOIN recipe_items ri ON ri.recipe_id=r.id
       WHERE mi.status='ACTIVE' AND mi.approval_status='APPROVED'
         AND mib.availability_status='APPROVED' AND mib.is_active=true
+      GROUP BY mi.id
       ORDER BY mi.name`,
       [branchId],
     ),
@@ -232,14 +239,24 @@ export const createIncidentReport: RequestHandler = async (req, res) => {
     const product = await pool.query(
       `SELECT 1 FROM menu_items mi JOIN menu_item_branches mib ON mib.menu_item_id=mi.id
         WHERE mi.id=$1 AND mib.branch_id=$2 AND mi.status='ACTIVE' AND mi.approval_status='APPROVED'
-          AND mib.availability_status='APPROVED' AND mib.is_active=true`,
-      [input.productId, branchId],
+          AND mib.availability_status='APPROVED' AND mib.is_active=true
+          AND EXISTS (
+            SELECT 1
+              FROM menu_item_variants v
+              JOIN recipes r ON r.menu_item_variant_id=v.id AND r.status='ACTIVE'
+              JOIN recipe_items ri ON ri.recipe_id=r.id
+             WHERE v.menu_item_id=mi.id AND v.status='ACTIVE'
+               AND ri.inventory_item_id=$3
+               AND r.effective_from<=($4::timestamptz AT TIME ZONE 'Asia/Manila')::date
+               AND (r.effective_to IS NULL OR r.effective_to>($4::timestamptz AT TIME ZONE 'Asia/Manila')::date)
+          )`,
+      [input.productId, branchId, input.inventoryItemId, input.occurredAt],
     );
     if (!product.rows[0])
       throw new AppError(
         422,
         "PRODUCT_INVALID",
-        "Select an active product available at your branch",
+        "Select an active branch product whose recipe uses the selected ingredient",
       );
   }
   if (input.shrinkageReportId) {
@@ -381,7 +398,8 @@ const purchaseOrderSelection = `SELECT po.id,po.po_no "poNo",po.branch_id "branc
   po.created_at "createdAt",po.updated_at "updatedAt",count(poi.id)::int "itemCount",
   COALESCE(sum(poi.quantity_ordered*poi.unit_cost),0)::float8 "totalAmount",
   COALESCE(json_agg(json_build_object('id',poi.id,'inventoryItemId',ii.id,'sku',ii.sku,'name',ii.name,'unit',ii.unit,
-    'quantityOrdered',poi.quantity_ordered::float8,'quantityReceived',poi.quantity_received::float8,'unitCost',poi.unit_cost::float8)
+    'quantityOrdered',poi.quantity_ordered::float8,'quantityReceived',poi.quantity_received::float8,'unitCost',poi.unit_cost::float8,
+    'purchaseUom',poi.purchase_uom,'conversionFactor',poi.conversion_factor::float8)
     ORDER BY ii.name) FILTER (WHERE poi.id IS NOT NULL),'[]') items
   FROM purchase_orders po JOIN branches b ON b.id=po.branch_id JOIN users u ON u.id=po.created_by
   LEFT JOIN purchase_order_items poi ON poi.purchase_order_id=po.id LEFT JOIN inventory_items ii ON ii.id=poi.inventory_item_id`;
@@ -461,8 +479,8 @@ export const createPurchaseOrder: RequestHandler = async (req, res) => {
       );
     }
     const ids = input.items.map((item) => item.inventoryItemId);
-    const valid = await client.query(
-      `SELECT id FROM inventory_items WHERE id=ANY($1::uuid[]) AND status='ACTIVE'
+    const valid = await client.query<{ id: string; unit: string }>(
+      `SELECT id,unit FROM inventory_items WHERE id=ANY($1::uuid[]) AND status='ACTIVE'
       AND (item_scope='GLOBAL' OR origin_branch_id=$2)`,
       [ids, branchId],
     );
@@ -490,16 +508,25 @@ export const createPurchaseOrder: RequestHandler = async (req, res) => {
         input.notes ?? null,
       ],
     );
-    for (const item of input.items)
+    for (const item of input.items) {
+      const inventoryItem = valid.rows.find((candidate) => candidate.id === item.inventoryItemId)!;
+      const conversion = resolvePurchaseConversion(
+        inventoryItem.unit,
+        item.purchaseUom,
+        item.conversionFactor,
+      );
       await client.query(
-        `INSERT INTO purchase_order_items (purchase_order_id,inventory_item_id,quantity_ordered,unit_cost) VALUES ($1,$2,$3,$4)`,
+        `INSERT INTO purchase_order_items (purchase_order_id,inventory_item_id,quantity_ordered,unit_cost,purchase_uom,conversion_factor) VALUES ($1,$2,$3,$4,$5,$6)`,
         [
           inserted.rows[0]!.id,
           item.inventoryItemId,
           item.quantityOrdered,
           item.unitCost,
+          conversion.purchaseUom,
+          conversion.conversionFactor,
         ],
       );
+    }
     await writeAudit(
       req.user!,
       "CREATE_PURCHASE_ORDER",
@@ -561,8 +588,8 @@ export const receivePurchaseOrder: RequestHandler = async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const order = await client.query<{ poNo: string; orderDate: string }>(
-      `SELECT po_no "poNo",order_date::text "orderDate" FROM purchase_orders WHERE id=$1 AND branch_id=$2 AND status IN ('ORDERED','PARTIALLY_RECEIVED') FOR UPDATE`,
+    const order = await client.query<{ poNo: string; orderDate: string; isTestData: boolean }>(
+      `SELECT po_no "poNo",order_date::text "orderDate",is_test_data "isTestData" FROM purchase_orders WHERE id=$1 AND branch_id=$2 AND status IN ('ORDERED','PARTIALLY_RECEIVED') FOR UPDATE`,
       [id, branchId],
     );
     if (!order.rows[0])
@@ -582,8 +609,10 @@ export const receivePurchaseOrder: RequestHandler = async (req, res) => {
         inventoryItemId: string;
         remaining: number;
         unitCost: number;
+        conversionFactor: number;
       }>(
-        `SELECT inventory_item_id "inventoryItemId",(quantity_ordered-quantity_received)::float8 remaining,unit_cost::float8 "unitCost"
+        `SELECT inventory_item_id "inventoryItemId",(quantity_ordered-quantity_received)::float8 remaining,
+                unit_cost::float8 "unitCost",conversion_factor::float8 "conversionFactor"
            FROM purchase_order_items WHERE id=$1 AND purchase_order_id=$2 FOR UPDATE`,
         [item.purchaseOrderItemId, id],
       );
@@ -599,20 +628,22 @@ export const receivePurchaseOrder: RequestHandler = async (req, res) => {
           "PO_RECEIPT_EXCEEDS_ORDER",
           "Received quantity cannot exceed the remaining ordered quantity",
         );
+      const conversionFactor = Number(current.rows[0].conversionFactor ?? 1);
       await client.query(
         `UPDATE purchase_order_items SET quantity_received=quantity_received+$2,updated_at=now() WHERE id=$1`,
         [item.purchaseOrderItemId, item.quantityReceived],
       );
       await client.query(
-        `INSERT INTO inventory_movements (branch_id,inventory_item_id,movement_type,quantity,occurred_at,reference_no,notes,created_by)
-         VALUES ($1,$2,'RECEIPT',$3,$4::date + time '12:00',$5,'Received through Purchase Orders',$6)`,
+        `INSERT INTO inventory_movements (branch_id,inventory_item_id,movement_type,quantity,occurred_at,reference_no,notes,created_by,is_test_data)
+         VALUES ($1,$2,'RECEIPT',$3,$4::date + time '12:00',$5,'Received through Purchase Orders',$6,$7)`,
         [
           branchId,
           current.rows[0].inventoryItemId,
-          item.quantityReceived,
+          receivedStockQuantity(item.quantityReceived, conversionFactor),
           input.receivedDate,
           order.rows[0].poNo,
           req.user!.id,
+          order.rows[0].isTestData,
         ],
       );
       await client.query(
@@ -623,7 +654,7 @@ export const receivePurchaseOrder: RequestHandler = async (req, res) => {
         [
           branchId,
           req.user!.id,
-          current.rows[0].unitCost,
+          baseStockUnitCost(current.rows[0].unitCost, conversionFactor),
           current.rows[0].inventoryItemId,
         ],
       );

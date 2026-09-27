@@ -23,6 +23,20 @@ export const POS_SOURCE_FORMATS = {
 export type PosSourceFormat = typeof POS_SOURCE_FORMATS[keyof typeof POS_SOURCE_FORMATS];
 
 export type PosRowStatus = "VALID" | "WARNING" | "INVALID";
+export type PosItemClassification = "SELLABLE_ITEM" | "OPERATIONAL_ITEM" | "UNKNOWN_REVIEW";
+export type PosPricingSource = "SUPPLIER_ITEM_PRICE" | "MENU_VARIANT_CAPSTONE_FALLBACK";
+
+const OPERATIONAL_POS_IDENTITIES = new Set([
+  "12OZ PAPER CUP",
+  "12OZ PAPER CUP-FRAPPE",
+  "12OZ PAPER CUP-HOT",
+  "16OZ PAPER CUP",
+  "16OZ PAPER CUP-FRAPPE",
+  "ESPRESSO CALIBRATION",
+  "MILK",
+  "DECAF",
+  "SUB OATMILK",
+]);
 
 export interface ParsedPosRow {
   rowNumber: number;
@@ -39,6 +53,8 @@ export interface ParsedPosRow {
   sourceWorksheet?: string | null;
   sourceRow?: number | null;
   lineAmount?: number | null;
+  calculatedSalesAmount?: number | null;
+  pricingSource?: PosPricingSource;
   sourceOrNumber?: string | null;
   sourceTransactionNumber?: string | null;
   transactionStatus?: string | null;
@@ -65,6 +81,7 @@ export interface PosMenuCandidate {
 }
 
 export interface MatchedPosRow extends ParsedPosRow {
+  itemClassification?: PosItemClassification;
   menuItemId: string | null;
   matchedMenuProduct: string | null;
   menuItemVariantId?: string | null;
@@ -87,6 +104,11 @@ const normalizeHeader = (value: string) =>
   value.replace(/^\uFEFF/, "").trim().toLowerCase().replace(/[\s-]+/g, "_");
 const normalizeProduct = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
 const clean = (value: unknown) => String(value ?? "").trim();
+
+export function classifyUnmatchedPosIdentity(value: string): Exclude<PosItemClassification, "SELLABLE_ITEM"> {
+  const normalized = value.trim().replace(/\s+/g, " ").toUpperCase();
+  return OPERATIONAL_POS_IDENTITIES.has(normalized) ? "OPERATIONAL_ITEM" : "UNKNOWN_REVIEW";
+}
 
 export function validBusinessDate(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -233,9 +255,26 @@ export function matchPosRows(rows: ParsedPosRow[], products: readonly PosMenuCan
 }
 
 export function summarizePosRows(rows: readonly MatchedPosRow[], duplicate: boolean) {
-  const validRows = rows.filter((row) => row.status === "VALID").length;
-  const warningRows = rows.filter((row) => row.status === "WARNING").length;
-  const invalidRows = rows.filter((row) => row.status === "INVALID").length;
-  const unmatchedRows = rows.filter((row) => row.mappingStatus === "UNMATCHED" || row.issues.some((issue) => issue.startsWith("UNMATCHED PRODUCT"))).length;
-  return { totalSourceRows: rows.length, validRows, warningRows, invalidRows, unmatchedRows, duplicate, quality: duplicate || invalidRows ? "REJECTED" as const : warningRows ? "NEEDS_REVIEW" as const : "COMPLETE" as const, canImport: !duplicate && invalidRows === 0 && rows.length > 0 };
+  const includedRows = rows.filter((row) => row.itemClassification !== "OPERATIONAL_ITEM");
+  const validRows = includedRows.filter((row) => row.status === "VALID").length;
+  const warningRows = includedRows.filter((row) => row.status === "WARNING").length;
+  const invalidRows = includedRows.filter((row) => row.status === "INVALID").length;
+  const sellableRows = rows.filter((row) => row.itemClassification === "SELLABLE_ITEM" || (!row.itemClassification && Boolean(row.menuItemId))).length;
+  const operationalRows = rows.filter((row) => row.itemClassification === "OPERATIONAL_ITEM").length;
+  const unknownReviewRows = rows.filter((row) => row.itemClassification === "UNKNOWN_REVIEW").length;
+  const unmatchedRows = rows.filter((row) => row.itemClassification !== "OPERATIONAL_ITEM"
+    && (row.mappingStatus === "UNMATCHED" || row.issues.some((issue) => issue.startsWith("UNMATCHED PRODUCT")))).length;
+  return {
+    totalSourceRows: rows.length,
+    validRows,
+    warningRows,
+    invalidRows,
+    unmatchedRows,
+    sellableRows,
+    operationalRows,
+    unknownReviewRows,
+    duplicate,
+    quality: duplicate || invalidRows ? "REJECTED" as const : warningRows ? "NEEDS_REVIEW" as const : "COMPLETE" as const,
+    canImport: !duplicate && invalidRows === 0 && sellableRows > 0,
+  };
 }

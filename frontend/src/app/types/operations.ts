@@ -81,6 +81,8 @@ export interface PurchaseOrderItem {
   quantityOrdered: number;
   quantityReceived: number;
   unitCost: number;
+  purchaseUom: string;
+  conversionFactor: number;
 }
 
 export interface PurchaseOrder {
@@ -114,4 +116,5 @@ export interface IncidentProductOption {
   productId: string;
   code: string;
   name: string;
+  ingredientIds: string[];
 }

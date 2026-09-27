@@ -89,6 +89,7 @@ const reportTypes: {
   },
 ];
 export const selectAllReportTypes=()=>reportTypes.map(item=>item.value);
+export const initialReportSelection=():ApprovedReportType[]=>[];
 export const toggleReportType=(selected:ApprovedReportType[],value:ApprovedReportType)=>selected.includes(value)?selected.filter(item=>item!==value):reportTypes.map(item=>item.value).filter(item=>item===value||selected.includes(item));
 export const shouldApplyPreviewResponse=(requestId:number,latestRequestId:number)=>requestId===latestRequestId;
 const classifications = [
@@ -202,9 +203,7 @@ export function Reports({
 }) {
   const { user } = useAuth();
   const today = businessDate();
-  const [selectedTypes, setSelectedTypes] = useState<ApprovedReportType[]>([
-      "SALES",
-    ]),
+  const [selectedTypes, setSelectedTypes] = useState<ApprovedReportType[]>(initialReportSelection),
     [startDate, setStartDate] = useState(`${today.slice(0, 7)}-01`),
     [endDate, setEndDate] = useState(today);
   const [branchId, setBranchId] = useState(

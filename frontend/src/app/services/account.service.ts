@@ -11,6 +11,7 @@ export type OrganizationSettings = {
   taxIdentifier: string;
   reportingCycle: "WEEKLY" | "MONTHLY" | "QUARTERLY";
   varianceToleranceQuantity: number;
+  varianceTolerancePercent: number;
   highCogsPercent: number;
   shrinkageAlertPercent: number;
   defaultReorderDays: number;

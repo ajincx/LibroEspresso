@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import * as XLSX from "xlsx";
 import { POS_SOURCE_FORMATS } from "./posCsvImport.service.js";
 import {
-  TRANSACTION_SUMMARY_BLOCK_REASON,
+  TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE,
   detectPosExcelFormat,
   parsePosExcel,
   validateExcelFileSignature,
@@ -141,8 +141,9 @@ describe("Transaction Summary XLSX adapter", () => {
     expect(parsed.rows).toHaveLength(2);
     expect(parsed.rows.map((item) => [item.sourceProduct, item.quantitySold])).toEqual([["Americano", 1], ["Spanish Latte", 2]]);
     expect(parsed.rows.every((item) => item.unitPrice === null && item.lineAmount === null)).toBe(true);
-    expect(parsed.rows.every((item) => item.status === "INVALID")).toBe(true);
-    expect(parsed.importBlockedReason).toBe(TRANSACTION_SUMMARY_BLOCK_REASON);
+    expect(parsed.rows.every((item) => item.status === "WARNING")).toBe(true);
+    expect(parsed.rows.every((item) => item.issues.includes(TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE))).toBe(true);
+    expect(parsed.importBlockedReason).toBeNull();
   });
 
   it("supports a single product and excludes report summary rows", () => {

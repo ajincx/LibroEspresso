@@ -8,7 +8,7 @@ import { CalendarDateField, TableCard, TableWrapper, THead, TR, TD, TableEmptyRo
 
 import { businessDate } from "../../utils/businessDate";
 
-export function InventoryCountPage() {
+export function InventoryCountPage({ onSubmitted }: { onSubmitted?: () => void }) {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const requestedCountId = params.get("editCount");
@@ -51,10 +51,11 @@ export function InventoryCountPage() {
     try {
       const items = expected.map((item) => ({ inventoryItemId: item.inventoryItemId, actualQuantity: actual[item.inventoryItemId] ?? 0 }));
       const count = editingCountId ? await inventoryWorkflowService.updateCount(editingCountId, countDate, items) : await inventoryWorkflowService.submitCount(countDate, items);
-      setSubmitted({ id: count.id, countNo: count.countNo, items: count.items });
+      if (!onSubmitted) setSubmitted({ id: count.id, countNo: count.countNo, items: count.items });
       toast.success(editingCountId ? "Physical count corrections saved" : "Physical count submitted and variances calculated automatically");
       setEditingCountId(null);
       setParams({}, { replace: true });
+      onSubmitted?.();
     } catch (reason) { toast.error(reason instanceof Error ? reason.message : "Unable to submit inventory count"); }
     finally { setSaving(false); }
   };
@@ -106,6 +107,11 @@ export function InventoryCountPage() {
           <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-0.5 rounded-full bg-[var(--app-primary-faint)] text-[var(--app-primary)] border border-[var(--app-border)]">
             {expected.length} item{expected.length === 1 ? "" : "s"}
           </span>
+        }
+        toolbar={
+          <Btn icon={Send} disabled={saving || expected.length === 0} onClick={() => void submit()}>
+            {saving ? "Saving…" : editingCountId ? "Save Corrections" : "Submit Count"}
+          </Btn>
         }
       >
         <TableWrapper minWidth={900}>
@@ -164,13 +170,6 @@ export function InventoryCountPage() {
                 Cancel Correction
               </Btn>
             )}
-            <Btn
-              icon={Send}
-              disabled={saving || expected.length === 0}
-              onClick={() => void submit()}
-            >
-              {saving ? "Saving…" : editingCountId ? "Save Corrections" : "Submit Count"}
-            </Btn>
           </div>
         </div>
       </TableCard>

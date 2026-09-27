@@ -10,6 +10,8 @@
     "typecheck": "tsc --noEmit",
     "db:migrate": "tsx src/database/migrate.ts",
     "db:seed": "tsx src/database/seed.ts",
+    "db:seed:pos-mappings": "tsx src/database/seed-libro-pos-mappings.ts",
+    "db:complete-pos-validation": "tsx src/database/completePosMappingValidation.ts",
     "benchmark:pos-import": "tsx scripts/benchmark-pos-import.ts",
     "benchmark:dashboard": "tsx scripts/benchmark-system.ts dashboard",
     "benchmark:cogs": "tsx scripts/benchmark-system.ts cogs",

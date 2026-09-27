@@ -76,13 +76,13 @@ export async function calculateExpectedInventory(
     `SELECT ici.actual_quantity::float8 "actualQuantity",ic.count_date::text "baselineDate"
        FROM inventory_count_items ici
        JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
-      WHERE ic.branch_id=$1 AND ici.inventory_item_id=$2 AND ic.count_date < $3::date
+      WHERE ic.branch_id=$1 AND ici.inventory_item_id=$2 AND NOT ic.is_test_data AND ic.count_date < $3::date
       ORDER BY ic.count_date DESC,ic.submitted_at DESC LIMIT 1`,
     [branchId, inventoryItemId, countDate],
   );
   const openingBalance = await client.query<{ actualQuantity: number; baselineDate: string }>(
     `SELECT actual_quantity::float8 "actualQuantity",as_of::date::text "baselineDate"
-       FROM branch_inventory_balances WHERE branch_id=$1 AND inventory_item_id=$2`,
+       FROM branch_inventory_balances WHERE branch_id=$1 AND inventory_item_id=$2 AND NOT is_test_data`,
     [branchId, inventoryItemId],
   );
   const baseline = priorCount.rows[0] ?? openingBalance.rows[0] ?? { actualQuantity: 0, baselineDate: "1970-01-01" };
@@ -93,7 +93,7 @@ export async function calculateExpectedInventory(
        COALESCE(sum(quantity) FILTER (WHERE movement_type IN ('APPROVED_ADJUSTMENT_INCREASE')),0)::float8 "adjustmentIncreases",
        COALESCE(sum(quantity) FILTER (WHERE movement_type IN ('APPROVED_ADJUSTMENT', 'APPROVED_ADJUSTMENT_DECREASE')),0)::float8 "adjustmentDecreases"
        FROM inventory_movements
-      WHERE branch_id=$1 AND inventory_item_id=$2
+      WHERE branch_id=$1 AND inventory_item_id=$2 AND NOT is_test_data
         AND occurred_at::date > $3::date AND occurred_at::date <= $4::date`,
     [branchId, inventoryItemId, baseline.baselineDate, countDate],
   );

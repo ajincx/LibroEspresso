@@ -43,6 +43,7 @@ export interface PosImportPreviewRow {
   mappingStatus?: "APPROVED" | "UNMATCHED" | "AMBIGUOUS" | "DIRECT";
   mappingScope?: "GLOBAL" | "BRANCH" | null;
   mappingId?: string | null;
+  itemClassification?: "SELLABLE_ITEM" | "OPERATIONAL_ITEM" | "UNKNOWN_REVIEW";
   sourceProductId?: string | null;
   quantitySold: number | null;
   unitPrice: number | null;
@@ -54,6 +55,8 @@ export interface PosImportPreviewRow {
   sourceWorksheet?: string | null;
   sourceRow?: number | null;
   lineAmount?: number | null;
+  calculatedSalesAmount?: number | null;
+  pricingSource?: "SUPPLIER_ITEM_PRICE" | "MENU_VARIANT_CAPSTONE_FALLBACK";
   sourceOrNumber?: string | null;
   sourceTransactionNumber?: string | null;
   transactionStatus?: string | null;
@@ -76,12 +79,20 @@ export interface PosImportPreview {
   formatLabel: string;
   importBlockedReason: string | null;
   rows: PosImportPreviewRow[];
+  pricing: {
+    method: "SUPPLIER_ITEM_PRICE" | "MENU_VARIANT_CAPSTONE_FALLBACK";
+    notice: string | null;
+    fallbackRows: number;
+  };
   summary: {
     totalSourceRows: number;
     validRows: number;
     warningRows: number;
     invalidRows: number;
     unmatchedRows: number;
+    sellableRows: number;
+    operationalRows: number;
+    unknownReviewRows: number;
     duplicate: boolean;
     quality: "COMPLETE" | "NEEDS_REVIEW" | "REJECTED";
     canImport: boolean;
@@ -120,6 +131,8 @@ export interface PosImportReconciliation {
 
 export interface PosSource {
   id: string;
+  branchId: string;
+  branchName: string;
   sourceCode: string;
   displayName: string;
   supportedFormat: "CANONICAL_CSV" | "SUMMARY_ITEMS_SOLD_LEGACY_XLS" | "TRANSACTION_SUMMARY_XLSX";
@@ -171,6 +184,7 @@ export interface PosAnalytics {
   trends: { date: string; sales: number; cogs: number; grossProfit: number }[];
   products: { id: string; name: string; category: string; unitsSold: number; sales: number; cogs: number }[];
   ingredients: { id: string; name: string; category: string; cost: number }[];
+  shrinkageCauses?: { name: string; value: number }[];
 }
 
 export interface InventoryCountSummary {
@@ -289,4 +303,10 @@ export interface WorkflowNotification {
   entityId: string | null;
   readAt: string | null;
   createdAt: string;
+}
+
+export interface DailyPosUploadStatus {
+  branchId:string; branchName:string; posSourceId:string|null; posSourceName:string|null; sourceCode:string|null;
+  businessDate:string; importId:string|null; sourceFilename:string|null; importedAt:string|null; uploadedBy:string|null; closed:boolean;
+  status:"UPLOADED"|"DUE_TODAY"|"MISSING_UPLOAD"|"LATE_UPLOAD"|"UPCOMING"|"NO_SALES_CLOSED"|"POS_SOURCE_NOT_CONFIGURED";
 }

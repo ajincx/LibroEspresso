@@ -4,11 +4,14 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { InventoryOverviewItem } from "../../types/operations";
 import type { PredictiveForecast } from "../../types/predictive";
 import { C, StatusChip } from "../../components/ModuleUi";
-import { DASHBOARD_INVENTORY_TARGET, DashboardToolbar, ForecastReplenishmentPanel, dashboardGreeting, forecastUrgencyAccent, inventoryValueColor, prioritizeInventoryAlerts, stockStatusChip } from "./DashboardPage";
+import { DASHBOARD_INVENTORY_TARGET, DASHBOARD_SHOWS_DAILY_POS_MONITORING, DEFAULT_DASHBOARD_RANGE, DashboardToolbar, ForecastReplenishmentPanel, adjustRangeForImport, dashboardGreeting, forecastUrgencyAccent, getEffectiveDashboardBranchId, inventoryValueColor, prioritizeInventoryAlerts, stockStatusChip } from "./DashboardPage";
 
 const item=(name:string,status:InventoryOverviewItem["status"],stock:number,reorderLevel=10):InventoryOverviewItem=>({branchId:"branch",branchName:"Main",inventoryItemId:name,sku:name,name,category:"Coffee",unit:"g",unitCost:1,reorderLevel,reorderDays:7,lastActualQuantity:stock,lastCountAt:null,systemStock:stock,inventoryValue:stock,status});
 
 describe("dashboard presentation helpers",()=>{
+  it("does not render daily POS upload monitoring on the Dashboard",()=>{
+    expect(DASHBOARD_SHOWS_DAILY_POS_MONITORING).toBe(false);
+  });
   it("uses the dynamic name and waving hand for each time-based greeting",()=>{
     expect(dashboardGreeting(8,"Gem")).toBe("Good morning, Gem 👋");
     expect(dashboardGreeting(13,"Maria")).toBe("Good afternoon, Maria 👋");
@@ -49,7 +52,6 @@ describe("dashboard presentation helpers",()=>{
     expect(new Set([forecastUrgencyAccent("LOW"),forecastUrgencyAccent("MEDIUM"),forecastUrgencyAccent("HIGH")]).size).toBe(3);
   });
 });
-
 const forecast={scope:{branchId:"branch",branchName:"Lipa",forecastStart:"2026-09-13",forecastEnd:"2026-10-12"},methodology:{historicalStart:"2026-01-01",historicalEnd:"2026-09-12",observedSalesDays:120,confidence:"LOW",insightSource:"SYSTEM_ANALYSIS",disclaimer:"Forecasts are estimates based on recorded historical patterns.",salesMaeMethod:"MAE",ingredientMaeMethod:"MAE",stockProjectionAssumption:"Recorded usage"},summary:{forecastSales:125000,demandChange:4,criticalItems:1,projectedCogs:50000,projectedShrinkageRate:0,recommendedReorders:1},accuracy:{sales:{overall:{evaluationStart:null,evaluationEnd:null,evaluatedDays:0,observations:[],mae:null,averageActual:null,averageForecast:null,insufficientHistory:true},branches:[]},ingredients:[]},demandSeries:[],inventorySeries:[],inventoryChartItems:[],predictions:[{branchId:"branch",branchName:"Lipa",inventoryItemId:"beans",sku:"BEAN-01",name:"Espresso Blend Beans",unit:"g",systemStock:2000,dailyUsage:150,outstandingQuantity:500,daysToStockout:12,nextDeliveryDate:null,projectedEndStock:-4000,recommendedReorder:4280,urgency:"HIGH"}],insights:[{title:"Projected demand pattern",description:"Sales may increase during the forecast period.",recommendation:"Review daily demand.",urgency:"LOW"},{title:"Potential stock-out risk",description:"One ingredient may run out.",recommendation:"Review replenishment needs.",urgency:"HIGH"},{title:"Limited historical coverage",description:"Some dates have limited records.",recommendation:"Continue recording complete sales data.",urgency:"MEDIUM"}]} as PredictiveForecast;
 
 describe("Forecast & Replenishment presentation",()=>{
@@ -66,5 +68,38 @@ describe("Forecast & Replenishment presentation",()=>{
     expect(markup).toContain(forecast.methodology.disclaimer);
     expect(markup).not.toContain("inset-y-0 left-0 w-1");
     expect(markup).not.toContain("border-l-");
+  });
+});
+
+describe("dashboard scope and range synchronization", () => {
+  it("defaults the dashboard range to mtd for consistent visibility", () => {
+    expect(DEFAULT_DASHBOARD_RANGE).toBe("mtd");
+  });
+
+  it("resolves the branch ID correctly for owner and manager roles", () => {
+    expect(getEffectiveDashboardBranchId("owner", "ALL", "branch-mgr")).toBeUndefined();
+    expect(getEffectiveDashboardBranchId("owner", "branch-1", "branch-mgr")).toBe("branch-1");
+    expect(getEffectiveDashboardBranchId("owner", undefined, "branch-mgr")).toBeUndefined();
+    expect(getEffectiveDashboardBranchId("manager", "ALL", "branch-mgr")).toBe("branch-mgr");
+    expect(getEffectiveDashboardBranchId("manager", undefined, undefined)).toBeUndefined();
+  });
+
+  it("adjusts range to mtd when an import occurs outside today's scope", () => {
+    const adjusted = adjustRangeForImport("today", "2026-09-26", "2026-09-26", "2026-09-16", "2026-09-26");
+    expect(adjusted).toEqual({ range: "mtd" });
+  });
+
+  it("returns null when an imported date is already within the active range", () => {
+    const adjusted = adjustRangeForImport("mtd", "2026-09-01", "2026-09-26", "2026-09-16", "2026-09-26");
+    expect(adjusted).toBeNull();
+  });
+
+  it("expands custom range when imported date precedes the current range", () => {
+    const adjusted = adjustRangeForImport("mtd", "2026-09-01", "2026-09-26", "2026-08-25", "2026-09-26");
+    expect(adjusted).toEqual({
+      range: "custom",
+      customStart: "2026-08-25",
+      customEnd: "2026-09-26",
+    });
   });
 });

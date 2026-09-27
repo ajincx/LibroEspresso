@@ -8,7 +8,12 @@
 
 .data-table th,
 .data-table td {
-  text-align: left;
+  text-align: center;
+}
+
+.app-main table th,
+.app-main table td {
+  text-align: center !important;
 }
 
 .data-table th.text-right,

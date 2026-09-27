@@ -55,8 +55,8 @@ describe("reviewed POS product/variant resolution", () => {
   });
   it("requires an active source whose configured format matches the file", async () => {
     const client = { query: vi.fn().mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [{ id: "source-1", sourceCode: "VERIFIED", displayName: "Verified", supportedFormat: "SUMMARY_ITEMS_SOLD_LEGACY_XLS" }] }) };
-    await expect(loadPosSource(client as never, "source-1", "SUMMARY_ITEMS_SOLD_LEGACY_XLS")).rejects.toMatchObject({ code: "POS_SOURCE_UNAVAILABLE" });
-    await expect(loadPosSource(client as never, "source-1", "TRANSACTION_SUMMARY_XLSX")).rejects.toMatchObject({ code: "POS_SOURCE_FORMAT_MISMATCH" });
+    await expect(loadPosSource(client as never, "source-1", "SUMMARY_ITEMS_SOLD_LEGACY_XLS", "branch-1")).rejects.toMatchObject({ code: "POS_SOURCE_UNAVAILABLE" });
+    await expect(loadPosSource(client as never, "source-1", "TRANSACTION_SUMMARY_XLSX", "branch-1")).rejects.toMatchObject({ code: "POS_SOURCE_FORMAT_MISMATCH" });
   });
   it("adds nullable provenance without rewriting historical sale or recipe rows", async () => {
     const migration = await readFile(new URL("../../migrations/032_pos_product_variant_mapping.sql", import.meta.url), "utf8");

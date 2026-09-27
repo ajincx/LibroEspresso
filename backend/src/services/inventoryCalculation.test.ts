@@ -1,7 +1,26 @@
-import { describe, expect, it } from "vitest";
-import { computeExpectedStock, computeVariance } from "./inventoryCalculation.service.js";
+import { describe, expect, it, vi } from "vitest";
+import { calculateExpectedInventory, computeExpectedStock, computeVariance } from "./inventoryCalculation.service.js";
 
 describe("thesis inventory calculation formulas", () => {
+  it("excludes explicitly classified test counts, balances, and movements from authoritative expected stock", async () => {
+    const query = vi.fn(async (statement: unknown) => {
+      const sql = String(statement);
+      if (sql.includes("FROM inventory_items ii")) return { rows: [{ id: "item-1", sku: "RM-001", name: "Milk", unit: "ml", unitCost: 0.1 }] };
+      if (sql.includes("FROM inventory_count_items ici")) return { rows: [] };
+      if (sql.includes("FROM branch_inventory_balances")) return { rows: [{ actualQuantity: 100, baselineDate: "2026-09-01" }] };
+      if (sql.includes("FROM inventory_movements")) return { rows: [{ received: 20, adjustmentIncreases: 0, adjustmentDecreases: 0 }] };
+      return { rows: [{ unit: "ml", quantity: 10 }] };
+    });
+
+    const result = await calculateExpectedInventory({ query } as never, "branch-1", "item-1", "2026-09-30");
+
+    expect(result.expectedQuantity).toBe(110);
+    const statements = query.mock.calls.map(([sql]) => String(sql));
+    expect(statements.find((sql) => sql.includes("FROM inventory_count_items ici"))).toContain("NOT ic.is_test_data");
+    expect(statements.find((sql) => sql.includes("FROM branch_inventory_balances"))).toContain("NOT is_test_data");
+    expect(statements.find((sql) => sql.includes("FROM inventory_movements"))).toContain("NOT is_test_data");
+  });
+
   describe("computeExpectedStock", () => {
     it("deducts exact configured recipe consumption", () => {
       expect(computeExpectedStock(1000, 0, 34 * 7, 0, 0)).toBe(762);

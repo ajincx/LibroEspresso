@@ -121,6 +121,8 @@ export const operationsService = {
       inventoryItemId: string;
       quantityOrdered: number;
       unitCost: number;
+      purchaseUom: "g" | "kg" | "ml" | "L" | "pc";
+      conversionFactor: number;
     }[];
   }) {
     return (

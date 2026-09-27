@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_POS_ROWS, matchPosRows, parsePosCsv, summarizePosRows } from "./posCsvImport.service.js";
+import { classifyUnmatchedPosIdentity, MAX_POS_ROWS, matchPosRows, parsePosCsv, summarizePosRows } from "./posCsvImport.service.js";
 
 const header = "product_code,product_name,quantity_sold,selling_price,business_date,transaction_id,line_id";
 const product = { id: "menu-1", code: "LATTE-L", name: "Iced Latte, Large", sellingPrice: 190 };
@@ -112,5 +112,47 @@ describe("product matching and deterministic identity", () => {
     const rows = matchPosRows(parsePosCsv(`product_code,quantity_sold,selling_price,business_date\nLATTE-L,1,190,2026-09-08`).rows, [product]);
     expect(rows[0]).toMatchObject({ status: "WARNING", transactionId: null, sourceLineId: null });
     expect(summarizePosRows(rows, false)).toMatchObject({ warningRows: 1, canImport: true, quality: "NEEDS_REVIEW" });
+  });
+});
+
+describe("POS unmatched item classification", () => {
+  it.each([
+    "12OZ PAPER CUP",
+    "12OZ PAPER CUP-FRAPPE",
+    "12OZ PAPER CUP-HOT",
+    "16OZ PAPER CUP",
+    "16OZ PAPER CUP-FRAPPE",
+    "ESPRESSO CALIBRATION",
+    "MILK",
+    "DECAF",
+    "SUB OATMILK",
+  ])("classifies %s as an operational item", (identity) => {
+    expect(classifyUnmatchedPosIdentity(`  ${identity.toLowerCase()}  `)).toBe("OPERATIONAL_ITEM");
+  });
+
+  it.each([
+    "B1T1 ML",
+    "B1T1 SL ML",
+    "NEW CRISPY BITES",
+    "SOLO WEDGES",
+    "FP C16 SPNLT",
+  ])("keeps %s in unknown review until it is mapped", (identity) => {
+    expect(classifyUnmatchedPosIdentity(identity)).toBe("UNKNOWN_REVIEW");
+  });
+
+  it("excludes operational rows from validation counts without making unknown rows importable", () => {
+    const parsed = parsePosCsv(`product_name,quantity_sold,selling_price,business_date\n12OZ PAPER CUP,1,0,2026-09-16\nMILK,1,40,2026-09-16`).rows;
+    const rows = [
+      { ...parsed[0]!, menuItemId: null, matchedMenuProduct: null, mappingStatus: "UNMATCHED" as const, itemClassification: "OPERATIONAL_ITEM" as const, status: "VALID" as const },
+      { ...parsed[1]!, menuItemId: null, matchedMenuProduct: null, mappingStatus: "UNMATCHED" as const, itemClassification: "UNKNOWN_REVIEW" as const, status: "INVALID" as const },
+    ];
+    expect(summarizePosRows(rows, false)).toMatchObject({
+      totalSourceRows: 2,
+      operationalRows: 1,
+      unknownReviewRows: 1,
+      invalidRows: 1,
+      unmatchedRows: 1,
+      canImport: false,
+    });
   });
 });

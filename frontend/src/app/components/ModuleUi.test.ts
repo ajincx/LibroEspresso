@@ -10,8 +10,8 @@ describe("shared table alignment",()=>{
     expect(isTableDataValue(12)).toBe(true);
     expect(isTableDataValue("₱1,250.00")).toBe(true);
   });
-  it("keeps descriptive columns left aligned and centers dates and statuses",()=>{
-    expect(tableHeaderAlignment("Ingredient")).toBe("left");
+  it("centers descriptive columns, dates, and statuses",()=>{
+    expect(tableHeaderAlignment("Ingredient")).toBe("center");
     expect(tableHeaderAlignment("Status")).toBe("center");
     expect(tableHeaderAlignment("Business Date")).toBe("center");
     expect(isTableDataValue("Arabica Beans")).toBe(false);

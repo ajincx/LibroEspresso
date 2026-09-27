@@ -113,7 +113,7 @@ describe("access controls", () => {
     expect(response.status).toBe(422);
   });
 
-  it("allows a Manager through product-management authorization", async () => {
+  it("prevents a Manager from creating a global product", async () => {
     const response = await request(app)
       .post("/api/menu-items/with-recipe")
       .set(
@@ -121,7 +121,7 @@ describe("access controls", () => {
         session({ id: "manager", role: "BRANCH_MANAGER", branchId: "lipa" }),
       )
       .send({});
-    expect(response.status).toBe(422);
+    expect(response.status).toBe(403);
   });
 
   it("allows only Managers into branch product status validation", async () => {
@@ -218,7 +218,7 @@ describe("access controls", () => {
   it("keeps POS source and mapping administration Owner-only", async () => {
     const manager = session({ id: "manager", role: "BRANCH_MANAGER", branchId: "00000000-0000-4000-8000-000000000002" });
     const staff = session({ id: "staff", role: "STAFF", branchId: "00000000-0000-4000-8000-000000000002" });
-    const paths = ["/api/pos-sales/sources", "/api/pos-sales/mappings"];
+    const paths = ["/api/pos-sales/sources", "/api/pos-sales/mappings", "/api/pos-sales/mappings/copy"];
     for (const path of paths) {
       const responses = await Promise.all([
         request(app).post(path).set("Cookie", manager).send({}),
@@ -227,32 +227,36 @@ describe("access controls", () => {
       ]);
       expect(responses.map((response) => response.status)).toEqual([403, 403, 401]);
     }
+    const mappingId = "00000000-0000-4000-8000-000000000003";
+    const revisionResponses = await Promise.all([
+      request(app).put(`/api/pos-sales/mappings/${mappingId}`).set("Cookie", manager).send({}),
+      request(app).put(`/api/pos-sales/mappings/${mappingId}`).set("Cookie", staff).send({}),
+      request(app).post(`/api/pos-sales/mappings/${mappingId}/deactivate`).set("Cookie", manager).send({}),
+      request(app).post(`/api/pos-sales/mappings/${mappingId}/deactivate`).set("Cookie", staff).send({}),
+    ]);
+    expect(revisionResponses.map((response) => response.status)).toEqual([403, 403, 403, 403]);
   });
 
   it("requires a separate Owner review before activating new POS sources or mappings", async () => {
     const owner = session({ id: "owner", role: "OWNER", branchId: null });
     const responses = await Promise.all([
-      request(app).post("/api/pos-sales/sources").set("Cookie", owner).send({ sourceCode: "UNVERIFIED", displayName: "Unverified", supportedFormat: "SUMMARY_ITEMS_SOLD_LEGACY_XLS", status: "ACTIVE" }),
+      request(app).post("/api/pos-sales/sources").set("Cookie", owner).send({ sourceCode: "UNVERIFIED", displayName: "Unverified", supportedFormat: "SUMMARY_ITEMS_SOLD_LEGACY_XLS", branchId: "00000000-0000-4000-8000-000000000002", status: "ACTIVE" }),
       request(app).post("/api/pos-sales/mappings").set("Cookie", owner).send({ posSourceId: "00000000-0000-4000-8000-000000000001", branchId: null, sourceProductName: "C12 SPNLT", menuItemVariantId: "00000000-0000-4000-8000-000000000002", status: "ACTIVE" }),
     ]);
     expect(responses.map((response) => response.status)).toEqual([422, 422]);
     expect(responses.map((response) => response.body.error.code)).toEqual(["POS_SOURCE_REVIEW_REQUIRED", "POS_MAPPING_REVIEW_REQUIRED"]);
   });
 
-  it("separates Manager import requests from Owner approval decisions",async()=>{
+  it("does not expose the removed POS import approval workflow",async()=>{
     const manager=session({id:"manager",role:"BRANCH_MANAGER",branchId:"00000000-0000-4000-8000-000000000002"});
     const owner=session({id:"owner",role:"OWNER",branchId:null});
-    const staff=session({id:"staff",role:"STAFF",branchId:"00000000-0000-4000-8000-000000000002"});
     const approvalPath="/api/pos-sales/approvals/00000000-0000-4000-8000-000000000032";
-    const [ownerCannotRequest,staffCannotRequest,managerCannotReview,staffCannotReview,ownerValidation]=await Promise.all([
-      request(app).post("/api/pos-sales/approvals").set("Cookie",owner).send({}),
-      request(app).post("/api/pos-sales/approvals").set("Cookie",staff).send({}),
-      request(app).patch(approvalPath).set("Cookie",manager).send({status:"APPROVED",approvalNotes:"Reviewed"}),
-      request(app).patch(approvalPath).set("Cookie",staff).send({status:"APPROVED",approvalNotes:"Reviewed"}),
-      request(app).patch(approvalPath).set("Cookie",owner).send({}),
+    const responses=await Promise.all([
+      request(app).get("/api/pos-sales/approvals").set("Cookie",owner),
+      request(app).post("/api/pos-sales/approvals").set("Cookie",manager).send({}),
+      request(app).patch(approvalPath).set("Cookie",owner).send({status:"APPROVED",approvalNotes:"Reviewed"}),
     ]);
-    expect([ownerCannotRequest.status,staffCannotRequest.status,managerCannotReview.status,staffCannotReview.status]).toEqual([403,403,403,403]);
-    expect(ownerValidation.status).toBe(422);
+    expect(responses.map(response=>response.status)).toEqual([404,404,404]);
   });
 
   it("blocks an Owner from importing branch POS sales", async () => {

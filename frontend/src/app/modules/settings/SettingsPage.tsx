@@ -753,13 +753,23 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void } = {}) {
                     [
                       {
                         key: "varianceToleranceQuantity",
-                        title: "Allowed Count Difference",
+                        title: "Allowed Absolute Difference",
                         description:
-                          "The smallest difference the system ignores when comparing expected stock with the physical count.",
+                          "A shortage at or below this amount in the ingredient's stock unit is not flagged for investigation.",
                         example:
-                          "0.0001 means only differences smaller than 0.0001 unit are ignored.",
+                          "1 means a difference of 1 g, 1 ml, or 1 pc is ignored.",
                         suffix: "unit",
-                        step: "0.0001",
+                        step: "0.1",
+                      },
+                      {
+                        key: "varianceTolerancePercent",
+                        title: "Allowed Relative Difference",
+                        description:
+                          "The percentage of expected stock that may differ before an investigation is created.",
+                        example:
+                          "2% means the system uses 2% of expected stock when that is larger than the absolute allowance.",
+                        suffix: "%",
+                        step: "0.1",
                       },
                       {
                         key: "highCogsPercent",

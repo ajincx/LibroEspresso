@@ -72,6 +72,8 @@ const purchaseOrderItem = z.object({
   inventoryItemId: z.string().uuid(),
   quantityOrdered: z.coerce.number().positive(),
   unitCost: z.coerce.number().min(0),
+  purchaseUom: z.enum(["g", "kg", "ml", "L", "pc"]).optional(),
+  conversionFactor: z.coerce.number().positive().optional(),
 });
 
 export const purchaseOrderCreateInput = z
