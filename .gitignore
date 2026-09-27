@@ -37,3 +37,7 @@ Thumbs.db
 
 # Keep README files
 !README.md
+
+database-backups/
+*.backup
+*.dump
