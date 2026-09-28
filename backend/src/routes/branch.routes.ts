@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { createBranch,getBranch,listBranches,updateBranch } from "../controllers/branch.controller.js";
+import { createBranch,deactivateBranch,getBranch,listBranches,updateBranch } from "../controllers/branch.controller.js";
 import { authenticate,authorize } from "../middleware/auth.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
-export const branchRouter=Router(); branchRouter.use(authenticate,authorize("OWNER","BRANCH_MANAGER")); branchRouter.get("/",asyncHandler(listBranches)); branchRouter.post("/",authorize("OWNER"),asyncHandler(createBranch)); branchRouter.get("/:id",asyncHandler(getBranch)); branchRouter.patch("/:id",authorize("OWNER"),asyncHandler(updateBranch));
+export const branchRouter=Router(); branchRouter.use(authenticate,authorize("OWNER","BRANCH_MANAGER")); branchRouter.get("/",asyncHandler(listBranches)); branchRouter.post("/",authorize("OWNER"),asyncHandler(createBranch)); branchRouter.get("/:id",asyncHandler(getBranch)); branchRouter.patch("/:id",authorize("OWNER"),asyncHandler(updateBranch)); branchRouter.post("/:id/deactivate",authorize("OWNER"),asyncHandler(deactivateBranch));

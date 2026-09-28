@@ -1,6 +1,7 @@
 import { Router, raw } from "express";
 import {
   createInventoryMovement,
+  authorizePosImportCleanup,
   deletePosImport,
   getExpectedInventory,
   getPosAnalytics,
@@ -23,6 +24,7 @@ import {
 } from "../controllers/inventoryWorkflow.controller.js";
 import { authenticate, authorize } from "../middleware/auth.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
+import { archiveShrinkageReport, deletePosSourceConfiguration, voidVarianceRecord } from "../controllers/controlledDestructive.controller.js";
 import { copyApprovedGlobalPosMappings, createPosMapping, createPosSource, deactivateApprovedPosMapping, listPosMappings, listPosSources, revisePendingPosMapping, updatePosMapping, updatePosSource } from "../controllers/posProductVariantMapping.controller.js";
 import { declareClosedPosDay, listDailyPosStatus } from "../controllers/posDailyMonitoring.controller.js";
 
@@ -34,6 +36,7 @@ posSalesRouter.post("/daily-status/closed", authorize("BRANCH_MANAGER"), asyncHa
 posSalesRouter.get("/sources", asyncHandler(listPosSources));
 posSalesRouter.post("/sources", authorize("OWNER"), asyncHandler(createPosSource));
 posSalesRouter.patch("/sources/:id", authorize("OWNER"), asyncHandler(updatePosSource));
+posSalesRouter.delete("/sources/:id", authorize("OWNER"), asyncHandler(deletePosSourceConfiguration));
 posSalesRouter.get("/mappings", asyncHandler(listPosMappings));
 posSalesRouter.post("/mappings", authorize("OWNER"), asyncHandler(createPosMapping));
 posSalesRouter.post("/mappings/copy", authorize("OWNER"), asyncHandler(copyApprovedGlobalPosMappings));
@@ -41,6 +44,7 @@ posSalesRouter.put("/mappings/:id", authorize("OWNER"), asyncHandler(revisePendi
 posSalesRouter.patch("/mappings/:id", authorize("OWNER"), asyncHandler(updatePosMapping));
 posSalesRouter.post("/mappings/:id/deactivate", authorize("OWNER"), asyncHandler(deactivateApprovedPosMapping));
 posSalesRouter.get("/", asyncHandler(listPosImports));
+posSalesRouter.post("/:id/authorize-cleanup", authorize("OWNER"), asyncHandler(authorizePosImportCleanup));
 posSalesRouter.delete("/:id", authorize("OWNER"), asyncHandler(deletePosImport));
 const posFileBody = raw({ type: "application/octet-stream", limit: "4mb" });
 posSalesRouter.post("/preview", authorize("BRANCH_MANAGER"), posFileBody, asyncHandler(previewPosSales));
@@ -50,6 +54,7 @@ export const inventoryWorkflowRouter = Router();
 inventoryWorkflowRouter.use(authenticate, authorize("OWNER", "BRANCH_MANAGER"));
 inventoryWorkflowRouter.get("/expected", asyncHandler(getExpectedInventory));
 inventoryWorkflowRouter.get("/variances", asyncHandler(listInventoryVariances));
+inventoryWorkflowRouter.post("/variances/:id/void", asyncHandler(voidVarianceRecord));
 inventoryWorkflowRouter.get("/", asyncHandler(listInventoryCounts));
 inventoryWorkflowRouter.get("/:id", asyncHandler(getInventoryCount));
 inventoryWorkflowRouter.post("/", authorize("BRANCH_MANAGER"), asyncHandler(submitInventoryCount));
@@ -64,6 +69,7 @@ shrinkageReportRouter.use(authenticate, authorize("OWNER", "BRANCH_MANAGER"));
 shrinkageReportRouter.get("/", asyncHandler(listShrinkageReports));
 shrinkageReportRouter.get("/:id", asyncHandler(getShrinkageReport));
 shrinkageReportRouter.get("/:id/evidence", asyncHandler(getShrinkageEvidence));
+shrinkageReportRouter.post("/:id/archive", asyncHandler(archiveShrinkageReport));
 shrinkageReportRouter.patch("/:id/investigation", authorize("BRANCH_MANAGER"), asyncHandler(submitShrinkageInvestigation));
 shrinkageReportRouter.post("/:id/review", authorize("OWNER"), asyncHandler(reviewShrinkageReport));
 

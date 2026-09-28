@@ -8,14 +8,16 @@ const mocks = vi.hoisted(() => ({
   connect: vi.fn(),
   poolQuery: vi.fn(),
   writeAudit: vi.fn(),
+  env: {NODE_ENV:"test",DATA_LIFECYCLE_ENV:"DEVELOPMENT" as "DEVELOPMENT"|"UAT"|"PRODUCTION",BENCHMARK_MODE:false},
 }));
 
 vi.mock("../config/database.js", () => ({
   pool: { connect: mocks.connect, query: mocks.poolQuery },
 }));
 vi.mock("../services/audit.service.js", () => ({ writeAudit: mocks.writeAudit }));
+vi.mock("../config/env.js",()=>({env:mocks.env}));
 
-import { deletePosImport, importPosSales, listPosImportApprovals, listPosImports, previewPosSales, requestPosImportApproval, reviewPosImportApproval } from "./inventoryWorkflow.controller.js";
+import { authorizePosImportCleanup, deletePosImport, importPosSales, listPosImportApprovals, listPosImports, previewPosSales, requestPosImportApproval, reviewPosImportApproval } from "./inventoryWorkflow.controller.js";
 
 const branchId = "00000000-0000-4000-8000-000000000002";
 const importId = "00000000-0000-4000-8000-000000000010";
@@ -86,6 +88,8 @@ function response() {
   res.status.mockReturnValue(res);
   return res;
 }
+
+const deleteRequest = (id=importId) => ({params:{id},body:{reason:"Reset an explicitly authorized development fixture",verificationPin:"12345"},user:{id:"owner-1",role:"OWNER",branchId:null}}) as never;
 
 function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate" | "reconciliation", mappingVersion?: string,
   variantRows?: Array<{id:string;menuItemId:string;name:string;status:"ACTIVE"|"INACTIVE";recipeVersionId:string|null;recipeUnits:Array<{recipeUnit:string;inventoryUnit:string}>}>,
@@ -171,6 +175,7 @@ function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate" | "reco
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.env.DATA_LIFECYCLE_ENV="DEVELOPMENT";
   mocks.poolQuery.mockResolvedValue({ rows: [] });
   mocks.writeAudit.mockResolvedValue(undefined);
 });
@@ -244,7 +249,7 @@ describe("Excel POS preview and canonical import integration", () => {
     expect(mocks.poolQuery).toHaveBeenCalledWith(expect.stringContaining("bis.branch_id=$2"), [["recipe-v1"], branchId]);
     await importPosSales(excelRequest(buffer, "sales.xls", hash, resolved.resolutionFingerprint, sourceId), response() as never, vi.fn());
     const sale = queries.find(({ sql }) => sql.includes("INSERT INTO pos_sale_items"));
-    expect(sale?.values).toEqual(["import-1", branchId, "2026-09-08", ["menu-1"], [2], [190], ["Iced Latte, Large"], ["R-1"], ["11"], [null], [variantId]]);
+    expect(sale?.values).toEqual(["import-1", branchId, sourceId, "2026-09-08", ["menu-1"], [2], [190], ["Iced Latte, Large"], ["R-1"], ["11"], [null], [variantId]]);
     expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_sale_ingredient_usage"))).toBe(true);
     expect(queries.at(-1)?.sql).toBe("COMMIT");
   });
@@ -328,7 +333,7 @@ describe("Excel POS preview and canonical import integration", () => {
     mocks.connect.mockResolvedValue(client);
     await importPosSales(excelRequest(buffer, "transactions.xlsx", hash, preview.resolutionFingerprint, sourceId), response() as never, vi.fn());
     const sale = queries.find(({sql})=>sql.includes("INSERT INTO pos_sale_items"));
-    expect(sale?.values).toEqual(["import-1",branchId,"2026-09-08",["menu-1"],[2],[190],["Iced Latte, Large"],["OR-1"],[null],[null],[variantId]]);
+    expect(sale?.values).toEqual(["import-1",branchId,sourceId,"2026-09-08",["menu-1"],[2],[190],["Iced Latte, Large"],["OR-1"],[null],[null],[variantId]]);
     expect(mocks.writeAudit).toHaveBeenCalledWith(expect.anything(),"IMPORT_POS_SALES","POS_IMPORT","import-1",expect.any(String),expect.objectContaining({pricingMethod:"MENU_VARIANT_CAPSTONE_FALLBACK",fallbackPricingRows:1}),client);
     expect(queries.at(-1)?.sql).toBe("COMMIT");
   });
@@ -394,6 +399,7 @@ describe("transactional POS import persistence", () => {
     expect(sale?.values).toEqual([
       "import-1",
       branchId,
+      null,
       "2026-09-08",
       ["menu-1"],
       [2],
@@ -412,6 +418,13 @@ describe("transactional POS import persistence", () => {
     expect(previewVariants?.values).toEqual([["menu-1"],"2026-09-08"]);
     expect(usageSource?.sql).toContain("candidate.effective_from<=psi.business_date");
     expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_imports"))).toBe(true);
+    const importInsert=queries.find(({sql})=>sql.includes("INSERT INTO pos_imports"));
+    expect(importInsert?.sql).toContain("created_environment");
+    expect(importInsert?.values?.at(-1)).toBe("DEVELOPMENT");
+    expect(sale?.sql).toContain("pos_source_id");
+    expect(queries.some(({sql})=>sql.includes("pos_test_fixture_authorizations"))).toBe(false);
+    const duplicateCheck=queries.find(({sql})=>sql.includes("SELECT id FROM pos_imports"));
+    expect(duplicateCheck?.sql).toContain("pos_source_id IS NOT DISTINCT FROM $2::uuid");
     expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_sale_items"))).toBe(true);
     expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_sale_ingredient_usage"))).toBe(true);
     expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_import_reconciliations"))).toBe(true);
@@ -467,12 +480,12 @@ describe("POS import history access and deletion",()=>{
     const queries:Array<{sql:string;values?:unknown[]}>=[];
     const client={query:vi.fn(async(statement:unknown,values?:unknown[])=>{
       const sql=String(statement);queries.push({sql,values});
-      if(sql.includes('pi.branch_id "branchId"'))return{rows:[{branchId,branchName:"Lipa",businessDate:"2026-09-13",importedAt:"2026-09-14T01:00:00Z",sourceFilename:"sales.csv",importedByUserId:"manager-1",totalRows:500,saleRowCount:500,ingredientUsageRowCount:1200}]};
+      if(sql.includes('pi.branch_id "branchId"'))return{rows:[{branchId,branchName:"Lipa",businessDate:"2026-09-13",importedAt:"2026-09-14T01:00:00Z",sourceFilename:"sales.csv",importedByUserId:"manager-1",totalRows:500,saleRowCount:500,ingredientUsageRowCount:1200,createdEnvironment:"DEVELOPMENT",cleanupAuthorizedBy:null,cleanupAuthorizedAt:null,cleanupReason:null,contentHash:"hash",reconciliationCount:1,notificationCount:1}]};
       if(sql.includes("FROM inventory_counts"))return{rows:[]};
       return{rows:[]};
     }),release:vi.fn()};
     mocks.connect.mockResolvedValue(client);
-    const req={params:{id:importId},user:{id:"owner-1",role:"OWNER",branchId:null}} as never;
+    const req=deleteRequest();
     const res=response();
     await deletePosImport(req,res as never,vi.fn());
     const statements=queries.map(item=>item.sql);
@@ -486,7 +499,7 @@ describe("POS import history access and deletion",()=>{
     expect(approvalDelete).toBeLessThan(usageDelete);
     expect(usageDelete).toBeLessThan(salesDelete);
     expect(salesDelete).toBeLessThan(importDelete);
-    expect(mocks.writeAudit).toHaveBeenCalledWith(expect.objectContaining({role:"OWNER"}),"POS_IMPORT_DELETED","POS_IMPORT",importId,"Deleted POS import sales.csv",expect.objectContaining({saleRowCount:500,ingredientUsageRowCount:1200}),client);
+    expect(mocks.writeAudit).toHaveBeenCalledWith(expect.objectContaining({role:"OWNER"}),"CONTROLLED_DELETE","POS_IMPORT",importId,"Cleaned up POS import sales.csv",expect.objectContaining({saleRowCount:500,ingredientUsageRowCount:1200,reason:expect.any(String),createdEnvironment:"DEVELOPMENT",verificationResult:"VERIFIED"}),client);
     expect(res.json).toHaveBeenCalledWith({success:true,data:{id:importId,deleted:true}});
     expect(client.release).toHaveBeenCalledOnce();
   });
@@ -495,13 +508,13 @@ describe("POS import history access and deletion",()=>{
     const queries:string[]=[];
     const client={query:vi.fn(async(statement:unknown)=>{
       const sql=String(statement);queries.push(sql);
-      if(sql.includes('pi.branch_id "branchId"'))return{rows:[{branchId,branchName:"Lipa",businessDate:"2026-09-13",importedAt:"2026-09-14T01:00:00Z",sourceFilename:"sales.csv",importedByUserId:"manager-1",totalRows:10,saleRowCount:10,ingredientUsageRowCount:20}]};
+      if(sql.includes('pi.branch_id "branchId"'))return{rows:[{branchId,branchName:"Lipa",businessDate:"2026-09-13",importedAt:"2026-09-14T01:00:00Z",sourceFilename:"sales.csv",importedByUserId:"manager-1",totalRows:10,saleRowCount:10,ingredientUsageRowCount:20,createdEnvironment:"DEVELOPMENT",cleanupAuthorizedBy:null,cleanupAuthorizedAt:null,cleanupReason:null}]};
       if(sql.includes("FROM inventory_counts"))return{rows:[]};
       if(sql.includes("DELETE FROM pos_sale_ingredient_usage"))throw new Error("usage delete failed");
       return{rows:[]};
     }),release:vi.fn()};
     mocks.connect.mockResolvedValue(client);
-    await expect(deletePosImport({params:{id:importId},user:{id:"owner-1",role:"OWNER",branchId:null}} as never,response() as never,vi.fn())).rejects.toThrow("usage delete failed");
+    await expect(deletePosImport(deleteRequest(),response() as never,vi.fn())).rejects.toThrow("usage delete failed");
     expect(queries).toContain("ROLLBACK");
     expect(queries).not.toContain("COMMIT");
     expect(queries.some(sql=>sql.includes("DELETE FROM pos_imports"))).toBe(false);
@@ -513,13 +526,13 @@ describe("POS import history access and deletion",()=>{
     const queries:string[]=[];
     const client={query:vi.fn(async(statement:unknown)=>{
       const sql=String(statement);queries.push(sql);
-      if(sql.includes('pi.branch_id "branchId"'))return{rows:[{branchId,branchName:"Lipa",businessDate:"2026-09-13",importedAt:"2026-09-14T01:00:00Z",sourceFilename:"sales.csv",importedByUserId:"manager-1",totalRows:10,saleRowCount:10,ingredientUsageRowCount:20}]};
+      if(sql.includes('pi.branch_id "branchId"'))return{rows:[{branchId,branchName:"Lipa",businessDate:"2026-09-13",importedAt:"2026-09-14T01:00:00Z",sourceFilename:"sales.csv",importedByUserId:"manager-1",totalRows:10,saleRowCount:10,ingredientUsageRowCount:20,createdEnvironment:"DEVELOPMENT",cleanupAuthorizedBy:null,cleanupAuthorizedAt:null,cleanupReason:null}]};
       if(sql.includes("FROM inventory_counts"))return{rows:[{exists:1}]};
       return{rows:[]};
     }),release:vi.fn()};
     mocks.connect.mockResolvedValue(client);
     let failure:unknown;
-    try{await deletePosImport({params:{id:importId},user:{id:"owner-1",role:"OWNER",branchId:null}} as never,response() as never,vi.fn());}catch(error){failure=error;}
+    try{await deletePosImport(deleteRequest(),response() as never,vi.fn());}catch(error){failure=error;}
     expect(failure).toMatchObject({status:409,code:"POS_IMPORT_RECONCILED"});
     expect(queries).toContain("ROLLBACK");
     expect(queries.some(sql=>sql.includes("DELETE FROM pos_imports"))).toBe(false);
@@ -530,12 +543,12 @@ describe("POS import history access and deletion",()=>{
     const queries:Array<{sql:string;values?:unknown[]}>=[];
     const client={query:vi.fn(async(statement:unknown,values?:unknown[])=>{
       const sql=String(statement);queries.push({sql,values});
-      if(sql.includes('pi.branch_id "branchId"'))return{rows:[{branchId,branchName:"Lipa",businessDate:"2026-09-16",importedAt:"2026-09-17T02:00:00Z",sourceFilename:"sales.xlsx",importedByUserId:"manager-1",totalRows:96,saleRowCount:85,ingredientUsageRowCount:300}]};
+      if(sql.includes('pi.branch_id "branchId"'))return{rows:[{branchId,branchName:"Lipa",businessDate:"2026-09-16",importedAt:"2026-09-17T02:00:00Z",sourceFilename:"sales.xlsx",importedByUserId:"manager-1",totalRows:96,saleRowCount:85,ingredientUsageRowCount:300,createdEnvironment:"DEVELOPMENT",cleanupAuthorizedBy:null,cleanupAuthorizedAt:null,cleanupReason:null}]};
       if(sql.includes("FROM inventory_counts"))return{rows:[]};
       return{rows:[]};
     }),release:vi.fn()};
     mocks.connect.mockResolvedValue(client);
-    await deletePosImport({params:{id:importId},user:{id:"owner-1",role:"OWNER",branchId:null}} as never,response() as never,vi.fn());
+    await deletePosImport(deleteRequest(),response() as never,vi.fn());
     const guard=queries.find(({sql})=>sql.includes("FROM inventory_counts"));
     expect(guard?.sql).toContain("NOT is_test_data");
     expect(guard?.sql).toContain("submitted_at >= $3::timestamptz");
@@ -543,25 +556,39 @@ describe("POS import history access and deletion",()=>{
     expect(queries.some(({sql})=>sql.includes("DELETE FROM pos_imports"))).toBe(true);
   });
 
-  it.each([
-    ["b39f988c-2abf-4d2b-a0c6-d127bf9f40db", "POS.09.16.2026.XLS"],
-    ["c0038e0c-1427-4e3e-b93b-655c47860bb9", "POS.09.16.2026.xlsx"],
-  ])("deletes authorized fixture %s when its only later count is classified test data",async(id,sourceFilename)=>{
+  it("refuses cleanup when the import was created in a different lifecycle environment",async()=>{
     const queries:string[]=[];
     const client={query:vi.fn(async(statement:unknown)=>{
       const sql=String(statement);queries.push(sql);
-      if(sql.includes('pi.branch_id "branchId"'))return{rows:[{branchId,branchName:"Gulod / Main Branch",businessDate:"2026-09-16",importedAt:"2026-09-26T01:00:00Z",sourceFilename,importedByUserId:"manager-1",totalRows:10,saleRowCount:10,ingredientUsageRowCount:20}]};
-      // The production query excludes is_test_data=true, so no authoritative dependency is returned.
-      if(sql.includes("FROM inventory_counts"))return{rows:[]};
+      if(sql.includes('pi.branch_id "branchId"'))return{rows:[{branchId,branchName:"Lipa",businessDate:"2026-09-16",importedAt:"2026-09-17T02:00:00Z",sourceFilename:"real-sales.xlsx",importedByUserId:"manager-1",totalRows:96,saleRowCount:85,ingredientUsageRowCount:300,createdEnvironment:"PRODUCTION",cleanupAuthorizedBy:null,cleanupAuthorizedAt:null,cleanupReason:null}]};
       return{rows:[]};
     }),release:vi.fn()};
     mocks.connect.mockResolvedValue(client);
+    await expect(deletePosImport(deleteRequest(),response() as never,vi.fn())).rejects.toMatchObject({status:409,code:"POS_CLEANUP_ENVIRONMENT_MISMATCH"});
+    expect(queries.some(sql=>sql.includes("DELETE FROM pos_imports"))).toBe(false);
+    expect(queries).toContain("ROLLBACK");
+  });
 
-    await deletePosImport({params:{id},user:{id:"owner-1",role:"OWNER",branchId:null}} as never,response() as never,vi.fn());
+  it("disables POS cleanup in production",async()=>{
+    mocks.env.DATA_LIFECYCLE_ENV="PRODUCTION";
+    await expect(deletePosImport(deleteRequest(),response() as never,vi.fn())).rejects.toMatchObject({status:403,code:"POS_CLEANUP_DISABLED"});
+    expect(mocks.connect).not.toHaveBeenCalled();
+  });
 
-    expect(queries.find(sql=>sql.includes("FROM inventory_counts"))).toContain("NOT is_test_data");
-    expect(queries.some(sql=>sql.includes("DELETE FROM pos_imports"))).toBe(true);
-    expect(queries).toContain("COMMIT");
+  it("requires and records explicit Owner authorization before UAT cleanup",async()=>{
+    mocks.env.DATA_LIFECYCLE_ENV="UAT";
+    const queries:string[]=[];
+    const client={query:vi.fn(async(statement:unknown)=>{
+      const sql=String(statement);queries.push(sql);
+      if(sql.includes('SELECT created_environment "createdEnvironment"'))return{rows:[{createdEnvironment:"UAT"}]};
+      return{rows:[]};
+    }),release:vi.fn()};
+    mocks.connect.mockResolvedValue(client);
+    const res=response();
+    await authorizePosImportCleanup(deleteRequest(),res as never,vi.fn());
+    expect(queries.some(sql=>sql.includes("cleanup_authorized_by=$2::uuid"))).toBe(true);
+    expect(mocks.writeAudit).toHaveBeenCalledWith(expect.objectContaining({role:"OWNER"}),"AUTHORIZE_POS_IMPORT_CLEANUP","POS_IMPORT",importId,"Authorized UAT POS import cleanup",expect.any(Object),client);
+    expect(res.json).toHaveBeenCalledWith({success:true,data:{id:importId,authorized:true}});
   });
 });
 

@@ -24,6 +24,8 @@ import type {
 import { formatAppDate } from "../../utils/appPreferences";
 import { StaffIncidentModal } from "./StaffIncidentModal";
 import { IncidentReportDetailsModal } from "./IncidentReportDetailsModal";
+import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
+import { controlledActionService } from "../../services/controlledAction.service";
 type StaffTab = "home" | "reports";
 type Props = {
   unreadCount: number;
@@ -142,6 +144,9 @@ export function StaffPortalPage({
   const [reportStatus, setReportStatus] = useState<IncidentStatus | "ALL">(
     "ALL",
   );
+  const [cancelTarget,setCancelTarget]=useState<IncidentReport|null>(null);
+  const [controlledValue,setControlledValue]=useState<ControlledActionValue>({reason:"",verificationPin:""});
+  const [controlledBusy,setControlledBusy]=useState(false);
   const load = useCallback(async (silent = false) => {
     try {
       const [incidents, incidentOptions] = await Promise.all([
@@ -174,6 +179,7 @@ export function StaffPortalPage({
         : reports.filter((report) => report.status === reportStatus),
     [reports, reportStatus],
   );
+  const cancelReport=async()=>{if(!cancelTarget)return;setControlledBusy(true);try{await controlledActionService.incidentLifecycle(cancelTarget.id,"CANCEL",controlledValue);toast.success("Incident report cancelled");setCancelTarget(null);setSelectedReport(null);setControlledValue({reason:"",verificationPin:""});await load();}catch(error){toast.error(error instanceof Error?error.message:"Unable to cancel incident report");}finally{setControlledBusy(false);}};
   if (!user) return null;
   const pending = reports.filter((r) => r.status === "PENDING").length;
   const verified = reports.filter((r) => r.status === "VERIFIED").length;
@@ -393,8 +399,10 @@ export function StaffPortalPage({
           report={selectedReport}
           canReview={false}
           onClose={() => setSelectedReport(null)}
+          onCancelReport={selectedReport.status==="PENDING"?()=>{setCancelTarget(selectedReport);setControlledValue({reason:"",verificationPin:""});}:undefined}
         />
       )}
+      {cancelTarget&&<ControlledActionDialog title="Cancel incident report?" description="Only your own pending report can be cancelled. It remains in the audit history and does not change inventory." confirmLabel="Cancel Report" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setCancelTarget(null)} onConfirm={()=>void cancelReport()}/>}
     </div>
   );
 }

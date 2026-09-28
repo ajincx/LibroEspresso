@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
-import { Eye, Inbox, PackageCheck, Plus, RefreshCw, Send, ShoppingCart, X } from "lucide-react";
+import { Eye, Inbox, PackageCheck, Plus, RefreshCw, Send, ShieldCheck, ShoppingCart, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { Btn, C, CalendarDateField, KPICard, Pagination, SearchInput, SectionHeader, Select, StatusChip, TableCard, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
 import { masterDataService } from "../../services/masterData.service";
@@ -11,11 +11,16 @@ import type { Role } from "../../types/navigation";
 import { IngredientEditorModal } from "../menu-recipes/MenuRecipesPage";
 import { formatAppCurrency, formatAppDate } from "../../utils/appPreferences";
 import { businessDate } from "../../utils/businessDate";
+import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
+import { controlledActionService } from "../../services/controlledAction.service";
 
 const peso = formatAppCurrency;
 const chip: Record<PurchaseOrderStatus, string> = { DRAFT: "draft", ORDERED: "ordered", PARTIALLY_RECEIVED: "partially_received", RECEIVED: "received", CANCELLED: "cancelled" };
 const statuses: (PurchaseOrderStatus | "ALL")[] = ["ALL", "DRAFT", "ORDERED", "PARTIALLY_RECEIVED", "RECEIVED", "CANCELLED"];
 const prettyStatus = (value: string) => value === "ALL" ? "All Statuses" : value.toLowerCase().replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+const testDataActionsEnabled = import.meta.env.MODE !== "production";
+export const canAuthorizePurchaseOrderTest = (role:Role,order:PurchaseOrder,enabled=true) => enabled && role==="owner" && !order.testAuthorizedAt && ["DRAFT","ORDERED","CANCELLED"].includes(order.status) && order.items.every((item)=>item.quantityReceived===0);
+export const canDeletePurchaseOrderTest = (role:Role,order:PurchaseOrder,enabled=true) => enabled && role==="owner" && order.isTestData && Boolean(order.testAuthorizedAt);
 
 export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; scopeBranchId?: string }) {
   const [orders, setOrders] = useState<PurchaseOrder[]>([]);
@@ -31,6 +36,13 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
   const [creating, setCreating] = useState(false);
   const [prefillItem, setPrefillItem] = useState<{ ingredientId: string; quantity: string } | null>(null);
   const [receiving, setReceiving] = useState<PurchaseOrder | null>(null);
+  const [authorizeTestTarget,setAuthorizeTestTarget]=useState<PurchaseOrder|null>(null);
+  const [deleteTestTarget,setDeleteTestTarget]=useState<PurchaseOrder|null>(null);
+  const [testActionReason,setTestActionReason]=useState("");
+  const [testActionBusy,setTestActionBusy]=useState(false);
+  const [lifecycleTarget,setLifecycleTarget]=useState<PurchaseOrder|null>(null);
+  const [controlledValue,setControlledValue]=useState<ControlledActionValue>({reason:"",verificationPin:""});
+  const [controlledBusy,setControlledBusy]=useState(false);
 
   useEffect(() => {
     if (searchParams.get("create") === "1") {
@@ -73,9 +85,25 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
       && (branchId === "ALL" || order.branchId === branchId) && (status === "ALL" || order.status === status);
   }), [branchId, orders, search, status]);
   const suppliers = useMemo(() => [...new Set(orders.map((order) => order.supplierName.trim()).filter(Boolean))].sort(), [orders]);
-  const setOrderStatus = async (order: PurchaseOrder, next: "ORDERED" | "CANCELLED") => {
-    try { await operationsService.updatePurchaseOrderStatus(order.id, next); toast.success(next === "ORDERED" ? "Purchase order marked as ordered" : "Purchase order cancelled"); setSelected(null); await load(); }
+  const setOrderStatus = async (order: PurchaseOrder, next: "ORDERED") => {
+    try { await operationsService.updatePurchaseOrderStatus(order.id, next); toast.success("Purchase order marked as ordered"); setSelected(null); await load(); }
     catch (cause) { toast.error(cause instanceof Error ? cause.message : "Unable to update purchase order."); }
+  };
+  const lifecycleAction=(order:PurchaseOrder):"DELETE"|"CANCEL"|"REVERSE"|null=>order.status==="DRAFT"?"DELETE":order.status==="ORDERED"?"CANCEL":order.status==="PARTIALLY_RECEIVED"||order.status==="RECEIVED"?"REVERSE":null;
+  const applyLifecycle=async()=>{if(!lifecycleTarget)return;const action=lifecycleAction(lifecycleTarget);if(!action)return;setControlledBusy(true);try{await controlledActionService.purchaseOrderLifecycle(lifecycleTarget.id,action,controlledValue);toast.success(action==="DELETE"?"Draft purchase order deleted":action==="CANCEL"?"Purchase order cancelled":"Receipt reversed with compensating stock movements");setLifecycleTarget(null);setSelected(null);setControlledValue({reason:"",verificationPin:""});await load();}catch(cause){toast.error(cause instanceof Error?cause.message:"Unable to apply purchase order action");}finally{setControlledBusy(false);}};
+  const authorizeTestOrder=async()=>{
+    if(!authorizeTestTarget||testActionReason.trim().length<10)return;
+    setTestActionBusy(true);
+    try{await operationsService.authorizePurchaseOrderTestCleanup(authorizeTestTarget.id,testActionReason.trim());toast.success(`${authorizeTestTarget.poNo} authorized as test data`);setAuthorizeTestTarget(null);setTestActionReason("");await load();}
+    catch(cause){toast.error(cause instanceof Error?cause.message:"Unable to authorize the test purchase order.");}
+    finally{setTestActionBusy(false);}
+  };
+  const deleteTestOrder=async()=>{
+    if(!deleteTestTarget||testActionReason.trim().length<10)return;
+    setTestActionBusy(true);
+    try{await operationsService.deletePurchaseOrderTestData(deleteTestTarget.id,testActionReason.trim());toast.success(`${deleteTestTarget.poNo} test data cleaned up`);setDeleteTestTarget(null);setSelected(null);setTestActionReason("");await load();}
+    catch(cause){toast.error(cause instanceof Error?cause.message:"Unable to clean up the test purchase order.");}
+    finally{setTestActionBusy(false);}
   };
 
   return <div className="p-4 md:p-6 space-y-5">
@@ -123,6 +151,9 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
               <button className="p-2 rounded-lg hover:bg-[var(--app-surface-muted)] text-[var(--app-primary)] transition-colors" aria-label={`View ${order.poNo}`} onClick={() => setSelected(order)}>
                 <Eye size={15}/>
               </button>
+              {canAuthorizePurchaseOrderTest(role,order,testDataActionsEnabled)&&<button className="p-2 rounded-lg hover:bg-[var(--app-surface-muted)] text-[var(--app-warning)] transition-colors" aria-label={`Authorize ${order.poNo} as test data`} onClick={()=>{setAuthorizeTestTarget(order);setTestActionReason("");}}><ShieldCheck size={15}/></button>}
+              {canDeletePurchaseOrderTest(role,order,testDataActionsEnabled)&&<button className="p-2 rounded-lg hover:bg-[var(--app-danger-bg)] text-[var(--app-danger)] transition-colors" aria-label={`Delete test purchase order ${order.poNo}`} onClick={()=>{setDeleteTestTarget(order);setTestActionReason("");}}><Trash2 size={15}/></button>}
+              {lifecycleAction(order)&&<button className="p-2 rounded-lg hover:bg-[var(--app-danger-bg)] text-[var(--app-danger)] transition-colors" aria-label={`${lifecycleAction(order)} ${order.poNo}`} onClick={()=>{setLifecycleTarget(order);setControlledValue({reason:"",verificationPin:""});}}><Trash2 size={15}/></button>}
             </TD>
           </TR>)}
         </tbody>
@@ -142,13 +173,27 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
         }}
       />
     )}
-    {selected && <OrderDetail order={selected} role={role} onClose={() => setSelected(null)} onOrder={() => void setOrderStatus(selected, "ORDERED")} onCancel={() => void setOrderStatus(selected, "CANCELLED")} onReceive={() => { setReceiving(selected); setSelected(null); }}/>}
+    {selected && (
+      <OrderDetail order={selected} role={role} onClose={() => setSelected(null)} onOrder={() => void setOrderStatus(selected, "ORDERED")} onCancel={() => {setLifecycleTarget(selected);setControlledValue({reason:"",verificationPin:""});}} onReceive={() => { setReceiving(selected); setSelected(null); }}/>
+    )}
     {receiving && <ReceiveOrder order={receiving} onClose={() => setReceiving(null)} onReceived={() => { setReceiving(null); void load(); }}/>}
+    {authorizeTestTarget&&<TestPurchaseOrderDialog mode="authorize" order={authorizeTestTarget} reason={testActionReason} busy={testActionBusy} onReasonChange={setTestActionReason} onClose={()=>{if(!testActionBusy){setAuthorizeTestTarget(null);setTestActionReason("");}}} onConfirm={()=>void authorizeTestOrder()}/>}
+    {deleteTestTarget&&<TestPurchaseOrderDialog mode="delete" order={deleteTestTarget} reason={testActionReason} busy={testActionBusy} onReasonChange={setTestActionReason} onClose={()=>{if(!testActionBusy){setDeleteTestTarget(null);setTestActionReason("");}}} onConfirm={()=>void deleteTestOrder()}/>}
+    {lifecycleTarget&&lifecycleAction(lifecycleTarget)&&<ControlledActionDialog title={`${lifecycleAction(lifecycleTarget)==="DELETE"?"Delete draft":lifecycleAction(lifecycleTarget)==="CANCEL"?"Cancel order":"Reverse received order"} ${lifecycleTarget.poNo}?`} description={lifecycleAction(lifecycleTarget)==="REVERSE"?"Received quantities are preserved in the PO history and offset with approved decrease movements. A later physical count blocks reversal.":"Only the appropriate current PO state can use this action; the server rechecks received quantities and dependencies."} confirmLabel={lifecycleAction(lifecycleTarget)==="DELETE"?"Delete Draft":lifecycleAction(lifecycleTarget)==="CANCEL"?"Cancel Order":"Reverse Receipt"} value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setLifecycleTarget(null)} onConfirm={()=>void applyLifecycle()}/>}
   </div>;
 }
 
 function ModalShell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   return <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.45)" }}><div role="dialog" aria-modal="true" aria-label={title} className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-2xl border p-6" style={{ background: C.surface, borderColor: C.border }}><div className="flex items-center justify-between mb-5"><h2 className="text-lg font-bold">{title}</h2><button onClick={onClose} className="p-2 rounded-lg bg-[var(--app-surface-muted)]" aria-label="Close"><X size={15}/></button></div>{children}</div></div>;
+}
+
+export function TestPurchaseOrderDialog({mode,order,reason,busy,onReasonChange,onClose,onConfirm}:{mode:"authorize"|"delete";order:PurchaseOrder;reason:string;busy:boolean;onReasonChange:(value:string)=>void;onClose:()=>void;onConfirm:()=>void}) {
+  const authorize=mode==="authorize";
+  return <ModalShell title={authorize?"Authorize as Test Data":"Clean Up Test Purchase Order"} onClose={onClose}>
+    <div className="rounded-xl border border-[var(--app-warning)] bg-[var(--app-warning-bg)] p-4 text-sm leading-6"><strong>{order.poNo}</strong> · {order.supplierName}<br/>{authorize?"This development-only classification is permanent for this PO and remains after receiving. It cannot be applied after any quantity has been received.":"This removes only this authorized test PO, its test receipt movements, and safely reversible test cost effects. Real business data is not deleted."}</div>
+    <label className="mt-4 block text-sm font-medium">{authorize?"Authorization reason":"Cleanup reason"}<textarea className="field mt-1.5 min-h-24" value={reason} maxLength={500} onChange={(event)=>onReasonChange(event.target.value)} placeholder="Enter a clear development/testing reason"/></label>
+    <div className="mt-5 flex justify-end gap-2"><Btn variant="outline" disabled={busy} onClick={onClose}>Cancel</Btn><Btn variant={authorize?"primary":"danger"} disabled={busy||reason.trim().length<10} onClick={onConfirm}>{busy?"Working…":authorize?"Authorize This PO":"Clean Up Test PO"}</Btn></div>
+  </ModalShell>;
 }
 
 function CreatePurchaseOrder({

@@ -126,3 +126,7 @@ export const purchaseOrderReceiveInput = z.object({
       "Received purchase order items must be unique",
     ),
 });
+
+export const testCleanupAuthorizationInput = z.object({
+  reason: z.string().trim().min(10).max(500),
+});

@@ -2,6 +2,8 @@ import { Router } from "express";
 import {
   createIncidentReport,
   createPurchaseOrder,
+  authorizePurchaseOrderTestCleanup,
+  deletePurchaseOrderTestData,
   getInventoryOverview,
   getPurchaseOrder,
   listIncidentItemOptions,
@@ -13,6 +15,7 @@ import {
   updateBranchInventorySettings,
   updatePurchaseOrderStatus,
 } from "../controllers/operations.controller.js";
+import { applyPurchaseOrderLifecycle, archiveIncidentReport } from "../controllers/controlledDestructive.controller.js";
 import { authenticate, authorize } from "../middleware/auth.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 
@@ -47,6 +50,7 @@ incidentRouter.patch(
   authorize("BRANCH_MANAGER"),
   asyncHandler(linkIncidentToInvestigation),
 );
+incidentRouter.post("/:id/lifecycle", asyncHandler(archiveIncidentReport));
 incidentRouter.patch(
   "/:id/review",
   authorize("BRANCH_MANAGER"),
@@ -65,6 +69,11 @@ purchaseOrderRouter.post(
   authorize("BRANCH_MANAGER"),
   asyncHandler(createPurchaseOrder),
 );
+purchaseOrderRouter.post(
+  "/:id/lifecycle",
+  authorize("OWNER", "BRANCH_MANAGER"),
+  asyncHandler(applyPurchaseOrderLifecycle),
+);
 purchaseOrderRouter.get(
   "/:id",
   authorize("OWNER", "BRANCH_MANAGER"),
@@ -79,4 +88,14 @@ purchaseOrderRouter.post(
   "/:id/receive",
   authorize("BRANCH_MANAGER"),
   asyncHandler(receivePurchaseOrder),
+);
+purchaseOrderRouter.post(
+  "/:id/authorize-test-cleanup",
+  authorize("OWNER"),
+  asyncHandler(authorizePurchaseOrderTestCleanup),
+);
+purchaseOrderRouter.delete(
+  "/:id",
+  authorize("OWNER"),
+  asyncHandler(deletePurchaseOrderTestData),
 );

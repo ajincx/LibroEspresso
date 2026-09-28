@@ -43,6 +43,7 @@ describe("daily POS reminder persistence", () => {
     const [sql,values]=mocks.poolQuery.mock.calls[0]!;
     expect(String(sql)).toContain("CROSS JOIN dates");
     expect(String(sql)).toContain("pi.completed_at IS NOT NULL");
+    expect(String(sql)).not.toContain("pi.is_test_data");
     expect(String(sql)).not.toContain("inventory_counts");
     expect(values).toEqual(["2026-09-21","2026-09-27",null]);
     expect(json).toHaveBeenCalledWith(expect.objectContaining({success:true,data:expect.objectContaining({startDate:"2026-09-21",endDate:"2026-09-27"})}));

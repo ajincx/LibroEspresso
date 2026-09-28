@@ -8,7 +8,6 @@ import {
   Plus,
   RefreshCw,
   Save,
-  Trash2,
   Users,
   X,
 } from "lucide-react";
@@ -18,6 +17,7 @@ import { masterDataService } from "../../services/masterData.service";
 import type { Branch, ManagedUser, RecordStatus } from "../../types/masterData";
 import { formatAppDate } from "../../utils/appPreferences";
 import { Btn, KPICard, Select, StatusBadge, TableCard, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
+import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
 
 type UserRole = "OWNER" | "BRANCH_MANAGER" | "STAFF";
 type UserForm = {
@@ -71,6 +71,9 @@ export function UserManagementPage({
   const [showPassword, setShowPassword] = useState(false);
   const [branchFilter, setBranchFilter] = useState("ALL");
   const [roleFilter, setRoleFilter] = useState("ALL");
+  const [deactivateTarget,setDeactivateTarget]=useState<ManagedUser|null>(null);
+  const [controlledValue,setControlledValue]=useState<ControlledActionValue>({reason:"",verificationPin:""});
+  const [controlledBusy,setControlledBusy]=useState(false);
 
   const load = async (silent = false) => {
     if (!silent) setLoading(true);
@@ -251,10 +254,11 @@ export function UserManagementPage({
   };
 
   const toggleStatus = async (selected: ManagedUser) => {
+    if(selected.status==="ACTIVE"){setDeactivateTarget(selected);setControlledValue({reason:"",verificationPin:""});return;}
     try {
       await masterDataService.setUserStatus(
         selected.id,
-        selected.status === "ACTIVE" ? "INACTIVE" : "ACTIVE",
+        "ACTIVE",
       );
       toast.success("User status updated");
       await load(true);
@@ -271,20 +275,17 @@ export function UserManagementPage({
     }
   };
 
-  const deleteAccount = async (selected: ManagedUser) => {
-    if (
-      !window.confirm(
-        `Delete ${selected.firstName} ${selected.lastName}'s account? Historical records will be retained for audit purposes.`,
-      )
-    )
-      return;
+  const deleteAccount = async () => {
+    if(!deactivateTarget)return;
+    setControlledBusy(true);
     try {
-      await masterDataService.deleteUser(selected.id);
-      toast.success("User account deleted");
+      await masterDataService.deleteUser(deactivateTarget.id,controlledValue);
+      toast.success("User account deactivated; historical ownership was retained");
+      setDeactivateTarget(null); setControlledValue({reason:"",verificationPin:""});
       await load();
     } catch (reason) {
-      toast.error(message(reason, "Unable to delete user account"));
-    }
+      toast.error(message(reason, "Unable to deactivate user account"));
+    } finally { setControlledBusy(false); }
   };
 
   const stats = [
@@ -468,14 +469,6 @@ export function UserManagementPage({
                       >
                         {selected.status === "ACTIVE" ? "Deactivate" : "Activate"}
                       </Btn>
-                      <button
-                        onClick={() => void deleteAccount(selected)}
-                        disabled={selected.id === currentUser?.id}
-                        title="Delete account while retaining audit records"
-                        className="w-8 h-8 inline-flex items-center justify-center rounded-lg border text-[var(--app-danger)] border-[var(--app-border)] hover:bg-[var(--app-danger-bg)] transition-colors disabled:opacity-40"
-                      >
-                        <Trash2 size={13} />
-                      </button>
                     </div>
                   </TD>
                 </TR>
@@ -483,6 +476,7 @@ export function UserManagementPage({
           </tbody>
         </TableWrapper>
       </TableCard>
+      {deactivateTarget&&<ControlledActionDialog title={`Deactivate ${deactivateTarget.firstName} ${deactivateTarget.lastName}?`} description="The account and active sessions will be disabled. Ownership, audit, and operational history remain intact. Your own account and the final active Owner are protected." confirmLabel="Deactivate Account" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setDeactivateTarget(null)} onConfirm={()=>void deleteAccount()}/>}
 
       {modalOpen && (
         <div

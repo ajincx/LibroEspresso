@@ -7,6 +7,8 @@ import { AppError } from "../utils/appError.js";
 import { idParams, inventoryItemInput, inventoryItemPatch, menuCategoryInput, menuCategoryPatch, menuItemInput, menuItemPatch, menuProductInput, menuProductReviewInput, menuProductStatusInput, recipeInput } from "../validators/masterData.js";
 import { areUnitsCompatible, calculateIngredientCost, normalizeUnit } from "../services/unitConversion.service.js";
 import { saveRecipeDefinition } from "../services/recipeVersion.service.js";
+import { verifyDestructiveAction, writeDestructiveActionAudit } from "../services/destructiveAction.service.js";
+import { destructiveActionInput } from "../validators/destructiveAction.js";
 
 const inventorySelection = `SELECT ii.id,ii.sku,ii.name,ii.category,ii.unit,ii.unit_cost::float8 "unitCost",ii.reorder_level::float8 "reorderLevel",
   ii.status,ii.item_scope "itemScope",ii.origin_branch_id "originBranchId",b.name "originBranchName",
@@ -461,6 +463,8 @@ export const updateMenuProductStatus: RequestHandler = async (req, res) => {
 
 export const deleteMenuProduct: RequestHandler = async (req, res) => {
   const { id } = idParams.parse(req.params);
+  const input = destructiveActionInput.parse(req.body);
+  await verifyDestructiveAction(req.user!, input.verificationPin, { module: "MENU_ITEM", action: "REMOVE", recordId: id, reason: input.reason });
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -469,17 +473,24 @@ export const deleteMenuProduct: RequestHandler = async (req, res) => {
     if (!product) throw new AppError(404, "MENU_PRODUCT_NOT_FOUND", "Menu product not found");
     if (req.user!.role === "BRANCH_MANAGER" && (product.productScope !== "BRANCH" || product.originBranchId !== req.user!.branchId)) throw new AppError(403, "PRODUCT_SCOPE_FORBIDDEN", "Managers may delete only unused products proposed for their branch");
     if (req.user!.role === "OWNER" && product.productScope !== "GLOBAL") throw new AppError(403, "PRODUCT_SCOPE_FORBIDDEN", "Owners may delete only global products");
-    const usage = await client.query<{ count: number }>(`SELECT count(*)::int count FROM pos_sale_items WHERE menu_item_id=$1`, [id]);
-    if ((usage.rows[0]?.count ?? 0) > 0) {
-      throw new AppError(409, "MENU_PRODUCT_HAS_SALES", "This product has POS sales history and cannot be deleted. Set it to Inactive instead to preserve historical reports.");
+    const usage = await client.query<{ used: boolean }>(`SELECT EXISTS(
+      SELECT 1 FROM pos_sale_items WHERE menu_item_id=$1 UNION ALL
+      SELECT 1 FROM pos_product_variant_mappings mapping JOIN menu_item_variants variant ON variant.id=mapping.menu_item_variant_id WHERE variant.menu_item_id=$1 UNION ALL
+      SELECT 1 FROM shrinkage_reports WHERE menu_item_id=$1) used`, [id]);
+    const action = usage.rows[0]?.used ? "DEACTIVATED" : "DELETED";
+    if (action === "DEACTIVATED") {
+      await client.query(`UPDATE menu_items SET status='INACTIVE',updated_at=now() WHERE id=$1`, [id]);
+      await client.query(`UPDATE menu_item_variants SET status='INACTIVE',updated_at=now() WHERE menu_item_id=$1`, [id]);
+      await client.query(`UPDATE menu_item_branches SET is_active=false,updated_at=now() WHERE menu_item_id=$1`, [id]);
+    } else {
+      await client.query(`DELETE FROM recipes WHERE menu_item_id=$1`, [id]);
+      await client.query(`DELETE FROM menu_items WHERE id=$1`, [id]);
     }
-    await client.query(`DELETE FROM recipes WHERE menu_item_id=$1`, [id]);
-    await client.query(`DELETE FROM menu_items WHERE id=$1`, [id]);
-    await writeAudit(req.user!, "DELETE_MENU_PRODUCT_RECIPE", "MENU_ITEM", id, `Deleted unused menu product ${product.name} and its recipe`, {}, client);
+    await writeDestructiveActionAudit(req.user!, { module: "MENU_ITEM", action, recordId: id, reason: input.reason }, `${action === "DELETED" ? "Deleted unused" : "Deactivated dependent"} menu product ${product.name}`, { dependencyFound: action === "DEACTIVATED" }, client);
     if (req.user!.role === "BRANCH_MANAGER") await notifyOwnersOfMenuChange(client, req.user!, "MENU_PRODUCT_DELETED", "Branch Product Deleted", id, product.name, "deleted the branch product proposal");
     else await notifyManagersOfMenuChange(client, req.user!, product.productScope === "BRANCH" ? product.originBranchId : null, "MENU_PRODUCT_DELETED", "Menu Product Deleted", id, product.name, "deleted", false);
     await client.query("COMMIT");
-    res.json({ success: true, data: { id } });
+    res.json({ success: true, data: { id, action } });
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;

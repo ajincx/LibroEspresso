@@ -7,6 +7,7 @@ import type { InventoryItem, MenuCategory, MenuProduct, RecordStatus } from "../
 import { Btn, SearchInput, Select, StatusBadge, TableCard, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
 import { formatAppCurrency } from "../../utils/appPreferences";
 import { compatibleUnits, units } from "../../utils/units";
+import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
 
 type RecipeRow = { key: string; inventoryItemId: string; quantity: number; unit: string };
 type VariantRow = { key:string; id?:string; name:string; sellingPrice:number|""; status:RecordStatus };
@@ -36,6 +37,7 @@ export function MenuRecipesPage() {
   const [saving, setSaving] = useState(false);
   const [actionProductId, setActionProductId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<MenuProduct | null>(null);
+  const [deleteConfirmation,setDeleteConfirmation]=useState<ControlledActionValue>({reason:"",verificationPin:""});
   const [reviewTarget, setReviewTarget] = useState<MenuProduct | null>(null);
   const [reviewComment, setReviewComment] = useState("");
   const [error, setError] = useState("");
@@ -114,9 +116,10 @@ export function MenuRecipesPage() {
     if (!deleteTarget) return;
     setActionProductId(deleteTarget.id);
     try {
-      await masterDataService.deleteMenuProduct(deleteTarget.id);
-      toast.success(`${deleteTarget.name} and its recipe were deleted`);
+      const result=await masterDataService.deleteMenuProduct(deleteTarget.id,deleteConfirmation);
+      toast.success(result.action==="DELETED"?`${deleteTarget.name} was deleted`:`${deleteTarget.name} was deactivated because history depends on it`);
       setDeleteTarget(null);
+      setDeleteConfirmation({reason:"",verificationPin:""});
       setSelected(null);
       await load();
     } catch (reason) {
@@ -189,7 +192,7 @@ export function MenuRecipesPage() {
     {selected && <ProductDetails product={selected} owner={owner} canEdit={(owner && selected.productScope === "GLOBAL") || (manager && selected.productScope === "BRANCH" && selected.originBranchId === user?.branchId)} onClose={() => setSelected(null)} onEdit={() => { setSelected(null); openEdit(selected); }} />}
     {reviewTarget && <ProductReviewModal product={reviewTarget} comment={reviewComment} setComment={setReviewComment} saving={actionProductId === reviewTarget.id} onClose={() => { if (!actionProductId) { setReviewTarget(null); setReviewComment(""); } }} onDecision={(decision) => void reviewProduct(reviewTarget, decision, reviewComment)} />}
     {productModal && <ProductEditor editing={editing} form={form} setForm={setForm} errors={formErrors} categories={categories} inventory={owner ? inventory.filter((item) => item.itemScope === "GLOBAL") : inventory} canCreateIngredient={owner || manager} saving={saving} onInventoryCreated={(item) => setInventory((current) => [...current, item].sort((a, b) => a.name.localeCompare(b.name)))} onClose={() => setProductModal(false)} onSave={() => void saveProduct()} />}
-    {deleteTarget && <Modal onClose={() => actionProductId ? undefined : setDeleteTarget(null)} width="max-w-md"><div className="w-12 h-12 rounded-xl flex items-center justify-center mb-4" style={{ background:"var(--app-danger-bg)",color:"var(--app-danger)" }}><Trash2 size={21}/></div><h2 className="text-xl font-bold">Delete {deleteTarget.name}?</h2><p className="text-sm mt-2 leading-relaxed" style={{ color:"var(--app-text-muted)" }}>This permanently deletes the product and its standard recipe. Products with POS sales history cannot be deleted and should be set to Inactive instead.</p><div className="flex justify-end gap-3 mt-6"><button disabled={Boolean(actionProductId)} onClick={() => setDeleteTarget(null)} className="px-4 py-2.5 rounded-xl border text-sm font-semibold disabled:opacity-50" style={{ borderColor:"var(--app-border)" }}>Cancel</button><button disabled={Boolean(actionProductId)} onClick={() => void deleteProduct()} className="px-4 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-50" style={{ background:"var(--app-danger)" }}>{actionProductId ? "Deleting…" : "Delete Product"}</button></div></Modal>}
+    {deleteTarget && <ControlledActionDialog title={`Remove ${deleteTarget.name}?`} description="Unused products are deleted. Products with sales, mappings, or investigation history are deactivated so historical reports remain valid." confirmLabel="Remove Product" value={deleteConfirmation} busy={Boolean(actionProductId)} onChange={setDeleteConfirmation} onCancel={()=>{setDeleteTarget(null);setDeleteConfirmation({reason:"",verificationPin:""});}} onConfirm={()=>void deleteProduct()}/>}
   </div>;
 }
 

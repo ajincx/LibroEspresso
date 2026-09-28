@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle, Eye, RefreshCw, SearchCheck, ShieldCheck, X } from "lucide-react";
+import { AlertTriangle, Archive, CheckCircle, Eye, RefreshCw, SearchCheck, ShieldCheck, X } from "lucide-react";
 import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { useAuth } from "../../contexts/AuthContext";
@@ -13,6 +13,8 @@ import { ShrinkageIncidentReports } from "./ShrinkageIncidentReports";
 import { CalendarDateField, Select, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, TableLoadingRow, Pagination } from "../../components/ModuleUi";
 import { formatAppDate } from "../../utils/appPreferences";
 import { classificationLabel, evidenceBasisOptions, incidentTypeLabel, incidentTypeOptions, managerClassificationOptions } from "../../utils/shrinkageTaxonomy";
+import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
+import { controlledActionService } from "../../services/controlledAction.service";
 const formatDate = (value: string | null) => value ? formatAppDate(value, true) : "—";
 
 export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string }) {
@@ -37,6 +39,9 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [archiveTarget,setArchiveTarget]=useState<ShrinkageReport|null>(null);
+  const [controlledValue,setControlledValue]=useState<ControlledActionValue>({reason:"",verificationPin:""});
+  const [controlledBusy,setControlledBusy]=useState(false);
 
   const load = async () => {
     setLoading(true); setError("");
@@ -73,6 +78,7 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
     wastage: reports.filter((report) => report.classification === "WASTAGE").length,
     pilferage: reports.filter((report) => report.classification === "PILFERAGE").length,
   }), [reports]);
+  const archiveReport=async()=>{if(!archiveTarget)return;setControlledBusy(true);try{await controlledActionService.archiveShrinkage(archiveTarget.id,controlledValue);toast.success("Anomaly case archived; its history remains in the audit trail");setArchiveTarget(null);setControlledValue({reason:"",verificationPin:""});await load();}catch(reason){toast.error(reason instanceof Error?reason.message:"Unable to archive anomaly");}finally{setControlledBusy(false);}};
 
   const submitInvestigation = async () => {
     if (!selected || !investigation.classification || investigation.explanation.trim().length < 10) return;
@@ -175,6 +181,7 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
                 <TD center><Status status={report.status} /></TD>
                 <TD muted>{formatDate(report.investigatedAt)}</TD>
                 <TD right>
+                  <div className="flex justify-end gap-1">
                   <button
                     type="button"
                     onClick={() => openReport(report)}
@@ -184,6 +191,8 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
                   >
                     <Eye size={15} />
                   </button>
+                  <button type="button" title="Archive anomaly" aria-label={`Archive case ${report.reportNo}`} onClick={()=>{setArchiveTarget(report);setControlledValue({reason:"",verificationPin:""});}} className="p-2 rounded-lg border border-[var(--app-border)] text-[var(--app-danger)]"><Archive size={15}/></button>
+                  </div>
                 </TD>
               </TR>
             ))
@@ -192,6 +201,7 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
       </TableWrapper>
       <Pagination total={reports.length} page={1} perPage={Math.max(reports.length, 1)} />
     </TableCard>
+    {archiveTarget&&<ControlledActionDialog title={`Archive ${archiveTarget.reportNo}?`} description="This dismisses the case from active anomaly monitoring without deleting the physical count, variance, evidence, or investigation history." confirmLabel="Archive Case" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setArchiveTarget(null)} onConfirm={()=>void archiveReport()}/>}
 
     <ShrinkageIncidentReports owner={owner} branchId={branchId} />
 

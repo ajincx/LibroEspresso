@@ -152,4 +152,19 @@ export const operationsService = {
       )
     ).data.data.purchaseOrder;
   },
+  async authorizePurchaseOrderTestCleanup(id: string, reason: string) {
+    return (
+      await api.post<ApiSuccess<{ purchaseOrder: PurchaseOrder }>>(
+        `/purchase-orders/${id}/authorize-test-cleanup`,
+        { reason },
+      )
+    ).data.data.purchaseOrder;
+  },
+  async deletePurchaseOrderTestData(id: string, reason: string) {
+    return (
+      await api.delete<ApiSuccess<{ deletedId: string }>>(`/purchase-orders/${id}`, {
+        data: { reason },
+      })
+    ).data.data;
+  },
 };

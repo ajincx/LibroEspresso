@@ -98,6 +98,8 @@ export interface PurchaseOrder {
   receivedDate: string | null;
   status: PurchaseOrderStatus;
   notes: string | null;
+  isTestData: boolean;
+  testAuthorizedAt: string | null;
   createdAt: string;
   updatedAt: string;
   itemCount: number;

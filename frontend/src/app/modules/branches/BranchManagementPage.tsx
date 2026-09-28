@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
-import { Building2, CheckCircle, Plus, RefreshCw, X } from "lucide-react";
+import { Building2, CheckCircle, Plus, RefreshCw, Power, X } from "lucide-react";
 import { toast } from "sonner";
 import { Btn, KPICard, Select, StatusBadge, TableCard, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
 import { masterDataService } from "../../services/masterData.service";
 import type { Branch, RecordStatus } from "../../types/masterData";
 import { formatAppDate } from "../../utils/appPreferences";
+import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
+import { controlledActionService } from "../../services/controlledAction.service";
 
 const empty = {
   code: "",
@@ -24,6 +26,9 @@ export function BranchManagementPage({
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState(empty);
+  const [deactivateTarget,setDeactivateTarget]=useState<Branch|null>(null);
+  const [controlledValue,setControlledValue]=useState<ControlledActionValue>({reason:"",verificationPin:""});
+  const [controlledBusy,setControlledBusy]=useState(false);
   const visibleBranches =
     scopeBranchId === "ALL"
       ? branches
@@ -91,6 +96,7 @@ export function BranchManagementPage({
       setSaving(false);
     }
   };
+  const deactivate=async()=>{if(!deactivateTarget)return;setControlledBusy(true);try{await controlledActionService.deactivateBranch(deactivateTarget.id,controlledValue);toast.success("Branch deactivated; operational history was preserved");setDeactivateTarget(null);setControlledValue({reason:"",verificationPin:""});await load(true);}catch(cause){toast.error(cause instanceof Error?cause.message:"Unable to deactivate branch");}finally{setControlledBusy(false);}};
 
   return (
     <div className="p-4 sm:p-6 space-y-5">
@@ -144,20 +150,21 @@ export function BranchManagementPage({
               "Manager Account",
               "Branch Status",
               "Last Updated",
+              "Action",
             ]}
           />
           <tbody>
-            {loading && <TableLoadingRow colSpan={7} label="Loading branches…" />}
+            {loading && <TableLoadingRow colSpan={8} label="Loading branches…" />}
             {!loading && error && (
               <TableEmptyRow
-                colSpan={7}
+                colSpan={8}
                 title="Unable to load branches"
                 subtitle={error}
               />
             )}
             {!loading && !error && visibleBranches.length === 0 && (
               <TableEmptyRow
-                colSpan={7}
+                colSpan={8}
                 title="No branches found"
                 subtitle="No branch records available in the system."
               />
@@ -188,11 +195,13 @@ export function BranchManagementPage({
                       {branch.lastActivityDescription}
                     </span>
                   </TD>
+                  <TD center>{branch.status==="ACTIVE"?<Btn variant="outline" size="sm" icon={Power} onClick={()=>{setDeactivateTarget(branch);setControlledValue({reason:"",verificationPin:""});}}>Deactivate</Btn>:<span className="text-xs text-[var(--app-text-muted)]">—</span>}</TD>
                 </TR>
               ))}
           </tbody>
         </TableWrapper>
       </TableCard>
+      {deactivateTarget&&<ControlledActionDialog title={`Deactivate ${deactivateTarget.name}?`} description="The branch, its active accounts, and branch menu availability will be disabled. Sales, counts, incidents, and audit history remain unchanged." confirmLabel="Deactivate Branch" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setDeactivateTarget(null)} onConfirm={()=>void deactivate()}/>}
 
       {open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/45">

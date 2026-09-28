@@ -69,6 +69,9 @@ export const inventoryWorkflowService = {
   async updatePosSource(id: string, input: Partial<Pick<PosSource,"sourceCode"|"displayName"|"supportedFormat"|"branchId"|"status">> & { confirmedSupportedFormat?: PosSource["supportedFormat"] }) {
     return (await api.patch<ApiSuccess<{ source: PosSource }>>(`/pos-sales/sources/${id}`, input)).data.data.source;
   },
+  async deletePosSource(id: string, input: { reason: string; verificationPin: string }) {
+    return (await api.delete<ApiSuccess<{ id: string; action: string }>>(`/pos-sales/sources/${id}`, { data: input })).data.data;
+  },
   async posMappings(posSourceId: string, reviewStatus?: PosMappingReviewStatus) {
     return (await api.get<ApiSuccess<{ mappings: PosMapping[] }>>("/pos-sales/mappings", { params: { posSourceId, reviewStatus } })).data.data.mappings;
   },
@@ -90,8 +93,11 @@ export const inventoryWorkflowService = {
   async posImports(filters?: { branchId?: string; search?: string; page?: number; pageSize?: number }) {
     return (await api.get<ApiSuccess<{ imports: PosImportRecord[]; pagination: { page:number;pageSize:number;total:number;totalPages:number } }>>("/pos-sales", { params: filters })).data.data;
   },
-  async deletePosImport(id:string) {
-    return (await api.delete<ApiSuccess<{ id:string;deleted:true }>>(`/pos-sales/${id}`)).data.data;
+  async deletePosImport(id:string, reason:string, verificationPin:string) {
+    return (await api.delete<ApiSuccess<{ id:string;deleted:true }>>(`/pos-sales/${id}`, { data: { reason, verificationPin } })).data.data;
+  },
+  async authorizePosImportCleanup(id:string,reason:string){
+    return (await api.post<ApiSuccess<{id:string;authorized:true}>>(`/pos-sales/${id}/authorize-cleanup`,{reason})).data.data;
   },
   async posAnalytics(filters?: { branchId?: string; startDate?: string; endDate?: string }) {
     return (await api.get<ApiSuccess<PosAnalytics>>("/pos-sales/analytics", { params: filters })).data.data;

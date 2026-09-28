@@ -5,6 +5,8 @@ import { writeAudit } from "../services/audit.service.js";
 import { revokeAllUserSessions } from "../services/auth.service.js";
 import { AppError } from "../utils/appError.js";
 import { idParams, statusSchema, userCreate, userPatch } from "../validators/masterData.js";
+import { destructiveActionInput } from "../validators/destructiveAction.js";
+import { verifyDestructiveAction, writeDestructiveActionAudit } from "../services/destructiveAction.service.js";
 
 const selection = `SELECT u.id,u.branch_id "branchId",u.first_name "firstName",u.last_name "lastName",u.email,u.username,u.phone_number "phoneNumber",u.position,u.role,u.status,u.last_login_at "lastLoginAt",u.created_at "createdAt",u.updated_at "updatedAt",b.code "branchCode",b.name "branchName",
   GREATEST(u.updated_at,u.last_login_at,activity.created_at) "lastActivityAt",
@@ -25,6 +27,7 @@ export const createUser: RequestHandler = async (req, res) => {
 export const updateUser: RequestHandler = async (req, res) => {
   const { id } = idParams.parse(req.params);
   const input = userPatch.parse(req.body);
+  if (input.status === "INACTIVE") throw new AppError(409, "CONTROLLED_DEACTIVATION_REQUIRED", "Use the controlled account deactivation action and provide a reason and verification PIN");
   const current = await pool.query<{ role: "OWNER"|"BRANCH_MANAGER"|"STAFF"; branch_id: string|null }>("SELECT role,branch_id FROM users WHERE id=$1", [id]);
   if (!current.rows[0]) throw new AppError(404, "USER_NOT_FOUND", "User not found");
   const role = input.role ?? current.rows[0].role;
@@ -56,11 +59,6 @@ export const updateUser: RequestHandler = async (req, res) => {
       if (revoked.rowCount) await writeAudit(req.user!, "SESSION_REVOKED", "USER", id, "Revoked active sessions after administrator password change", { reason: "PASSWORD_CHANGED" }, client);
       await writeAudit(req.user!, "PASSWORD_CHANGED", "USER", id, "Administrator changed account password and revoked active sessions", {}, client);
     }
-    if (input.status === "INACTIVE") {
-      const revoked = await revokeAllUserSessions(id, "ACCOUNT_DISABLED", client);
-      if (revoked.rowCount) await writeAudit(req.user!, "SESSION_REVOKED", "USER", id, "Revoked active sessions because the account was disabled", { reason: "ACCOUNT_DISABLED" }, client);
-      await writeAudit(req.user!, "ACCOUNT_DISABLED", "USER", id, "Disabled account and revoked active sessions", {}, client);
-    }
     await writeAudit(req.user!, "UPDATE_USER", "USER", id, "Updated user account", { fields: Object.keys(input).filter((key) => key !== "password"), passwordChanged: Boolean(input.password) }, client);
     await client.query("COMMIT");
   } catch (error) {
@@ -77,17 +75,12 @@ export const updateUser: RequestHandler = async (req, res) => {
 };
 export const updateUserStatus: RequestHandler = async (req,res) => {
   const {id}=idParams.parse(req.params); const {status}=statusSchema.parse(req.body);
-  if(id===req.user!.id && status==="INACTIVE") throw new AppError(409,"SELF_DEACTIVATION","You cannot deactivate your own account");
+  if(status==="INACTIVE") throw new AppError(409,"CONTROLLED_DEACTIVATION_REQUIRED","Use the controlled account deactivation action and provide a reason and verification PIN");
   const client=await pool.connect();
   try {
     await client.query("BEGIN");
     const result=await client.query(`UPDATE users SET status=$2,updated_at=now() WHERE id=$1 RETURNING id`,[id,status]);
     if(!result.rows[0]) throw new AppError(404,"USER_NOT_FOUND","User not found");
-    if(status==="INACTIVE") {
-      const revoked=await revokeAllUserSessions(id,"ACCOUNT_DISABLED",client);
-      if(revoked.rowCount) await writeAudit(req.user!,"SESSION_REVOKED","USER",id,"Revoked active sessions because the account was disabled",{reason:"ACCOUNT_DISABLED"},client);
-      await writeAudit(req.user!,"ACCOUNT_DISABLED","USER",id,"Disabled account and revoked active sessions",{},client);
-    }
     await writeAudit(req.user!,"UPDATE_USER_STATUS","USER",id,`Changed user status to ${status}`,{status},client);
     await client.query("COMMIT");
   } catch(error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
@@ -96,6 +89,8 @@ export const updateUserStatus: RequestHandler = async (req,res) => {
 
 export const deleteUserAccount: RequestHandler = async (req, res) => {
   const { id } = idParams.parse(req.params);
+  const input = destructiveActionInput.parse(req.body);
+  await verifyDestructiveAction(req.user!, input.verificationPin, { module: "USER", action: "DEACTIVATE", recordId: id, reason: input.reason });
   if (id === req.user!.id) throw new AppError(409, "SELF_DELETION", "You cannot delete your own account");
   const current = await pool.query<{ role: "OWNER" | "BRANCH_MANAGER" | "STAFF" }>("SELECT role FROM users WHERE id=$1", [id]);
   if (!current.rows[0]) throw new AppError(404, "USER_NOT_FOUND", "User not found");
@@ -110,7 +105,7 @@ export const deleteUserAccount: RequestHandler = async (req, res) => {
     const revoked=await revokeAllUserSessions(id,"ACCOUNT_DISABLED",client);
     if(revoked.rowCount) await writeAudit(req.user!,"SESSION_REVOKED","USER",id,"Revoked active sessions because the account was soft-deleted",{reason:"ACCOUNT_DISABLED"},client);
     await writeAudit(req.user!,"ACCOUNT_DISABLED","USER",id,"Soft-deleted account disabled and active sessions revoked",{},client);
-    await writeAudit(req.user!, "DELETE_USER", "USER", id, "Soft-deleted user account", { retainedForAudit: true },client);
+    await writeDestructiveActionAudit(req.user!, { module: "USER", action: "DEACTIVATE", recordId: id, reason: input.reason }, "Deactivated user account while preserving ownership and history", { retainedForAudit: true }, client);
     await client.query("COMMIT");
   } catch(error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   res.json({ success: true, data: { id, deleted: true } });

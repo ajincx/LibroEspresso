@@ -30,6 +30,13 @@ export interface PosImportRecord {
   invalidRows: number;
   unmatchedRows: number;
   fingerprintIndicator: string | null;
+  createdEnvironment: "DEVELOPMENT" | "UAT" | "PRODUCTION";
+  cleanupPolicy: "DEVELOPMENT" | "UAT" | "PRODUCTION";
+  cleanupAuthorizedBy: string | null;
+  cleanupAuthorizedAt: string | null;
+  cleanupReason: string | null;
+  canAuthorizeCleanup: boolean;
+  canCleanup: boolean;
 }
 
 export interface PosImportPreviewRow {
@@ -140,6 +147,9 @@ export interface PosSource {
   formatVerifiedBy: string | null;
   formatVerifiedByName?: string | null;
   formatVerifiedAt: string | null;
+  hasImports?: boolean;
+  hasSales?: boolean;
+  hasActiveMappings?: boolean;
 }
 
 export type PosMappingReviewStatus = "PENDING" | "APPROVED" | "REJECTED" | "AMBIGUOUS";

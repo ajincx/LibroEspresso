@@ -9,6 +9,7 @@ import { parsePosExcel, TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE } from "../s
 import { loadPosMappings, loadPosSource, posResolutionFingerprint, resolvePosMapping } from "../services/posProductVariantMapping.service.js";
 import { getEffectiveBranchId } from "../services/branchScope.js";
 import { writeAudit } from "../services/audit.service.js";
+import { verifyDestructiveAction, writeDestructiveActionAudit } from "../services/destructiveAction.service.js";
 import { createIngredientUsageSnapshots } from "../services/recipeVersion.service.js";
 import { calculatePosImportSimulation, type PosSimulationRecipeItem } from "../services/posImportSimulation.service.js";
 import { manilaBusinessDate } from "../services/businessTime.service.js";
@@ -16,6 +17,7 @@ import { areUnitsCompatible } from "../services/unitConversion.service.js";
 import { requiresVarianceInvestigation } from "../services/varianceMateriality.service.js";
 import { AppError } from "../utils/appError.js";
 import { idParams } from "../validators/masterData.js";
+import { destructiveActionInput } from "../validators/destructiveAction.js";
 import { paginatedRows, paginationQuery } from "../validators/pagination.js";
 import {
   inventoryCountInput,
@@ -25,11 +27,29 @@ import {
   posImportHistoryFilters,
   posImportInput,
   posImportApprovalReviewInput,
+  posCleanupAuthorizationInput,
   posPreviewInput,
   shrinkageFilters,
   shrinkageInvestigationInput,
   varianceFilters,
 } from "../validators/inventoryWorkflow.js";
+
+type PosLifecycleEnvironment = "DEVELOPMENT" | "UAT" | "PRODUCTION";
+
+function posCleanupAccess(record: {
+  createdEnvironment: PosLifecycleEnvironment;
+  cleanupAuthorizedAt: string | null;
+}, role: string) {
+  const policy = env.DATA_LIFECYCLE_ENV;
+  const sameEnvironment = record.createdEnvironment === policy;
+  return {
+    cleanupPolicy: policy,
+    canAuthorizeCleanup: role === "OWNER" && policy === "UAT" && sameEnvironment && !record.cleanupAuthorizedAt,
+    canCleanup: role === "OWNER" && sameEnvironment && (
+      policy === "DEVELOPMENT" || (policy === "UAT" && Boolean(record.cleanupAuthorizedAt))
+    ),
+  };
+}
 
 function requiredBranchId(
   user: NonNullable<Express.Request["user"]>,
@@ -214,8 +234,10 @@ async function buildPosPreview(
   const duplicateStartedAt = performance.now();
   const existing = parsed.businessDate
     ? await client.query<{ id: string }>(
-        `SELECT id FROM pos_imports WHERE branch_id=$1 AND business_date=$2 AND content_hash=$3 LIMIT 1`,
-        [branchId, parsed.businessDate, parsed.contentHash],
+        `SELECT id FROM pos_imports
+          WHERE branch_id=$1 AND pos_source_id IS NOT DISTINCT FROM $2::uuid
+            AND business_date=$3 AND content_hash=$4 LIMIT 1`,
+        [branchId, selectedSource?.id ?? null, parsed.businessDate, parsed.contentHash],
       )
     : { rows: [] as { id: string }[] };
   const duplicateCheckMs = performance.now() - duplicateStartedAt;
@@ -390,18 +412,18 @@ export const importPosSales: RequestHandler = async (req, res) => {
     const sourceSalesTotal=importRows.reduce((total,row)=>total+(typeof row.lineAmount==="number"?row.lineAmount:Number(row.quantitySold)*Number(row.unitPrice)),0);
     const sourceQuantity=importRows.reduce((total,row)=>total+Number(row.quantitySold),0);
     const imported = await client.query<{ id: string }>(
-      `INSERT INTO pos_imports (branch_id,business_date,source_filename,imported_by,content_hash,total_source_rows,valid_rows,warning_rows,invalid_rows,unmatched_rows,import_status,completed_at,pos_source_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,0,0,$9,now(),$10) RETURNING id`,
-      [branchId, preview.businessDate, input.sourceFilename, req.user!.id, preview.contentHash, preview.summary.totalSourceRows, preview.summary.validRows, preview.summary.warningRows, preview.summary.quality,preview.posSourceId],
+      `INSERT INTO pos_imports (branch_id,business_date,source_filename,imported_by,content_hash,total_source_rows,valid_rows,warning_rows,invalid_rows,unmatched_rows,import_status,completed_at,pos_source_id,created_environment)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,0,0,$9,now(),$10,$11) RETURNING id`,
+      [branchId, preview.businessDate, input.sourceFilename, req.user!.id, preview.contentHash, preview.summary.totalSourceRows, preview.summary.validRows, preview.summary.warningRows, preview.summary.quality,preview.posSourceId,env.DATA_LIFECYCLE_ENV],
     );
     const importId = imported.rows[0]!.id;
     const salesInsertStartedAt = performance.now();
     await client.query(
-      `INSERT INTO pos_sale_items (pos_import_id,branch_id,business_date,menu_item_id,quantity_sold,unit_price_snapshot,source_product,source_transaction_id,source_line_id,transaction_timestamp,menu_item_variant_id)
-       SELECT $1,$2,$3,source.menu_item_id,source.quantity_sold,source.unit_price,source.source_product,source.transaction_id,source.line_id,source.transaction_timestamp,source.variant_id
-       FROM unnest($4::uuid[],$5::numeric[],$6::numeric[],$7::text[],$8::text[],$9::text[],$10::timestamptz[],$11::uuid[])
+      `INSERT INTO pos_sale_items (pos_import_id,branch_id,pos_source_id,business_date,menu_item_id,quantity_sold,unit_price_snapshot,source_product,source_transaction_id,source_line_id,transaction_timestamp,menu_item_variant_id)
+       SELECT $1,$2,$3,$4,source.menu_item_id,source.quantity_sold,source.unit_price,source.source_product,source.transaction_id,source.line_id,source.transaction_timestamp,source.variant_id
+       FROM unnest($5::uuid[],$6::numeric[],$7::numeric[],$8::text[],$9::text[],$10::text[],$11::timestamptz[],$12::uuid[])
          AS source(menu_item_id,quantity_sold,unit_price,source_product,transaction_id,line_id,transaction_timestamp,variant_id)`,
-      [importId,branchId,preview.businessDate,importRows.map((item)=>item.menuItemId),importRows.map((item)=>item.quantitySold),importRows.map((item)=>item.unitPrice),importRows.map((item)=>item.sourceProduct),importRows.map((item)=>item.transactionId),importRows.map((item)=>item.sourceLineId),importRows.map((item)=>item.transactionTimestamp),importRows.map((item)=>item.menuItemVariantId ?? null)],
+      [importId,branchId,preview.posSourceId,preview.businessDate,importRows.map((item)=>item.menuItemId),importRows.map((item)=>item.quantitySold),importRows.map((item)=>item.unitPrice),importRows.map((item)=>item.sourceProduct),importRows.map((item)=>item.transactionId),importRows.map((item)=>item.sourceLineId),importRows.map((item)=>item.transactionTimestamp),importRows.map((item)=>item.menuItemVariantId ?? null)],
     );
     const salesInsertMs = performance.now() - salesInsertStartedAt;
     const usageStartedAt = performance.now();
@@ -477,7 +499,7 @@ export const importPosSales: RequestHandler = async (req, res) => {
       "POS_IMPORT",
       importId,
       `Imported ${importRows.length} POS sales rows`,
-      { branchId, businessDate: preview.businessDate, rowCount: importRows.length, totalQuantity: meta?.unitsSold ?? 0, totalSales: meta?.totalSales ?? 0, fingerprintIndicator: preview.fingerprintIndicator, pricingMethod: preview.pricing.method, pricingNotice: preview.pricing.notice, fallbackPricingRows: preview.pricing.fallbackRows },
+      { branchId, businessDate: preview.businessDate, rowCount: importRows.length, totalQuantity: meta?.unitsSold ?? 0, totalSales: meta?.totalSales ?? 0, fingerprintIndicator: preview.fingerprintIndicator, pricingMethod: preview.pricing.method, pricingNotice: preview.pricing.notice, fallbackPricingRows: preview.pricing.fallbackRows, createdEnvironment:env.DATA_LIFECYCLE_ENV },
       client,
     );
     await client.query("COMMIT");
@@ -495,6 +517,7 @@ export const importPosSales: RequestHandler = async (req, res) => {
           totalSales: meta?.totalSales ?? 0,
           fingerprintIndicator: preview.fingerprintIndicator,
           quality: preview.summary.quality,
+          createdEnvironment:env.DATA_LIFECYCLE_ENV,
           pricing: preview.pricing,
           consumption: consumption.rows,
           reconciliation,
@@ -525,6 +548,8 @@ export const listPosImports: RequestHandler = async (req, res) => {
     `SELECT pi.id,pi.business_date::text "businessDate",pi.source_filename "sourceFilename",
             pi.imported_at "importedAt",pi.import_status "status",pi.total_source_rows "totalRows",
             pi.valid_rows "validRows",pi.warning_rows "warningRows",pi.invalid_rows "invalidRows",pi.unmatched_rows "unmatchedRows",
+            pi.created_environment "createdEnvironment",pi.cleanup_authorized_by "cleanupAuthorizedBy",
+            pi.cleanup_authorized_at "cleanupAuthorizedAt",pi.cleanup_reason "cleanupReason",
             CASE WHEN pi.content_hash IS NULL THEN NULL ELSE left(pi.content_hash,12) END "fingerprintIndicator",
             b.id "branchId",b.name "branchName",
             concat(u.first_name,' ',u.last_name) "importedBy",count(*) OVER()::int "__total",
@@ -543,28 +568,62 @@ export const listPosImports: RequestHandler = async (req, res) => {
     values,
   );
   const page = paginatedRows(result.rows, pagination);
+  page.data = page.data.map((record) => ({
+    ...record,
+    ...posCleanupAccess(record as {createdEnvironment:PosLifecycleEnvironment;cleanupAuthorizedAt:string|null},req.user!.role),
+  }));
   res.json({ success: true, data: { imports: page.data, pagination: page.pagination } });
 };
 
+export const authorizePosImportCleanup: RequestHandler = async (req,res) => {
+  if(env.DATA_LIFECYCLE_ENV!=="UAT") throw new AppError(403,"POS_CLEANUP_AUTHORIZATION_DISABLED","Separate cleanup authorization is available only in UAT.");
+  const {id}=idParams.parse(req.params);
+  const input=posCleanupAuthorizationInput.parse(req.body);
+  const client=await pool.connect();
+  try{
+    await client.query("BEGIN");
+    const existing=await client.query<{createdEnvironment:PosLifecycleEnvironment}>(
+      `SELECT created_environment "createdEnvironment" FROM pos_imports WHERE id=$1 FOR UPDATE`,[id]);
+    const record=existing.rows[0];
+    if(!record)throw new AppError(404,"POS_IMPORT_NOT_FOUND","POS import not found");
+    if(record.createdEnvironment!=="UAT")throw new AppError(409,"POS_CLEANUP_ENVIRONMENT_MISMATCH","Only a POS import created in this UAT environment can be authorized for cleanup.");
+    await client.query(`UPDATE pos_imports SET cleanup_authorized_by=$2::uuid,cleanup_authorized_at=now(),cleanup_reason=$3 WHERE id=$1`,[id,req.user!.id,input.reason]);
+    await writeAudit(req.user!,"AUTHORIZE_POS_IMPORT_CLEANUP","POS_IMPORT",id,"Authorized UAT POS import cleanup",{reason:input.reason,createdEnvironment:record.createdEnvironment},client);
+    await client.query("COMMIT");
+    res.json({success:true,data:{id,authorized:true}});
+  }catch(error){await client.query("ROLLBACK");throw error;}
+  finally{client.release();}
+};
+
 export const deletePosImport: RequestHandler = async (req, res) => {
+  if(env.DATA_LIFECYCLE_ENV==="PRODUCTION") throw new AppError(403,"POS_CLEANUP_DISABLED","POS import cleanup is disabled in production.");
   const { id } = idParams.parse(req.params);
+  const input=destructiveActionInput.parse(req.body);
+  await verifyDestructiveAction(req.user!,input.verificationPin,{module:"POS_IMPORT",action:"DELETE",recordId:id,reason:input.reason});
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const imported = await client.query<{
       branchId:string;branchName:string;businessDate:string;importedAt:string;sourceFilename:string;importedByUserId:string;
-      totalRows:number;saleRowCount:number;ingredientUsageRowCount:number;
+      totalRows:number;saleRowCount:number;ingredientUsageRowCount:number;contentHash:string|null;reconciliationCount:number;notificationCount:number;
+      createdEnvironment:PosLifecycleEnvironment;cleanupAuthorizedBy:string|null;cleanupAuthorizedAt:string|null;cleanupReason:string|null;
     }>(
       `SELECT pi.branch_id "branchId",b.name "branchName",pi.business_date::text "businessDate",
               pi.imported_at::text "importedAt",
-              pi.source_filename "sourceFilename",pi.imported_by "importedByUserId",pi.total_source_rows "totalRows",
+              pi.source_filename "sourceFilename",pi.imported_by "importedByUserId",pi.total_source_rows "totalRows",pi.content_hash "contentHash",
+              pi.created_environment "createdEnvironment",pi.cleanup_authorized_by "cleanupAuthorizedBy",
+              pi.cleanup_authorized_at::text "cleanupAuthorizedAt",pi.cleanup_reason "cleanupReason",
               (SELECT count(*)::int FROM pos_sale_items psi WHERE psi.pos_import_id=pi.id) "saleRowCount",
-              (SELECT count(*)::int FROM pos_sale_ingredient_usage usage JOIN pos_sale_items psi ON psi.id=usage.pos_sale_item_id WHERE psi.pos_import_id=pi.id) "ingredientUsageRowCount"
+              (SELECT count(*)::int FROM pos_sale_ingredient_usage usage JOIN pos_sale_items psi ON psi.id=usage.pos_sale_item_id WHERE psi.pos_import_id=pi.id) "ingredientUsageRowCount",
+              (SELECT count(*)::int FROM pos_import_reconciliations reconciliation WHERE reconciliation.pos_import_id=pi.id) "reconciliationCount",
+              (SELECT count(*)::int FROM notifications notification WHERE notification.entity_type='POS_IMPORT' AND notification.entity_id=pi.id) "notificationCount"
          FROM pos_imports pi JOIN branches b ON b.id=pi.branch_id WHERE pi.id=$1 FOR UPDATE`,
       [id],
     );
     const record=imported.rows[0];
     if(!record) throw new AppError(404,"POS_IMPORT_NOT_FOUND","POS import not found");
+    if(record.createdEnvironment!==env.DATA_LIFECYCLE_ENV) throw new AppError(409,"POS_CLEANUP_ENVIRONMENT_MISMATCH","This POS import was created in a different lifecycle environment and cannot be cleaned up here.");
+    if(env.DATA_LIFECYCLE_ENV==="UAT"&&!record.cleanupAuthorizedAt) throw new AppError(409,"POS_CLEANUP_AUTHORIZATION_REQUIRED","Owner cleanup authorization is required before this UAT import can be deleted.");
     const reconciled=await client.query(
       `SELECT 1
          FROM inventory_counts
@@ -583,7 +642,7 @@ export const deletePosImport: RequestHandler = async (req, res) => {
       WHERE pos_sale_item_id IN (SELECT id FROM pos_sale_items WHERE pos_import_id=$1)`,[id]);
     await client.query(`DELETE FROM pos_sale_items WHERE pos_import_id=$1`,[id]);
     await client.query(`DELETE FROM pos_imports WHERE id=$1`,[id]);
-    await writeAudit(req.user!,"POS_IMPORT_DELETED","POS_IMPORT",id,`Deleted POS import ${record.sourceFilename}`,{
+    await writeDestructiveActionAudit(req.user!,{module:"POS_IMPORT",action:"DELETE",recordId:id,reason:input.reason},`Cleaned up POS import ${record.sourceFilename}`,{
       branchId:record.branchId,
       branchName:record.branchName,
       businessDate:record.businessDate,
@@ -592,6 +651,14 @@ export const deletePosImport: RequestHandler = async (req, res) => {
       totalRows:record.totalRows,
       saleRowCount:record.saleRowCount,
       ingredientUsageRowCount:record.ingredientUsageRowCount,
+      reconciliationCount:record.reconciliationCount,
+      notificationCount:record.notificationCount,
+      contentHash:record.contentHash,
+      reason:input.reason,
+      createdEnvironment:record.createdEnvironment,
+      cleanupAuthorizedBy:record.cleanupAuthorizedBy,
+      cleanupAuthorizedAt:record.cleanupAuthorizedAt,
+      cleanupAuthorizationReason:record.cleanupReason,
       deletingRole:req.user!.role,
     },client);
     await client.query("COMMIT");
@@ -1220,7 +1287,7 @@ export const listInventoryCounts: RequestHandler = async (req, res) => {
               concat(u.first_name,' ',u.last_name) "submittedBy",count(ici.id)::int "itemCount",count(*) OVER()::int "__total",
               (count(ici.id) FILTER (WHERE abs(ici.variance_quantity)>0.0001))::int "varianceCount"
        FROM inventory_counts ic JOIN branches b ON b.id=ic.branch_id JOIN users u ON u.id=ic.submitted_by
-       LEFT JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id
+       LEFT JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id AND ici.voided_at IS NULL
       WHERE NOT ic.is_test_data AND ($2::uuid IS NULL OR ic.branch_id=$2)
       GROUP BY ic.id,b.id,u.id ORDER BY ic.count_date DESC,ic.submitted_at DESC LIMIT $3 OFFSET $4`,
     [req.user!.id, branchId ?? null, pagination.pageSize, (pagination.page-1)*pagination.pageSize],
@@ -1246,8 +1313,8 @@ export const getInventoryCount: RequestHandler = async (req, res) => {
     CASE WHEN ici.expected_quantity > 0 THEN ((ici.variance_quantity / ici.expected_quantity) * 100)::float8 ELSE NULL END "variancePercentage",
     sr.id "shrinkageReportId",(sr.status='DETECTED') "requiresInvestigation"
     FROM inventory_count_items ici JOIN inventory_items ii ON ii.id=ici.inventory_item_id
-    LEFT JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ici.id
-    WHERE ici.inventory_count_id=$1 ORDER BY ii.name`,[id]);
+    LEFT JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ici.id AND sr.archived_at IS NULL
+    WHERE ici.inventory_count_id=$1 AND ici.voided_at IS NULL ORDER BY ii.name`,[id]);
   res.json({success:true,data:{count:{...count.rows[0],items:items.rows}}});
 };
 
@@ -1255,7 +1322,7 @@ export const listInventoryVariances: RequestHandler = async (req, res) => {
   const filters = varianceFilters.parse(req.query);
   const pagination = paginationQuery.parse(req.query);
   const branchId = getEffectiveBranchId(req.user!, filters.branchId);
-  const clauses: string[] = ["NOT ic.is_test_data"];
+  const clauses: string[] = ["NOT ic.is_test_data", "ici.voided_at IS NULL"];
   const values: unknown[] = [];
   if (branchId) {
     values.push(branchId);
@@ -1276,7 +1343,7 @@ export const listInventoryVariances: RequestHandler = async (req, res) => {
        JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
        JOIN branches b ON b.id=ic.branch_id
        JOIN inventory_items ii ON ii.id=ici.inventory_item_id
-       LEFT JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ici.id
+       LEFT JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ici.id AND sr.archived_at IS NULL
       ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
       ORDER BY ic.count_date DESC,abs(ici.variance_value) DESC,ii.name LIMIT $${values.length+1} OFFSET $${values.length+2}`,
     [...values,pagination.pageSize,(pagination.page-1)*pagination.pageSize],
@@ -1299,7 +1366,7 @@ export const listShrinkageReports: RequestHandler = async (req, res) => {
   const filters = shrinkageFilters.parse(req.query);
   const pagination = paginationQuery.parse(req.query);
   const branchId = getEffectiveBranchId(req.user!, filters.branchId);
-  const clauses: string[] = ["NOT sr.is_test_data"];
+  const clauses: string[] = ["NOT sr.is_test_data", "sr.archived_at IS NULL"];
   const values: unknown[] = [];
   if (branchId) {
     values.push(branchId);
@@ -1341,7 +1408,7 @@ export const getShrinkageReport: RequestHandler = async (req, res) => {
   const { id } = idParams.parse(req.params);
   const branchId = getEffectiveBranchId(req.user!);
   const result = await pool.query(
-    `${shrinkageSelection} WHERE sr.id=$1 AND NOT sr.is_test_data ${branchId ? "AND sr.branch_id=$2" : ""}`,
+    `${shrinkageSelection} WHERE sr.id=$1 AND NOT sr.is_test_data AND sr.archived_at IS NULL ${branchId ? "AND sr.branch_id=$2" : ""}`,
     branchId ? [id, branchId] : [id],
   );
   if (!result.rows[0])

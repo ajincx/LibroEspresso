@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { Package, Plus, RefreshCw, X } from "lucide-react";
+import { Package, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { masterDataService } from "../../services/masterData.service";
 import type { InventoryItem } from "../../types/masterData";
 import { Select, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, TableLoadingRow, StatusChip, Btn } from "../../components/ModuleUi";
 import { useAuth } from "../../contexts/AuthContext";
 import { units } from "../../utils/units";
+import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
+import { controlledActionService } from "../../services/controlledAction.service";
 
 const emptyForm = { name: "", categoryChoice: "", otherCategory: "", unit: "", unitCost: "", reorderLevel: "", status: "ACTIVE" as const };
 
@@ -17,6 +19,9 @@ export function MasterDataPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [removeTarget,setRemoveTarget]=useState<InventoryItem|null>(null);
+  const [controlledValue,setControlledValue]=useState<ControlledActionValue>({reason:"",verificationPin:""});
+  const [controlledBusy,setControlledBusy]=useState(false);
 
   const load = async () => {
     setLoading(true); setError("");
@@ -39,6 +44,7 @@ export function MasterDataPage() {
     } catch (reason) { toast.error(reason instanceof Error ? reason.message : "Unable to create inventory item"); }
     finally { setSaving(false); }
   };
+  const remove=async()=>{if(!removeTarget)return;setControlledBusy(true);try{const result=await controlledActionService.removeInventoryItem(removeTarget.id,controlledValue);toast.success(result.action==="DELETED"?"Unused inventory item deleted":"Used inventory item deactivated; history was preserved");setRemoveTarget(null);setControlledValue({reason:"",verificationPin:""});await load();}catch(reason){toast.error(reason instanceof Error?reason.message:"Unable to remove inventory item");}finally{setControlledBusy(false);}};
 
   return <div className="p-4 md:p-6 space-y-5">
     <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
@@ -69,14 +75,14 @@ export function MasterDataPage() {
       }
     >
       <TableWrapper minWidth={840}>
-        <THead cols={["Code", "Ingredient", "Scope", "Category", "Unit", "Unit Cost", "Reorder Level", "Status"]} />
+        <THead cols={["Code", "Ingredient", "Scope", "Category", "Unit", "Unit Cost", "Reorder Level", "Status", "Action"]} />
         <tbody>
           {loading ? (
-            <TableLoadingRow colSpan={8} label="Loading inventory items…" />
+            <TableLoadingRow colSpan={9} label="Loading inventory items…" />
           ) : error ? (
-            <TableEmptyRow colSpan={8} title="Unable to load inventory items" subtitle={error} />
+            <TableEmptyRow colSpan={9} title="Unable to load inventory items" subtitle={error} />
           ) : inventory.length === 0 ? (
-            <TableEmptyRow colSpan={8} icon={Package} title="No inventory items found" subtitle="Create an ingredient to establish baseline recipes and stock items." />
+            <TableEmptyRow colSpan={9} icon={Package} title="No inventory items found" subtitle="Create an ingredient to establish baseline recipes and stock items." />
           ) : (
             inventory.map((item) => (
               <TR key={item.id}>
@@ -88,12 +94,14 @@ export function MasterDataPage() {
                 <TD right><span className="font-semibold">₱{item.unitCost.toFixed(4)}</span></TD>
                 <TD right muted>{item.reorderLevel}</TD>
                 <TD center><StatusChip status={item.status === "ACTIVE" ? "active" : "inactive"} /></TD>
+                <TD center><button aria-label={`Remove ${item.name}`} className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--app-border)] text-[var(--app-danger)]" onClick={()=>{setRemoveTarget(item);setControlledValue({reason:"",verificationPin:""});}}><Trash2 size={14}/></button></TD>
               </TR>
             ))
           )}
         </tbody>
       </TableWrapper>
     </TableCard>
+    {removeTarget&&<ControlledActionDialog title={`Remove ${removeTarget.name}?`} description="The server deletes only an entirely unused ingredient. If recipes, purchases, counts, movements, or sales usage depend on it, the item is deactivated instead." confirmLabel="Remove Ingredient" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setRemoveTarget(null)} onConfirm={()=>void remove()}/>}
     {open && <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.5)" }}><div role="dialog" aria-modal="true" aria-labelledby="add-inventory-item-title" className="w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-2xl border p-6" style={{ background: "var(--app-surface)", borderColor: "var(--app-border)" }}><div className="flex justify-between mb-5"><div><h2 id="add-inventory-item-title" className="text-lg font-bold">Add Inventory Item</h2><p className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>The ingredient code is generated automatically. {user?.role==="OWNER"?"This item will be available to all branches.":"This item will be available only to your branch."}</p></div><button aria-label="Close inventory item form" onClick={() => setOpen(false)}><X size={18} /></button></div><div className="grid grid-cols-1 sm:grid-cols-2 gap-3"><Field label="Ingredient Name *" value={form.name} onChange={(value) => setForm((current) => ({ ...current, name: value }))} /><label className="text-sm font-medium">Category *<Select className="mt-1.5 w-full" value={form.categoryChoice} onChange={(value)=>setForm((current)=>({...current,categoryChoice:value,otherCategory:value==="__OTHER__"?current.otherCategory:""}))} options={[{value:"",label:"Select category…"},...categories.map((category)=>({value:category,label:category})),{value:"__OTHER__",label:"Others"}]}/></label>{form.categoryChoice==="__OTHER__"&&<Field label="Specify Category *" value={form.otherCategory} onChange={(value)=>setForm((current)=>({...current,otherCategory:value}))}/>}<label className="text-sm font-medium">Inventory Unit *<Select className="mt-1.5 w-full" value={form.unit} onChange={(value)=>setForm((current)=>({...current,unit:value}))} options={[{value:"",label:"Select unit…"},...units.map((unit)=>({value:unit,label:unit}))]}/></label><Field label="Unit Cost *" type="number" value={form.unitCost} onChange={(value) => setForm((current) => ({ ...current, unitCost: value }))} /><Field label="Reorder Level *" type="number" value={form.reorderLevel} onChange={(value) => setForm((current) => ({ ...current, reorderLevel: value }))} /></div><div className="flex gap-3 mt-6"><button onClick={() => setOpen(false)} className="flex-1 py-2.5 rounded-xl border" style={{ borderColor: "var(--app-border)" }}>Cancel</button><button disabled={saving} onClick={() => void create()} className="flex-1 py-2.5 rounded-xl text-white font-semibold disabled:opacity-50" style={{ background: "var(--app-primary)" }}>{saving ? "Creating…" : "Create Item"}</button></div></div></div>}
   </div>;
 }

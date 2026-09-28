@@ -64,7 +64,10 @@ function databaseConflict(error: unknown): never {
 export const listPosSources: RequestHandler = async (req, res) => {
   const result = await pool.query(`SELECT s.id,s.branch_id "branchId",b.name "branchName",s.source_code "sourceCode",s.display_name "displayName",s.supported_format "supportedFormat",s.status,
       s.format_verified_by "formatVerifiedBy",s.format_verified_at "formatVerifiedAt",
-      concat(u.first_name,' ',u.last_name) "formatVerifiedByName"
+      concat(u.first_name,' ',u.last_name) "formatVerifiedByName",
+      EXISTS(SELECT 1 FROM pos_imports pi WHERE pi.pos_source_id=s.id) "hasImports",
+      EXISTS(SELECT 1 FROM pos_sale_items psi WHERE psi.pos_source_id=s.id) "hasSales",
+      EXISTS(SELECT 1 FROM pos_product_variant_mappings pm WHERE pm.pos_source_id=s.id AND pm.status='ACTIVE') "hasActiveMappings"
     FROM pos_sources s LEFT JOIN users u ON u.id=s.format_verified_by LEFT JOIN branches b ON b.id=s.branch_id
     WHERE ($1::boolean OR (s.status='ACTIVE' AND s.branch_id=$2::uuid)) ORDER BY b.name,s.display_name`, [req.user!.role === "OWNER",req.user!.branchId]);
   res.json({ success: true, data: { sources: result.rows } });

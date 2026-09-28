@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowDown, ArrowUp, GitCompare, RefreshCw, Search } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, Ban, GitCompare, RefreshCw, Search } from "lucide-react";
+import { toast } from "sonner";
 import { useNavigate } from "react-router";
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useAuth } from "../../contexts/AuthContext";
@@ -10,6 +11,8 @@ import type { Branch } from "../../types/masterData";
 import { CalendarDateField, Select, SearchInput, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, TableLoadingRow, StatusBadge, Pagination } from "../../components/ModuleUi";
 import { formatAppDate } from "../../utils/appPreferences";
 import { classificationLabel } from "../../utils/shrinkageTaxonomy";
+import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
+import { controlledActionService } from "../../services/controlledAction.service";
 
 type DisplayStatus =
   | "MATCHED"
@@ -42,6 +45,9 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
   const [status, setStatus] = useState<DisplayStatus | "">("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [voidTarget,setVoidTarget]=useState<VarianceRecord|null>(null);
+  const [controlledValue,setControlledValue]=useState<ControlledActionValue>({reason:"",verificationPin:""});
+  const [controlledBusy,setControlledBusy]=useState(false);
 
   const load = async () => {
     setLoading(true); setError("");
@@ -70,6 +76,8 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
     expected: record.expectedQuantity,
     actual: record.actualQuantity,
   })), [filtered]);
+
+  const voidRecord=async()=>{if(!voidTarget)return;setControlledBusy(true);try{await controlledActionService.voidVariance(voidTarget.countItemId,controlledValue);toast.success("Variance voided; the original count history was preserved");setVoidTarget(null);setControlledValue({reason:"",verificationPin:""});await load();}catch(reason){toast.error(reason instanceof Error?reason.message:"Unable to void variance");}finally{setControlledBusy(false);}};
 
   return <div className="p-4 md:p-6 space-y-5">
     <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4"><div><h1 className="text-xl font-bold">Variance &amp; Discrepancies</h1><p className="text-sm mt-1" style={{ color: "var(--app-text-muted)" }}>System-calculated comparison of expected inventory and submitted physical counts (Expected − Actual). Positive values indicate shortages.</p></div><div className="flex gap-2 flex-wrap">
@@ -197,7 +205,7 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
                 <TD muted>{classificationLabel(record.classification)}</TD>
                 <TD center><VarianceStatus status={displayStatus(record)} /></TD>
                 <TD right>
-                  {record.anomalyId ? (
+                  <div className="flex justify-end gap-1">{record.anomalyId ? (
                     <button
                       type="button"
                       onClick={() => navigate(`/shrinkage?reportId=${record.anomalyId}`)}
@@ -211,7 +219,7 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
                     </button>
                   ) : (
                     <span className="text-xs text-[var(--app-text-faint)]">—</span>
-                  )}
+                  )}<button type="button" title="Void variance" aria-label={`Void variance ${record.countNo} ${record.itemName}`} onClick={()=>{setVoidTarget(record);setControlledValue({reason:"",verificationPin:""});}} className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--app-border)] text-[var(--app-danger)]"><Ban size={14}/></button></div>
                 </TD>
               </TR>
             ))
@@ -220,6 +228,7 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
       </TableWrapper>
       <Pagination total={filtered.length} page={1} perPage={Math.max(filtered.length, 1)} />
     </TableCard>
+    {voidTarget&&<ControlledActionDialog title={`Void ${voidTarget.itemName} variance?`} description="The variance and linked anomaly are retained for audit but removed from active discrepancy and shrinkage views. This does not alter the submitted physical count values." confirmLabel="Void Variance" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setVoidTarget(null)} onConfirm={()=>void voidRecord()}/>}
   </div>;
 }
 

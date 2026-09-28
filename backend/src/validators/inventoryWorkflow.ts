@@ -17,6 +17,8 @@ export const posImportInput = posCsvSourceInput.extend({
   expectedResolutionFingerprint: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
   posSourceId: z.string().uuid().optional(),
 });
+export const testDataAuthorizationInput = z.object({ reason: z.string().trim().min(10).max(500) });
+export const posCleanupAuthorizationInput = z.object({ reason: z.string().trim().min(10).max(500) });
 export const posImportApprovalReviewInput = z.object({
   status: z.enum(["APPROVED", "REJECTED"]),
   approvalNotes: z.string().trim().min(3).max(1000),

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Eye, FileWarning, RefreshCw } from "lucide-react";
+import { Archive, Eye, FileWarning, RefreshCw } from "lucide-react";
 import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { operationsService } from "../../services/operations.service";
@@ -8,6 +8,8 @@ import { IncidentReportDetailsModal } from "../staff/IncidentReportDetailsModal"
 import { TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, TableLoadingRow, StatusChip, Btn } from "../../components/ModuleUi";
 import { formatAppDate } from "../../utils/appPreferences";
 import { incidentTypeLabel } from "../../utils/shrinkageTaxonomy";
+import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
+import { controlledActionService } from "../../services/controlledAction.service";
 
 const formatDate = (value: string) => formatAppDate(value, true);
 
@@ -17,6 +19,9 @@ export function ShrinkageIncidentReports({ owner, branchId }: { owner: boolean; 
   const [selected, setSelected] = useState<IncidentReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [reviewing, setReviewing] = useState(false);
+  const [archiveTarget,setArchiveTarget]=useState<IncidentReport|null>(null);
+  const [controlledValue,setControlledValue]=useState<ControlledActionValue>({reason:"",verificationPin:""});
+  const [controlledBusy,setControlledBusy]=useState(false);
   const load = useCallback(async () => {
     setLoading(true);
     try { setReports(await operationsService.incidents({ branchId: branchId || undefined })); }
@@ -39,6 +44,7 @@ export function ShrinkageIncidentReports({ owner, branchId }: { owner: boolean; 
     catch (error) { toast.error(error instanceof Error ? error.message : "Unable to review incident report."); }
     finally { setReviewing(false); }
   };
+  const archive=async()=>{if(!archiveTarget)return;setControlledBusy(true);try{await controlledActionService.incidentLifecycle(archiveTarget.id,"ARCHIVE",controlledValue);toast.success("Incident report archived");setArchiveTarget(null);setControlledValue({reason:"",verificationPin:""});await load();}catch(error){toast.error(error instanceof Error?error.message:"Unable to archive incident");}finally{setControlledBusy(false);}};
   return <>
     <TableCard
       title="Staff Incident Reports"
@@ -75,6 +81,7 @@ export function ShrinkageIncidentReports({ owner, branchId }: { owner: boolean; 
                 <TD right muted>{report.quantity} {report.unit}</TD>
                 <TD center><StatusChip status={report.status.toLowerCase()} /></TD>
                 <TD right>
+                  <div className="flex justify-end gap-1">
                   <button
                     type="button"
                     onClick={() => setSelected(report)}
@@ -84,6 +91,8 @@ export function ShrinkageIncidentReports({ owner, branchId }: { owner: boolean; 
                   >
                     <Eye size={15} />
                   </button>
+                  <button type="button" onClick={()=>{setArchiveTarget(report);setControlledValue({reason:"",verificationPin:""});}} className="p-2 rounded-lg border border-[var(--app-border)] text-[var(--app-danger)]" title="Archive incident" aria-label="Archive incident"><Archive size={15}/></button>
+                  </div>
                 </TD>
               </TR>
             ))
@@ -91,6 +100,7 @@ export function ShrinkageIncidentReports({ owner, branchId }: { owner: boolean; 
         </tbody>
       </TableWrapper>
     </TableCard>
+    {archiveTarget&&<ControlledActionDialog title="Archive incident report?" description="The report remains available in audit history and no inventory quantity is changed." confirmLabel="Archive Report" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setArchiveTarget(null)} onConfirm={()=>void archive()}/>}
     {selected && <IncidentReportDetailsModal report={selected} canReview={!owner} reviewing={reviewing} onClose={() => setSelected(null)} onReview={review}/>}
   </>;
 }

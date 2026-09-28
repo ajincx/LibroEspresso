@@ -272,8 +272,12 @@ describe("access controls", () => {
     const manager=session({id:"manager",role:"BRANCH_MANAGER",branchId:"00000000-0000-0000-0000-000000000002"});
     const staff=session({id:"staff",role:"STAFF",branchId:"00000000-0000-0000-0000-000000000002"});
     const path="/api/pos-sales/00000000-0000-4000-8000-000000000010";
-    const responses=await Promise.all([request(app).delete(path).set("Cookie",manager),request(app).delete(path).set("Cookie",staff),request(app).delete(path)]);
-    expect(responses.map(response=>response.status)).toEqual([403,403,401]);
+    const responses=await Promise.all([
+      request(app).delete(path).set("Cookie",manager),request(app).delete(path).set("Cookie",staff),request(app).delete(path),
+      request(app).post(`${path}/authorize-cleanup`).set("Cookie",manager).send({reason:"UAT cleanup review"}),
+      request(app).post(`${path}/authorize-cleanup`).set("Cookie",staff).send({reason:"UAT cleanup review"}),
+    ]);
+    expect(responses.map(response=>response.status)).toEqual([403,403,401,403,403]);
   });
 
   it("allows only an authenticated Branch Manager into POS preview validation", async () => {
@@ -355,6 +359,19 @@ describe("access controls", () => {
       .set("Cookie", session({ id: "owner", role: "OWNER", branchId: null }))
       .send({});
     expect(response.status).toBe(403);
+  });
+
+  it("keeps purchase-order test authorization and cleanup Owner-only",async()=>{
+    const id="00000000-0000-4000-8000-000000000041";
+    const manager=session({id:"manager",role:"BRANCH_MANAGER",branchId:"00000000-0000-4000-8000-000000000002"});
+    const staff=session({id:"staff",role:"STAFF",branchId:"00000000-0000-4000-8000-000000000002"});
+    const responses=await Promise.all([
+      request(app).post(`/api/purchase-orders/${id}/authorize-test-cleanup`).set("Cookie",manager).send({reason:"development fixture"}),
+      request(app).delete(`/api/purchase-orders/${id}`).set("Cookie",manager).send({reason:"development fixture"}),
+      request(app).post(`/api/purchase-orders/${id}/authorize-test-cleanup`).set("Cookie",staff).send({reason:"development fixture"}),
+      request(app).delete(`/api/purchase-orders/${id}`).set("Cookie",staff).send({reason:"development fixture"}),
+    ]);
+    expect(responses.map(response=>response.status)).toEqual([403,403,403,403]);
   });
 
   it("allows a Manager into Purchase Order validation", async () => {

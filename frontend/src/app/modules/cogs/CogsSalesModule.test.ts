@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { C } from "../../components/ModuleUi";
-import { DAILY_POS_MONITORING_LOCATION, OWNER_POS_IMPORT_HISTORY_COLUMNS, PosImportDeleteDialog, PosMappingActions, PosMappingEditDialog, PosPricingNotice, canApprovePosMapping, canDeletePosImport, canEditPosMapping, dailyPosStatusLabel, filterDailyPosStatuses, hasInvalidCsvEncoding, isSupportedPosFilename, marginValueColor, posSalesAmountLabel } from "./CogsSalesModule";
+import { DAILY_POS_MONITORING_LOCATION, OWNER_POS_IMPORT_HISTORY_COLUMNS, PosImportActions, PosImportCleanupAuthorizationDialog, PosImportDeleteDialog, PosMappingActions, PosMappingEditDialog, PosMappingSetup, PosPricingNotice, canApprovePosMapping, canAuthorizePosImportCleanup, canDeletePosImport, canDeletePosSource, canEditPosMapping, dailyPosStatusLabel, filterDailyPosStatuses, formatPosSourceFormatName, hasInvalidCsvEncoding, isSupportedPosFilename, marginValueColor, posSalesAmountLabel } from "./CogsSalesModule";
 import type { DailyPosUploadStatus, PosMapping } from "../../types/inventoryWorkflow";
 import type { MenuProduct } from "../../types/masterData";
 
@@ -54,21 +54,84 @@ describe("POS Import History controls",()=>{
     expect(hasInvalidCsvEncoding("product,quantity\nAmericano,\uFFFD")).toBe(true);
   });
 
-  it("limits import deletion to the Owner presentation",()=>{
-    expect(canDeletePosImport("owner")).toBe(true);
-    expect(canDeletePosImport("manager")).toBe(false);
+  it("uses backend lifecycle permissions for Owner cleanup controls",()=>{
+    expect(canDeletePosImport("owner",{canCleanup:true})).toBe(true);
+    expect(canDeletePosImport("OWNER",{canCleanup:true})).toBe(true);
+    expect(canDeletePosImport("owner",{canCleanup:false})).toBe(false);
+    expect(canDeletePosImport("manager",{canCleanup:true})).toBe(false);
+    expect(canDeletePosImport("BRANCH_MANAGER",{canCleanup:true})).toBe(false);
+    expect(canAuthorizePosImportCleanup("owner",{canAuthorizeCleanup:true})).toBe(true);
+    expect(canAuthorizePosImportCleanup("OWNER",{canAuthorizeCleanup:true})).toBe(true);
+    expect(canAuthorizePosImportCleanup("manager",{canAuthorizeCleanup:true})).toBe(false);
+  });
+
+  it("renders the Delete button only when Owner has canCleanup=true from the backend", () => {
+    // Scenario 1: Owner user, Development environment, canCleanup: true
+    const devImport = {
+      sourceFilename: "POS.09.16.2026.xlsx",
+      canCleanup: true,
+      canAuthorizeCleanup: false,
+    };
+    const devMarkup = renderToStaticMarkup(
+      React.createElement(PosImportActions, { role: "owner", record: devImport })
+    );
+    expect(devMarkup).toContain("Delete import POS.09.16.2026.xlsx");
+    expect(devMarkup).toContain("lucide-trash-2");
+
+    const ownerUpperMarkup = renderToStaticMarkup(
+      React.createElement(PosImportActions, { role: "OWNER", record: devImport })
+    );
+    expect(ownerUpperMarkup).toContain("Delete import POS.09.16.2026.xlsx");
+    expect(ownerUpperMarkup).toContain("lucide-trash-2");
+
+    // Scenario 2: Owner user, Production environment, canCleanup: false
+    const prodImport = {
+      sourceFilename: "POS.09.16.2026.xlsx",
+      canCleanup: false,
+      canAuthorizeCleanup: false,
+    };
+    const prodMarkup = renderToStaticMarkup(
+      React.createElement(PosImportActions, { role: "owner", record: prodImport })
+    );
+    expect(prodMarkup).toBe("");
+
+    // Scenario 3: Branch Manager never sees Delete button even if canCleanup flag were true
+    const managerMarkup = renderToStaticMarkup(
+      React.createElement(PosImportActions, { role: "manager", record: devImport })
+    );
+    expect(managerMarkup).toBe("");
+
+    const managerUpperMarkup = renderToStaticMarkup(
+      React.createElement(PosImportActions, { role: "BRANCH_MANAGER", record: devImport })
+    );
+    expect(managerUpperMarkup).toBe("");
+
+    // Scenario 4: Owner user, UAT environment, canAuthorizeCleanup: true
+    const uatImport = {
+      sourceFilename: "POS.09.16.2026.xlsx",
+      canCleanup: false,
+      canAuthorizeCleanup: true,
+    };
+    const uatMarkup = renderToStaticMarkup(
+      React.createElement(PosImportActions, { role: "owner", record: uatImport })
+    );
+    expect(uatMarkup).toContain("Authorize cleanup POS.09.16.2026.xlsx");
+    expect(uatMarkup).not.toContain("lucide-trash-2");
   });
 
   it("requires a descriptive confirmation before deleting an entire import batch",()=>{
-    const target={id:"import-1",businessDate:"2026-09-13",sourceFilename:"sales0913.csv",importedAt:"2026-09-13T08:00:00Z",branchId:"branch-1",branchName:"Lipa",importedBy:"Maria D.",productLines:20,unitsSold:500,totalSales:10000,status:"COMPLETE",totalRows:500,validRows:500,warningRows:0,invalidRows:0,unmatchedRows:0,fingerprintIndicator:"abcdef"} as const;
-    const markup=renderToStaticMarkup(React.createElement(PosImportDeleteDialog,{target,deleting:false,onCancel:()=>undefined,onConfirm:()=>undefined}));
-    expect(markup).toContain("Delete imported sales data?");
+    const target={id:"import-1",businessDate:"2026-09-13",sourceFilename:"sales0913.csv",importedAt:"2026-09-13T08:00:00Z",branchId:"branch-1",branchName:"Lipa",importedBy:"Maria D.",productLines:20,unitsSold:500,totalSales:10000,status:"COMPLETE",totalRows:500,validRows:500,warningRows:0,invalidRows:0,unmatchedRows:0,fingerprintIndicator:"abcdef",createdEnvironment:"DEVELOPMENT",cleanupPolicy:"DEVELOPMENT",cleanupAuthorizedBy:null,cleanupAuthorizedAt:null,cleanupReason:null,canAuthorizeCleanup:false,canCleanup:true} as const;
+    const markup=renderToStaticMarkup(React.createElement(PosImportDeleteDialog,{target,deleting:false,reason:"",onReasonChange:()=>undefined,onCancel:()=>undefined,onConfirm:()=>undefined}));
+    expect(markup).toContain("Clean up this POS import?");
     expect(markup).toContain("sales0913.csv");
     expect(markup).toContain("Lipa");
-    expect(markup).toContain("recipe-derived usage");
+    expect(markup).toContain("Production cleanup remains disabled");
     expect(markup).toContain("Cancel");
-    expect(markup).toContain("Delete Import");
+    expect(markup).toContain("Clean Up Import");
     expect(markup).toContain("app-btn--danger");
+    const authorization=renderToStaticMarkup(React.createElement(PosImportCleanupAuthorizationDialog,{target:{...target,createdEnvironment:"UAT",cleanupPolicy:"UAT",canAuthorizeCleanup:true,canCleanup:false},busy:false,reason:"",onReasonChange:()=>undefined,onCancel:()=>undefined,onConfirm:()=>undefined}));
+    expect(authorization).toContain("Authorize UAT cleanup");
+    expect(authorization).toContain("does not delete the import or change its business meaning");
   });
 });
 
@@ -119,3 +182,52 @@ describe("POS mapping revision presentation",()=>{
     expect(markup).toContain("Save Changes");
   });
 });
+
+describe("POS System and Mapping Setup UX workflow", () => {
+  it("formats POS source format names for user readability", () => {
+    expect(formatPosSourceFormatName("SUMMARY_ITEMS_SOLD_LEGACY_XLS")).toBe("Summary Items Sold XLS");
+    expect(formatPosSourceFormatName("TRANSACTION_SUMMARY_XLSX")).toBe("Transaction Summary XLSX");
+    expect(formatPosSourceFormatName("CANONICAL_CSV")).toBe("Canonical CSV");
+  });
+
+  it("renders the POS System & Mapping Setup button and collapsed state cleanly", () => {
+    const markup = renderToStaticMarkup(React.createElement(PosMappingSetup));
+    expect(markup).toContain("POS System &amp; Mapping Setup");
+    expect(markup).toContain("Open POS Setup");
+  });
+});
+
+describe("POS System configuration deletion policy", () => {
+  it("allows deletion only for Owner on inactive, unused POS systems", () => {
+    const unusedSource = { status: "INACTIVE" as const, hasImports: false, hasSales: false, hasActiveMappings: false };
+    expect(canDeletePosSource("owner", unusedSource)).toBe(true);
+    expect(canDeletePosSource("OWNER", unusedSource)).toBe(true);
+  });
+
+  it("blocks deletion of active POS systems", () => {
+    const activeSource = { status: "ACTIVE" as const, hasImports: false, hasSales: false, hasActiveMappings: false };
+    expect(canDeletePosSource("owner", activeSource)).toBe(false);
+  });
+
+  it("blocks deletion when historical imports exist", () => {
+    const sourceWithImports = { status: "INACTIVE" as const, hasImports: true, hasSales: false, hasActiveMappings: false };
+    expect(canDeletePosSource("owner", sourceWithImports)).toBe(false);
+  });
+
+  it("blocks deletion when recorded sales exist", () => {
+    const sourceWithSales = { status: "INACTIVE" as const, hasImports: false, hasSales: true, hasActiveMappings: false };
+    expect(canDeletePosSource("owner", sourceWithSales)).toBe(false);
+  });
+
+  it("blocks deletion when active mappings exist", () => {
+    const sourceWithMappings = { status: "INACTIVE" as const, hasImports: false, hasSales: false, hasActiveMappings: true };
+    expect(canDeletePosSource("owner", sourceWithMappings)).toBe(false);
+  });
+
+  it("blocks managers from deleting POS systems under all conditions", () => {
+    const unusedSource = { status: "INACTIVE" as const, hasImports: false, hasSales: false, hasActiveMappings: false };
+    expect(canDeletePosSource("manager", unusedSource)).toBe(false);
+    expect(canDeletePosSource("BRANCH_MANAGER", unusedSource)).toBe(false);
+  });
+});
+

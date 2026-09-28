@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CheckCircle2,
+  Archive,
   Eye,
   FileWarning,
   RefreshCw,
@@ -36,6 +37,8 @@ import type { Role } from "../../types/navigation";
 import { formatAppDate } from "../../utils/appPreferences";
 import { incidentTypeLabel, incidentTypeOptions } from "../../utils/shrinkageTaxonomy";
 import { IncidentReportDetailsModal } from "./IncidentReportDetailsModal";
+import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
+import { controlledActionService } from "../../services/controlledAction.service";
 const chips: Record<string, string> = {
   PENDING: "pending_review",
   VERIFIED: "verified",
@@ -58,6 +61,9 @@ export function StaffMonitoringPage({
   const [reviewing, setReviewing] = useState(false);
   const [selected, setSelected] = useState<IncidentReport | null>(null);
   const [error, setError] = useState("");
+  const [lifecycleTarget,setLifecycleTarget]=useState<IncidentReport|null>(null);
+  const [controlledValue,setControlledValue]=useState<ControlledActionValue>({reason:"",verificationPin:""});
+  const [controlledBusy,setControlledBusy]=useState(false);
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -73,6 +79,7 @@ export function StaffMonitoringPage({
       setLoading(false);
     }
   }, []);
+  const applyLifecycle=async()=>{if(!lifecycleTarget)return;setControlledBusy(true);try{await controlledActionService.incidentLifecycle(lifecycleTarget.id,"ARCHIVE",controlledValue);toast.success("Incident report archived");setLifecycleTarget(null);setControlledValue({reason:"",verificationPin:""});await load();}catch(cause){toast.error(cause instanceof Error?cause.message:"Unable to update incident lifecycle");}finally{setControlledBusy(false);}};
   useEffect(() => {
     void load();
   }, [load]);
@@ -293,6 +300,7 @@ export function StaffMonitoringPage({
                     <StatusChip status={chips[r.status]} />
                   </TD>
                   <TD center>
+                    <div className="flex justify-center gap-1">
                     <Btn
                       variant="outline"
                       size="sm"
@@ -301,6 +309,8 @@ export function StaffMonitoringPage({
                     >
                       View
                     </Btn>
+                    <button type="button" aria-label="Archive incident" className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--app-border)] text-[var(--app-danger)]" onClick={()=>{setLifecycleTarget(r);setControlledValue({reason:"",verificationPin:""});}}><Archive size={14}/></button>
+                    </div>
                   </TD>
                 </TR>
               ))}
@@ -312,6 +322,7 @@ export function StaffMonitoringPage({
         Incident reports support inventory reconciliation and do not change
         stock until the authorized workflow confirms an adjustment.
       </p>
+      {lifecycleTarget&&<ControlledActionDialog title="Archive incident report?" description="The report remains in the audit history and does not alter inventory quantities." confirmLabel="Archive Report" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setLifecycleTarget(null)} onConfirm={()=>void applyLifecycle()}/>}
       {selected && (
         <IncidentReportDetailsModal
           report={selected}

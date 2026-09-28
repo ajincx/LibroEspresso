@@ -32,12 +32,14 @@ export function IncidentReportDetailsModal({
   reviewing,
   onClose,
   onReview,
+  onCancelReport,
 }: {
   report: IncidentReport;
   canReview: boolean;
   reviewing?: boolean;
   onClose: () => void;
   onReview?: (status: "VERIFIED" | "REJECTED", managerComment: string) => void;
+  onCancelReport?: () => void;
 }) {
   const [managerComment, setManagerComment] = useState(
     report.managerComment ?? "",
@@ -206,6 +208,7 @@ export function IncidentReportDetailsModal({
           >
             Close
           </button>
+          {!canReview&&report.status==="PENDING"&&onCancelReport&&<button onClick={onCancelReport} className="h-11 px-5 rounded-xl border border-[var(--app-danger)] text-[var(--app-danger)] text-sm font-semibold">Cancel Report</button>}
           {pendingReview && (
             <>
               <button

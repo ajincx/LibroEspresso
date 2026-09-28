@@ -1,6 +1,7 @@
 import type { RequestHandler } from "express";
 import type { PoolClient } from "pg";
 import { pool } from "../config/database.js";
+import { env } from "../config/env.js";
 import { getEffectiveBranchId } from "../services/branchScope.js";
 import { writeAudit } from "../services/audit.service.js";
 import { baseStockUnitCost, receivedStockQuantity, resolvePurchaseConversion } from "../services/purchaseUom.service.js";
@@ -19,6 +20,7 @@ import {
   purchaseOrderFilters,
   purchaseOrderReceiveInput,
   purchaseOrderStatusInput,
+  testCleanupAuthorizationInput,
 } from "../validators/operations.js";
 
 function requiredBranchId(
@@ -146,7 +148,7 @@ export const listIncidentReports: RequestHandler = async (req, res) => {
   const filters = incidentFilters.parse(req.query);
   const pagination = paginationQuery.parse(req.query);
   const branchId = getEffectiveBranchId(req.user!, filters.branchId);
-  const clauses: string[] = ["NOT ir.is_test_data"];
+  const clauses: string[] = ["NOT ir.is_test_data", "ir.archived_at IS NULL"];
   const values: unknown[] = [];
   if (branchId) {
     values.push(branchId);
@@ -333,7 +335,7 @@ export const reviewIncidentReport: RequestHandler = async (req, res) => {
   const branchId = requiredBranchId(req.user!);
   const updated = await pool.query(
     `UPDATE incident_reports SET status=$3,verified_by=$4,verified_at=now(),manager_comment=$5,updated_at=now()
-      WHERE id=$1 AND branch_id=$2 AND status='PENDING' RETURNING id`,
+      WHERE id=$1 AND branch_id=$2 AND status='PENDING' AND archived_at IS NULL RETURNING id`,
     [
       id,
       branchId,
@@ -395,6 +397,7 @@ export const linkIncidentToInvestigation: RequestHandler = async (req, res) => {
 const purchaseOrderSelection = `SELECT po.id,po.po_no "poNo",po.branch_id "branchId",b.name "branchName",po.created_by "createdByUserId",
   concat(u.first_name,' ',u.last_name) "createdByName",po.supplier_name "supplierName",po.order_date::text "orderDate",
   po.expected_delivery_date::text "expectedDeliveryDate",po.received_date::text "receivedDate",po.status,po.notes,
+  po.is_test_data "isTestData",po.test_authorized_at "testAuthorizedAt",
   po.created_at "createdAt",po.updated_at "updatedAt",count(poi.id)::int "itemCount",
   COALESCE(sum(poi.quantity_ordered*poi.unit_cost),0)::float8 "totalAmount",
   COALESCE(json_agg(json_build_object('id',poi.id,'inventoryItemId',ii.id,'sku',ii.sku,'name',ii.name,'unit',ii.unit,
@@ -552,6 +555,7 @@ export const createPurchaseOrder: RequestHandler = async (req, res) => {
 export const updatePurchaseOrderStatus: RequestHandler = async (req, res) => {
   const { id } = idParams.parse(req.params);
   const input = purchaseOrderStatusInput.parse(req.body);
+  if (input.status === "CANCELLED") throw new AppError(409, "CONTROLLED_CANCELLATION_REQUIRED", "Use the controlled purchase-order cancellation action and provide a reason and verification PIN");
   const branchId = requiredBranchId(req.user!);
   const allowedCurrent =
     input.status === "ORDERED" ? ["DRAFT"] : ["DRAFT", "ORDERED"];
@@ -579,6 +583,61 @@ export const updatePurchaseOrderStatus: RequestHandler = async (req, res) => {
       purchaseOrder: (await readPurchaseOrders(branchId, undefined, id))[0],
     },
   });
+};
+
+function requireDevelopmentOwner(user: NonNullable<Express.Request["user"]>) {
+  if (user.role !== "OWNER")
+    throw new AppError(403, "FORBIDDEN", "Only the Owner can manage test purchase orders");
+  if (env.NODE_ENV === "production")
+    throw new AppError(403, "TEST_DATA_DISABLED", "Test-data actions are disabled in production");
+}
+
+export const authorizePurchaseOrderTestCleanup: RequestHandler = async (req, res) => {
+  requireDevelopmentOwner(req.user!);
+  const { id } = idParams.parse(req.params);
+  const input = testCleanupAuthorizationInput.parse(req.body);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const authorized = await client.query<{ id: string; poNo: string; branchId: string }>(
+      `UPDATE purchase_orders po
+          SET is_test_data=true,test_authorized_by=$2,test_authorized_at=now(),
+              test_authorization_reason=$3,updated_at=now()
+        WHERE po.id=$1 AND po.status IN ('DRAFT','ORDERED','CANCELLED')
+          AND NOT EXISTS (
+            SELECT 1 FROM purchase_order_items item
+             WHERE item.purchase_order_id=po.id AND item.quantity_received>0
+          )
+      RETURNING po.id,po.po_no "poNo",po.branch_id "branchId"`,
+      [id, req.user!.id, input.reason],
+    );
+    const order = authorized.rows[0];
+    if (!order)
+      throw new AppError(
+        409,
+        "PO_TEST_AUTHORIZATION_INVALID",
+        "Only an individual draft, ordered, or cancelled purchase order with zero received quantity can be authorized as test data",
+      );
+    await writeAudit(
+      req.user!,
+      "AUTHORIZE_TEST_DATA_CLEANUP",
+      "PURCHASE_ORDER",
+      id,
+      `Authorized ${order.poNo} as development test data`,
+      { branchId: order.branchId, reason: input.reason },
+      client,
+    );
+    await client.query("COMMIT");
+    res.json({
+      success: true,
+      data: { purchaseOrder: (await readPurchaseOrders(undefined, undefined, id))[0] },
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 };
 
 export const receivePurchaseOrder: RequestHandler = async (req, res) => {
@@ -629,6 +688,25 @@ export const receivePurchaseOrder: RequestHandler = async (req, res) => {
           "Received quantity cannot exceed the remaining ordered quantity",
         );
       const conversionFactor = Number(current.rows[0].conversionFactor ?? 1);
+      if (order.rows[0].isTestData) {
+        const priorSetting = await client.query<{ currentUnitCost: number }>(
+          `SELECT current_unit_cost::float8 "currentUnitCost"
+             FROM branch_inventory_settings
+            WHERE branch_id=$1 AND inventory_item_id=$2 FOR UPDATE`,
+          [branchId, current.rows[0].inventoryItemId],
+        );
+        await client.query(
+          `UPDATE purchase_order_items
+              SET test_prior_setting_existed=$2,
+                  test_prior_unit_cost=$3
+            WHERE id=$1 AND test_prior_setting_existed IS NULL`,
+          [
+            item.purchaseOrderItemId,
+            Boolean(priorSetting.rows[0]),
+            priorSetting.rows[0]?.currentUnitCost ?? null,
+          ],
+        );
+      }
       await client.query(
         `UPDATE purchase_order_items SET quantity_received=quantity_received+$2,updated_at=now() WHERE id=$1`,
         [item.purchaseOrderItemId, item.quantityReceived],
@@ -646,11 +724,12 @@ export const receivePurchaseOrder: RequestHandler = async (req, res) => {
           order.rows[0].isTestData,
         ],
       );
-      await client.query(
+      const appliedSetting = await client.query<{ updatedAt: Date }>(
         `INSERT INTO branch_inventory_settings (branch_id,inventory_item_id,current_unit_cost,reorder_level,reorder_days,updated_by)
          SELECT $1,ii.id,$3,ii.reorder_level,7,$2 FROM inventory_items ii WHERE ii.id=$4
          ON CONFLICT (branch_id,inventory_item_id) DO UPDATE
-           SET current_unit_cost=excluded.current_unit_cost,updated_by=excluded.updated_by,updated_at=now()`,
+           SET current_unit_cost=excluded.current_unit_cost,updated_by=excluded.updated_by,updated_at=now()
+         RETURNING updated_at "updatedAt"`,
         [
           branchId,
           req.user!.id,
@@ -658,6 +737,12 @@ export const receivePurchaseOrder: RequestHandler = async (req, res) => {
           current.rows[0].inventoryItemId,
         ],
       );
+      if (order.rows[0].isTestData) {
+        await client.query(
+          `UPDATE purchase_order_items SET test_cost_applied_at=$2 WHERE id=$1`,
+          [item.purchaseOrderItemId, appliedSetting.rows[0]!.updatedAt],
+        );
+      }
     }
     const remaining = await client.query<{ count: string }>(
       `SELECT count(*) count FROM purchase_order_items WHERE purchase_order_id=$1 AND quantity_received<quantity_ordered`,
@@ -691,6 +776,119 @@ export const receivePurchaseOrder: RequestHandler = async (req, res) => {
         purchaseOrder: (await readPurchaseOrders(branchId, undefined, id))[0],
       },
     });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
+export const deletePurchaseOrderTestData: RequestHandler = async (req, res) => {
+  requireDevelopmentOwner(req.user!);
+  const { id } = idParams.parse(req.params);
+  const input = testCleanupAuthorizationInput.parse(req.body);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const orderResult = await client.query<{
+      id: string;
+      poNo: string;
+      branchId: string;
+      status: string;
+      isTestData: boolean;
+      testAuthorizedBy: string | null;
+    }>(
+      `SELECT id,po_no "poNo",branch_id "branchId",status,
+              is_test_data "isTestData",test_authorized_by "testAuthorizedBy"
+         FROM purchase_orders WHERE id=$1 FOR UPDATE`,
+      [id],
+    );
+    const order = orderResult.rows[0];
+    if (!order) throw new AppError(404, "PURCHASE_ORDER_NOT_FOUND", "Purchase order not found");
+    if (!order.isTestData || !order.testAuthorizedBy)
+      throw new AppError(
+        409,
+        "PO_NOT_AUTHORIZED_TEST_DATA",
+        "Only an individually Owner-authorized test purchase order can be cleaned up",
+      );
+
+    const items = await client.query<{
+      inventoryItemId: string;
+      quantityReceived: number;
+      priorSettingExisted: boolean | null;
+      priorUnitCost: number | null;
+      costAppliedAt: Date | null;
+    }>(
+      `SELECT inventory_item_id "inventoryItemId",quantity_received::float8 "quantityReceived",
+              test_prior_setting_existed "priorSettingExisted",
+              test_prior_unit_cost::float8 "priorUnitCost",test_cost_applied_at "costAppliedAt"
+         FROM purchase_order_items WHERE purchase_order_id=$1 FOR UPDATE`,
+      [id],
+    );
+    const receivedItems = items.rows.filter((item) => Number(item.quantityReceived) > 0);
+    const unsafeMovement = await client.query(
+      `SELECT id FROM inventory_movements
+        WHERE reference_no=$1 AND (branch_id<>$2 OR NOT is_test_data) LIMIT 1`,
+      [order.poNo, order.branchId],
+    );
+    if (unsafeMovement.rows[0])
+      throw new AppError(409, "PO_TEST_CLEANUP_UNSAFE", "The purchase order has a non-test or cross-branch inventory movement");
+
+    for (const item of receivedItems) {
+      if (item.priorSettingExisted === null || !item.costAppliedAt)
+        throw new AppError(409, "PO_TEST_CLEANUP_UNSAFE", "A received test item is missing its reversible cost snapshot");
+      const currentSetting = await client.query<{ updatedAt: Date }>(
+        `SELECT updated_at "updatedAt" FROM branch_inventory_settings
+          WHERE branch_id=$1 AND inventory_item_id=$2 FOR UPDATE`,
+        [order.branchId, item.inventoryItemId],
+      );
+      if (!currentSetting.rows[0] || currentSetting.rows[0].updatedAt.getTime() !== item.costAppliedAt.getTime())
+        throw new AppError(409, "PO_TEST_CLEANUP_COST_CHANGED", "An ingredient cost changed after this test receipt; cleanup was stopped to protect the newer value");
+    }
+
+    const deletedMovements = await client.query(
+      `DELETE FROM inventory_movements
+        WHERE branch_id=$1 AND reference_no=$2 AND is_test_data=true RETURNING id`,
+      [order.branchId, order.poNo],
+    );
+    for (const item of receivedItems) {
+      if (item.priorSettingExisted) {
+        const restored = await client.query(
+          `UPDATE branch_inventory_settings
+              SET current_unit_cost=$3,updated_by=$4,updated_at=now()
+            WHERE branch_id=$1 AND inventory_item_id=$2 AND updated_at=$5 RETURNING inventory_item_id`,
+          [order.branchId, item.inventoryItemId, item.priorUnitCost, req.user!.id, item.costAppliedAt],
+        );
+        if (!restored.rows[0]) throw new AppError(409, "PO_TEST_CLEANUP_COST_CHANGED", "The test cost could not be safely restored");
+      } else {
+        const removed = await client.query(
+          `DELETE FROM branch_inventory_settings
+            WHERE branch_id=$1 AND inventory_item_id=$2 AND updated_at=$3 RETURNING inventory_item_id`,
+          [order.branchId, item.inventoryItemId, item.costAppliedAt],
+        );
+        if (!removed.rows[0]) throw new AppError(409, "PO_TEST_CLEANUP_COST_CHANGED", "The test-created cost setting could not be safely removed");
+      }
+    }
+    await client.query(`DELETE FROM notifications WHERE entity_type='PURCHASE_ORDER' AND entity_id=$1`, [id]);
+    await client.query(`DELETE FROM purchase_orders WHERE id=$1`, [id]);
+    await writeAudit(
+      req.user!,
+      "TEST_DATA_CLEANUP",
+      "PURCHASE_ORDER",
+      id,
+      `Cleaned up Owner-authorized test purchase order ${order.poNo}`,
+      {
+        branchId: order.branchId,
+        reason: input.reason,
+        priorStatus: order.status,
+        authorizedBy: order.testAuthorizedBy,
+        removedMovementCount: deletedMovements.rowCount ?? 0,
+      },
+      client,
+    );
+    await client.query("COMMIT");
+    res.json({ success: true, data: { deletedId: id } });
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;

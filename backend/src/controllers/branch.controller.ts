@@ -4,6 +4,9 @@ import { getEffectiveBranchId } from "../services/branchScope.js";
 import { writeAudit } from "../services/audit.service.js";
 import { AppError } from "../utils/appError.js";
 import { branchInput, branchPatch, idParams } from "../validators/masterData.js";
+import { destructiveActionInput } from "../validators/destructiveAction.js";
+import { verifyDestructiveAction, writeDestructiveActionAudit } from "../services/destructiveAction.service.js";
+import { revokeAllUserSessions } from "../services/auth.service.js";
 
 const selection = `SELECT b.id,b.code,b.name,b.location,b.status,b.created_at "createdAt",b.updated_at "updatedAt",
   manager.id "managerId",manager.name manager,manager.status "managerStatus",
@@ -47,6 +50,7 @@ export const createBranch: RequestHandler = async (req, res) => {
 };
 export const updateBranch: RequestHandler = async (req, res) => {
   const { id } = idParams.parse(req.params); const input = branchPatch.parse(req.body);
+  if (input.status === "INACTIVE") throw new AppError(409, "CONTROLLED_DEACTIVATION_REQUIRED", "Use the controlled branch deactivation action and provide a reason and verification PIN");
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -56,5 +60,22 @@ export const updateBranch: RequestHandler = async (req, res) => {
     await writeAudit(req.user!, "UPDATE_BRANCH", "BRANCH", id, `Updated branch ${result.rows[0].name}`, { fields: Object.keys(input) }, client);
     await client.query("COMMIT");
     res.json({ success: true, data: { branch: result.rows[0] } });
+  } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+};
+
+export const deactivateBranch: RequestHandler = async (req, res) => {
+  if (req.user!.role !== "OWNER") throw new AppError(403, "FORBIDDEN", "Only the Owner can deactivate a branch");
+  const { id } = idParams.parse(req.params); const input = destructiveActionInput.parse(req.body);
+  await verifyDestructiveAction(req.user!, input.verificationPin, { module: "BRANCH", action: "DEACTIVATE", recordId: id, reason: input.reason });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query<{ name: string }>(`UPDATE branches SET status='INACTIVE',updated_at=now() WHERE id=$1 AND status='ACTIVE' RETURNING name`, [id]);
+    if (!result.rows[0]) throw new AppError(404, "ACTIVE_BRANCH_NOT_FOUND", "Active branch not found");
+    const affectedUsers = await client.query<{ id: string }>(`UPDATE users SET status='INACTIVE',updated_at=now() WHERE branch_id=$1 AND status='ACTIVE' RETURNING id`, [id]);
+    for (const user of affectedUsers.rows) await revokeAllUserSessions(user.id, "BRANCH_DEACTIVATED", client);
+    await client.query(`UPDATE menu_item_branches SET is_active=false,updated_at=now() WHERE branch_id=$1`, [id]);
+    await writeDestructiveActionAudit(req.user!, { module: "BRANCH", action: "DEACTIVATE", recordId: id, reason: input.reason }, `Deactivated branch ${result.rows[0].name}`, { operationalHistoryPreserved: true, deactivatedUserCount: affectedUsers.rowCount ?? 0 }, client);
+    await client.query("COMMIT"); res.json({ success: true, data: { id, action: "DEACTIVATED" } });
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 };
