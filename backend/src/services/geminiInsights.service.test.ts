@@ -5,9 +5,12 @@ vi.mock("../config/env.js", () => ({ env: mocks.env }));
 
 import {
   buildGeminiPrompt,
+  buildShrinkageGeminiPrompt,
   generateGeminiInsights,
+  generateGeminiShrinkageAnalysis,
   geminiFindingsSchema,
   resetGeminiRequestProtectionForTests,
+  type ShrinkageFindings,
   type GeminiFindings,
 } from "./geminiInsights.service.js";
 
@@ -28,6 +31,26 @@ const findings: GeminiFindings = {
   stockRisks: [{ branch: "Gulod / Main Branch", ingredient: "Espresso Blend Beans", daysToStockout: 5, suggestedReorder: 500, unit: "g" }],
 };
 const validInsights = [{ title: "Stock risk", description: "Beans may run low.", recommendation: "Review recorded stock.", urgency: "HIGH" }];
+const shrinkageFindings: ShrinkageFindings = {
+  branch: "Gulod / Main Branch",
+  ingredient: "Espresso Blend Beans",
+  expectedQuantity: 5_054,
+  actualQuantity: 5_000,
+  varianceQuantity: -54,
+  variancePercent: -1.068,
+  unit: "g",
+  materiality: "ABOVE_TOLERANCE",
+  status: "DETECTED",
+  classification: null,
+  relatedHistoricalCases: 0,
+  linkedIncidents: [],
+};
+const validShrinkageAnalysis = {
+  observation: "The recorded count is 54 g below expected stock.",
+  risk: "The available facts indicate a shortage that warrants review, not a proven cause.",
+  recommendation: "Review count records, recent movements, and linked incident evidence.",
+  limitations: "No linked incident evidence is available, so the cause cannot be determined.",
+};
 const geminiResponse = (value: unknown) => ({ ok: true, status: 200, json: vi.fn().mockResolvedValue({ candidates: [{ content: { parts: [{ text: JSON.stringify(value) }] } }] }) });
 
 beforeEach(() => {
@@ -138,5 +161,42 @@ describe("Gemini insight hardening", () => {
     await expect(generateGeminiInsights(findings)).resolves.toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(vi.mocked(console.info).mock.calls.flat().join(" ")).toContain("CACHED_FALLBACK");
+  });
+});
+
+describe("Gemini-assisted shrinkage analysis", () => {
+  it("returns a locally validated advisory response without changing authoritative findings", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(geminiResponse(validShrinkageAnalysis)));
+    await expect(generateGeminiShrinkageAnalysis(shrinkageFindings)).resolves.toEqual(validShrinkageAnalysis);
+    expect(shrinkageFindings).toMatchObject({ expectedQuantity: 5_054, actualQuantity: 5_000, varianceQuantity: -54 });
+  });
+
+  it("rejects malformed shrinkage output safely", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(geminiResponse({ observation: "Incomplete" })));
+    await expect(generateGeminiShrinkageAnalysis(shrinkageFindings)).resolves.toBeNull();
+  });
+
+  it("times out safely without performing any business-record operation", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    })));
+    const pending = generateGeminiShrinkageAnalysis(shrinkageFindings);
+    await vi.advanceTimersByTimeAsync(12_000);
+    await expect(pending).resolves.toBeNull();
+  });
+
+  it("sends only the approved minimized findings and treats values as untrusted data", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(geminiResponse(validShrinkageAnalysis));
+    vi.stubGlobal("fetch", fetchMock);
+    await generateGeminiShrinkageAnalysis({ ...shrinkageFindings, userId: "private", incidentNarrative: "private narrative", databaseUrl: "secret" });
+    const body = JSON.parse(String((fetchMock.mock.calls[0]![1] as RequestInit).body));
+    const prompt = body.contents[0].parts[0].text as string;
+    expect(prompt).toContain('"varianceQuantity":-54');
+    expect(prompt).toContain("BEGIN_DATA_JSON");
+    expect(prompt).toContain("Never claim that theft");
+    expect(prompt).toContain("not as independently proven fact");
+    for (const forbidden of ["userId", "incidentNarrative", "private narrative", "databaseUrl", "secret"]) expect(prompt).not.toContain(forbidden);
+    expect(buildShrinkageGeminiPrompt(shrinkageFindings)).not.toContain(validShrinkageAnalysis.limitations);
   });
 });

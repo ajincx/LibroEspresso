@@ -320,6 +320,16 @@ export interface ShrinkageEvidence {
   aiAdvisoryLabel: string;
 }
 
+export interface ShrinkageAiAnalysisResult {
+  source: "GOOGLE_GEMINI" | "UNAVAILABLE";
+  analysis: {
+    observation: string;
+    risk: string;
+    recommendation: string;
+    limitations: string;
+  } | null;
+}
+
 export interface VarianceRecord {
   countItemId: string;
   countNo: string;

@@ -1,5 +1,5 @@
 import type { ApiSuccess } from "../types/auth";
-import type { CountVarianceItem, DailyPosUploadStatus, EvidenceBasis, ExpectedInventoryItem, InventoryCountSummary, OpeningInventoryBaseline, PosAnalytics, PosImportPreview, PosImportReconciliation, PosImportRecord, PosInventoryDateAssessment, PosMapping, PosMappingReviewStatus, PosSource, ShrinkageClassification, ShrinkageEvidence, ShrinkageReport, UnavailableInventoryCountItem, VarianceRecord, WorkflowNotification } from "../types/inventoryWorkflow";
+import type { CountVarianceItem, DailyPosUploadStatus, EvidenceBasis, ExpectedInventoryItem, InventoryCountSummary, OpeningInventoryBaseline, PosAnalytics, PosImportPreview, PosImportReconciliation, PosImportRecord, PosInventoryDateAssessment, PosMapping, PosMappingReviewStatus, PosSource, ShrinkageAiAnalysisResult, ShrinkageClassification, ShrinkageEvidence, ShrinkageReport, UnavailableInventoryCountItem, VarianceRecord, WorkflowNotification } from "../types/inventoryWorkflow";
 import { api } from "./api";
 
 type PosPreviewSource =
@@ -53,6 +53,9 @@ export const inventoryWorkflowService = {
   },
   async evidence(id: string) {
     return (await api.get<ApiSuccess<{ evidence: ShrinkageEvidence }>>(`/shrinkage-reports/${id}/evidence`)).data.data.evidence;
+  },
+  async shrinkageAiAnalysis(id: string) {
+    return (await api.get<ApiSuccess<ShrinkageAiAnalysisResult>>(`/shrinkage-reports/${id}/ai-analysis`)).data.data;
   },
   async submitInvestigation(id: string, input: { menuItemId?: string; classification: ShrinkageClassification; explanation: string; supportingNotes?: string; evidenceReviewConfirmed?: boolean; evidenceBasis?: EvidenceBasis[] }) {
     return (await api.patch<ApiSuccess<{ report: ShrinkageReport }>>(`/shrinkage-reports/${id}/investigation`, input)).data.data.report;

@@ -18,7 +18,7 @@ describe("getPosAnalytics verified incident shrinkage causes", () => {
   it("calculates verifiedShrinkageCost and shrinkageCauses from verified incident reports", async () => {
     mocks.poolQuery
       .mockResolvedValueOnce({ rows: [{ branchName: "Main Branch" }] }) // branch query
-      .mockResolvedValueOnce({ rows: [{ sales: 1000, unitsSold: 10, importCount: 1, theoreticalCogs: 400 }] }) // summary
+      .mockResolvedValueOnce({ rows: [{ sales: 15443, unitsSold: 89, importCount: 1, theoreticalCogs: 4941.535 }] }) // summary
       .mockResolvedValueOnce({ rows: [] }) // trends
       .mockResolvedValueOnce({ rows: [] }) // products
       .mockResolvedValueOnce({ rows: [] }) // ingredients
@@ -50,6 +50,18 @@ describe("getPosAnalytics verified incident shrinkage causes", () => {
       { name: "PREPARATION ERROR", value: 36.86 },
       { name: "WASTAGE", value: 4.32 },
     ]);
+    expect(responseData.data.summary.sales).toBe(15443);
+    expect(responseData.data.summary.theoreticalCogs).toBe(4941.535);
+
+    const operationalPosQueries = mocks.poolQuery.mock.calls
+      .map(([sql]) => String(sql))
+      .filter((sql) => sql.includes("FROM pos_imports pi"));
+    expect(operationalPosQueries).toHaveLength(4);
+    for (const sql of operationalPosQueries) {
+      expect(sql).toContain("source.status='ACTIVE'");
+      expect(sql).toContain("NOT pi.is_test_data");
+      expect(sql).toContain("pi.branch_id=$3");
+    }
   });
 
   it("returns empty shrinkageCauses and 0 verifiedShrinkageCost when no verified incidents exist", async () => {

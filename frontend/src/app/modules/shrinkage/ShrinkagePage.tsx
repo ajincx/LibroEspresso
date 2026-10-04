@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Archive, CheckCircle, Eye, RefreshCw, SearchCheck, ShieldCheck, X } from "lucide-react";
+import { AlertTriangle, Archive, CheckCircle, Eye, RefreshCw, SearchCheck, ShieldCheck, Sparkles, X } from "lucide-react";
 import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { useAuth } from "../../contexts/AuthContext";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
 import { operationsService } from "../../services/operations.service";
 import { masterDataService } from "../../services/masterData.service";
-import type { EvidenceBasis, ShrinkageClassification, ShrinkageEvidence, ShrinkageReport, ShrinkageStatus } from "../../types/inventoryWorkflow";
+import type { EvidenceBasis, ShrinkageAiAnalysisResult, ShrinkageClassification, ShrinkageEvidence, ShrinkageReport, ShrinkageStatus } from "../../types/inventoryWorkflow";
 import type { Branch, InventoryItem, MenuItem } from "../../types/masterData";
 import type { IncidentType } from "../../types/operations";
 import { ShrinkageIncidentReports } from "./ShrinkageIncidentReports";
@@ -36,6 +36,8 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
   const [confirmReview, setConfirmReview] = useState(false);
   const [investigation, setInvestigation] = useState({ classification: "" as ShrinkageClassification | "", menuItemId: "", explanation: "", supportingNotes: "", evidenceReviewConfirmed: false, evidenceBasis: [] as EvidenceBasis[] });
   const [evidence, setEvidence] = useState<ShrinkageEvidence | null>(null);
+  const [aiAnalysis, setAiAnalysis] = useState<ShrinkageAiAnalysisResult | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -67,7 +69,13 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
     setSelected(report);
     setInvestigation({ classification: report.classification ?? "", menuItemId: report.menuItemId ?? "", explanation: report.explanation ?? "", supportingNotes: report.supportingNotes ?? "", evidenceReviewConfirmed: report.evidenceReviewConfirmed ?? false, evidenceBasis: report.evidenceBasis ?? [] });
     setEvidence(null);
+    setAiAnalysis(null);
+    setAiLoading(true);
     void inventoryWorkflowService.evidence(report.id).then(setEvidence).catch(() => setEvidence(null));
+    void inventoryWorkflowService.shrinkageAiAnalysis(report.id)
+      .then(setAiAnalysis)
+      .catch(() => setAiAnalysis({ source: "UNAVAILABLE", analysis: null }))
+      .finally(() => setAiLoading(false));
   };
 
   const metrics = useMemo(() => ({
@@ -215,9 +223,10 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
         {!evidence ? <p className="text-xs mt-2" style={{ color: "var(--app-text-muted)" }}>Loading available operational evidence…</p> : <>
           {evidence.incidents.length ? <div className="mt-3 space-y-2">{evidence.incidents.map((incident) => <div key={incident.incidentReportItemId} className="rounded-xl border p-3 text-xs" style={{ borderColor: "var(--app-border)" }}><div className="flex justify-between gap-2"><strong>{incidentTypeLabel(incident.incidentType)}</strong><span>{incident.explicitlyLinked ? "Linked evidence" : "Possible match"}</span></div><div className="mt-1" style={{ color: "var(--app-text-muted)" }}>{incident.submittedByName} · {formatDate(incident.occurredAt)} · {incident.quantity} {incident.unit} · {incident.status}</div><p className="mt-2">{incident.reason}</p><div className="flex items-center gap-3 mt-2">{incident.photoUrl && <a href={incident.photoUrl} target="_blank" rel="noreferrer" className="font-semibold" style={{ color: "var(--app-primary)" }}>View supporting image</a>}{!owner && !incident.explicitlyLinked && <button disabled={saving} onClick={() => void linkIncident(incident.id,incident.incidentReportItemId)} className="font-semibold" style={{ color: "var(--app-primary)" }}>Link as evidence</button>}</div></div>)}</div> : <p className="text-xs mt-2" style={{ color: "var(--app-text-muted)" }}>No linked or potentially relevant Staff incidents were found.</p>}
           <div className="grid sm:grid-cols-2 gap-3 mt-3"><div className="rounded-xl p-3" style={{ background: "var(--app-bg)" }}><div className="text-xs font-semibold">Recent inventory records</div>{evidence.movements.length ? <div className="mt-2 space-y-1.5">{evidence.movements.map((movement, index) => <div key={`${movement.occurredAt}-${index}`} className="text-xs" style={{ color: "var(--app-text-muted)" }}><strong>{movement.movementType.replaceAll("_", " ")}</strong> · {movement.quantity} {selected.unit} · {formatDate(movement.occurredAt)}{movement.referenceNo ? ` · ${movement.referenceNo}` : ""}</div>)}</div> : <div className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>No nearby receipt or adjustment records.</div>}</div><div className="rounded-xl p-3" style={{ background: "var(--app-bg)" }}><div className="text-xs font-semibold">Related sales usage</div>{evidence.usage.length ? <div className="mt-2 space-y-1.5">{evidence.usage.map((entry) => <div key={entry.date} className="text-xs" style={{ color: "var(--app-text-muted)" }}>{formatDate(entry.date)} · {entry.expectedUsage.toFixed(2)} {selected.unit} expected usage</div>)}</div> : <div className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>No recent recipe-derived usage.</div>}</div></div>
-          <div className="mt-3 rounded-xl p-3 text-xs" style={{ background: "var(--app-primary-subtle)", color: "var(--app-text-muted)" }}><strong>AI-assisted analysis</strong><div className="mt-1">{evidence.aiSuggestion ?? "No AI suggestion was requested for this investigation."}</div><div className="mt-1 font-semibold">{evidence.aiAdvisoryLabel}</div></div>
         </>}
       </div>
+
+      <ShrinkageAiAnalysisPanel result={aiAnalysis} loading={aiLoading} />
 
       {selected.status === "DETECTED" && !owner ? <div>
         <h3 className="font-semibold mb-1">Manager Investigation Findings</h3><p className="text-xs mb-4" style={{ color: "var(--app-text-muted)" }}>Investigate with branch personnel, then document the verified or suspected cause.</p>
@@ -234,6 +243,26 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
 
     {confirmReview && selected && <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.55)" }}><div role="dialog" aria-modal="true" aria-labelledby="confirm-shrinkage-review-title" className="w-full max-w-md p-6 rounded-2xl border" style={{ background: "var(--app-surface)", borderColor: "var(--app-border)" }}><h2 id="confirm-shrinkage-review-title" className="text-lg font-bold">Mark these investigation findings as reviewed?</h2><p className="text-sm mt-2" style={{ color: "var(--app-text-muted)" }}>The Branch Manager will be notified and the Owner review will be recorded.</p><div className="flex gap-3 mt-6"><button onClick={() => setConfirmReview(false)} className="flex-1 py-2.5 rounded-xl border" style={{ borderColor: "var(--app-border)" }}>Cancel</button><button disabled={saving} onClick={() => void review()} className="flex-1 py-2.5 rounded-xl text-white font-semibold disabled:opacity-50" style={{ background: "var(--app-primary)" }}>{saving ? "Reviewing…" : "Mark as Reviewed"}</button></div></div></div>}
   </div>;
+}
+
+export function ShrinkageAiAnalysisPanel({ result, loading }: { result: ShrinkageAiAnalysisResult | null; loading: boolean }) {
+  const analysis = result?.source === "GOOGLE_GEMINI" ? result.analysis : null;
+  return <div className="mb-5 rounded-xl border p-4" style={{ borderColor: "var(--app-border)", background: "var(--app-primary-subtle)" }}>
+    <div className="flex items-start gap-2"><Sparkles size={16} className="mt-0.5 shrink-0" style={{ color: "var(--app-primary)" }} /><div className="min-w-0 flex-1"><h3 className="text-sm font-semibold">AI-Assisted Shrinkage Analysis</h3>
+      {loading ? <p className="mt-2 text-xs" style={{ color: "var(--app-text-muted)" }}>Generating advisory analysis from calculated shrinkage findings…</p>
+        : analysis ? <><p className="mt-1 text-[10px] font-semibold" style={{ color: "var(--app-primary)" }}>Generated by Gemini from calculated shrinkage findings</p><div className="mt-3 space-y-3 text-xs">
+          <AnalysisField label="Observation" value={analysis.observation} />
+          <AnalysisField label="Risk / Pattern" value={analysis.risk} />
+          <AnalysisField label="Recommendation" value={analysis.recommendation} />
+          <AnalysisField label="Confidence / Limitation" value={analysis.limitations} />
+        </div></>
+          : <><p className="mt-2 text-xs font-semibold">AI-assisted analysis is currently unavailable.</p><p className="mt-1 text-xs" style={{ color: "var(--app-text-muted)" }}>The investigation remains fully available using the calculated quantities and supporting records.</p></>}
+    </div></div>
+  </div>;
+}
+
+function AnalysisField({ label, value }: { label: string; value: string }) {
+  return <div><div className="font-semibold">{label}</div><p className="mt-0.5 leading-relaxed" style={{ color: "var(--app-text-muted)" }}>{value}</p></div>;
 }
 
 function Status({ status }: { status: ShrinkageStatus }) {

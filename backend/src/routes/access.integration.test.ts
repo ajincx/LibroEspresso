@@ -541,6 +541,15 @@ describe("access controls", () => {
     expect([classification.status, linking.status]).toEqual([403, 403]);
   });
 
+  it("blocks Staff and anonymous users from Gemini-assisted shrinkage analysis", async () => {
+    const id = "00000000-0000-0000-0000-000000000001";
+    const [staff, anonymous] = await Promise.all([
+      request(app).get(`/api/shrinkage-reports/${id}/ai-analysis`).set("Cookie", session({ id: "staff", role: "STAFF", branchId: "00000000-0000-4000-8000-000000000002" })),
+      request(app).get(`/api/shrinkage-reports/${id}/ai-analysis`),
+    ]);
+    expect([staff.status, anonymous.status]).toEqual([403, 401]);
+  });
+
   it("does not let Staff link an incident during submission", async () => {
     const id = "00000000-0000-4000-8000-000000000001";
     const response = await request(app)

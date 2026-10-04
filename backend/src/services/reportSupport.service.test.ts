@@ -51,5 +51,14 @@ describe("inventory report calculation source", () => {
     expect(inventoryCall?.[1]).not.toContain(otherBranchId);
     expect(String(inventoryCall?.[0])).toContain("source.status='ACTIVE'");
     expect(String(inventoryCall?.[0])).toContain("NOT pi.is_test_data");
+
+    const operationalFinancialQueries = mocks.poolQuery.mock.calls
+      .map(([sql]) => String(sql))
+      .filter((sql) => sql.includes("FROM pos_imports pi"));
+    expect(operationalFinancialQueries.length).toBeGreaterThan(0);
+    for (const sql of operationalFinancialQueries) {
+      expect(sql).toContain("source.status='ACTIVE'");
+      expect(sql).toContain("NOT pi.is_test_data");
+    }
   });
 });

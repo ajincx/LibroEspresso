@@ -1,5 +1,6 @@
 import { pool } from "../config/database.js";
 import { buildReportSupportData } from "./reportSupport.service.js";
+import { OPERATIONAL_POS_IMPORT_CONDITION, OPERATIONAL_POS_SOURCE_JOIN } from "./operationalPosScope.service.js";
 import { buildPredictiveForecast } from "../controllers/predictive.controller.js";
 import { calculateFinancialSummary } from "./financialMetrics.service.js";
 import { getEffectiveBranchId } from "./branchScope.js";
@@ -258,8 +259,9 @@ export async function buildReportDataset(
       `SELECT pi.business_date::text "businessDate",b.name branch,mi.name product,
       psi.quantity_sold::float8 "quantitySold",coalesce(psi.unit_price_snapshot,mi.selling_price)::float8 "sellingPriceSnapshot",
       (psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price))::float8 "salesRevenue"
-      FROM pos_imports pi JOIN branches b ON b.id=pi.branch_id JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN menu_items mi ON mi.id=psi.menu_item_id
-      WHERE pi.business_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR pi.branch_id=$3::uuid)
+      FROM pos_imports pi ${OPERATIONAL_POS_SOURCE_JOIN}
+      JOIN branches b ON b.id=pi.branch_id JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN menu_items mi ON mi.id=psi.menu_item_id
+      WHERE ${OPERATIONAL_POS_IMPORT_CONDITION} AND pi.business_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR pi.branch_id=$3::uuid)
         AND ($4::uuid IS NULL OR mi.id=$4::uuid) ORDER BY pi.business_date,mi.name LIMIT 5001`,
       [request.startDate, request.endDate, branchId, request.productId ?? null],
     );

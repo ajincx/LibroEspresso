@@ -7,6 +7,7 @@ import {
 } from "./reportCalculations.service.js";
 import { VERIFIED_SHRINKAGE_CLASSIFICATIONS_SQL } from "./shrinkageWorkflow.service.js";
 import { inventoryLedgerKey, loadInventoryLedgerBalances } from "./inventoryLedger.service.js";
+import { OPERATIONAL_POS_IMPORT_CONDITION, OPERATIONAL_POS_SOURCE_JOIN } from "./operationalPosScope.service.js";
 import type { TokenUser } from "../types/auth.js";
 
 type FinancialRow = { branchId: string; branchName: string; branchStatus: string; sales: number; cogs: number; detected: number; verified: number; pending: number; corrected: number };
@@ -42,13 +43,15 @@ export async function buildReportSupportData(user: TokenUser, filters: ReportSup
         SELECT id,name,status::text FROM branches WHERE ($3::uuid IS NULL OR id=$3::uuid)
       ), sales AS (
         SELECT pi.branch_id,coalesce(sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price)),0)::float8 sales
-          FROM pos_imports pi JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN menu_items mi ON mi.id=psi.menu_item_id
-         WHERE pi.business_date BETWEEN $1::date AND $2::date GROUP BY pi.branch_id
+          FROM pos_imports pi ${OPERATIONAL_POS_SOURCE_JOIN}
+          JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN menu_items mi ON mi.id=psi.menu_item_id
+         WHERE ${OPERATIONAL_POS_IMPORT_CONDITION} AND pi.business_date BETWEEN $1::date AND $2::date GROUP BY pi.branch_id
       ), costs AS (
         SELECT pi.branch_id,coalesce(sum(u.quantity_consumed*u.unit_cost_snapshot),0)::float8 cogs
-          FROM pos_imports pi JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
+          FROM pos_imports pi ${OPERATIONAL_POS_SOURCE_JOIN}
+          JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
           JOIN pos_sale_ingredient_usage u ON u.pos_sale_item_id=psi.id
-         WHERE pi.business_date BETWEEN $1::date AND $2::date GROUP BY pi.branch_id
+         WHERE ${OPERATIONAL_POS_IMPORT_CONDITION} AND pi.business_date BETWEEN $1::date AND $2::date GROUP BY pi.branch_id
       ), detected AS (
       SELECT ic.branch_id,coalesce(sum(CASE WHEN ici.actual_quantity<ici.expected_quantity THEN abs(ici.variance_value) ELSE 0 END),0)::float8 value
           FROM inventory_counts ic JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id
@@ -67,21 +70,24 @@ export async function buildReportSupportData(user: TokenUser, filters: ReportSup
       LEFT JOIN detected d ON d.branch_id=b.id LEFT JOIN states st ON st.branch_id=b.id ORDER BY b.name`, params),
     pool.query(`WITH line_costs AS (
         SELECT psi.id,coalesce(sum(u.quantity_consumed*u.unit_cost_snapshot),0)::float8 cogs
-        FROM pos_imports pi JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
+        FROM pos_imports pi ${OPERATIONAL_POS_SOURCE_JOIN}
+        JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
         LEFT JOIN pos_sale_ingredient_usage u ON u.pos_sale_item_id=psi.id
-        WHERE pi.business_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR pi.branch_id=$3::uuid)
+        WHERE ${OPERATIONAL_POS_IMPORT_CONDITION} AND pi.business_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR pi.branch_id=$3::uuid)
         GROUP BY psi.id
       ) SELECT mi.id,mi.name,mi.category,mi.status::text,sum(psi.quantity_sold)::float8 "quantitySold",
         sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price))::float8 revenue,sum(lc.cogs)::float8 cogs
-      FROM pos_imports pi JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN menu_items mi ON mi.id=psi.menu_item_id JOIN line_costs lc ON lc.id=psi.id
-      WHERE pi.business_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR pi.branch_id=$3::uuid)
+      FROM pos_imports pi ${OPERATIONAL_POS_SOURCE_JOIN}
+      JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN menu_items mi ON mi.id=psi.menu_item_id JOIN line_costs lc ON lc.id=psi.id
+      WHERE ${OPERATIONAL_POS_IMPORT_CONDITION} AND pi.business_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR pi.branch_id=$3::uuid)
         AND ($4::uuid IS NULL OR mi.id=$4::uuid)
       GROUP BY mi.id ORDER BY cogs DESC`, [filters.startDate, filters.endDate, scope, productFilter]),
     pool.query(`SELECT mi.id "productId",mi.name "productName",ii.id "ingredientId",ii.name ingredient,ii.unit,
         sum(u.quantity_consumed)::float8 "quantityUsed",sum(u.quantity_consumed*u.unit_cost_snapshot)::float8 cost
-      FROM pos_imports pi JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN menu_items mi ON mi.id=psi.menu_item_id
+      FROM pos_imports pi ${OPERATIONAL_POS_SOURCE_JOIN}
+      JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN menu_items mi ON mi.id=psi.menu_item_id
       JOIN pos_sale_ingredient_usage u ON u.pos_sale_item_id=psi.id JOIN inventory_items ii ON ii.id=u.inventory_item_id
-      WHERE pi.business_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR pi.branch_id=$3::uuid)
+      WHERE ${OPERATIONAL_POS_IMPORT_CONDITION} AND pi.business_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR pi.branch_id=$3::uuid)
         AND ($4::uuid IS NULL OR mi.id=$4::uuid) AND ($5::uuid IS NULL OR ii.id=$5::uuid)
       GROUP BY mi.id,ii.id ORDER BY cost DESC`, [filters.startDate, filters.endDate, scope, productFilter, ingredientFilter]),
     pool.query(`SELECT sr.classification::text classification,count(*)::int cases,
@@ -105,9 +111,9 @@ export async function buildReportSupportData(user: TokenUser, filters: ReportSup
       GROUP BY sr.id,b.name,ii.name,u.id ORDER BY sr.detected_at DESC`, [filters.startDate, filters.endDate, scope, ingredientFilter, classificationFilter]),
     pool.query(`WITH recent_usage AS (
         SELECT pi.branch_id,u.inventory_item_id,sum(u.quantity_consumed)::float8 usage,count(DISTINCT pi.business_date)::int days
-        FROM pos_imports pi JOIN pos_sources source ON source.id=pi.pos_source_id AND source.status='ACTIVE'
+        FROM pos_imports pi ${OPERATIONAL_POS_SOURCE_JOIN}
         JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN pos_sale_ingredient_usage u ON u.pos_sale_item_id=psi.id
-        WHERE NOT pi.is_test_data AND pi.business_date BETWEEN $1::date AND $2::date GROUP BY pi.branch_id,u.inventory_item_id
+        WHERE ${OPERATIONAL_POS_IMPORT_CONDITION} AND pi.business_date BETWEEN $1::date AND $2::date GROUP BY pi.branch_id,u.inventory_item_id
       ), variance AS (
         SELECT ic.branch_id,ici.inventory_item_id,sum(ici.actual_quantity-ici.expected_quantity)::float8 quantity,
           sum(CASE WHEN ici.actual_quantity>ici.expected_quantity THEN abs(ici.variance_value) WHEN ici.actual_quantity<ici.expected_quantity THEN -abs(ici.variance_value) ELSE 0 END)::float8 value
@@ -135,18 +141,20 @@ export async function buildReportSupportData(user: TokenUser, filters: ReportSup
         AND ($1::uuid IS NULL OR po.branch_id=$1::uuid) GROUP BY po.branch_id,poi.inventory_item_id,po.expected_delivery_date`, [scope]),
     pool.query(`SELECT pi.branch_id "branchId",b.name "branchName",pi.business_date::text date,
         sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price))::float8 sales
-      FROM pos_imports pi JOIN pos_sources source ON source.id=pi.pos_source_id AND source.status='ACTIVE'
+      FROM pos_imports pi ${OPERATIONAL_POS_SOURCE_JOIN}
       JOIN branches b ON b.id=pi.branch_id JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN menu_items mi ON mi.id=psi.menu_item_id
-      WHERE NOT pi.is_test_data AND pi.business_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR pi.branch_id=$3::uuid)
+      WHERE ${OPERATIONAL_POS_IMPORT_CONDITION} AND pi.business_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR pi.branch_id=$3::uuid)
       GROUP BY pi.branch_id,b.name,pi.business_date ORDER BY pi.branch_id,pi.business_date`, [evaluationStart, filters.endDate, scope]),
     pool.query(`WITH sales AS (
         SELECT pi.business_date date,sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price))::float8 sales
-        FROM pos_imports pi JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN menu_items mi ON mi.id=psi.menu_item_id
-        WHERE pi.business_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR pi.branch_id=$3::uuid) GROUP BY pi.business_date
+        FROM pos_imports pi ${OPERATIONAL_POS_SOURCE_JOIN}
+        JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN menu_items mi ON mi.id=psi.menu_item_id
+        WHERE ${OPERATIONAL_POS_IMPORT_CONDITION} AND pi.business_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR pi.branch_id=$3::uuid) GROUP BY pi.business_date
       ), costs AS (
         SELECT pi.business_date date,sum(u.quantity_consumed*u.unit_cost_snapshot)::float8 cogs
-        FROM pos_imports pi JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN pos_sale_ingredient_usage u ON u.pos_sale_item_id=psi.id
-        WHERE pi.business_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR pi.branch_id=$3::uuid) GROUP BY pi.business_date
+        FROM pos_imports pi ${OPERATIONAL_POS_SOURCE_JOIN}
+        JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN pos_sale_ingredient_usage u ON u.pos_sale_item_id=psi.id
+        WHERE ${OPERATIONAL_POS_IMPORT_CONDITION} AND pi.business_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR pi.branch_id=$3::uuid) GROUP BY pi.business_date
       ), shortage AS (
         SELECT ic.count_date date,sum(CASE WHEN ici.actual_quantity<ici.expected_quantity THEN abs(ici.variance_value) ELSE 0 END)::float8 detected FROM inventory_counts ic JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id
         WHERE NOT ic.is_test_data AND ic.count_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR ic.branch_id=$3::uuid) GROUP BY ic.count_date
@@ -177,7 +185,7 @@ export async function buildReportSupportData(user: TokenUser, filters: ReportSup
 
   const allRows = financialResult.rows.map((row) => ({ ...row, sales: n(row.sales), cogs: n(row.cogs), detected: n(row.detected), verified: n(row.verified), pending: n(row.pending), corrected: n(row.corrected) }));
   const financialByPeriod = async (startDate: string, endDate: string) => {
-    const result = await pool.query(`WITH s AS (SELECT coalesce(sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price)),0)::float8 sales FROM pos_imports pi JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN menu_items mi ON mi.id=psi.menu_item_id WHERE pi.business_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR pi.branch_id=$3::uuid)), c AS (SELECT coalesce(sum(u.quantity_consumed*u.unit_cost_snapshot),0)::float8 cogs FROM pos_imports pi JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN pos_sale_ingredient_usage u ON u.pos_sale_item_id=psi.id WHERE pi.business_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR pi.branch_id=$3::uuid)), d AS (SELECT coalesce(sum(CASE WHEN ici.actual_quantity<ici.expected_quantity THEN abs(ici.variance_value) ELSE 0 END),0)::float8 detected FROM inventory_counts ic JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id WHERE NOT ic.is_test_data AND ic.count_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR ic.branch_id=$3::uuid)), v AS (SELECT coalesce(sum(CASE WHEN actual_quantity<expected_quantity THEN abs(variance_value) ELSE 0 END),0)::float8 verified FROM shrinkage_reports WHERE NOT is_test_data AND detected_at::date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR branch_id=$3::uuid) AND status IN ('VERIFIED','REVIEWED') AND classification IN (${VERIFIED_SHRINKAGE_CLASSIFICATIONS_SQL})) SELECT * FROM s,c,d,v`, [startDate,endDate,scope]);
+    const result = await pool.query(`WITH s AS (SELECT coalesce(sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price)),0)::float8 sales FROM pos_imports pi ${OPERATIONAL_POS_SOURCE_JOIN} JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN menu_items mi ON mi.id=psi.menu_item_id WHERE ${OPERATIONAL_POS_IMPORT_CONDITION} AND pi.business_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR pi.branch_id=$3::uuid)), c AS (SELECT coalesce(sum(u.quantity_consumed*u.unit_cost_snapshot),0)::float8 cogs FROM pos_imports pi ${OPERATIONAL_POS_SOURCE_JOIN} JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN pos_sale_ingredient_usage u ON u.pos_sale_item_id=psi.id WHERE ${OPERATIONAL_POS_IMPORT_CONDITION} AND pi.business_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR pi.branch_id=$3::uuid)), d AS (SELECT coalesce(sum(CASE WHEN ici.actual_quantity<ici.expected_quantity THEN abs(ici.variance_value) ELSE 0 END),0)::float8 detected FROM inventory_counts ic JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id WHERE NOT ic.is_test_data AND ic.count_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR ic.branch_id=$3::uuid)), v AS (SELECT coalesce(sum(CASE WHEN actual_quantity<expected_quantity THEN abs(variance_value) ELSE 0 END),0)::float8 verified FROM shrinkage_reports WHERE NOT is_test_data AND detected_at::date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR branch_id=$3::uuid) AND status IN ('VERIFIED','REVIEWED') AND classification IN (${VERIFIED_SHRINKAGE_CLASSIFICATIONS_SQL})) SELECT * FROM s,c,d,v`, [startDate,endDate,scope]);
     const row = result.rows[0]; return financialValues({ sales:n(row.sales),productCogs:n(row.cogs),detectedShortageValue:n(row.detected),verifiedShrinkageCost:n(row.verified) });
   };
   const [current, previous] = await Promise.all([financialByPeriod(filters.startDate,filters.endDate), financialByPeriod(periods.previousStartDate,periods.previousEndDate)]);

@@ -31,6 +31,7 @@ import { archiveShrinkageReport, deletePosSourceConfiguration, voidVarianceRecor
 import { copyApprovedGlobalPosMappings, createPosMapping, createPosSource, deactivateApprovedPosMapping, listPosMappings, listPosSources, revisePendingPosMapping, updatePosMapping, updatePosSource } from "../controllers/posProductVariantMapping.controller.js";
 import { declareClosedPosDay, listDailyPosStatus } from "../controllers/posDailyMonitoring.controller.js";
 import { createOpeningInventoryBaseline, listOpeningInventoryBaselines } from "../controllers/openingInventory.controller.js";
+import { getShrinkageAiAnalysis } from "../controllers/shrinkageAi.controller.js";
 
 export const posSalesRouter = Router();
 posSalesRouter.use(authenticate, authorize("OWNER", "BRANCH_MANAGER"));
@@ -79,6 +80,7 @@ openingInventoryRouter.post("/", authorize("OWNER"), asyncHandler(createOpeningI
 export const shrinkageReportRouter = Router();
 shrinkageReportRouter.use(authenticate, authorize("OWNER", "BRANCH_MANAGER"));
 shrinkageReportRouter.get("/", asyncHandler(listShrinkageReports));
+shrinkageReportRouter.get("/:id/ai-analysis", asyncHandler(getShrinkageAiAnalysis));
 shrinkageReportRouter.get("/:id", asyncHandler(getShrinkageReport));
 shrinkageReportRouter.get("/:id/evidence", asyncHandler(getShrinkageEvidence));
 shrinkageReportRouter.post("/:id/archive", asyncHandler(archiveShrinkageReport));

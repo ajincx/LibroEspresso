@@ -4,6 +4,7 @@ import { pool } from "../config/database.js";
 import { env } from "../config/env.js";
 import { calculateExpectedInventory, computeVariance } from "../services/inventoryCalculation.service.js";
 import { calculateFinancialSummary, roundMoney } from "../services/financialMetrics.service.js";
+import { OPERATIONAL_POS_IMPORT_CONDITION, OPERATIONAL_POS_SOURCE_JOIN } from "../services/operationalPosScope.service.js";
 import { classifyUnmatchedPosIdentity, parsePosCsv, POS_SOURCE_FORMATS, PosCsvError, summarizePosRows, type MatchedPosRow, type PosMenuCandidate } from "../services/posCsvImport.service.js";
 import { parsePosExcel, TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE } from "../services/posExcelImport.service.js";
 import { loadPosMappings, loadPosSource, posResolutionFingerprint, resolvePosMapping } from "../services/posProductVariantMapping.service.js";
@@ -724,26 +725,30 @@ export const getPosAnalytics: RequestHandler = async (req, res) => {
          SELECT coalesce(sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price)),0)::float8 sales,
                 coalesce(sum(psi.quantity_sold),0)::float8 units_sold,
                 count(DISTINCT pi.id)::int import_count
-           FROM pos_imports pi JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN menu_items mi ON mi.id=psi.menu_item_id
-          WHERE pi.business_date BETWEEN $1::date AND $2::date ${branchClause}
+           FROM pos_imports pi ${OPERATIONAL_POS_SOURCE_JOIN}
+           JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN menu_items mi ON mi.id=psi.menu_item_id
+          WHERE ${OPERATIONAL_POS_IMPORT_CONDITION} AND pi.business_date BETWEEN $1::date AND $2::date ${branchClause}
        ), costs AS (
          SELECT coalesce(sum(usage.quantity_consumed*usage.unit_cost_snapshot),0)::float8 cogs
-           FROM pos_imports pi JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
+           FROM pos_imports pi ${OPERATIONAL_POS_SOURCE_JOIN}
+           JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
            JOIN pos_sale_ingredient_usage usage ON usage.pos_sale_item_id=psi.id
-          WHERE pi.business_date BETWEEN $1::date AND $2::date ${branchClause}
+          WHERE ${OPERATIONAL_POS_IMPORT_CONDITION} AND pi.business_date BETWEEN $1::date AND $2::date ${branchClause}
        ) SELECT sales,units_sold "unitsSold",import_count "importCount",cogs "theoreticalCogs" FROM sales CROSS JOIN costs`,
         params,
       ),
       pool.query(
         `WITH sales AS (
          SELECT pi.business_date::text date,sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price))::float8 sales
-           FROM pos_imports pi JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN menu_items mi ON mi.id=psi.menu_item_id
-          WHERE pi.business_date BETWEEN $1::date AND $2::date ${branchClause} GROUP BY pi.business_date
+           FROM pos_imports pi ${OPERATIONAL_POS_SOURCE_JOIN}
+           JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN menu_items mi ON mi.id=psi.menu_item_id
+          WHERE ${OPERATIONAL_POS_IMPORT_CONDITION} AND pi.business_date BETWEEN $1::date AND $2::date ${branchClause} GROUP BY pi.business_date
        ), costs AS (
          SELECT pi.business_date::text date,sum(usage.quantity_consumed*usage.unit_cost_snapshot)::float8 cogs
-           FROM pos_imports pi JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
+           FROM pos_imports pi ${OPERATIONAL_POS_SOURCE_JOIN}
+           JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
            JOIN pos_sale_ingredient_usage usage ON usage.pos_sale_item_id=psi.id
-          WHERE pi.business_date BETWEEN $1::date AND $2::date ${branchClause} GROUP BY pi.business_date
+          WHERE ${OPERATIONAL_POS_IMPORT_CONDITION} AND pi.business_date BETWEEN $1::date AND $2::date ${branchClause} GROUP BY pi.business_date
        ) SELECT sales.date,sales.sales,coalesce(costs.cogs,0)::float8 cogs,(sales.sales-coalesce(costs.cogs,0))::float8 "grossProfit"
            FROM sales LEFT JOIN costs USING(date) ORDER BY sales.date`,
         params,
@@ -754,17 +759,19 @@ export const getPosAnalytics: RequestHandler = async (req, res) => {
            FROM pos_sale_items psi LEFT JOIN pos_sale_ingredient_usage usage ON usage.pos_sale_item_id=psi.id GROUP BY psi.id
        ) SELECT mi.id,mi.name,mi.category,sum(psi.quantity_sold)::float8 "unitsSold",
                 sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price))::float8 sales,sum(lc.cogs)::float8 cogs
-           FROM pos_imports pi JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN menu_items mi ON mi.id=psi.menu_item_id
+           FROM pos_imports pi ${OPERATIONAL_POS_SOURCE_JOIN}
+           JOIN pos_sale_items psi ON psi.pos_import_id=pi.id JOIN menu_items mi ON mi.id=psi.menu_item_id
            JOIN line_costs lc ON lc.id=psi.id
-          WHERE pi.business_date BETWEEN $1::date AND $2::date ${branchClause}
+          WHERE ${OPERATIONAL_POS_IMPORT_CONDITION} AND pi.business_date BETWEEN $1::date AND $2::date ${branchClause}
           GROUP BY mi.id ORDER BY sales DESC`,
         params,
       ),
       pool.query(
         `SELECT ii.id,ii.name,ii.category,sum(usage.quantity_consumed*usage.unit_cost_snapshot)::float8 cost
-         FROM pos_imports pi JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
+         FROM pos_imports pi ${OPERATIONAL_POS_SOURCE_JOIN}
+         JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
          JOIN pos_sale_ingredient_usage usage ON usage.pos_sale_item_id=psi.id JOIN inventory_items ii ON ii.id=usage.inventory_item_id
-        WHERE pi.business_date BETWEEN $1::date AND $2::date ${branchClause}
+        WHERE ${OPERATIONAL_POS_IMPORT_CONDITION} AND pi.business_date BETWEEN $1::date AND $2::date ${branchClause}
         GROUP BY ii.id ORDER BY cost DESC`,
         params,
       ),
