@@ -41,7 +41,7 @@ export function calculateTotalCogs(productCogs: number | readonly number[]): num
 }
 
 export function detectedShortageContribution(varianceValue: number): number {
-  return Math.max(varianceValue, 0);
+  return Math.max(-varianceValue, 0);
 }
 
 export function verifiedShrinkageContribution(record: {

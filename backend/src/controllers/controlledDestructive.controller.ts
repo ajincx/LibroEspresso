@@ -1,9 +1,10 @@
 import type { RequestHandler } from "express";
 import { pool } from "../config/database.js";
 import { writeDestructiveActionAudit, verifyDestructiveAction } from "../services/destructiveAction.service.js";
+import { writeAudit } from "../services/audit.service.js";
 import { AppError } from "../utils/appError.js";
 import { idParams } from "../validators/masterData.js";
-import { destructiveActionInput, incidentLifecycleInput, purchaseOrderLifecycleInput } from "../validators/destructiveAction.js";
+import { destructiveActionInput, incidentLifecycleInput, purchaseOrderLifecycleInput, testDataProductRetirementInput } from "../validators/destructiveAction.js";
 
 type AppRole = "OWNER" | "BRANCH_MANAGER" | "STAFF";
 function requireRole(user: NonNullable<Express.Request["user"]>, roles: AppRole[]) {
@@ -12,6 +13,155 @@ function requireRole(user: NonNullable<Express.Request["user"]>, roles: AppRole[
 function assertBranchAccess(user: NonNullable<Express.Request["user"]>, branchId: string) {
   if (user.role !== "OWNER" && user.branchId !== branchId) throw new AppError(403, "BRANCH_SCOPE_FORBIDDEN", "This record does not belong to your assigned branch");
 }
+
+const approvedTestProductChain = {
+  productCode: "PRD-00073",
+  productName: "Test Caramel Latte",
+  variantName: "Standard",
+  recipeName: "Test Caramel Latte Standard Recipe",
+  recipeVersion: 1,
+  ingredientSku: "ING-00073",
+} as const;
+
+export const retireTestDataProductChain: RequestHandler = async (req, res) => {
+  requireRole(req.user!, ["OWNER"]);
+  const { id } = idParams.parse(req.params);
+  const input = testDataProductRetirementInput.parse(req.body);
+  await verifyDestructiveAction(req.user!, input.verificationPin, {
+    module: "MENU_ITEM",
+    action: "TEST_DATA_PRODUCT_RETIREMENT",
+    recordId: id,
+    reason: input.reason,
+  });
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const chainResult = await client.query<{
+      productId: string;
+      productCode: string;
+      productName: string;
+      productStatus: string;
+      variantId: string;
+      variantName: string;
+      variantStatus: string;
+      recipeId: string;
+      recipeName: string;
+      recipeStatus: string;
+      recipeVersion: number;
+      ingredientId: string;
+      ingredientSku: string;
+      ingredientStatus: string;
+    }>(
+      `SELECT mi.id "productId",mi.code "productCode",mi.name "productName",mi.status "productStatus",
+              miv.id "variantId",miv.name "variantName",miv.status "variantStatus",
+              r.id "recipeId",r.name "recipeName",r.status "recipeStatus",r.version "recipeVersion",
+              ii.id "ingredientId",ii.sku "ingredientSku",ii.status "ingredientStatus"
+         FROM menu_items mi
+         JOIN menu_item_variants miv ON miv.menu_item_id=mi.id
+         JOIN recipes r ON r.menu_item_id=mi.id AND r.menu_item_variant_id=miv.id
+         JOIN recipe_items ri ON ri.recipe_id=r.id
+         JOIN inventory_items ii ON ii.id=ri.inventory_item_id
+        WHERE mi.id=$1
+        FOR UPDATE OF mi,miv,r,ri,ii`,
+      [id],
+    );
+    const matchingRows = chainResult.rows.filter((row) =>
+      row.productCode === approvedTestProductChain.productCode
+      && row.productName === approvedTestProductChain.productName
+      && row.variantName === approvedTestProductChain.variantName
+      && row.recipeName === approvedTestProductChain.recipeName
+      && row.recipeVersion === approvedTestProductChain.recipeVersion
+      && row.ingredientSku === approvedTestProductChain.ingredientSku,
+    );
+    const chain = matchingRows[0];
+    if (!chain || matchingRows.length !== chainResult.rows.length) {
+      throw new AppError(409, "TEST_PRODUCT_CHAIN_MISMATCH", "The product chain no longer matches the approved TEST_Oat Milk retirement target");
+    }
+    if (chain.productStatus !== "ACTIVE" || chain.variantStatus !== "ACTIVE" || chain.recipeStatus !== "ACTIVE") {
+      throw new AppError(409, "TEST_PRODUCT_ALREADY_RETIRED", "The approved test product chain is no longer fully active");
+    }
+    await client.query(`SELECT branch_id FROM menu_item_branches WHERE menu_item_id=$1 FOR UPDATE`, [chain.productId]);
+
+    const dependencies = await client.query<{
+      mappings: number;
+      sales: number;
+      usage: number;
+      purchaseOrders: number;
+      startingStock: number;
+      operationalBalances: number;
+      operationalCounts: number;
+      movements: number;
+      shrinkage: number;
+      incidents: number;
+    }>(
+      `SELECT
+        (SELECT count(*)::int FROM pos_product_variant_mappings WHERE menu_item_variant_id=$1) mappings,
+        (SELECT count(*)::int FROM pos_sale_items WHERE menu_item_variant_id=$1 OR menu_item_id=$2) sales,
+        (SELECT count(*)::int FROM pos_sale_ingredient_usage u JOIN pos_sale_items s ON s.id=u.pos_sale_item_id
+          WHERE s.menu_item_variant_id=$1 OR s.menu_item_id=$2) usage,
+        (SELECT count(*)::int FROM purchase_order_items WHERE inventory_item_id=$3) "purchaseOrders",
+        (SELECT count(*)::int FROM inventory_opening_baseline_items WHERE inventory_item_id=$3) "startingStock",
+        (SELECT count(*)::int FROM branch_inventory_balances WHERE inventory_item_id=$3 AND NOT is_test_data) "operationalBalances",
+        (SELECT count(*)::int FROM inventory_count_items ici JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
+          WHERE ici.inventory_item_id=$3 AND NOT ic.is_test_data) "operationalCounts",
+        (SELECT count(*)::int FROM inventory_movements WHERE inventory_item_id=$3 AND NOT is_test_data) movements,
+        (SELECT count(*)::int FROM shrinkage_reports WHERE inventory_item_id=$3 AND NOT is_test_data) shrinkage,
+        ((SELECT count(*) FROM incident_report_items WHERE inventory_item_id=$3)
+          +(SELECT count(*) FROM incident_reports WHERE inventory_item_id=$3))::int incidents`,
+      [chain.variantId, chain.productId, chain.ingredientId],
+    );
+    const dependency = dependencies.rows[0]!;
+    if (Object.values(dependency).some((count) => Number(count) > 0)) {
+      throw new AppError(409, "TEST_PRODUCT_OPERATIONAL_DEPENDENCY", "An operational record now depends on this test product chain; retirement was stopped");
+    }
+
+    await client.query(`UPDATE menu_items SET status='INACTIVE' WHERE id=$1`, [chain.productId]);
+    await client.query(`UPDATE menu_item_variants SET status='INACTIVE' WHERE id=$1`, [chain.variantId]);
+    await client.query(`UPDATE recipes SET status='INACTIVE' WHERE id=$1`, [chain.recipeId]);
+    await client.query(`UPDATE menu_item_branches SET is_active=false WHERE menu_item_id=$1`, [chain.productId]);
+    await writeAudit(
+      req.user!,
+      "TEST_DATA_PRODUCT_RETIREMENT",
+      "MENU_ITEM",
+      chain.productId,
+      `Retired test product chain ${chain.productCode} ${chain.productName}`,
+      {
+        productId: chain.productId,
+        variantId: chain.variantId,
+        recipeId: chain.recipeId,
+        recipeVersion: chain.recipeVersion,
+        ingredientId: chain.ingredientId,
+        ingredientSku: chain.ingredientSku,
+        previousStatus: {
+          product: chain.productStatus,
+          variant: chain.variantStatus,
+          recipe: chain.recipeStatus,
+          ingredient: chain.ingredientStatus,
+        },
+        newStatus: { product: "INACTIVE", variant: "INACTIVE", recipe: "INACTIVE" },
+        reason: input.reason,
+        verificationResult: "VERIFIED",
+      },
+      client,
+    );
+    await client.query("COMMIT");
+    res.json({
+      success: true,
+      data: {
+        productId: chain.productId,
+        variantId: chain.variantId,
+        recipeId: chain.recipeId,
+        action: "TEST_DATA_PRODUCT_RETIREMENT",
+      },
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+};
 
 export const removeInventoryItem: RequestHandler = async (req, res) => {
   requireRole(req.user!, ["OWNER", "BRANCH_MANAGER"]);

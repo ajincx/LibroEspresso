@@ -66,25 +66,52 @@ describe("Staff incident validation", () => {
     expect(parsed).not.toHaveProperty("actualQuantity");
     expect(parsed).not.toHaveProperty("varianceValue");
   });
+
+  it("accepts one or three affected items and keeps legacy one-item payloads compatible", () => {
+    expect(incidentCreateInput.parse({ ...base, incidentType:"SPILLAGE" }).items).toHaveLength(1);
+    const items=[
+      {inventoryItemId:"00000000-0000-4000-8000-000000000001",quantity:500},
+      {inventoryItemId:"00000000-0000-4000-8000-000000000002",quantity:1000},
+      {inventoryItemId:"00000000-0000-4000-8000-000000000003",quantity:50},
+    ];
+    expect(incidentCreateInput.parse({items,incidentType:"SPILLAGE",occurredAt:base.occurredAt,reason:base.reason}).items).toEqual(items);
+  });
+
+  it("rejects empty, duplicate, and invalid affected items", () => {
+    const common={incidentType:"SPILLAGE",occurredAt:base.occurredAt,reason:base.reason};
+    expect(()=>incidentCreateInput.parse({...common,items:[]})).toThrow();
+    expect(()=>incidentCreateInput.parse({...common,items:[{inventoryItemId:base.inventoryItemId,quantity:1},{inventoryItemId:base.inventoryItemId,quantity:2}]})).toThrow("Affected inventory items must be unique");
+    expect(()=>incidentCreateInput.parse({...common,items:[{inventoryItemId:base.inventoryItemId,quantity:0}]})).toThrow();
+  });
 });
 
 describe("branch inventory settings validation", () => {
-  it("accepts branch-specific cost and reorder settings", () => {
+  it("accepts an explicit branch-specific reorder policy", () => {
     expect(
       branchInventorySettingsInput.parse({
-        currentUnitCost: 0.18,
+        branchId: "00000000-0000-4000-8000-000000000001",
+        category: "FAST",
         reorderLevel: 15000,
         reorderDays: 7,
+        reason: "Approved manual initial configuration",
       }),
-    ).toEqual({ currentUnitCost: 0.18, reorderLevel: 15000, reorderDays: 7 });
+    ).toEqual({
+      branchId: "00000000-0000-4000-8000-000000000001",
+      category: "FAST",
+      reorderLevel: 15000,
+      reorderDays: 7,
+      reason: "Approved manual initial configuration",
+    });
   });
 
   it("rejects invalid stock coverage days", () => {
     expect(() =>
       branchInventorySettingsInput.parse({
-        currentUnitCost: 1,
+        branchId: "00000000-0000-4000-8000-000000000001",
+        category: "MEDIUM",
         reorderLevel: 10,
         reorderDays: 0,
+        reason: "Invalid coverage example",
       }),
     ).toThrow();
   });

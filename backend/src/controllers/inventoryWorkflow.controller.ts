@@ -2,18 +2,20 @@ import type { Request, RequestHandler } from "express";
 import type { PoolClient } from "pg";
 import { pool } from "../config/database.js";
 import { env } from "../config/env.js";
-import { calculateExpectedInventory } from "../services/inventoryCalculation.service.js";
+import { calculateExpectedInventory, computeVariance } from "../services/inventoryCalculation.service.js";
 import { calculateFinancialSummary, roundMoney } from "../services/financialMetrics.service.js";
-import { classifyUnmatchedPosIdentity, matchPosRows, parsePosCsv, POS_SOURCE_FORMATS, PosCsvError, summarizePosRows, type MatchedPosRow, type PosMenuCandidate } from "../services/posCsvImport.service.js";
+import { classifyUnmatchedPosIdentity, parsePosCsv, POS_SOURCE_FORMATS, PosCsvError, summarizePosRows, type MatchedPosRow, type PosMenuCandidate } from "../services/posCsvImport.service.js";
 import { parsePosExcel, TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE } from "../services/posExcelImport.service.js";
 import { loadPosMappings, loadPosSource, posResolutionFingerprint, resolvePosMapping } from "../services/posProductVariantMapping.service.js";
 import { getEffectiveBranchId } from "../services/branchScope.js";
 import { writeAudit } from "../services/audit.service.js";
 import { verifyDestructiveAction, writeDestructiveActionAudit } from "../services/destructiveAction.service.js";
 import { createIngredientUsageSnapshots } from "../services/recipeVersion.service.js";
+import { assessPosImportInventoryDates } from "../services/posInventoryDate.service.js";
 import { calculatePosImportSimulation, type PosSimulationRecipeItem } from "../services/posImportSimulation.service.js";
 import { manilaBusinessDate } from "../services/businessTime.service.js";
 import { areUnitsCompatible } from "../services/unitConversion.service.js";
+import { normalizePhysicalCountQuantity } from "../services/physicalCountUnit.service.js";
 import { requiresVarianceInvestigation } from "../services/varianceMateriality.service.js";
 import { AppError } from "../utils/appError.js";
 import { idParams } from "../validators/masterData.js";
@@ -21,6 +23,7 @@ import { destructiveActionInput } from "../validators/destructiveAction.js";
 import { paginatedRows, paginationQuery } from "../validators/pagination.js";
 import {
   inventoryCountInput,
+  inventoryCountTestClassificationInput,
   inventoryMovementInput,
   notificationIdParams,
   posAnalyticsFilters,
@@ -33,6 +36,17 @@ import {
   shrinkageInvestigationInput,
   varianceFilters,
 } from "../validators/inventoryWorkflow.js";
+
+const GULOD_UAT_PLACEHOLDER_COUNTS = new Map<string, { countNo: string; itemCount: number; balanceCount: number; shrinkageReportNo: string }>([
+  ["87bcecb9-d0f5-4af6-8922-8c0fd9ee6243", { countNo: "IC-2026-00006", itemCount: 77, balanceCount: 0, shrinkageReportNo: "SR-2026-00005" }],
+  ["9c084a0a-2283-4d4a-b333-b985a3126ff3", { countNo: "IC-2026-00009", itemCount: 78, balanceCount: 78, shrinkageReportNo: "SR-2026-00006" }],
+]);
+const GULOD_MAIN_BRANCH_ID = "b50d405c-3c4a-4579-a3e8-7644d8324df6";
+
+function assertUatCountClassificationAvailable() {
+  if (env.DATA_LIFECYCLE_ENV === "PRODUCTION")
+    throw new AppError(403, "INVENTORY_COUNT_TEST_CLASSIFICATION_DISABLED", "UAT/Test count classification is disabled in production");
+}
 
 type PosLifecycleEnvironment = "DEVELOPMENT" | "UAT" | "PRODUCTION";
 
@@ -65,6 +79,19 @@ function requiredBranchId(
   return branchId;
 }
 
+export function assertInventoryCountDateNotFuture(
+  countDate: string,
+  currentBusinessDate = manilaBusinessDate(),
+) {
+  if (countDate > currentBusinessDate) {
+    throw new AppError(
+      422,
+      "INVENTORY_COUNT_FUTURE_DATE",
+      "Physical counts cannot be recorded for a future date.",
+    );
+  }
+}
+
 type PosPreviewProductRow = PosMenuCandidate;
 type PosPreviewVariantRow = {
   id: string;
@@ -78,8 +105,8 @@ type PosPreviewVariantRow = {
 };
 
 type PosImportSource =
-  | { sourceFilename: string; csvText: string; fileBuffer?: never; posSourceId?: string }
-  | { sourceFilename: string; fileBuffer: Buffer; csvText?: never; posSourceId?: string };
+  | { sourceFilename: string; csvText: string; fileBuffer?: never; posSourceId: string }
+  | { sourceFilename: string; fileBuffer: Buffer; csvText?: never; posSourceId: string };
 
 function decodedPosFilename(value: string | string[] | undefined) {
   if (typeof value !== "string") throw new AppError(422, "POS_FILENAME_REQUIRED", "The POS filename is required.");
@@ -100,12 +127,12 @@ function posRequestSource(req: Request, confirmation: boolean) {
     const expectedContentHash = req.headers["x-pos-content-hash"];
     const posSourceId = req.headers["x-pos-source-id"];
     const expectedResolutionFingerprint = req.headers["x-pos-resolution-fingerprint"];
-    if (posSourceId !== undefined && (typeof posSourceId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(posSourceId))) throw new AppError(422, "POS_SOURCE_INVALID", "Select a valid POS source.");
+    if (typeof posSourceId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(posSourceId)) throw new AppError(422, "POS_SOURCE_INVALID", "Select a valid POS source.");
     if (expectedResolutionFingerprint !== undefined && (typeof expectedResolutionFingerprint !== "string" || !/^[a-f0-9]{64}$/i.test(expectedResolutionFingerprint))) throw new AppError(422, "POS_RESOLUTION_INVALID", "Preview the POS file again before importing.");
     if (confirmation && (typeof expectedContentHash !== "string" || !/^[a-f0-9]{64}$/i.test(expectedContentHash))) {
       throw new AppError(422, "POS_PREVIEW_REQUIRED", "Preview the POS file again before importing.");
     }
-    return { sourceFilename, fileBuffer: req.body, ...(posSourceId ? { posSourceId } : {}), ...(confirmation ? { expectedContentHash, expectedResolutionFingerprint } : {}) };
+    return { sourceFilename, fileBuffer: req.body, posSourceId, ...(confirmation ? { expectedContentHash, expectedResolutionFingerprint } : {}) };
   }
   return confirmation ? posImportInput.parse(req.body) : posPreviewInput.parse(req.body);
 }
@@ -156,14 +183,11 @@ async function buildPosPreview(
      GROUP BY v.id,r.id,r.version`,
     [products.rows.map((product)=>product.id), parsed.businessDate],
   );
-  const variantsByProduct = new Map<string, PosPreviewVariantRow[]>();
   const variantById = new Map(variantResult.rows.map((variant)=>[variant.id,variant]));
-  for (const variant of variantResult.rows) variantsByProduct.set(variant.menuItemId,[...(variantsByProduct.get(variant.menuItemId)??[]),variant]);
-  const sourceId = source.fileBuffer ? source.posSourceId ?? null : null;
-  const selectedSource = sourceId ? await loadPosSource(client, sourceId, parsed.sourceFormat, branchId) : null;
-  const mappings = selectedSource ? await loadPosMappings(client, selectedSource.id, branchId, parsed.businessDate) : [];
-  const preliminaryRows: MatchedPosRow[] = source.fileBuffer
-    ? parsed.rows.map((row) => {
+  const sourceId = source.posSourceId;
+  const selectedSource = await loadPosSource(client, sourceId, parsed.sourceFormat, branchId);
+  const mappings = await loadPosMappings(client, selectedSource.id, branchId, parsed.businessDate);
+  const preliminaryRows: MatchedPosRow[] = parsed.rows.map((row) => {
         if (classifyUnmatchedPosIdentity(row.sourceProduct) === "OPERATIONAL_ITEM") return {
           ...row,
           menuItemId: null,
@@ -177,12 +201,12 @@ async function buildPosPreview(
           status: "VALID",
           issues: ["Operational POS line excluded from sellable-item mapping and COGS validation."],
         };
-        const resolution = selectedSource ? resolvePosMapping(row, branchId, mappings) : null;
+        const resolution = resolvePosMapping(row, branchId, mappings);
         if (!resolution || resolution.status !== "APPROVED") return {
           ...row, menuItemId: null, matchedMenuProduct: null, menuItemVariantId: null, matchedVariant: null,
           mappingId: null, mappingStatus: resolution?.status ?? "UNMATCHED", mappingScope: null,
           itemClassification: "UNKNOWN_REVIEW",
-          status: "INVALID", issues: [...row.issues, resolution?.issue ?? "Select a configured POS source before importing this Excel file."],
+           status: "INVALID", issues: [...row.issues, resolution.issue ?? "No approved POS product/variant mapping exists for this source and branch."],
         };
         return {
           ...row, menuItemId: resolution.menuItemId, matchedMenuProduct: resolution.menuItemName,
@@ -191,26 +215,6 @@ async function buildPosPreview(
           mappingStatus: resolution.status, mappingScope: resolution.scope,
           itemClassification: "SELLABLE_ITEM",
         };
-      })
-    : matchPosRows(parsed.rows, products.rows).map((row) => {
-        if (!row.menuItemId) {
-          const itemClassification = classifyUnmatchedPosIdentity(row.sourceProduct);
-          if (itemClassification === "OPERATIONAL_ITEM") return {
-            ...row,
-            itemClassification,
-            mappingStatus: "UNMATCHED" as const,
-            status: "VALID" as const,
-            issues: ["Operational POS line excluded from sellable-item mapping and COGS validation."],
-          };
-          return { ...row, itemClassification, mappingStatus: "UNMATCHED" as const };
-        }
-        const active = (variantsByProduct.get(row.menuItemId)??[]).filter((variant)=>variant.status==="ACTIVE");
-        if (active.length!==1 || active[0]!.name.toLowerCase()!=="standard") return {
-          ...row,menuItemId:null,matchedMenuProduct:null,menuItemVariantId:null,matchedVariant:null,
-          itemClassification:"UNKNOWN_REVIEW" as const,mappingStatus:"UNMATCHED" as const,status:"INVALID" as const,
-          issues:[...row.issues,"The CSV product does not identify an unambiguous Standard variant. Review the product/variant mapping."],
-        };
-        return {...row,itemClassification:"SELLABLE_ITEM" as const,menuItemVariantId:active[0]!.id,matchedVariant:active[0]!.name,mappingStatus:"DIRECT" as const};
       });
   const rows = preliminaryRows.map((row): MatchedPosRow => {
     if (row.itemClassification === "OPERATIONAL_ITEM") return row;
@@ -235,14 +239,13 @@ async function buildPosPreview(
   const existing = parsed.businessDate
     ? await client.query<{ id: string }>(
         `SELECT id FROM pos_imports
-          WHERE branch_id=$1 AND pos_source_id IS NOT DISTINCT FROM $2::uuid
-            AND business_date=$3 AND content_hash=$4 LIMIT 1`,
-        [branchId, selectedSource?.id ?? null, parsed.businessDate, parsed.contentHash],
+          WHERE branch_id=$1 AND business_date=$2 AND content_hash=$3 LIMIT 1`,
+        [branchId, parsed.businessDate, parsed.contentHash],
       )
     : { rows: [] as { id: string }[] };
   const duplicateCheckMs = performance.now() - duplicateStartedAt;
   const summary = summarizePosRows(rows, existing.rows.length > 0);
-  const importBlockedReason = parsed.importBlockedReason ?? (source.fileBuffer && !selectedSource ? "Configure and select a verified POS source before confirming this Excel import." : null);
+  const importBlockedReason = parsed.importBlockedReason ?? null;
   if (importBlockedReason) {
     summary.canImport = false;
     summary.quality = "REJECTED";
@@ -278,8 +281,8 @@ async function buildPosPreview(
     businessDate: parsed.businessDate,
     contentHash: parsed.contentHash,
     resolutionFingerprint: posResolutionFingerprint(sourceId, rows),
-    posSourceId: selectedSource?.id ?? null,
-    posSourceName: selectedSource?.displayName ?? null,
+    posSourceId: selectedSource.id,
+    posSourceName: selectedSource.displayName,
     fingerprintIndicator: parsed.contentHash.slice(0, 12),
     sourceFormat: parsed.sourceFormat,
     formatLabel: parsed.formatLabel,
@@ -406,8 +409,8 @@ export const importPosSales: RequestHandler = async (req, res) => {
     if (preview.contentHash !== input.expectedContentHash) throw new AppError(409, "POS_PREVIEW_CHANGED", "The selected POS file changed after preview. Preview it again before importing.");
     if (preview.summary.duplicate) throw new AppError(409, "POS_IMPORT_DUPLICATE", "This POS file appears to have already been imported for this branch.");
     if (preview.importBlockedReason) throw new AppError(422, "POS_FORMAT_IMPORT_BLOCKED", preview.importBlockedReason);
-    if (input.fileBuffer && (!input.expectedResolutionFingerprint || preview.resolutionFingerprint !== input.expectedResolutionFingerprint)) throw new AppError(409, "POS_MAPPING_CHANGED", "POS source or product/variant mapping changed after preview. Preview the file again.");
     if (!preview.summary.canImport || !preview.businessDate) throw new AppError(422, "POS_IMPORT_INVALID", "POS import was not completed because the preview contains invalid or unmatched rows.");
+    if (!input.expectedResolutionFingerprint || preview.resolutionFingerprint !== input.expectedResolutionFingerprint) throw new AppError(409, "POS_MAPPING_CHANGED", "POS source or product/variant mapping changed after preview. Preview the file again.");
     const importRows = preview.rows.filter((row): row is MatchedPosRow & { menuItemId: string; quantitySold: number; unitPrice: number; businessDate: string } => Boolean(row.menuItemId) && row.quantitySold !== null && row.unitPrice !== null && row.businessDate !== null && row.status !== "INVALID");
     const sourceSalesTotal=importRows.reduce((total,row)=>total+(typeof row.lineAmount==="number"?row.lineAmount:Number(row.quantitySold)*Number(row.unitPrice)),0);
     const sourceQuantity=importRows.reduce((total,row)=>total+Number(row.quantitySold),0);
@@ -429,6 +432,7 @@ export const importPosSales: RequestHandler = async (req, res) => {
     const usageStartedAt = performance.now();
     await createIngredientUsageSnapshots(client,importId);
     const ingredientUsageMs = performance.now() - usageStartedAt;
+    const inventoryDateAssessment = await assessPosImportInventoryDates(client, importId);
     const consumption = await client.query(
       `SELECT ii.id "inventoryItemId",ii.sku,ii.name,usage.unit,
               sum(usage.quantity_consumed)::float8 "expectedConsumption",
@@ -492,6 +496,16 @@ export const importPosSales: RequestHandler = async (req, res) => {
           importId,
         ],
       );
+      if (inventoryDateAssessment.lateHistoricalImport) {
+        const affectedCounts = inventoryDateAssessment.affectedCountPeriods.map((period) => period.countNo).join(", ") || "the applicable historical count period";
+        await client.query(
+          `INSERT INTO notifications (recipient_user_id,branch_id,type,title,message,entity_type,entity_id)
+           SELECT id,$1,'POS_LATE_HISTORICAL_IMPORT','Historical POS Import Needs Reconciliation',$2,'POS_IMPORT',$3
+             FROM users
+            WHERE status='ACTIVE' AND (role='OWNER' OR (role='BRANCH_MANAGER' AND branch_id=$1))`,
+          [branchId, `${input.sourceFilename} contains sales dated ${preview.businessDate}, on or before the ${inventoryDateAssessment.latestBaselineDate} inventory baseline. Current inventory was not changed. Review ${affectedCounts} for historical reconciliation.`, importId],
+        );
+      }
     }
     await writeAudit(
       req.user!,
@@ -499,7 +513,7 @@ export const importPosSales: RequestHandler = async (req, res) => {
       "POS_IMPORT",
       importId,
       `Imported ${importRows.length} POS sales rows`,
-      { branchId, businessDate: preview.businessDate, rowCount: importRows.length, totalQuantity: meta?.unitsSold ?? 0, totalSales: meta?.totalSales ?? 0, fingerprintIndicator: preview.fingerprintIndicator, pricingMethod: preview.pricing.method, pricingNotice: preview.pricing.notice, fallbackPricingRows: preview.pricing.fallbackRows, createdEnvironment:env.DATA_LIFECYCLE_ENV },
+      { branchId, businessDate: preview.businessDate, rowCount: importRows.length, totalQuantity: meta?.unitsSold ?? 0, totalSales: meta?.totalSales ?? 0, fingerprintIndicator: preview.fingerprintIndicator, pricingMethod: preview.pricing.method, pricingNotice: preview.pricing.notice, fallbackPricingRows: preview.pricing.fallbackRows, createdEnvironment:env.DATA_LIFECYCLE_ENV, inventoryDateAssessment },
       client,
     );
     await client.query("COMMIT");
@@ -521,6 +535,7 @@ export const importPosSales: RequestHandler = async (req, res) => {
           pricing: preview.pricing,
           consumption: consumption.rows,
           reconciliation,
+          inventoryDateAssessment,
           ...(env.BENCHMARK_MODE ? { benchmark: { ...preview.benchmark, salesInsertMs, ingredientUsageMs, databaseTransactionMs: performance.now() - importStartedAt } } : {}),
         },
       });
@@ -556,6 +571,18 @@ export const listPosImports: RequestHandler = async (req, res) => {
             count(psi.id)::int "productLines",
             coalesce(sum(psi.quantity_sold),0)::float8 "unitsSold",
             coalesce(sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price)),0)::float8 "totalSales"
+            ,exists(
+               SELECT 1 FROM inventory_counts historical_count
+                WHERE historical_count.branch_id=pi.branch_id
+                  AND NOT historical_count.is_test_data
+                  AND historical_count.submitted_at <= pi.imported_at
+                  AND historical_count.count_date >= pi.business_date
+             ) "lateHistoricalImport"
+            ,(SELECT max(historical_count.count_date)::text FROM inventory_counts historical_count
+                WHERE historical_count.branch_id=pi.branch_id
+                  AND NOT historical_count.is_test_data
+                  AND historical_count.submitted_at <= pi.imported_at
+                  AND historical_count.count_date >= pi.business_date) "latestBaselineDate"
        FROM pos_imports pi
        JOIN branches b ON b.id=pi.branch_id
        JOIN users u ON u.id=pi.imported_by
@@ -742,16 +769,17 @@ export const getPosAnalytics: RequestHandler = async (req, res) => {
         params,
       ),
       pool.query(
-        `SELECT coalesce(sum(greatest(ici.variance_value,0)),0)::float8 "detectedShortageValue"
+        `SELECT coalesce(sum(CASE WHEN ici.actual_quantity < ici.expected_quantity THEN abs(ici.variance_value) ELSE 0 END),0)::float8 "detectedShortageValue"
          FROM inventory_counts ic JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id
         WHERE NOT ic.is_test_data AND ic.count_date BETWEEN $1::date AND $2::date ${branchId ? `AND ic.branch_id=$3` : ""}`,
         params,
       ),
       pool.query<{ name: string; value: number }>(
         `SELECT replace(ir.incident_type::text, '_', ' ') "name",
-                round(coalesce(sum(ir.quantity * ii.unit_cost), 0)::numeric, 2)::float8 "value"
+                round(coalesce(sum(iri.quantity * ii.unit_cost), 0)::numeric, 2)::float8 "value"
          FROM incident_reports ir
-         JOIN inventory_items ii ON ii.id = ir.inventory_item_id
+         JOIN incident_report_items iri ON iri.incident_report_id=ir.id
+         JOIN inventory_items ii ON ii.id = iri.inventory_item_id
         WHERE NOT ir.is_test_data AND ir.status = 'VERIFIED'
           AND ir.occurred_at::date BETWEEN $1::date AND $2::date
           ${branchId ? `AND ir.branch_id=$3` : ""}
@@ -878,21 +906,45 @@ export const getExpectedInventory: RequestHandler = async (req, res) => {
     typeof req.query.countDate === "string"
       ? req.query.countDate
       : manilaBusinessDate();
-  const itemIds = await pool.query<{ id: string }>(
-    `SELECT id FROM inventory_items WHERE status='ACTIVE'
+  assertInventoryCountDateNotFuture(countDate);
+  const itemIds = await pool.query<{ id: string; sku: string; name: string; unit: string }>(
+    `SELECT id,sku,name,unit FROM inventory_items WHERE status='ACTIVE'
     AND (item_scope='GLOBAL' OR origin_branch_id=$1) ORDER BY name`,
     [branchId],
   );
   const items = [];
-  for (const item of itemIds.rows)
-    items.push(
-      await calculateExpectedInventory(pool, branchId, item.id, countDate),
-    );
-  res.json({ success: true, data: { branchId, countDate, items } });
+  const unavailableItems: Array<{
+    inventoryItemId: string;
+    sku: string;
+    itemName: string;
+    unit: string;
+    availability: "NO_BASELINE";
+  }> = [];
+  for (const item of itemIds.rows) {
+    try {
+      items.push(
+        await calculateExpectedInventory(pool, branchId, item.id, countDate),
+      );
+    } catch (error) {
+      if (error instanceof AppError && error.code === "NO_VALID_HISTORICAL_BASELINE") {
+        unavailableItems.push({
+          inventoryItemId: item.id,
+          sku: item.sku,
+          itemName: item.name,
+          unit: item.unit,
+          availability: "NO_BASELINE",
+        });
+        continue;
+      }
+      throw error;
+    }
+  }
+  res.json({ success: true, data: { branchId, countDate, items, unavailableItems } });
 };
 
 export const submitInventoryCount: RequestHandler = async (req, res) => {
   const input = inventoryCountInput.parse(req.body);
+  assertInventoryCountDateNotFuture(input.countDate);
   const branchId = requiredBranchId(req.user!);
   const client = await pool.connect();
   try {
@@ -933,9 +985,25 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
         submitted.inventoryItemId,
         input.countDate,
       );
-      const varianceQuantity =
-        expected.expectedQuantity - submitted.actualQuantity;
-      const varianceValue = varianceQuantity * expected.unitCost;
+      let actualQuantity: number;
+      try {
+        actualQuantity = normalizePhysicalCountQuantity({
+          quantity: submitted.quantity,
+          enteredUnit: submitted.enteredUnit,
+          canonicalUnit: expected.unit,
+        });
+      } catch (error) {
+        throw new AppError(
+          422,
+          "INVENTORY_COUNT_UNIT_INCOMPATIBLE",
+          error instanceof Error ? error.message : "Invalid physical-count unit",
+        );
+      }
+      const { varianceQuantity, varianceValue } = computeVariance(
+        expected.expectedQuantity,
+        actualQuantity,
+        expected.unitCost,
+      );
       const inserted = await client.query(
         `INSERT INTO inventory_count_items
           (inventory_count_id,inventory_item_id,previous_actual_quantity,stock_received,expected_consumption,approved_adjustments,expected_quantity,actual_quantity,variance_quantity,variance_value,unit)
@@ -951,7 +1019,7 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
           expected.expectedConsumption,
           expected.approvedAdjustments,
           expected.expectedQuantity,
-          submitted.actualQuantity,
+          actualQuantity,
           varianceQuantity,
           varianceValue,
           expected.unit,
@@ -964,7 +1032,7 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
         [
           branchId,
           submitted.inventoryItemId,
-          submitted.actualQuantity,
+          actualQuantity,
           input.countDate,
         ],
       );
@@ -985,7 +1053,7 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
             submitted.inventoryItemId,
             countItem.id,
             expected.expectedQuantity,
-            submitted.actualQuantity,
+            actualQuantity,
             varianceQuantity,
             varianceValue,
             expected.unit,
@@ -999,7 +1067,7 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
           [
             req.user!.id,
             branchId,
-            `${expected.itemName} has a detected shortage of ${varianceQuantity.toFixed(2)}${expected.unit} below expected stock. Investigation is required.`,
+            `${expected.itemName} has a detected shortage of ${Math.abs(varianceQuantity).toFixed(2)}${expected.unit} below expected stock. Investigation is required.`,
             shrinkageReportId,
           ],
         );
@@ -1054,6 +1122,7 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
 export const updateInventoryCount: RequestHandler = async (req, res) => {
   const { id } = idParams.parse(req.params);
   const input = inventoryCountInput.parse(req.body);
+  assertInventoryCountDateNotFuture(input.countDate);
   const branchId = requiredBranchId(req.user!);
   const client = await pool.connect();
   try {
@@ -1145,13 +1214,29 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
       const row = existing.rows.find(
         (candidate) => candidate.inventoryItemId === submitted.inventoryItemId,
       )!;
+      let actualQuantity: number;
+      try {
+        actualQuantity = normalizePhysicalCountQuantity({
+          quantity: submitted.quantity,
+          enteredUnit: submitted.enteredUnit,
+          canonicalUnit: row.unit,
+        });
+      } catch (error) {
+        throw new AppError(
+          422,
+          "INVENTORY_COUNT_UNIT_INCOMPATIBLE",
+          error instanceof Error ? error.message : "Invalid physical-count unit",
+        );
+      }
       const expectedQty = Number(row.expectedQuantity);
-      const varianceQuantity = expectedQty - submitted.actualQuantity;
-      const varianceValue = varianceQuantity * Number(row.unitCost);
-      const variancePercentage = expectedQty > 0 ? (varianceQuantity / expectedQty) * 100 : null;
+      const { varianceQuantity, varianceValue, variancePercentage } = computeVariance(
+        expectedQty,
+        actualQuantity,
+        Number(row.unitCost),
+      );
       await client.query(
         `UPDATE inventory_count_items SET actual_quantity=$2,variance_quantity=$3,variance_value=$4 WHERE id=$1`,
-        [row.id, submitted.actualQuantity, varianceQuantity, varianceValue],
+        [row.id, actualQuantity, varianceQuantity, varianceValue],
       );
       await client.query(
         `UPDATE branch_inventory_balances SET actual_quantity=$3,as_of=$4::date+time '23:59:59',is_test_data=$5,updated_at=now()
@@ -1159,7 +1244,7 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
         [
           branchId,
           row.inventoryItemId,
-          submitted.actualQuantity,
+          actualQuantity,
           input.countDate,
           count.rows[0].isTestData,
         ],
@@ -1175,7 +1260,7 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
           `UPDATE shrinkage_reports SET actual_quantity=$2,variance_quantity=$3,variance_value=$4,updated_at=now() WHERE id=$1 AND status='DETECTED'`,
           [
             shrinkageReportId,
-            submitted.actualQuantity,
+            actualQuantity,
             varianceQuantity,
             varianceValue,
           ],
@@ -1194,7 +1279,7 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
             row.inventoryItemId,
             row.id,
             row.expectedQuantity,
-            submitted.actualQuantity,
+            actualQuantity,
             varianceQuantity,
             varianceValue,
             row.unit,
@@ -1209,7 +1294,7 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
           [
             req.user!.id,
             branchId,
-            `${row.itemName} has a detected shortage of ${varianceQuantity.toFixed(2)}${row.unit} below expected stock. Investigation is required.`,
+            `${row.itemName} has a detected shortage of ${Math.abs(varianceQuantity).toFixed(2)}${row.unit} below expected stock. Investigation is required.`,
             shrinkageReportId,
           ],
         );
@@ -1231,7 +1316,7 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
         itemName: row.itemName,
         expectedConsumption: Number(row.expectedConsumption),
         expectedQuantity: expectedQty,
-        actualQuantity: submitted.actualQuantity,
+        actualQuantity,
         varianceQuantity,
         varianceValue,
         variancePercentage,
@@ -1293,6 +1378,42 @@ export const listInventoryCounts: RequestHandler = async (req, res) => {
     [req.user!.id, branchId ?? null, pagination.pageSize, (pagination.page-1)*pagination.pageSize],
   );
   const page = paginatedRows(result.rows, pagination);
+  const counts = page.data.map((count) => ({
+    ...count,
+    canClassifyAsTestData:
+      req.user!.role === "OWNER" &&
+      env.DATA_LIFECYCLE_ENV !== "PRODUCTION" &&
+      GULOD_UAT_PLACEHOLDER_COUNTS.has(String(count.id)),
+  }));
+  res.json({
+    success: true,
+    data: {
+      counts,
+      pagination: page.pagination,
+      uatTestControlsEnabled: req.user!.role === "OWNER" && env.DATA_LIFECYCLE_ENV !== "PRODUCTION",
+    },
+  });
+};
+
+export const listUatInventoryCounts: RequestHandler = async (req, res) => {
+  assertUatCountClassificationAvailable();
+  const pagination = paginationQuery.parse(req.query);
+  const branchId = typeof req.query.branchId === "string" ? req.query.branchId : undefined;
+  const values: unknown[] = [];
+  const branchClause = branchId ? `AND ic.branch_id=$${values.push(branchId)}` : "";
+  const result = await pool.query(
+    `SELECT ic.id,ic.count_no "countNo",ic.count_date::text "countDate",ic.submitted_at "submittedAt",b.id "branchId",b.name "branchName",
+            false "canEdit",false "canClassifyAsTestData",true "isTestData",
+            concat(u.first_name,' ',u.last_name) "submittedBy",count(ici.id)::int "itemCount",count(*) OVER()::int "__total",
+            (count(ici.id) FILTER (WHERE abs(ici.variance_quantity)>0.0001))::int "varianceCount"
+       FROM inventory_counts ic JOIN branches b ON b.id=ic.branch_id JOIN users u ON u.id=ic.submitted_by
+       LEFT JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id AND ici.voided_at IS NULL
+      WHERE ic.is_test_data ${branchClause}
+      GROUP BY ic.id,b.id,u.id ORDER BY ic.count_date DESC,ic.submitted_at DESC
+      LIMIT $${values.length+1} OFFSET $${values.length+2}`,
+    [...values, pagination.pageSize, (pagination.page-1)*pagination.pageSize],
+  );
+  const page = paginatedRows(result.rows, pagination);
   res.json({ success: true, data: { counts: page.data, pagination: page.pagination } });
 };
 
@@ -1309,13 +1430,143 @@ export const getInventoryCount: RequestHandler = async (req, res) => {
     ici.previous_actual_quantity::float8 "previousActualQuantity",ici.stock_received::float8 "stockReceived",
     ici.expected_consumption::float8 "expectedConsumption",ici.approved_adjustments::float8 "approvedAdjustments",
     ici.expected_quantity::float8 "expectedQuantity",ici.actual_quantity::float8 "actualQuantity",
-    ici.variance_quantity::float8 "varianceQuantity",ici.variance_value::float8 "varianceValue",
-    CASE WHEN ici.expected_quantity > 0 THEN ((ici.variance_quantity / ici.expected_quantity) * 100)::float8 ELSE NULL END "variancePercentage",
+    (ici.actual_quantity-ici.expected_quantity)::float8 "varianceQuantity",
+    CASE WHEN ici.actual_quantity>ici.expected_quantity THEN abs(ici.variance_value)
+         WHEN ici.actual_quantity<ici.expected_quantity THEN -abs(ici.variance_value) ELSE 0 END::float8 "varianceValue",
+    CASE WHEN ici.expected_quantity > 0 THEN (((ici.actual_quantity-ici.expected_quantity) / ici.expected_quantity) * 100)::float8 ELSE NULL END "variancePercentage",
     sr.id "shrinkageReportId",(sr.status='DETECTED') "requiresInvestigation"
     FROM inventory_count_items ici JOIN inventory_items ii ON ii.id=ici.inventory_item_id
     LEFT JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ici.id AND sr.archived_at IS NULL
     WHERE ici.inventory_count_id=$1 AND ici.voided_at IS NULL ORDER BY ii.name`,[id]);
   res.json({success:true,data:{count:{...count.rows[0],items:items.rows}}});
+};
+
+export const getUatInventoryCount: RequestHandler = async (req, res) => {
+  assertUatCountClassificationAvailable();
+  const { id } = idParams.parse(req.params);
+  const count = await pool.query(
+    `SELECT ic.id,ic.count_no "countNo",ic.count_date::text "countDate",ic.branch_id "branchId",
+            b.name "branchName",false "canEdit",true "isTestData"
+       FROM inventory_counts ic JOIN branches b ON b.id=ic.branch_id
+      WHERE ic.id=$1 AND ic.is_test_data`,
+    [id],
+  );
+  if (!count.rows[0]) throw new AppError(404, "INVENTORY_COUNT_NOT_FOUND", "UAT/Test count not found");
+  const items = await pool.query(
+    `SELECT ici.id,ici.inventory_item_id "inventoryItemId",ii.sku,ii.name "itemName",ici.unit,
+            ici.previous_actual_quantity::float8 "previousActualQuantity",ici.stock_received::float8 "stockReceived",
+            ici.expected_consumption::float8 "expectedConsumption",ici.approved_adjustments::float8 "approvedAdjustments",
+            ici.expected_quantity::float8 "expectedQuantity",ici.actual_quantity::float8 "actualQuantity",
+            (ici.actual_quantity-ici.expected_quantity)::float8 "varianceQuantity",
+            CASE WHEN ici.actual_quantity>ici.expected_quantity THEN abs(ici.variance_value)
+                 WHEN ici.actual_quantity<ici.expected_quantity THEN -abs(ici.variance_value) ELSE 0 END::float8 "varianceValue",
+            CASE WHEN ici.expected_quantity > 0 THEN (((ici.actual_quantity-ici.expected_quantity) / ici.expected_quantity) * 100)::float8 ELSE NULL END "variancePercentage",
+            sr.id "shrinkageReportId",false "requiresInvestigation"
+       FROM inventory_count_items ici JOIN inventory_items ii ON ii.id=ici.inventory_item_id
+       LEFT JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ici.id
+      WHERE ici.inventory_count_id=$1 AND ici.voided_at IS NULL ORDER BY ii.name`,
+    [id],
+  );
+  res.json({ success: true, data: { count: { ...count.rows[0], items: items.rows } } });
+};
+
+export const classifyInventoryCountAsTestData: RequestHandler = async (req, res) => {
+  assertUatCountClassificationAvailable();
+  if (req.user!.role !== "OWNER") throw new AppError(403, "FORBIDDEN", "Only the Owner can classify UAT/Test counts");
+  const { id } = idParams.parse(req.params);
+  const target = GULOD_UAT_PLACEHOLDER_COUNTS.get(id);
+  if (!target) throw new AppError(403, "INVENTORY_COUNT_TEST_CLASSIFICATION_NOT_ALLOWED", "This physical count is not authorized for UAT/Test classification");
+  const input = inventoryCountTestClassificationInput.parse(req.body);
+  await verifyDestructiveAction(req.user!, input.verificationPin, {
+    module: "INVENTORY_COUNT",
+    action: "CLASSIFY_UAT_TEST",
+    recordId: id,
+    reason: input.reason,
+  });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const countResult = await client.query<{ countNo: string; branchId: string; branchName: string; countDate: string; isTestData: boolean }>(
+      `SELECT ic.count_no "countNo",ic.branch_id "branchId",b.name "branchName",ic.count_date::text "countDate",ic.is_test_data "isTestData"
+         FROM inventory_counts ic JOIN branches b ON b.id=ic.branch_id
+        WHERE ic.id=$1 FOR UPDATE OF ic`,
+      [id],
+    );
+    const count = countResult.rows[0];
+    if (!count) throw new AppError(404, "INVENTORY_COUNT_NOT_FOUND", "Physical count not found");
+    if (count.countNo !== target.countNo || count.branchId !== GULOD_MAIN_BRANCH_ID || count.branchName !== "Gulod / Main Branch")
+      throw new AppError(409, "INVENTORY_COUNT_TEST_CLASSIFICATION_MISMATCH", "The authorized UAT count identity or branch does not match");
+    if (count.isTestData) throw new AppError(409, "INVENTORY_COUNT_ALREADY_TEST_DATA", "This physical count is already classified as UAT/Test Data");
+
+    const countItems = await client.query<{ inventoryItemId: string; actualQuantity: number }>(
+      `SELECT inventory_item_id "inventoryItemId",actual_quantity::float8 "actualQuantity"
+         FROM inventory_count_items WHERE inventory_count_id=$1 ORDER BY inventory_item_id FOR UPDATE`,
+      [id],
+    );
+    if (countItems.rows.length !== target.itemCount)
+      throw new AppError(409, "INVENTORY_COUNT_TEST_DEPENDENCY_MISMATCH", `Expected ${target.itemCount} count items but found ${countItems.rows.length}`);
+
+    const linkedReports = await client.query<{ id: string; reportNo: string; status: string; isTestData: boolean }>(
+      `SELECT sr.id,sr.report_no "reportNo",sr.status,sr.is_test_data "isTestData"
+         FROM shrinkage_reports sr JOIN inventory_count_items ici ON ici.id=sr.inventory_count_item_id
+        WHERE ici.inventory_count_id=$1 FOR UPDATE OF sr`,
+      [id],
+    );
+    if (linkedReports.rows.length !== 1 || linkedReports.rows[0]!.reportNo !== target.shrinkageReportNo)
+      throw new AppError(409, "INVENTORY_COUNT_TEST_DEPENDENCY_MISMATCH", "Linked shrinkage records do not match the authorized UAT dependency set");
+
+    let classifiedBalanceRows = 0;
+    if (target.balanceCount > 0) {
+      const itemIds = countItems.rows.map((item) => item.inventoryItemId);
+      const balances = await client.query<{ inventoryItemId: string; actualQuantity: number; asOfDate: string; isTestData: boolean }>(
+        `SELECT inventory_item_id "inventoryItemId",actual_quantity::float8 "actualQuantity",as_of::date::text "asOfDate",is_test_data "isTestData"
+           FROM branch_inventory_balances
+          WHERE branch_id=$1 AND inventory_item_id=ANY($2::uuid[])
+          ORDER BY inventory_item_id FOR UPDATE`,
+        [count.branchId, itemIds],
+      );
+      const actualByItem = new Map(countItems.rows.map((item) => [item.inventoryItemId, Number(item.actualQuantity)]));
+      const balancesMatch = balances.rows.length === target.balanceCount && balances.rows.every((balance) =>
+        !balance.isTestData && balance.asOfDate === count.countDate && Number(balance.actualQuantity) === actualByItem.get(balance.inventoryItemId));
+      if (!balancesMatch)
+        throw new AppError(409, "INVENTORY_COUNT_TEST_BALANCE_MISMATCH", "Gulod balance rows no longer exactly match the authorized physical-count snapshots");
+      const classified = await client.query(
+        `UPDATE branch_inventory_balances SET is_test_data=true
+          WHERE branch_id=$1 AND inventory_item_id=ANY($2::uuid[]) AND NOT is_test_data`,
+        [count.branchId, itemIds],
+      );
+      classifiedBalanceRows = classified.rowCount ?? 0;
+      if (classifiedBalanceRows !== target.balanceCount)
+        throw new AppError(409, "INVENTORY_COUNT_TEST_BALANCE_MISMATCH", "Not all validated Gulod balance rows were classified");
+    }
+
+    await client.query(`UPDATE shrinkage_reports SET is_test_data=true WHERE id=$1`, [linkedReports.rows[0]!.id]);
+    const classifiedCount = await client.query(`UPDATE inventory_counts SET is_test_data=true WHERE id=$1 AND NOT is_test_data`, [id]);
+    if (classifiedCount.rowCount !== 1)
+      throw new AppError(409, "INVENTORY_COUNT_TEST_CLASSIFICATION_FAILED", "The physical count classification did not complete");
+    await writeDestructiveActionAudit(
+      req.user!,
+      { module: "INVENTORY_COUNT", action: "CLASSIFY_UAT_TEST", recordId: id, reason: input.reason },
+      `Classified physical count ${count.countNo} and its authorized dependencies as UAT/Test Data`,
+      {
+        branchId: count.branchId,
+        countNo: count.countNo,
+        countDate: count.countDate,
+        countItemCount: countItems.rows.length,
+        balanceRowsClassified: classifiedBalanceRows,
+        shrinkageReportsClassified: linkedReports.rows.map((report) => ({ id: report.id, reportNo: report.reportNo, priorStatus: report.status })),
+        preservedDependencies: ["COUNT_ITEMS", "NOTIFICATIONS", "INCIDENT_LINKS", "AUDIT_HISTORY"],
+      },
+      client,
+    );
+    await client.query("COMMIT");
+    res.json({ success: true, data: { id, countNo: count.countNo, classified: true, balanceRowsClassified: classifiedBalanceRows, shrinkageReportNo: target.shrinkageReportNo } });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 };
 
 export const listInventoryVariances: RequestHandler = async (req, res) => {
@@ -1336,8 +1587,10 @@ export const listInventoryVariances: RequestHandler = async (req, res) => {
     `SELECT ici.id "countItemId",ic.count_no "countNo",ic.count_date::text "countDate",
             b.id "branchId",b.name "branchName",ii.id "inventoryItemId",ii.sku,ii.name "itemName",
             ici.expected_quantity::float8 "expectedQuantity",ici.actual_quantity::float8 "actualQuantity",
-            ici.variance_quantity::float8 "varianceQuantity",ici.variance_value::float8 "varianceValue",ici.unit,
-            CASE WHEN ici.expected_quantity > 0 THEN ((ici.variance_quantity / ici.expected_quantity) * 100)::float8 ELSE NULL END "variancePercentage",
+            (ici.actual_quantity-ici.expected_quantity)::float8 "varianceQuantity",
+            CASE WHEN ici.actual_quantity>ici.expected_quantity THEN abs(ici.variance_value)
+                 WHEN ici.actual_quantity<ici.expected_quantity THEN -abs(ici.variance_value) ELSE 0 END::float8 "varianceValue",ici.unit,
+            CASE WHEN ici.expected_quantity > 0 THEN (((ici.actual_quantity-ici.expected_quantity) / ici.expected_quantity) * 100)::float8 ELSE NULL END "variancePercentage",
             sr.id "anomalyId",sr.report_no "reportNo",sr.status "anomalyStatus",sr.classification,count(*) OVER()::int "__total"
        FROM inventory_count_items ici
        JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
@@ -1354,8 +1607,11 @@ export const listInventoryVariances: RequestHandler = async (req, res) => {
 
 const shrinkageSelection = `SELECT sr.id,sr.report_no "reportNo",sr.status,sr.classification,sr.explanation,sr.supporting_notes "supportingNotes",
   sr.evidence_review_confirmed "evidenceReviewConfirmed",sr.evidence_basis "evidenceBasis",
-  sr.expected_quantity::float8 "expectedQuantity",sr.actual_quantity::float8 "actualQuantity",sr.variance_quantity::float8 "varianceQuantity",sr.variance_value::float8 "varianceValue",sr.unit,
-  CASE WHEN sr.expected_quantity > 0 THEN ((sr.variance_quantity / sr.expected_quantity) * 100)::float8 ELSE NULL END "variancePercentage",
+  sr.expected_quantity::float8 "expectedQuantity",sr.actual_quantity::float8 "actualQuantity",
+  (sr.actual_quantity-sr.expected_quantity)::float8 "varianceQuantity",
+  CASE WHEN sr.actual_quantity>sr.expected_quantity THEN abs(sr.variance_value)
+       WHEN sr.actual_quantity<sr.expected_quantity THEN -abs(sr.variance_value) ELSE 0 END::float8 "varianceValue",sr.unit,
+  CASE WHEN sr.expected_quantity > 0 THEN (((sr.actual_quantity-sr.expected_quantity) / sr.expected_quantity) * 100)::float8 ELSE NULL END "variancePercentage",
   ic.count_date::text "countDate",sr.detected_at "detectedAt",sr.investigated_at "investigatedAt",sr.submitted_at "submittedAt",sr.reviewed_at "reviewedAt",b.id "branchId",b.name "branchName",ii.id "inventoryItemId",ii.sku,ii.name "inventoryItemName",
   mi.id "menuItemId",mi.name "menuItemName",concat(su.first_name,' ',su.last_name) "managerName",concat(ru.first_name,' ',ru.last_name) "reviewedByName"
   FROM shrinkage_reports sr JOIN branches b ON b.id=sr.branch_id JOIN inventory_items ii ON ii.id=sr.inventory_item_id
@@ -1394,7 +1650,7 @@ export const listShrinkageReports: RequestHandler = async (req, res) => {
   }
   if (filters.incidentType) {
     values.push(filters.incidentType);
-    clauses.push(`EXISTS (SELECT 1 FROM incident_reports ir WHERE NOT ir.is_test_data AND ir.shrinkage_report_id=sr.id AND ir.incident_type=$${values.length})`);
+    clauses.push(`EXISTS (SELECT 1 FROM incident_shrinkage_links isl JOIN incident_reports ir ON ir.id=isl.incident_report_id WHERE NOT ir.is_test_data AND ir.archived_at IS NULL AND isl.shrinkage_report_id=sr.id AND ir.incident_type=$${values.length})`);
   }
   const result = await pool.query(
     `${shrinkageSelection.replace("SELECT ","SELECT count(*) OVER()::int \"__total\",")} ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""} ORDER BY CASE sr.status WHEN 'DETECTED' THEN 0 WHEN 'PENDING_REVIEW' THEN 1 ELSE 2 END,sr.detected_at DESC LIMIT $${values.length+1} OFFSET $${values.length+2}`,
@@ -1440,21 +1696,22 @@ export const getShrinkageEvidence: RequestHandler = async (req, res) => {
 
   const [incidents, movements, usage] = await Promise.all([
     pool.query(
-      `SELECT ir.id,ir.incident_type "incidentType",ir.quantity::float8,ir.occurred_at "occurredAt",
+      `SELECT ir.id,iri.id "incidentReportItemId",ir.incident_type "incidentType",iri.quantity::float8,iri.unit,ir.occurred_at "occurredAt",
               ir.reason,ir.notes,ir.photo_url "photoUrl",ir.status,ir.manager_comment "managerComment",
               concat(u.first_name,' ',u.last_name) "submittedByName",
-              (ir.shrinkage_report_id=$1) "explicitlyLinked"
+              EXISTS (SELECT 1 FROM incident_shrinkage_links isl WHERE isl.incident_report_item_id=iri.id AND isl.shrinkage_report_id=$1) "explicitlyLinked"
          FROM incident_reports ir JOIN users u ON u.id=ir.submitted_by
-        WHERE ir.branch_id=$2 AND ir.inventory_item_id=$3 AND NOT ir.is_test_data
+         JOIN incident_report_items iri ON iri.incident_report_id=ir.id
+        WHERE ir.branch_id=$2 AND iri.inventory_item_id=$3 AND NOT ir.is_test_data AND ir.archived_at IS NULL
           AND (
-            ir.shrinkage_report_id=$1
+            EXISTS (SELECT 1 FROM incident_shrinkage_links isl WHERE isl.incident_report_item_id=iri.id AND isl.shrinkage_report_id=$1)
             OR (
-              ir.shrinkage_report_id IS NULL
+              NOT EXISTS (SELECT 1 FROM incident_shrinkage_links isl WHERE isl.incident_report_item_id=iri.id)
               AND ir.status IN ('PENDING','VERIFIED')
               AND (ir.occurred_at AT TIME ZONE 'Asia/Manila')::date BETWEEN $4::date-7 AND $4::date+1
             )
           )
-        ORDER BY (ir.shrinkage_report_id=$1) DESC,ir.occurred_at DESC`,
+        ORDER BY EXISTS (SELECT 1 FROM incident_shrinkage_links isl WHERE isl.incident_report_item_id=iri.id AND isl.shrinkage_report_id=$1) DESC,ir.occurred_at DESC`,
       [id, context.branchId, context.inventoryItemId, context.countDate],
     ),
     pool.query(
@@ -1469,6 +1726,7 @@ export const getShrinkageEvidence: RequestHandler = async (req, res) => {
          FROM pos_sale_ingredient_usage u
          JOIN pos_sale_items psi ON psi.id=u.pos_sale_item_id
          JOIN pos_imports pi ON pi.id=psi.pos_import_id
+       JOIN pos_sources source ON source.id=pi.pos_source_id AND source.status='ACTIVE'
         WHERE pi.branch_id=$1 AND u.inventory_item_id=$2 AND pi.business_date BETWEEN $3::date-7 AND $3::date
         GROUP BY pi.business_date ORDER BY pi.business_date DESC`,
       [context.branchId, context.inventoryItemId, context.countDate],
@@ -1566,7 +1824,7 @@ export const submitShrinkageInvestigation: RequestHandler = async (
             )`,
       [
         branchId,
-        `${context.rows[0]!.branchName} verified classification for ${context.rows[0]!.itemName}. Shortage variance: ${row.varianceQuantity}${row.unit}. Classification: ${input.classification.replace("_", " ")}.`,
+        `${context.rows[0]!.branchName} verified classification for ${context.rows[0]!.itemName}. Shortage variance: ${Math.abs(row.varianceQuantity)}${row.unit}. Classification: ${input.classification.replace("_", " ")}.`,
         id,
       ],
     );

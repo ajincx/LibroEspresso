@@ -5,6 +5,12 @@ export const destructiveActionInput = z.object({
   verificationPin: z.string().trim().min(1, "Verification PIN is required"),
 });
 
+export const testDataProductRetirementInput = destructiveActionInput.extend({
+  confirmed: z.literal(true, {
+    error: "Explicit confirmation is required",
+  }),
+});
+
 export const incidentLifecycleInput = destructiveActionInput.extend({
   action: z.enum(["CANCEL", "ARCHIVE"]),
 });

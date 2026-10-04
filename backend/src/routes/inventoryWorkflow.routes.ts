@@ -11,6 +11,8 @@ import {
   listPosImports,
   listInventoryCounts,
   getInventoryCount,
+  listUatInventoryCounts,
+  getUatInventoryCount,
   listInventoryVariances,
   listNotifications,
   markAllNotificationsRead,
@@ -21,12 +23,14 @@ import {
   submitShrinkageInvestigation,
   submitInventoryCount,
   updateInventoryCount,
+  classifyInventoryCountAsTestData,
 } from "../controllers/inventoryWorkflow.controller.js";
 import { authenticate, authorize } from "../middleware/auth.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { archiveShrinkageReport, deletePosSourceConfiguration, voidVarianceRecord } from "../controllers/controlledDestructive.controller.js";
 import { copyApprovedGlobalPosMappings, createPosMapping, createPosSource, deactivateApprovedPosMapping, listPosMappings, listPosSources, revisePendingPosMapping, updatePosMapping, updatePosSource } from "../controllers/posProductVariantMapping.controller.js";
 import { declareClosedPosDay, listDailyPosStatus } from "../controllers/posDailyMonitoring.controller.js";
+import { createOpeningInventoryBaseline, listOpeningInventoryBaselines } from "../controllers/openingInventory.controller.js";
 
 export const posSalesRouter = Router();
 posSalesRouter.use(authenticate, authorize("OWNER", "BRANCH_MANAGER"));
@@ -55,14 +59,22 @@ inventoryWorkflowRouter.use(authenticate, authorize("OWNER", "BRANCH_MANAGER"));
 inventoryWorkflowRouter.get("/expected", asyncHandler(getExpectedInventory));
 inventoryWorkflowRouter.get("/variances", asyncHandler(listInventoryVariances));
 inventoryWorkflowRouter.post("/variances/:id/void", asyncHandler(voidVarianceRecord));
+inventoryWorkflowRouter.get("/uat-history", authorize("OWNER"), asyncHandler(listUatInventoryCounts));
+inventoryWorkflowRouter.get("/uat-history/:id", authorize("OWNER"), asyncHandler(getUatInventoryCount));
 inventoryWorkflowRouter.get("/", asyncHandler(listInventoryCounts));
 inventoryWorkflowRouter.get("/:id", asyncHandler(getInventoryCount));
 inventoryWorkflowRouter.post("/", authorize("BRANCH_MANAGER"), asyncHandler(submitInventoryCount));
 inventoryWorkflowRouter.patch("/:id", authorize("BRANCH_MANAGER"), asyncHandler(updateInventoryCount));
+inventoryWorkflowRouter.post("/:id/classify-uat-test", authorize("OWNER"), asyncHandler(classifyInventoryCountAsTestData));
 
 export const inventoryMovementRouter = Router();
 inventoryMovementRouter.use(authenticate, authorize("OWNER", "BRANCH_MANAGER"));
 inventoryMovementRouter.post("/", authorize("OWNER", "BRANCH_MANAGER"), asyncHandler(createInventoryMovement));
+
+export const openingInventoryRouter = Router();
+openingInventoryRouter.use(authenticate, authorize("OWNER", "BRANCH_MANAGER"));
+openingInventoryRouter.get("/", asyncHandler(listOpeningInventoryBaselines));
+openingInventoryRouter.post("/", authorize("OWNER"), asyncHandler(createOpeningInventoryBaseline));
 
 export const shrinkageReportRouter = Router();
 shrinkageReportRouter.use(authenticate, authorize("OWNER", "BRANCH_MANAGER"));

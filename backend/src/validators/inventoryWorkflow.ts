@@ -11,11 +11,11 @@ const posCsvSourceInput = z.object({
   csvText: z.string().min(1).max(4_500_000),
 });
 
-export const posPreviewInput = posCsvSourceInput.extend({ posSourceId: z.string().uuid().optional() });
+export const posPreviewInput = posCsvSourceInput.extend({ posSourceId: z.string().uuid() });
 export const posImportInput = posCsvSourceInput.extend({
   expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/i, "Preview the CSV again before importing"),
-  expectedResolutionFingerprint: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
-  posSourceId: z.string().uuid().optional(),
+  expectedResolutionFingerprint: z.string().regex(/^[a-f0-9]{64}$/i),
+  posSourceId: z.string().uuid(),
 });
 export const testDataAuthorizationInput = z.object({ reason: z.string().trim().min(10).max(500) });
 export const posCleanupAuthorizationInput = z.object({ reason: z.string().trim().min(10).max(500) });
@@ -57,8 +57,39 @@ export const inventoryCountInput = z.object({
   countDate: z.iso.date(),
   items: z.array(z.object({
     inventoryItemId: z.string().uuid(),
-    actualQuantity: z.coerce.number().min(0),
+    quantity: z.number().finite().min(0),
+    enteredUnit: z.enum(["g", "kg", "ml", "L", "pc"]),
   })).min(1).refine((items) => new Set(items.map((item) => item.inventoryItemId)).size === items.length, "Inventory items must be unique"),
+});
+
+export const inventoryCountTestClassificationInput = z.object({
+  reason: z.string().trim().min(10, "A reason of at least 10 characters is required").max(500),
+  verificationPin: z.string().trim().min(1, "Verification PIN is required"),
+  confirmed: z.literal(true, { error: "Explicit confirmation is required" }),
+});
+
+const openingBaselineItemInput = z.object({
+  inventoryItemId: z.string().uuid(),
+  quantity: z.coerce.number().min(0),
+  unit: z.enum(["g", "ml", "pc"]),
+});
+
+export const openingInventoryBaselineInput = z.object({
+  branchId: z.string().uuid(),
+  effectiveAt: z.iso.datetime({ offset: true }),
+  designation: z.literal("UAT_OPENING"),
+  notes: z.string().trim().min(10).max(1000),
+  items: z.array(openingBaselineItemInput).min(1).max(500)
+    .refine((items) => new Set(items.map((item) => item.inventoryItemId)).size === items.length, "Opening-baseline inventory items must be unique"),
+});
+
+export const openingInventoryBaselineBatchInput = z.object({
+  baselines: z.array(openingInventoryBaselineInput).min(1).max(20)
+    .refine((baselines) => new Set(baselines.map((baseline) => `${baseline.branchId}|${baseline.effectiveAt}|${baseline.designation}`)).size === baselines.length, "Opening baselines must be unique by branch, effective time, and designation"),
+});
+
+export const openingInventoryBaselineFilters = z.object({
+  branchId: z.string().uuid().optional(),
 });
 
 export const shrinkageInvestigationInput = z.object({

@@ -1,7 +1,7 @@
 import React, { lazy, Suspense, useEffect, useState } from "react";
 import { ShoppingCart, Package, TrendingDown, Search, X, Upload, Check, Coffee, CheckCircle, TrendingUp, DollarSign, GitCompare, BarChart2, Hash, Percent, Trash2, Building2, Layers, GitBranch, ArrowRight, Copy, Info, ShieldCheck } from "lucide-react";
 import { Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart } from "recharts";
-import { C, CalendarDateField, DashboardRange, DashboardComparison, dashboardPeriodLabel, formatPeso, StatusChip, KPICard, Card, SectionHeader, Btn, SearchInput, Select, DashboardFilters, THead, TR, TD, Pagination, ChartTip, ModuleTabSwitcher, AnimatedTabPanel, TableCard, TableWrapper, TableEmptyRow, TableLoadingRow } from "../../components/ModuleUi";
+import { C, CalendarDateField, DashboardRange, DashboardComparison, dashboardPeriodLabel, formatPeso, isModalBackdropEvent, StatusChip, KPICard, Card, SectionHeader, Btn, SearchInput, Select, DashboardFilters, THead, TR, TD, Pagination, ChartTip, ModuleTabSwitcher, AnimatedTabPanel, TableCard, TableWrapper, TableEmptyRow, TableLoadingRow } from "../../components/ModuleUi";
 import { toast } from "sonner";
 import type { Page, Role } from "../../types/navigation";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
@@ -11,7 +11,7 @@ import { ControlledActionDialog } from "../../components/ControlledActionDialog"
 import type { DailyPosUploadStatus, PosAnalytics, PosImportPreview, PosImportReconciliation, PosImportRecord, PosMapping, PosMappingReviewStatus, PosSource } from "../../types/inventoryWorkflow";
 import type { Branch, MenuProduct } from "../../types/masterData";
 import { useAuth } from "../../contexts/AuthContext";
-import { addDateDays, businessDate, periodDates } from "../../utils/businessDate";
+import { addDateDays, businessDate, periodDates, adjustRangeForAutomaticImport } from "../../utils/businessDate";
 import { formatAppDate } from "../../utils/appPreferences";
 
 export const marginValueColor = (margin:number) => margin > 0 ? C.green : margin < 0 ? C.red : "var(--app-text-muted)";
@@ -80,13 +80,48 @@ export function PosImportActions({
 export const isSupportedPosFilename = (filename:string) => /\.(csv|xls|xlsx)$/i.test(filename.trim());
 export const hasInvalidCsvEncoding = (csvText:string) => csvText.includes("\uFFFD");
 export const DAILY_POS_MONITORING_LOCATION="import_history" as const;
+export const DAILY_POS_MONITORING_IS_PAGINATED=false;
 export const OWNER_POS_IMPORT_HISTORY_COLUMNS=["File Name","Branch","Business Date","Uploaded Date / Time","Uploaded By","Processed / Total Rows","Units Sold","Total Sales","Fingerprint","Status","Action"];
 export const MANAGER_POS_IMPORT_HISTORY_COLUMNS=OWNER_POS_IMPORT_HISTORY_COLUMNS.filter((column)=>column!=="Branch"&&column!=="Action");
 export const dailyPosStatusLabel = (status:DailyPosUploadStatus["status"]) => ({
   UPLOADED:"Uploaded",DUE_TODAY:"Due Today",MISSING_UPLOAD:"Missing Upload",LATE_UPLOAD:"Late Upload",UPCOMING:"Upcoming",
   NO_SALES_CLOSED:"No Sales / Closed",POS_SOURCE_NOT_CONFIGURED:"POS Source Not Configured",
 })[status];
-export const filterDailyPosStatuses = (rows:DailyPosUploadStatus[],sourceId:string) => sourceId === "ALL" ? rows : rows.filter((row)=>row.posSourceId===sourceId);
+export const DAILY_POS_MONITORING_COLUMNS=["Branch","Business Date","Upload Status","Uploaded File","Uploaded By","Uploaded Date / Time"] as const;
+export type DailyPosMonitoringMode="current"|"history";
+export function dailyPosMonitoringView(mode:DailyPosMonitoringMode,currentBusinessDate:string,historyBusinessDate:string){
+  const businessDate=mode==="current"?currentBusinessDate:historyBusinessDate;
+  return {
+    businessDate,
+    startDate:businessDate,
+    endDate:businessDate,
+    showDateFilter:mode==="history",
+    title:mode==="history"?"Daily Upload Monitoring — History":"Daily Upload Monitoring",
+    actionLabel:mode==="history"?"Back to Current":"View History",
+  } as const;
+}
+export type DailyPosBranchSummary=Pick<DailyPosUploadStatus,"branchId"|"branchName"|"businessDate"|"status"|"sourceFilename"|"uploadedBy"|"importedAt"|"closed">&{requiredSourceCount:number;completedSourceCount:number};
+export function summarizeDailyPosStatuses(rows:DailyPosUploadStatus[]):DailyPosBranchSummary[]{
+  const groups=new Map<string,DailyPosUploadStatus[]>();
+  for(const row of rows){const key=`${row.businessDate}:${row.branchId}`;groups.set(key,[...(groups.get(key)??[]),row]);}
+  return Array.from(groups.values()).map((group)=>{
+    const first=group[0]!;
+    const required=group.filter((row)=>Boolean(row.posSourceId));
+    const completed=required.filter((row)=>Boolean(row.importId));
+    const closed=group.some((row)=>row.closed||row.status==="NO_SALES_CLOSED");
+    let status:DailyPosUploadStatus["status"];
+    if(required.length===0)status="POS_SOURCE_NOT_CONFIGURED";
+    else if(closed)status="NO_SALES_CLOSED";
+    else if(completed.length===required.length)status=required.some((row)=>row.status==="LATE_UPLOAD")?"LATE_UPLOAD":"UPLOADED";
+    else if(group.some((row)=>row.status==="MISSING_UPLOAD"||row.status==="LATE_UPLOAD"))status="MISSING_UPLOAD";
+    else if(group.some((row)=>row.status==="DUE_TODAY"))status="DUE_TODAY";
+    else status="UPCOMING";
+    const filenames=Array.from(new Set(completed.map((row)=>row.sourceFilename).filter((value):value is string=>Boolean(value))));
+    const uploaders=Array.from(new Set(completed.map((row)=>row.uploadedBy).filter((value):value is string=>Boolean(value))));
+    const importedAt=completed.map((row)=>row.importedAt).filter((value):value is string=>Boolean(value)).sort().at(-1)??null;
+    return {branchId:first.branchId,branchName:first.branchName,businessDate:first.businessDate,status,sourceFilename:filenames.length?filenames.join(", "):null,uploadedBy:uploaders.length?uploaders.join(", "):null,importedAt,closed,requiredSourceCount:required.length,completedSourceCount:completed.length};
+  });
+}
 export const canApprovePosMapping = (
   mapping: Pick<PosMapping, "recipeAvailable">,
   source: Pick<PosSource, "status" | "formatVerifiedAt"> | null,
@@ -105,7 +140,7 @@ export function PosMappingEditDialog({mapping,products,branches,busy,onCancel,on
   const eligibleProducts=products.filter(product=>product.status==="ACTIVE"&&product.approvalStatus==="APPROVED");
   const selectedProduct=eligibleProducts.find(product=>product.id===productId);
   const variants=selectedProduct?.variants.filter(variant=>variant.status==="ACTIVE")??[];
-  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-labelledby="edit-pos-mapping-title">
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-labelledby="edit-pos-mapping-title" onMouseDown={(event)=>{if(isModalBackdropEvent(event))onCancel();}}>
     <form className="w-full max-w-xl rounded-2xl border bg-[var(--app-surface)] p-6 shadow-2xl" style={{borderColor:C.border}} onSubmit={(event)=>{event.preventDefault();onSave({branchId:branchId||null,sourceProductCode:posCode.trim()||null,menuItemId:productId,menuItemVariantId:variantId,...(revisionReason.trim()?{revisionReason:revisionReason.trim()}:{})});}}>
       <h3 id="edit-pos-mapping-title" className="text-lg font-bold">Edit Pending Mapping</h3>
       <p className="mt-1 text-sm" style={{color:C.secondary}}>Saving returns this mapping to Pending Approval. It will not be activated automatically.</p>
@@ -151,6 +186,86 @@ export function PosImportCleanupAuthorizationDialog({target,busy,reason,onReason
 
 function dateRange(range: DashboardRange, customStart: string, customEnd: string) {
   return periodDates(range, customStart, customEnd);
+}
+
+export const STORAGE_KEY_COGS_USER_RANGE = "libro.cogs.userRange";
+
+export interface CogsUserRangeConfig {
+  range: DashboardRange;
+  customStart?: string;
+  customEnd?: string;
+}
+
+export function readCogsUserRange(): CogsUserRangeConfig | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_COGS_USER_RANGE);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && typeof parsed.range === "string") {
+      return parsed as CogsUserRangeConfig;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+export function saveCogsUserRange(config: CogsUserRangeConfig) {
+  try {
+    localStorage.setItem(STORAGE_KEY_COGS_USER_RANGE, JSON.stringify(config));
+  } catch {
+    // ignore
+  }
+}
+
+export function clearCogsUserRange() {
+  try {
+    localStorage.removeItem(STORAGE_KEY_COGS_USER_RANGE);
+  } catch {
+    // ignore
+  }
+}
+
+export function getInitialCogsDateRange(): {
+  userSelected: boolean;
+  range: DashboardRange;
+  customStart: string;
+  customEnd: string;
+} {
+  try {
+    if (typeof window !== "undefined" && window.location?.search) {
+      const params = new URLSearchParams(window.location.search);
+      const qStart = params.get("startDate");
+      const qEnd = params.get("endDate");
+      if (qStart && qEnd) {
+        return {
+          userSelected: true,
+          range: "custom",
+          customStart: qStart,
+          customEnd: qEnd,
+        };
+      }
+    }
+  } catch {
+    // ignore
+  }
+  const saved = readCogsUserRange();
+  if (saved) {
+    return {
+      userSelected: true,
+      range: saved.range,
+      customStart: saved.customStart ?? businessDate(),
+      customEnd: saved.customEnd ?? businessDate(),
+    };
+  }
+  const today = businessDate();
+  const monthStart = `${today.slice(0, 8)}01`;
+  return {
+    userSelected: false,
+    range: "mtd",
+    customStart: monthStart,
+    customEnd: today,
+  };
 }
 
 export const formatPosSourceFormatName = (format: PosSource["supportedFormat"]) => {
@@ -211,7 +326,7 @@ export function PosMappingSetup({ role = "owner" }: { role?: Role | string } = {
   const selectedSource = sources.find((source) => source.id === sourceId) ?? null;
   const selectedVariant = products.flatMap((product) => product.variants).find((variant) => variant.id === variantId);
 
-  // Group sources by branch to visualize Scenario B (multiple POS systems per branch)
+  // Group current and historical source configurations by their assigned branch.
   const sourcesByBranch = branches.map((b) => ({
     branch: b,
     sources: sources.filter((s) => s.branchId === b.id),
@@ -247,7 +362,7 @@ export function PosMappingSetup({ role = "owner" }: { role?: Role | string } = {
                 <strong>Scenario A:</strong> Same POS format across multiple branches
               </span>
               <span className="inline-flex items-center gap-1 rounded-md bg-white/80 px-2.5 py-1 font-medium text-purple-800 shadow-sm border border-purple-200 dark:bg-purple-900/60 dark:text-purple-200 dark:border-purple-800">
-                <strong>Scenario B:</strong> Multiple POS registers per branch
+                <strong>Scenario B:</strong> Historical inactive sources retained per branch
               </span>
               <span className="inline-flex items-center gap-1 rounded-md bg-white/80 px-2.5 py-1 font-medium text-amber-800 shadow-sm border border-amber-200 dark:bg-amber-900/60 dark:text-amber-200 dark:border-amber-800">
                 <strong>Scenario C:</strong> Branch-specific mapping overrides
@@ -308,7 +423,7 @@ export function PosMappingSetup({ role = "owner" }: { role?: Role | string } = {
           <h4 className="font-bold text-[var(--app-text)]">Step 2: Assign POS System to Branches & System Verification</h4>
         </div>
         <p className="mt-1 text-xs text-[var(--app-text-muted)]">
-          Select a configured POS system to verify format compatibility, review assigned branches, or deploy this POS format to another branch (Scenario A & B).
+          Select a configured POS system to verify format compatibility, review its assigned branch, or deploy this format to another branch. Deactivate the current source before activating its replacement.
         </p>
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -537,8 +652,7 @@ export function PosMappingSetup({ role = "owner" }: { role?: Role | string } = {
             No {mappingFilter === "ALL" ? "" : `${mappingFilter.toLowerCase()} `}mappings found for this POS system.
           </p>
         ) : (
-          <div className="mt-3 overflow-x-auto rounded-xl border" style={{ borderColor: C.border }}>
-            <table className="min-w-[1120px] w-full text-left text-xs">
+          <TableWrapper minWidth={1120} className="mt-3 rounded-xl border" >
               <thead style={{ background: "var(--app-surface-muted)" }}>
                 <tr>
                   <th className="p-3 font-semibold">POS Name</th>
@@ -611,8 +725,7 @@ export function PosMappingSetup({ role = "owner" }: { role?: Role | string } = {
                   );
                 })}
               </tbody>
-            </table>
-          </div>
+          </TableWrapper>
         )}
       </div>}
     </div>}
@@ -678,18 +791,17 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
   const [stagedFile, setStagedFile] = useState<File | null>(null);
   const [posValidating, setPosValidating] = useState(false);
   const [posConsumption, setPosConsumption] = useState<{ name: string; unit: string; expectedConsumption: number }[]>([]);
-  const [posImportResult, setPosImportResult] = useState<{ rowsImported: number; productsMatched: number; totalQuantitySold: number; totalSales: number; businessDate: string; fingerprintIndicator: string; pricing: PosImportPreview["pricing"]; reconciliation:PosImportReconciliation } | null>(null);
+  const [posImportResult, setPosImportResult] = useState<{ rowsImported: number; productsMatched: number; totalQuantitySold: number; totalSales: number; businessDate: string; fingerprintIndicator: string; pricing: PosImportPreview["pricing"]; reconciliation:PosImportReconciliation; inventoryDateAssessment: { lateHistoricalImport: boolean; latestBaselineDate: string | null; affectedCountPeriods: Array<{ countNo: string }> } } | null>(null);
   const [posImports, setPosImports] = useState<PosImportRecord[]>([]);
   const [posHistoryLoading, setPosHistoryLoading] = useState(true);
   const [posHistoryPage, setPosHistoryPage] = useState(1);
   const [posHistoryTotal, setPosHistoryTotal] = useState(0);
   const [historyRefresh, setHistoryRefresh] = useState(0);
-  const [monitoringStart,setMonitoringStart]=useState(addDateDays(localToday,-6));
-  const [monitoringEnd,setMonitoringEnd]=useState(localToday);
+  const [monitoringMode,setMonitoringMode]=useState<DailyPosMonitoringMode>("current");
+  const [monitoringHistoryDate,setMonitoringHistoryDate]=useState(addDateDays(localToday,-1));
   const [dailyPosStatuses,setDailyPosStatuses]=useState<DailyPosUploadStatus[]>([]);
   const [dailyPosLoading,setDailyPosLoading]=useState(false);
   const [dailyPosError,setDailyPosError]=useState("");
-  const [monitoringSourceId,setMonitoringSourceId]=useState("ALL");
   const [deleteTarget, setDeleteTarget] = useState<PosImportRecord|null>(null);
   const [deleteReason, setDeleteReason] = useState("");
   const [deletePin, setDeletePin] = useState("");
@@ -705,13 +817,16 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
   const [analytics, setAnalytics] = useState<PosAnalytics | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(true);
   const [tab, setTab] = useState("overview");
-  const [range, setRange] = useState<DashboardRange>("mtd");
+  const initialRange = getInitialCogsDateRange();
+  const [userSelected, setUserSelected] = useState<boolean>(initialRange.userSelected);
+  const [range, setRange] = useState<DashboardRange>(initialRange.range);
   const [comparison, setComparison] = useState<DashboardComparison>("previous");
-  const [customStart, setCustomStart] = useState(initialMonthStart);
-  const [customEnd, setCustomEnd] = useState(localToday);
+  const [customStart, setCustomStart] = useState(initialRange.customStart);
+  const [customEnd, setCustomEnd] = useState(initialRange.customEnd);
   const periodLabel = dashboardPeriodLabel(range, customStart, customEnd);
   const comparisonLabel = comparison === "previous" ? "previous period" : "last month";
   const branchLabel = !isOwner ? (user?.branch?.name ?? "Assigned Branch") : posBranchFilter;
+  const branchId = isOwner ? branches.find((branch) => branch.name === posBranchFilter)?.id : user?.branch?.id;
 
   useEffect(() => {
     if (!isOwner) return;
@@ -723,22 +838,60 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
   }, [effectiveRole, isOwner]);
 
   useEffect(() => { if (isOwner) setPosBranchFilter(scopeBranchName); }, [isOwner, scopeBranchName]);
-  useEffect(() => { setMonitoringSourceId("ALL"); }, [posBranchFilter]);
+
   useEffect(() => {
-    const handleDataChanged = () => setHistoryRefresh((value) => value + 1);
+    let active = true;
+    if (!userSelected) {
+      inventoryWorkflowService.posImports({ branchId, pageSize: 1 })
+        .then((res) => {
+          if (!active) return;
+          const latestDate = res.imports?.[0]?.businessDate;
+          if (latestDate) {
+            const defaultDates = periodDates("mtd");
+            const adjustment = adjustRangeForAutomaticImport(false, "mtd", defaultDates.startDate, defaultDates.endDate, latestDate, localToday);
+            if (adjustment) {
+              if (adjustment.customStart) setCustomStart(adjustment.customStart);
+              if (adjustment.customEnd) setCustomEnd(adjustment.customEnd);
+              setRange(adjustment.range);
+            } else {
+              setRange("mtd");
+            }
+          } else {
+            setRange("mtd");
+          }
+        })
+        .catch(() => undefined);
+    }
+    return () => { active = false; };
+  }, [branchId, userSelected, historyRefresh, localToday]);
+
+  useEffect(() => {
+    const handleDataChanged = (event: Event) => {
+      const customEvent = event as CustomEvent<{ businessDate?: string } | undefined>;
+      const importedDate = customEvent.detail?.businessDate;
+      if (importedDate) {
+        const currentDates = dateRange(range, customStart, customEnd);
+        const adjustment = adjustRangeForAutomaticImport(userSelected, range, currentDates.startDate, currentDates.endDate, importedDate, localToday);
+        if (adjustment) {
+          if (adjustment.customStart) setCustomStart(adjustment.customStart);
+          if (adjustment.customEnd) setCustomEnd(adjustment.customEnd);
+          setRange(adjustment.range);
+        }
+      }
+      setHistoryRefresh((value) => value + 1);
+    };
     window.addEventListener("libro-data-changed", handleDataChanged);
     return () => window.removeEventListener("libro-data-changed", handleDataChanged);
-  }, []);
+  }, [range, customStart, customEnd, userSelected, localToday]);
 
   useEffect(() => {
     const dates = dateRange(range, customStart, customEnd);
-    const branchId = isOwner ? branches.find((branch) => branch.name === posBranchFilter)?.id : undefined;
     setAnalyticsLoading(true);
     void inventoryWorkflowService.posAnalytics({ ...dates, branchId })
       .then(setAnalytics)
       .catch(() => setAnalytics(null))
       .finally(() => setAnalyticsLoading(false));
-  }, [branches, customEnd, customStart, posBranchFilter, range, effectiveRole, isOwner, historyRefresh]);
+  }, [branches, customEnd, customStart, branchId, range, effectiveRole, isOwner, historyRefresh]);
 
   useEffect(() => {
     let cancelled=false;
@@ -754,15 +907,16 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
     if(tab!=="import_history")return;
     let cancelled=false;
     const branchId=isOwner?branches.find((branch)=>branch.name===posBranchFilter)?.id:undefined;
+    const monitoringView=dailyPosMonitoringView(monitoringMode,localToday,monitoringHistoryDate);
     setDailyPosLoading(true);setDailyPosError("");
-    void inventoryWorkflowService.dailyPosStatus({startDate:monitoringStart,endDate:monitoringEnd,branchId})
+    void inventoryWorkflowService.dailyPosStatus({startDate:monitoringView.startDate,endDate:monitoringView.endDate,branchId})
       .then((result)=>{if(!cancelled)setDailyPosStatuses(result.statuses);})
       .catch((reason)=>{if(!cancelled){setDailyPosStatuses([]);setDailyPosError(reason instanceof Error?reason.message:"Unable to load daily upload monitoring.");}})
       .finally(()=>{if(!cancelled)setDailyPosLoading(false);});
     return()=>{cancelled=true;};
-  },[branches,historyRefresh,monitoringEnd,monitoringStart,posBranchFilter,effectiveRole,isOwner,tab]);
-  const monitoringSources=Array.from(new Map(dailyPosStatuses.filter((row)=>row.posSourceId).map((row)=>[row.posSourceId!,row.posSourceName??row.sourceCode??"POS Source"])).entries());
-  const visibleDailyStatuses=filterDailyPosStatuses(dailyPosStatuses,monitoringSourceId);
+  },[branches,historyRefresh,localToday,monitoringHistoryDate,monitoringMode,posBranchFilter,effectiveRole,isOwner,tab]);
+  const monitoringView=dailyPosMonitoringView(monitoringMode,localToday,monitoringHistoryDate);
+  const visibleDailyStatuses=summarizeDailyPosStatuses(dailyPosStatuses);
   const productCategories = [...new Set((analytics?.products ?? []).map((product) => product.category))];
   const visibleProducts = (analytics?.products ?? []).filter((product) => {
     const matchesCategory = productCategory === "All Categories" || product.category === productCategory;
@@ -797,14 +951,15 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
       if (file.size > 4_000_000) throw new Error("POS files must be 4 MB or smaller.");
       const extension = file.name.toLowerCase().split(".").pop();
       if (!extension || !isSupportedPosFilename(file.name)) throw new Error("Select a CSV, XLS, or XLSX POS file.");
+      if (!selectedPosSourceId) throw new Error("Select the active POS source for this file.");
       let csvText = "";
       const preview = extension === "csv"
         ? await (async () => {
             csvText = await file.text();
             if (hasInvalidCsvEncoding(csvText)) throw new Error("The CSV contains unsupported or invalid text encoding. Export it as UTF-8 and try again.");
-            return inventoryWorkflowService.previewPosSales({ sourceFilename: file.name, csvText });
+            return inventoryWorkflowService.previewPosSales({ sourceFilename: file.name, csvText, posSourceId: selectedPosSourceId });
           })()
-        : await inventoryWorkflowService.previewPosSales({ sourceFilename: file.name, file, posSourceId: selectedPosSourceId || undefined });
+        : await inventoryWorkflowService.previewPosSales({ sourceFilename: file.name, file, posSourceId: selectedPosSourceId });
       setPosPreview(preview);
       setPosCsvText(csvText);
       setPosExcelFile(extension === "csv" ? null : file);
@@ -825,10 +980,17 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
     setPosImporting(true); setPosImportError("");
     try {
       const result = await inventoryWorkflowService.importPosSales(posExcelFile
-        ? { sourceFilename: posFilename, file: posExcelFile, posSourceId: selectedPosSourceId || undefined, expectedContentHash: posPreview.contentHash, expectedResolutionFingerprint: posPreview.resolutionFingerprint }
-        : { sourceFilename: posFilename, csvText: posCsvText, expectedContentHash: posPreview.contentHash });
+        ? { sourceFilename: posFilename, file: posExcelFile, posSourceId: selectedPosSourceId, expectedContentHash: posPreview.contentHash, expectedResolutionFingerprint: posPreview.resolutionFingerprint }
+        : { sourceFilename: posFilename, csvText: posCsvText, posSourceId: selectedPosSourceId, expectedContentHash: posPreview.contentHash, expectedResolutionFingerprint: posPreview.resolutionFingerprint });
       setPosConsumption(result.consumption);
       setPosImportResult(result);
+      const currentDates = dateRange(range, customStart, customEnd);
+      const adjustment = adjustRangeForAutomaticImport(userSelected, range, currentDates.startDate, currentDates.endDate, result.businessDate, localToday);
+      if (adjustment) {
+        if (adjustment.customStart) setCustomStart(adjustment.customStart);
+        if (adjustment.customEnd) setCustomEnd(adjustment.customEnd);
+        setRange(adjustment.range);
+      }
       setPosHistoryPage(1);
       setHistoryRefresh(value=>value+1);
       setUploadStep("done");
@@ -874,9 +1036,26 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
             {!isOwner && <Btn variant="primary" icon={Upload} onClick={() => setUploadStep("select")}>Import POS File</Btn>}
             {isOwner && <Select options={["All Branches", ...branches.map((branch) => branch.name)]} value={posBranchFilter} onChange={value=>{setPosBranchFilter(value);setPosHistoryPage(1);}} small />}
             <DashboardFilters range={range} comparison={comparison} customStart={customStart} customEnd={customEnd}
-              onRangeChange={setRange} onComparisonChange={setComparison}
-              onApplyCustom={(start, end) => { setCustomStart(start); setCustomEnd(end); }}
-              onReset={() => { setRange("mtd"); setCustomStart(initialMonthStart); setCustomEnd(localToday); }} />
+              onRangeChange={(nextRange) => {
+                setUserSelected(true);
+                setRange(nextRange);
+                saveCogsUserRange({ range: nextRange, customStart, customEnd });
+              }}
+              onComparisonChange={setComparison}
+              onApplyCustom={(start, end) => {
+                setUserSelected(true);
+                setCustomStart(start);
+                setCustomEnd(end);
+                setRange("custom");
+                saveCogsUserRange({ range: "custom", customStart: start, customEnd: end });
+              }}
+              onReset={() => {
+                setUserSelected(false);
+                clearCogsUserRange();
+                setRange("mtd");
+                setComparison("previous");
+                setHistoryRefresh((v) => v + 1);
+              }} />
           </>
         } />
 
@@ -978,26 +1157,24 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
               })}
             </tbody>
           </TableWrapper>
-          <Pagination total={visibleProducts.length} page={1} perPage={10} />
         </TableCard>
       )}
 
       {tab === DAILY_POS_MONITORING_LOCATION && (<div className="space-y-4">
         <section aria-label="Daily Upload Monitoring" className="rounded-2xl border p-4" style={{borderColor:C.border,background:C.surface}}>
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div><h3 className="font-semibold" style={{color:C.primary}}>Daily Upload Monitoring</h3><p className="mt-1 text-xs" style={{color:C.secondary}}>Expected branch/POS uploads compared with committed imports. The 10:00 PM reminder does not mark today as missing.</p></div>
+            <div><h3 className="font-semibold" style={{color:C.primary}}>{monitoringView.title}</h3><p className="mt-1 text-xs" style={{color:C.secondary}}>{monitoringMode==="current"?"Current business-date upload status for each monitored branch.":"Historical upload status based on the selected business date."}</p></div>
             <div className="flex flex-wrap gap-2">
-              <CalendarDateField label="From" value={monitoringStart} max={monitoringEnd} onChange={(value)=>value&&setMonitoringStart(value)}/>
-              <CalendarDateField label="To" value={monitoringEnd} min={monitoringStart} max={localToday} onChange={(value)=>value&&setMonitoringEnd(value)}/>
               {isOwner && <Select ariaLabel="Monitoring branch" options={["All Branches", ...branches.map((branch) => branch.name)]} value={posBranchFilter} onChange={value=>{setPosBranchFilter(value);setPosHistoryPage(1);}} />}
-              <Select ariaLabel="Monitoring POS source" options={[{value:"ALL",label:"All POS Sources"},...monitoringSources.map(([value,label])=>({value,label}))]} value={monitoringSourceId} onChange={setMonitoringSourceId}/>
+              {monitoringView.showDateFilter&&<CalendarDateField label="Date" value={monitoringHistoryDate} max={addDateDays(localToday,-1)} onChange={(value)=>value&&setMonitoringHistoryDate(value)}/>}
+              <Btn variant="outline" onClick={()=>setMonitoringMode((mode)=>mode==="current"?"history":"current")}>{monitoringView.actionLabel}</Btn>
             </div>
           </div>
           {dailyPosError&&<p role="alert" className="mt-3 text-sm" style={{color:C.red}}>{dailyPosError}</p>}
-          <div className="mt-3 overflow-x-auto"><table className="data-table w-full min-w-[900px] text-sm"><thead><tr>{isOwner&&<th>Branch</th>}<th>POS Source</th><th>Business Date</th><th>Upload Status</th><th>Uploaded File</th><th>Uploaded By</th><th>Uploaded Date / Time</th>{!isOwner&&<th>Action</th>}</tr></thead><tbody>
-            {dailyPosLoading?<tr><td colSpan={isOwner?7:7}>Loading daily upload monitoring…</td></tr>:visibleDailyStatuses.length===0?<tr><td colSpan={isOwner?7:7}>No monitoring rows found for this date range.</td></tr>:visibleDailyStatuses.map((row)=><tr key={`${row.businessDate}-${row.branchId}-${row.posSourceId??"none"}`}>
-              {isOwner&&<td className="font-semibold">{row.branchName}</td>}<td>{row.posSourceName??"Not configured"}</td><td>{formatAppDate(row.businessDate)}</td><td><StatusChip status={dailyPosStatusLabel(row.status).toLowerCase()}/></td><td>{row.sourceFilename??"—"}</td><td>{row.uploadedBy??"—"}</td><td>{row.importedAt?formatAppDate(row.importedAt,true):"—"}</td>
-              {!isOwner&&<td>{row.posSourceId&&(row.status==="DUE_TODAY"||row.status==="MISSING_UPLOAD")?<Btn variant="outline" onClick={()=>void inventoryWorkflowService.declareClosedPosDay(row.businessDate,"Branch closed / no sales declared by Manager").then(()=>setHistoryRefresh((value)=>value+1)).catch((reason)=>setDailyPosError(reason instanceof Error?reason.message:"Unable to record the closed day."))}>Record No Sales / Closed</Btn>:"—"}</td>}
+          <div className="mt-3 overflow-x-auto"><table className="data-table w-full min-w-[800px] text-sm"><thead><tr>{DAILY_POS_MONITORING_COLUMNS.map((column)=><th key={column}>{column}</th>)}{!isOwner&&<th>Action</th>}</tr></thead><tbody>
+            {dailyPosLoading?<tr><td colSpan={isOwner?6:7}>Loading daily upload monitoring…</td></tr>:visibleDailyStatuses.length===0?<tr><td colSpan={isOwner?6:7}>No monitoring rows found for this date range.</td></tr>:visibleDailyStatuses.map((row)=><tr key={`${row.businessDate}-${row.branchId}`}>
+              <td className="font-semibold">{row.branchName}</td><td>{formatAppDate(row.businessDate)}</td><td><StatusChip status={dailyPosStatusLabel(row.status).toLowerCase()}/></td><td>{row.sourceFilename??"—"}</td><td>{row.uploadedBy??"—"}</td><td>{row.importedAt?formatAppDate(row.importedAt,true):"—"}</td>
+              {!isOwner&&<td>{row.requiredSourceCount>0&&(row.status==="DUE_TODAY"||row.status==="MISSING_UPLOAD")?<Btn variant="outline" onClick={()=>void inventoryWorkflowService.declareClosedPosDay(row.businessDate,"Branch closed / no sales declared by Manager").then(()=>setHistoryRefresh((value)=>value+1)).catch((reason)=>setDailyPosError(reason instanceof Error?reason.message:"Unable to record the closed day."))}>Record No Sales / Closed</Btn>:"—"}</td>}
             </tr>)}
           </tbody></table></div>
         </section>
@@ -1011,7 +1188,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
             </>
           }
         >
-          <TableWrapper minWidth={1080}>
+          <TableWrapper minWidth={1080} paginate={false}>
             <THead cols={isOwner ? OWNER_POS_IMPORT_HISTORY_COLUMNS : MANAGER_POS_IMPORT_HISTORY_COLUMNS} />
             <tbody>
               {posHistoryLoading ? (
@@ -1045,6 +1222,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
                     ) : (
                       <StatusChip status={(row.status as string) === "REJECTED" ? "rejected" : "imported"} />
                     )}
+                    {row.lateHistoricalImport && <div className="mt-1 text-[10px] font-semibold" style={{color:C.amber}}>Late historical · reconcile inventory periods</div>}
                   </TD>
                   {isOwner && (
                     <TD center>
@@ -1078,7 +1256,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
 
       {/* POS File Upload Modal */}
       {!isOwner && uploadStep !== "idle" && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.45)" }}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.45)" }} onMouseDown={(event)=>{if(isModalBackdropEvent(event))setUploadStep("idle");}}>
           <div role="dialog" aria-modal="true" aria-labelledby="pos-upload-title" className="rounded-2xl shadow-2xl w-full max-w-5xl max-h-[92vh] overflow-y-auto p-6" style={{ background: "var(--app-surface)", border: `1px solid ${C.border}` }}>
             <div className="flex items-center justify-between mb-5">
               <div>
@@ -1114,12 +1292,12 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
             {uploadStep === "select" && (
               <>
                 <div className="mb-4">
-                  <label htmlFor="pos-source-select" className="block text-sm font-semibold mb-2" style={{ color: C.primary }}>POS source for Excel imports</label>
+                  <label htmlFor="pos-source-select" className="block text-sm font-semibold mb-2" style={{ color: C.primary }}>POS source</label>
                   <select id="pos-source-select" value={selectedPosSourceId} onChange={(event) => setSelectedPosSourceId(event.target.value)} className="w-full rounded-xl border px-3 py-2 text-sm" style={{ borderColor: C.border, background: C.mainBg, color: C.primary }}>
                     <option value="">Select a verified POS source</option>
                     {posSources.filter((source) => source.status === "ACTIVE").map((source) => <option key={source.id} value={source.id}>{source.displayName} ({source.supportedFormat.replaceAll("_", " ")})</option>)}
                   </select>
-                  <p className="mt-2 text-xs" style={{ color: C.secondary }}>{posSources.some((source) => source.status === "ACTIVE") ? "CSV imports keep their current direct matching. Excel requires a reviewed source and product/variant mappings." : "No verified POS source is configured. Excel files may be previewed, but cannot be confirmed until an Owner configures the source and mappings."}</p>
+                  <p className="mt-2 text-xs" style={{ color: C.secondary }}>{posSources.some((source) => source.status === "ACTIVE") ? "CSV, XLS, and XLSX imports require this source's reviewed product/variant mappings." : "No active POS source is configured. Ask an Owner to configure and activate one before importing."}</p>
                 </div>
                 <label className="block border-2 border-dashed rounded-xl p-8 text-center mb-4 cursor-pointer transition-all"
                   style={{ borderColor: stagedFile ? C.maroon : C.border, background: stagedFile ? "rgba(128,0,32,0.03)" : "transparent" }}>
@@ -1213,6 +1391,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
                   <p className="text-xs mt-1" style={{ color: C.muted }}>{posFilename} · {posImportResult?.businessDate ?? ""}</p>
                   <div className="grid grid-cols-2 gap-2 mt-4 text-left text-xs">{[["Rows Imported",posImportResult?.rowsImported ?? 0],["Products Matched",posImportResult?.productsMatched ?? 0],["Total Quantity",posImportResult?.totalQuantitySold ?? 0],["Total Sales",`₱${(posImportResult?.totalSales ?? 0).toLocaleString("en-PH",{minimumFractionDigits:2})}`]].map(([label,value])=><div key={label} className="p-2 rounded-lg" style={{ background:C.mainBg }}><span style={{color:C.secondary}}>{label}: </span><strong>{value}</strong></div>)}</div>
                   <div className="mt-4"><PosPricingNotice notice={posImportResult?.pricing.notice} /></div>
+                  {posImportResult?.inventoryDateAssessment?.lateHistoricalImport&&<div role="status" className="mt-4 rounded-xl border p-3 text-left text-xs" style={{borderColor:C.amber,color:C.amber,background:C.amberBg}}>Historical sales were imported for sales and COGS, but the current inventory baseline was not changed. Reconcile {posImportResult.inventoryDateAssessment.affectedCountPeriods.map((period)=>period.countNo).join(", ")||"the affected historical count period"}.</div>}
                   {posImportResult?.reconciliation&&<div className="mt-4 rounded-xl border p-3 text-left text-xs" style={{borderColor:C.border}}><p className="font-bold uppercase tracking-wide" style={{color:C.secondary}}>POS Import Reconciliation Report</p><div className="mt-2 grid grid-cols-2 gap-2">{[["Sales total",posImportResult.reconciliation.salesTotalMatches],["Quantity",posImportResult.reconciliation.quantityMatches],["Recipe consumption",posImportResult.reconciliation.recipeConsumptionMatches],["COGS",posImportResult.reconciliation.cogsMatches],["Branch isolation",posImportResult.reconciliation.branchIsolated]].map(([label,passed])=><div key={String(label)}><span>{label}: </span><strong style={{color:passed?C.green:C.red}}>{passed?"MATCHED":"FAILED"}</strong></div>)}</div></div>}
                   <div className="mt-4 p-3 rounded-xl text-left space-y-1.5" style={{ background: C.mainBg }}>
                     <p className="text-xs font-bold uppercase tracking-wide" style={{ color: C.secondary }}>Expected ingredient consumption</p>
@@ -1252,11 +1431,12 @@ function COGSAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role |
   const isOwner = isOwnerRole(role) || user?.role === "OWNER";
   const effectiveRole: Role = isOwner ? "owner" : "manager";
   const today = businessDate();
-  const monthStart = `${today.slice(0, 8)}01`;
-  const [range, setRange] = useState<DashboardRange>("mtd");
+  const initialRange = getInitialCogsDateRange();
+  const [userSelected, setUserSelected] = useState<boolean>(initialRange.userSelected);
+  const [range, setRange] = useState<DashboardRange>(initialRange.range);
   const [comparison, setComparison] = useState<DashboardComparison>("previous");
-  const [customStart, setCustomStart] = useState(monthStart);
-  const [customEnd, setCustomEnd] = useState(today);
+  const [customStart, setCustomStart] = useState(initialRange.customStart);
+  const [customEnd, setCustomEnd] = useState(initialRange.customEnd);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [branchFilter, setBranchFilter] = useState("All Branches");
   const [analytics, setAnalytics] = useState<PosAnalytics | null>(null);
@@ -1264,12 +1444,52 @@ function COGSAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role |
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("All Categories");
   const [refresh, setRefresh] = useState(0);
+  const branchId = isOwner ? branches.find((branch) => branch.name === branchFilter)?.id : user?.branch?.id;
 
   useEffect(() => {
-    const handleDataChanged = () => setRefresh((value) => value + 1);
+    let active = true;
+    if (!userSelected) {
+      inventoryWorkflowService.posImports({ branchId, pageSize: 1 })
+        .then((res) => {
+          if (!active) return;
+          const latestDate = res.imports?.[0]?.businessDate;
+          if (latestDate) {
+            const defaultDates = periodDates("mtd");
+            const adjustment = adjustRangeForAutomaticImport(false, "mtd", defaultDates.startDate, defaultDates.endDate, latestDate, today);
+            if (adjustment) {
+              if (adjustment.customStart) setCustomStart(adjustment.customStart);
+              if (adjustment.customEnd) setCustomEnd(adjustment.customEnd);
+              setRange(adjustment.range);
+            } else {
+              setRange("mtd");
+            }
+          } else {
+            setRange("mtd");
+          }
+        })
+        .catch(() => undefined);
+    }
+    return () => { active = false; };
+  }, [branchId, userSelected, refresh, today]);
+
+  useEffect(() => {
+    const handleDataChanged = (event: Event) => {
+      const customEvent = event as CustomEvent<{ businessDate?: string } | undefined>;
+      const importedDate = customEvent.detail?.businessDate;
+      if (importedDate) {
+        const currentDates = dateRange(range, customStart, customEnd);
+        const adjustment = adjustRangeForAutomaticImport(userSelected, range, currentDates.startDate, currentDates.endDate, importedDate, today);
+        if (adjustment) {
+          if (adjustment.customStart) setCustomStart(adjustment.customStart);
+          if (adjustment.customEnd) setCustomEnd(adjustment.customEnd);
+          setRange(adjustment.range);
+        }
+      }
+      setRefresh((value) => value + 1);
+    };
     window.addEventListener("libro-data-changed", handleDataChanged);
     return () => window.removeEventListener("libro-data-changed", handleDataChanged);
-  }, []);
+  }, [range, customStart, customEnd, userSelected, today]);
 
   useEffect(() => {
     if (!isOwner) return;
@@ -1278,13 +1498,12 @@ function COGSAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role |
   useEffect(() => { if (isOwner) setBranchFilter(scopeBranchName); }, [isOwner, scopeBranchName]);
 
   useEffect(() => {
-    const branchId = isOwner ? branches.find((branch) => branch.name === branchFilter)?.id : undefined;
     setLoading(true);
     void inventoryWorkflowService.posAnalytics({ ...dateRange(range, customStart, customEnd), branchId })
       .then(setAnalytics)
       .catch(() => setAnalytics(null))
       .finally(() => setLoading(false));
-  }, [branchFilter, branches, customEnd, customStart, range, effectiveRole, isOwner, refresh]);
+  }, [branchId, branches, customEnd, customStart, range, effectiveRole, isOwner, refresh]);
 
   const summary = analytics?.summary;
   const branchLabel = !isOwner ? (user?.branch?.name ?? "Assigned Branch") : branchFilter;
@@ -1302,9 +1521,26 @@ function COGSAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role |
           <>
             {isOwner && <Select options={["All Branches", ...branches.map((branch) => branch.name)]} value={branchFilter} onChange={setBranchFilter} />}
             <DashboardFilters range={range} comparison={comparison} customStart={customStart} customEnd={customEnd}
-              onRangeChange={setRange} onComparisonChange={setComparison}
-              onApplyCustom={(start, end) => { setCustomStart(start); setCustomEnd(end); }}
-              onReset={() => { setRange("mtd"); setCustomStart(monthStart); setCustomEnd(today); }} />
+              onRangeChange={(nextRange) => {
+                setUserSelected(true);
+                setRange(nextRange);
+                saveCogsUserRange({ range: nextRange, customStart, customEnd });
+              }}
+              onComparisonChange={setComparison}
+              onApplyCustom={(start, end) => {
+                setUserSelected(true);
+                setCustomStart(start);
+                setCustomEnd(end);
+                setRange("custom");
+                saveCogsUserRange({ range: "custom", customStart: start, customEnd: end });
+              }}
+              onReset={() => {
+                setUserSelected(false);
+                clearCogsUserRange();
+                setRange("mtd");
+                setComparison("previous");
+                setRefresh((v) => v + 1);
+              }} />
           </>
         } />
 
@@ -1313,8 +1549,8 @@ function COGSAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role |
         <KPICard label="Total COGS" value={loading ? "—" : formatPeso(summary?.totalCogs ?? 0)} sub="Sum of recipe-based product COGS" icon={BarChart2} color={C.amber} />
         <KPICard label="Gross Profit" value={loading ? "—" : formatPeso(summary?.grossProfit ?? 0)} sub="Total Sales less Total COGS" icon={TrendingUp} color={C.green} />
         <KPICard label="Gross Margin" value={loading ? "—" : `${(summary?.grossMargin ?? 0).toFixed(1)}%`} sub="Gross Profit ÷ Sales × 100" icon={Percent} color={C.maroon} />
-        <KPICard label="Detected Shortage" value={loading ? "—" : formatPeso(summary?.detectedShortageValue ?? 0)} sub="Positive variance awaiting or under review" icon={TrendingDown} color={C.red} />
-        <KPICard label="Verified Shrinkage" value={loading ? "—" : formatPeso(summary?.verifiedShrinkageCost ?? 0)} sub="Verified positive shrinkage causes only" icon={GitCompare} color={C.red} />
+          <KPICard label="Detected Shortage" value={loading ? "—" : formatPeso(summary?.detectedShortageValue ?? 0)} sub="Inventory shortage awaiting or under review" icon={TrendingDown} color={C.red} />
+          <KPICard label="Verified Shrinkage" value={loading ? "—" : formatPeso(summary?.verifiedShrinkageCost ?? 0)} sub="Verified shrinkage causes only" icon={GitCompare} color={C.red} />
       </div>
 
       <div className="cogs-analysis-grid grid grid-cols-3 gap-5">

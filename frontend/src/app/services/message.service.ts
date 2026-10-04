@@ -18,4 +18,7 @@ export const messageService = {
   async markConversationRead(userId: string) {
     await api.patch(`/messages/conversation/${userId}/read`);
   },
+  async deleteMessage(messageId: string) {
+    await api.delete(`/messages/${messageId}`);
+  },
 };

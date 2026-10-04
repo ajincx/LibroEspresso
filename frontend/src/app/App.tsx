@@ -383,10 +383,9 @@ export default function App() {
         );
       case "physical-count":
         return (
-          <InventoryManagementModule
+          <PhysicalCountsModule
             role={role}
-            onNavigate={setPage}
-            initialTab="counts"
+            initialTab="record"
             scopeBranchId={branch}
           />
         );

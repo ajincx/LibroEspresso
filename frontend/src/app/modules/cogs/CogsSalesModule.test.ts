@@ -1,8 +1,39 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { C } from "../../components/ModuleUi";
-import { DAILY_POS_MONITORING_LOCATION, OWNER_POS_IMPORT_HISTORY_COLUMNS, PosImportActions, PosImportCleanupAuthorizationDialog, PosImportDeleteDialog, PosMappingActions, PosMappingEditDialog, PosMappingSetup, PosPricingNotice, canApprovePosMapping, canAuthorizePosImportCleanup, canDeletePosImport, canDeletePosSource, canEditPosMapping, dailyPosStatusLabel, filterDailyPosStatuses, formatPosSourceFormatName, hasInvalidCsvEncoding, isSupportedPosFilename, marginValueColor, posSalesAmountLabel } from "./CogsSalesModule";
+import {
+  DAILY_POS_MONITORING_LOCATION,
+  DAILY_POS_MONITORING_IS_PAGINATED,
+  DAILY_POS_MONITORING_COLUMNS,
+  OWNER_POS_IMPORT_HISTORY_COLUMNS,
+  PosImportActions,
+  PosImportCleanupAuthorizationDialog,
+  PosImportDeleteDialog,
+  PosMappingActions,
+  PosMappingEditDialog,
+  PosMappingSetup,
+  PosPricingNotice,
+  STORAGE_KEY_COGS_USER_RANGE,
+  canApprovePosMapping,
+  canAuthorizePosImportCleanup,
+  canDeletePosImport,
+  canDeletePosSource,
+  canEditPosMapping,
+  clearCogsUserRange,
+  dailyPosMonitoringView,
+  dailyPosStatusLabel,
+  formatPosSourceFormatName,
+  getInitialCogsDateRange,
+  hasInvalidCsvEncoding,
+  isSupportedPosFilename,
+  marginValueColor,
+  posSalesAmountLabel,
+  readCogsUserRange,
+  saveCogsUserRange,
+  summarizeDailyPosStatuses,
+} from "./CogsSalesModule";
+import { adjustRangeForImport } from "../../utils/businessDate";
 import type { DailyPosUploadStatus, PosMapping } from "../../types/inventoryWorkflow";
 import type { MenuProduct } from "../../types/masterData";
 
@@ -23,19 +54,52 @@ describe("profitability presentation",()=>{
 describe("POS Import History controls",()=>{
   it("places compact daily monitoring inside Import History while retaining actual history",()=>{
     expect(DAILY_POS_MONITORING_LOCATION).toBe("import_history");
+    expect(DAILY_POS_MONITORING_IS_PAGINATED).toBe(false);
     expect(OWNER_POS_IMPORT_HISTORY_COLUMNS).toEqual(expect.arrayContaining(["File Name","Business Date","Processed / Total Rows","Fingerprint","Status","Action"]));
   });
 
-  it("uses clear monitoring labels and filters independently configured POS sources",()=>{
+  it("uses clear monitoring labels without a POS Source summary column",()=>{
     expect(dailyPosStatusLabel("UPLOADED")).toBe("Uploaded");
     expect(dailyPosStatusLabel("MISSING_UPLOAD")).toBe("Missing Upload");
     expect(dailyPosStatusLabel("DUE_TODAY")).toBe("Due Today");
+    expect(DAILY_POS_MONITORING_COLUMNS).not.toContain("POS Source");
+  });
+
+  it("summarizes multiple required POS sources into one persisted branch/day row",()=>{
+    const base={branchId:"branch-1",branchName:"Gulod / Main Branch",businessDate:"2026-10-01",closed:false,sourceCode:null,posSourceName:null};
     const rows=[
-      {posSourceId:"source-a",status:"UPLOADED"},
-      {posSourceId:"source-b",status:"MISSING_UPLOAD"},
+      {...base,posSourceId:"source-a",importId:"import-a",sourceFilename:"sales.xls",importedAt:"2026-10-01T10:00:00Z",uploadedBy:"Ana Reyes",status:"UPLOADED"},
+      {...base,posSourceId:"source-b",importId:"import-b",sourceFilename:"sales.xlsx",importedAt:"2026-10-01T11:00:00Z",uploadedBy:"Ana Reyes",status:"UPLOADED"},
     ] as DailyPosUploadStatus[];
-    expect(filterDailyPosStatuses(rows,"ALL")).toHaveLength(2);
-    expect(filterDailyPosStatuses(rows,"source-b")).toEqual([rows[1]]);
+    expect(summarizeDailyPosStatuses(rows)).toEqual([expect.objectContaining({branchId:"branch-1",businessDate:"2026-10-01",status:"UPLOADED",requiredSourceCount:2,completedSourceCount:2,sourceFilename:"sales.xls, sales.xlsx"})]);
+  });
+
+  it("keeps a branch due while one existing required source remains uncommitted",()=>{
+    const base={branchId:"branch-1",branchName:"Gulod",businessDate:"2026-10-01",closed:false,sourceCode:null,posSourceName:null,uploadedBy:null,importedAt:null,sourceFilename:null};
+    const rows=[
+      {...base,posSourceId:"source-a",importId:"import-a",status:"UPLOADED"},
+      {...base,posSourceId:"source-b",importId:null,status:"DUE_TODAY"},
+    ] as DailyPosUploadStatus[];
+    expect(summarizeDailyPosStatuses(rows)[0]).toMatchObject({status:"DUE_TODAY",requiredSourceCount:2,completedSourceCount:1});
+  });
+
+  it("keeps a branch without an active source explicitly not configured",()=>{
+    const rows=[{branchId:"branch-2",branchName:"Evo",businessDate:"2026-10-01",posSourceId:null,posSourceName:null,sourceCode:null,importId:null,sourceFilename:null,importedAt:null,uploadedBy:null,closed:false,status:"POS_SOURCE_NOT_CONFIGURED"}] as DailyPosUploadStatus[];
+    expect(summarizeDailyPosStatuses(rows)[0]).toMatchObject({status:"POS_SOURCE_NOT_CONFIGURED",requiredSourceCount:0,completedSourceCount:0});
+  });
+
+  it("uses only the current business date in the default monitoring mode",()=>{
+    expect(dailyPosMonitoringView("current","2026-10-01","2026-09-16")).toEqual({
+      businessDate:"2026-10-01",startDate:"2026-10-01",endDate:"2026-10-01",showDateFilter:false,
+      title:"Daily Upload Monitoring",actionLabel:"View History",
+    });
+  });
+
+  it("uses the selected business date and exposes the date filter in history mode",()=>{
+    expect(dailyPosMonitoringView("history","2026-10-01","2026-09-16")).toEqual({
+      businessDate:"2026-09-16",startDate:"2026-09-16",endDate:"2026-09-16",showDateFilter:true,
+      title:"Daily Upload Monitoring — History",actionLabel:"Back to Current",
+    });
   });
   it("clearly discloses and labels the CAPSTONE menu-price fallback",()=>{
     const notice="Supplier file does not contain item-level selling prices. Menu selling prices are used for this CAPSTONE demonstration.";
@@ -228,6 +292,101 @@ describe("POS System configuration deletion policy", () => {
     const unusedSource = { status: "INACTIVE" as const, hasImports: false, hasSales: false, hasActiveMappings: false };
     expect(canDeletePosSource("manager", unusedSource)).toBe(false);
     expect(canDeletePosSource("BRANCH_MANAGER", unusedSource)).toBe(false);
+  });
+});
+
+describe("COGS and Sales reporting period synchronization and persistence", () => {
+  let mockStorage: Record<string, string> = {};
+  const originalLocalStorage = globalThis.localStorage;
+
+  beforeEach(() => {
+    mockStorage = {};
+    const storageMock = {
+      getItem: (key: string) => mockStorage[key] ?? null,
+      setItem: (key: string, val: string) => { mockStorage[key] = String(val); },
+      removeItem: (key: string) => { delete mockStorage[key]; },
+      clear: () => { mockStorage = {}; },
+      get length() { return Object.keys(mockStorage).length; },
+      key: (i: number) => Object.keys(mockStorage)[i] ?? null,
+    };
+    try {
+      Object.defineProperty(globalThis, "localStorage", {
+        value: storageMock,
+        writable: true,
+        configurable: true,
+      });
+    } catch {
+      // fallback
+    }
+  });
+
+  afterEach(() => {
+    try {
+      Object.defineProperty(globalThis, "localStorage", {
+        value: originalLocalStorage,
+        writable: true,
+        configurable: true,
+      });
+    } catch {
+      // fallback
+    }
+  });
+
+  it("returns null when no COGS user range is stored", () => {
+    expect(readCogsUserRange()).toBeNull();
+  });
+
+  it("saves and retrieves user-selected range configuration", () => {
+    saveCogsUserRange({
+      range: "custom",
+      customStart: "2026-09-16",
+      customEnd: "2026-10-01",
+    });
+    expect(readCogsUserRange()).toEqual({
+      range: "custom",
+      customStart: "2026-09-16",
+      customEnd: "2026-10-01",
+    });
+  });
+
+  it("clears user range from storage on reset", () => {
+    saveCogsUserRange({ range: "30d" });
+    expect(readCogsUserRange()).toEqual({ range: "30d" });
+    clearCogsUserRange();
+    expect(readCogsUserRange()).toBeNull();
+  });
+
+  it("defaults getInitialCogsDateRange to mtd with userSelected=false when no params or storage exist", () => {
+    const initial = getInitialCogsDateRange();
+    expect(initial.userSelected).toBe(false);
+    expect(initial.range).toBe("mtd");
+  });
+
+  it("restores user-selected range in getInitialCogsDateRange when storage is populated", () => {
+    saveCogsUserRange({
+      range: "custom",
+      customStart: "2026-09-01",
+      customEnd: "2026-09-30",
+    });
+    const initial = getInitialCogsDateRange();
+    expect(initial.userSelected).toBe(true);
+    expect(initial.range).toBe("custom");
+    expect(initial.customStart).toBe("2026-09-01");
+    expect(initial.customEnd).toBe("2026-09-30");
+  });
+
+  it("adjusts range to include imported historical business date when outside current month", () => {
+    const adjusted = adjustRangeForImport("mtd", "2026-10-01", "2026-10-01", "2026-09-16", "2026-10-01");
+    expect(adjusted).toEqual({
+      range: "custom",
+      customStart: "2026-09-16",
+      customEnd: "2026-10-01",
+    });
+  });
+
+  it("does not adjust range when imported date is already encompassed", () => {
+    const adjusted = adjustRangeForImport("custom", "2026-09-01", "2026-09-30", "2026-09-16", "2026-10-01");
+    expect(adjusted).toBeNull();
   });
 });
 

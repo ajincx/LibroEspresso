@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { ShoppingCart, Package, Percent, TrendingDown, RefreshCw, Check, AlertTriangle, Search, BadgeDollarSign, Sparkles, ArrowRight, Pencil, Plus, Upload } from "lucide-react";
-import { Card, Btn, KPICard, DashboardFilters, StatusChip, SearchInput, Select, C, type DashboardRange, type DashboardComparison } from "../../components/ModuleUi";
+import { ShoppingCart, Package, Percent, TrendingDown, RefreshCw, Check, AlertTriangle, Search, BadgeDollarSign, Sparkles, ArrowRight, Pencil, Plus, Upload, Info, X } from "lucide-react";
+import { Card, Btn, KPICard, DashboardFilters, StatusChip, SearchInput, Select, C, isModalBackdropEvent, type DashboardRange, type DashboardComparison } from "../../components/ModuleUi";
 import { useAuth } from "../../contexts/AuthContext";
 import { inventoryWorkflowService as workflow } from "../../services/inventoryWorkflow.service";
 import { operationsService } from "../../services/operations.service";
@@ -11,7 +11,7 @@ import type { PosAnalytics } from "../../types/inventoryWorkflow";
 import type { InventoryOverviewItem } from "../../types/operations";
 import type { PredictiveForecast } from "../../types/predictive";
 import type { Page, Role } from "../../types/navigation";
-import { businessDate, addDateDays, periodDates } from "../../utils/businessDate";
+import { businessDate, addDateDays, periodDates, adjustRangeForAutomaticImport, adjustRangeForImport } from "../../utils/businessDate";
 import { formatAppCurrency as money, formatAppDate, readAppPreferences } from "../../utils/appPreferences";
 import { officialFinancialMetrics } from "../../utils/financialMetrics";
 import { PosImportModal } from "../cogs/PosImportModal";
@@ -19,11 +19,49 @@ import { PosImportModal } from "../cogs/PosImportModal";
 const ALERT_PRIORITY: Record<InventoryOverviewItem["status"], number> = { OUT_OF_STOCK: 4, CRITICAL: 3, LOW_STOCK: 2, HEALTHY: 1 };
 export const DASHBOARD_INVENTORY_TARGET:Page="inventory";
 export const DASHBOARD_SHOWS_DAILY_POS_MONITORING=false;
+export const DASHBOARD_INVENTORY_ALERTS_ARE_PAGINATED=false;
 export const dashboardGreeting = (hour:number,firstName?:string) => `${hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"}, ${firstName ?? ""} 👋`.replace(",  ", ", ");
 export const prioritizeInventoryAlerts = (items:InventoryOverviewItem[]) => [...items].filter(item=>item.status!=="HEALTHY").sort((a,b)=>ALERT_PRIORITY[b.status]-ALERT_PRIORITY[a.status] || (b.reorderLevel-b.systemStock)-(a.reorderLevel-a.systemStock) || a.name.localeCompare(b.name));
 export const stockStatusChip=(status:InventoryOverviewItem["status"])=>status==="OUT_OF_STOCK"?"out_neutral":status==="LOW_STOCK"?"low":status.toLowerCase();
 export const inventoryValueColor=(value:number)=>value<0?C.red:"var(--app-text)";
 export const DEFAULT_DASHBOARD_RANGE: DashboardRange = "mtd";
+export const STORAGE_KEY_DASHBOARD_USER_RANGE = "libro.dashboard.userRange";
+
+export interface DashboardUserRangeConfig {
+  range: DashboardRange;
+  customStart?: string;
+  customEnd?: string;
+}
+
+export function readDashboardUserRange(): DashboardUserRangeConfig | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_DASHBOARD_USER_RANGE);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && typeof parsed.range === "string") {
+      return parsed as DashboardUserRangeConfig;
+    }
+  } catch {
+    // ignore corrupted storage
+  }
+  return null;
+}
+
+export function saveDashboardUserRange(config: DashboardUserRangeConfig) {
+  try {
+    localStorage.setItem(STORAGE_KEY_DASHBOARD_USER_RANGE, JSON.stringify(config));
+  } catch {
+    // ignore
+  }
+}
+
+export function clearDashboardUserRange() {
+  try {
+    localStorage.removeItem(STORAGE_KEY_DASHBOARD_USER_RANGE);
+  } catch {
+    // ignore
+  }
+}
 
 export function getEffectiveDashboardBranchId(
   role: Role,
@@ -37,25 +75,7 @@ export function getEffectiveDashboardBranchId(
     : managerBranchId;
 }
 
-export function adjustRangeForImport(
-  currentRange: DashboardRange,
-  currentStartDate: string,
-  currentEndDate: string,
-  importedDate: string,
-  today: string,
-): { range: DashboardRange; customStart?: string; customEnd?: string } | null {
-  if (currentRange === "today" && importedDate !== today) {
-    return { range: "mtd" };
-  }
-  if (importedDate < currentStartDate || importedDate > currentEndDate) {
-    return {
-      range: "custom",
-      customStart: importedDate < currentStartDate ? importedDate : currentStartDate,
-      customEnd: importedDate > currentEndDate ? importedDate : currentEndDate,
-    };
-  }
-  return null;
-}
+export { adjustRangeForImport };
 
 export const forecastUrgencyAccent=(urgency:PredictiveForecast["insights"][number]["urgency"])=>({HIGH:C.red,MEDIUM:C.amber,LOW:C.green}[urgency]);
 
@@ -63,6 +83,25 @@ export function DashboardToolbar({ actions, filters }:{ actions?:ReactNode;filte
   return <div data-dashboard-toolbar className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
     <div className="flex min-h-10 flex-wrap items-center gap-2">{actions}</div>
     <div className="min-w-0 lg:ml-auto">{filters}</div>
+  </div>;
+}
+
+export function GrossMarginInfoDialog({ sales, totalCogs, grossProfit, grossMargin, onClose }: { sales:number;totalCogs:number;grossProfit:number;grossMargin:number;onClose:()=>void }) {
+  const values=[["Sales",money(sales),C.maroon],["Total COGS",money(totalCogs),C.amber],["Gross Profit",money(grossProfit),C.green],["Gross Margin",`${grossMargin.toFixed(1)}%`,C.blue]] as const;
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 sm:p-6" onMouseDown={(event)=>{if(isModalBackdropEvent(event))onClose();}}>
+    <section role="dialog" aria-modal="true" aria-labelledby="gross-margin-info-title" className="w-full max-w-lg max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-2xl">
+      <header className="flex items-start justify-between gap-4 border-b border-[var(--app-border)] bg-[var(--app-primary-faint)] px-5 py-4 sm:px-6">
+        <div className="flex min-w-0 items-start gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--app-primary)] text-white"><Info size={19}/></span><div className="min-w-0"><h2 id="gross-margin-info-title" className="text-lg font-bold text-[var(--app-text)]">Gross Margin Calculation</h2><p className="mt-1 text-xs leading-relaxed text-[var(--app-text-muted)]">How recorded sales and recipe-based product costs produce the displayed margin.</p></div></div>
+        <button type="button" onClick={onClose} aria-label="Close gross margin information" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)]"><X size={16}/></button>
+      </header>
+      <div className="space-y-4 p-5 sm:p-6">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{values.map(([label,value,color])=><div key={label} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-elevated)] p-4"><p className="text-[11px] font-bold uppercase tracking-wider text-[var(--app-text-muted)]">{label}</p><p className="mt-1.5 text-xl font-extrabold" style={{color}}>{value}</p></div>)}</div>
+        <div className="rounded-2xl border border-[var(--app-primary-soft)] bg-[var(--app-primary-faint)] p-4 sm:p-5"><p className="text-xs font-bold uppercase tracking-wider text-[var(--app-primary)]">Formula</p><div className="mt-3 space-y-2 text-sm leading-relaxed text-[var(--app-text)]"><p><strong>Gross profit</strong> = Sales − Total COGS = <strong>{money(grossProfit)}</strong></p><p><strong>Gross margin</strong> = Gross profit ÷ Sales × 100 = <strong>{grossMargin.toFixed(1)}%</strong></p></div></div>
+        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-3.5 text-xs leading-relaxed text-[var(--app-text-muted)]">Detected shortages and verified shrinkage are shown separately and are not deducted again.</div>
+        {sales===0&&<p className="text-xs leading-relaxed text-[var(--app-text-muted)]">No sales denominator is available; the displayed margin is 0%.</p>}
+        <div className="flex justify-end"><Btn onClick={onClose}>Close</Btn></div>
+      </div>
+    </section>
   </div>;
 }
 
@@ -120,11 +159,13 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
 }) {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const initialUserRange = readDashboardUserRange();
+  const [userSelected, setUserSelected] = useState<boolean>(Boolean(initialUserRange));
   const [now, setNow] = useState(new Date());
-  const [range, setRange] = useState<DashboardRange>("mtd");
+  const [range, setRange] = useState<DashboardRange>(initialUserRange?.range ?? DEFAULT_DASHBOARD_RANGE);
   const [comparison, setComparison] = useState<DashboardComparison>("previous");
-  const [customStart, setCustomStart] = useState(businessDate());
-  const [customEnd, setCustomEnd] = useState(businessDate());
+  const [customStart, setCustomStart] = useState(initialUserRange?.customStart ?? businessDate());
+  const [customEnd, setCustomEnd] = useState(initialUserRange?.customEnd ?? businessDate());
   const [refresh, setRefresh] = useState(0);
   const [data, setData] = useState<{ current: PosAnalytics; previous: PosAnalytics; inventory: InventoryOverviewItem[] } | null>(null);
   const [forecast, setForecast] = useState<PredictiveForecast | null>(null);
@@ -138,6 +179,33 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
   const scope = role === "manager" ? user?.branch?.name ?? "Assigned Branch" : scopeBranchName;
   const today = businessDate(now);
   const { startDate, endDate } = periodDates(range, customStart, customEnd);
+
+  useEffect(() => {
+    let active = true;
+    if (!userSelected) {
+      workflow.posImports({ branchId, pageSize: 1 })
+        .then((res) => {
+          if (!active) return;
+          const latestDate = res.imports?.[0]?.businessDate;
+          if (latestDate) {
+            const defaultDates = periodDates(DEFAULT_DASHBOARD_RANGE);
+            const adjustment = adjustRangeForAutomaticImport(false, DEFAULT_DASHBOARD_RANGE, defaultDates.startDate, defaultDates.endDate, latestDate, today);
+            if (adjustment) {
+              if (adjustment.customStart) setCustomStart(adjustment.customStart);
+              if (adjustment.customEnd) setCustomEnd(adjustment.customEnd);
+              setRange(adjustment.range);
+            } else {
+              setRange(DEFAULT_DASHBOARD_RANGE);
+            }
+          } else {
+            setRange(DEFAULT_DASHBOARD_RANGE);
+          }
+        })
+        .catch(() => undefined);
+    }
+    return () => { active = false; };
+  }, [branchId, userSelected, refresh, today]);
+
   useEffect(() => {
     const tick = window.setInterval(() => setNow(new Date()), 60000);
     const focus = () => { setNow(new Date()); setRefresh(v => v + 1); };
@@ -145,7 +213,7 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
       const customEvent = event as CustomEvent<{ businessDate?: string } | undefined>;
       const importedDate = customEvent.detail?.businessDate;
       if (importedDate) {
-        const adjustment = adjustRangeForImport(range, startDate, endDate, importedDate, today);
+        const adjustment = adjustRangeForAutomaticImport(userSelected, range, startDate, endDate, importedDate, today);
         if (adjustment) {
           if (adjustment.customStart) setCustomStart(adjustment.customStart);
           if (adjustment.customEnd) setCustomEnd(adjustment.customEnd);
@@ -162,7 +230,7 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
       window.removeEventListener("focus", focus);
       window.removeEventListener("libro-data-changed", handleDataChanged);
     };
-  }, [range, today, startDate, endDate, customStart, customEnd]);
+  }, [range, today, startDate, endDate, customStart, customEnd, userSelected]);
   useEffect(() => {
     let active = true;
     setData(null); setError("");
@@ -242,14 +310,39 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
     </div>
     <DashboardToolbar
       actions={role === "manager" ? <><Btn icon={Pencil} onClick={() => onNavigate("physical-count")}>Record Stock Count</Btn><Btn icon={Upload} variant="outline" onClick={() => setImportOpen(true)}>Import Sales</Btn><Btn icon={Plus} variant="outline" onClick={() => createOrder()}>Create Purchase Request</Btn></> : undefined}
-      filters={<DashboardFilters range={range} comparison={comparison} customStart={customStart} customEnd={customEnd} onRangeChange={setRange} onComparisonChange={setComparison} onApplyCustom={(a,b) => { setCustomStart(a); setCustomEnd(b); setRange("custom"); }} onReset={() => { setRange("mtd"); setComparison("previous"); }}/>} />
+      filters={<DashboardFilters
+        range={range}
+        comparison={comparison}
+        customStart={customStart}
+        customEnd={customEnd}
+        onRangeChange={(nextRange) => {
+          setUserSelected(true);
+          setRange(nextRange);
+          saveDashboardUserRange({ range: nextRange, customStart, customEnd });
+        }}
+        onComparisonChange={setComparison}
+        onApplyCustom={(a, b) => {
+          setUserSelected(true);
+          setCustomStart(a);
+          setCustomEnd(b);
+          setRange("custom");
+          saveDashboardUserRange({ range: "custom", customStart: a, customEnd: b });
+        }}
+        onReset={() => {
+          setUserSelected(false);
+          clearDashboardUserRange();
+          setRange(DEFAULT_DASHBOARD_RANGE);
+          setComparison("previous");
+          setRefresh((v) => v + 1);
+        }}
+      />} />
     {error ? <Card><p role="alert" className="text-red-700">{error}</p><Btn onClick={() => setRefresh(v => v+1)}>Retry</Btn></Card> : !totals || !data ? <Card>Loading branch records…</Card> : <>
       <div className="dashboard-kpis grid grid-cols-2 xl:grid-cols-6 gap-4">
         <KPICard label={role === "owner" ? "Total Sales" : "Branch Sales"} value={money(financials!.sales)} sub={totals.unitsSold + " units sold"} icon={ShoppingCart} change={changed(financials!.sales,data.previous.summary.sales)} onClick={() => navigate(salesUrl)}/>
         <KPICard label={role === "owner" ? "Total COGS" : "Branch COGS"} value={money(financials!.totalCogs)} sub="Recipe-based cost of products sold" icon={Package} change={changed(financials!.totalCogs,data.previous.summary.totalCogs)} onClick={() => navigate("/cogs?startDate="+startDate+"&endDate="+endDate)}/>
         <KPICard label="Gross Profit" value={money(financials!.grossProfit)} sub="Sales minus official Total COGS" icon={BadgeDollarSign} change={changed(financials!.grossProfit,data.previous.summary.grossProfit)} onInfo={() => setMarginOpen(true)} infoLabel="Explain Gross Profit"/>
         <KPICard label="Gross Margin" value={financials!.grossMargin.toFixed(1)+"%"} sub="Product margin based on COGS" icon={Percent} onInfo={() => setMarginOpen(true)} infoLabel="Explain Gross Margin"/>
-        <KPICard label="Detected Shortage" value={money(financials!.detectedShortageValue)} sub="Positive inventory variance before resolution" icon={AlertTriangle} onClick={() => onNavigate("variance")}/>
+        <KPICard label="Detected Shortage" value={money(financials!.detectedShortageValue)} sub="Inventory shortage before resolution" icon={AlertTriangle} onClick={() => onNavigate("variance")}/>
         <KPICard label="Verified Shrinkage" value={money(financials!.verifiedShrinkageCost)} sub="Reviewed legitimate shrinkage causes only" icon={TrendingDown} onClick={() => onNavigate("shrinkage")}/>
       </div>
       {totals.importCount === 0 && <p className="text-sm text-[var(--app-text-muted)]">No POS sales were imported for this branch and period. No demonstration values are shown.</p>}
@@ -492,7 +585,23 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
       </Card>
     </>}
     <ForecastReplenishmentPanel forecast={forecast} forecastError={forecastError} role={role} onReview={() => onNavigate("predictive")} onCreateOrder={createOrder}/>
-    <PosImportModal open={role === "manager" && importOpen} branchName={scope} onClose={() => setImportOpen(false)} onImported={() => setRefresh(value => value + 1)}/>
-    {marginOpen && totals && financials && <div className="fixed inset-0 z-50 bg-black/40 p-4 flex items-center justify-center" onMouseDown={e=>{if(e.target===e.currentTarget)setMarginOpen(false);}}><section role="dialog" aria-modal="true" aria-label="Gross margin calculation" className="rounded-2xl p-6 max-w-md w-full bg-[var(--app-surface)] shadow-xl"><h2 className="font-bold">Gross Margin Calculation</h2><p className="mt-4">Sales: {money(financials.sales)}</p><p>Total COGS (recipe-based): {money(financials.totalCogs)}</p><p>Gross profit = Sales − Total COGS: {money(financials.grossProfit)}</p><p className="my-4">Gross margin = Gross profit ÷ Sales × 100 = {financials.grossMargin.toFixed(1)}%</p><p className="text-xs mb-3">Detected shortages and verified shrinkage are shown separately and are not deducted again.</p>{financials.sales===0&&<p className="text-xs mb-3">No sales denominator is available; the displayed margin is 0%.</p>}<Btn onClick={()=>setMarginOpen(false)}>Close</Btn></section></div>}
+    <PosImportModal
+      open={role === "manager" && importOpen}
+      branchName={scope}
+      onClose={() => setImportOpen(false)}
+      onImported={(importedDate) => {
+        if (importedDate) {
+          const currentDates = periodDates(range, customStart, customEnd);
+          const adjustment = adjustRangeForAutomaticImport(userSelected, range, currentDates.startDate, currentDates.endDate, importedDate, today);
+          if (adjustment) {
+            if (adjustment.customStart) setCustomStart(adjustment.customStart);
+            if (adjustment.customEnd) setCustomEnd(adjustment.customEnd);
+            setRange(adjustment.range);
+          }
+        }
+        setRefresh((value) => value + 1);
+      }}
+    />
+    {marginOpen && totals && financials && <GrossMarginInfoDialog sales={financials.sales} totalCogs={financials.totalCogs} grossProfit={financials.grossProfit} grossMargin={financials.grossMargin} onClose={()=>setMarginOpen(false)}/>}
   </div>;
 }

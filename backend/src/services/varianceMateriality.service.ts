@@ -21,10 +21,11 @@ export function classifyShortageVariance(
   varianceQuantity: number,
   tolerance: VarianceTolerance,
 ): VarianceMateriality {
-  if (varianceQuantity <= 0) return "IMMATERIAL";
+  if (varianceQuantity >= 0) return "IMMATERIAL";
+  const shortageQuantity = Math.abs(varianceQuantity);
   const threshold = varianceThreshold(expectedQuantity, tolerance);
-  if (varianceQuantity <= threshold) return "IMMATERIAL";
-  return varianceQuantity >= threshold * 2 ? "SIGNIFICANT" : "MATERIAL";
+  if (shortageQuantity <= threshold) return "IMMATERIAL";
+  return shortageQuantity >= threshold * 2 ? "SIGNIFICANT" : "MATERIAL";
 }
 
 export function requiresVarianceInvestigation(

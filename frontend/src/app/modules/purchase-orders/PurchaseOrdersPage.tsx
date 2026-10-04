@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import { Eye, Inbox, PackageCheck, Plus, RefreshCw, Send, ShieldCheck, ShoppingCart, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
-import { Btn, C, CalendarDateField, KPICard, Pagination, SearchInput, SectionHeader, Select, StatusChip, TableCard, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
+import { Btn, C, CalendarDateField, KPICard, SearchInput, SectionHeader, Select, StatusChip, TableCard, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
 import { masterDataService } from "../../services/masterData.service";
 import { operationsService } from "../../services/operations.service";
 import type { Branch, InventoryItem } from "../../types/masterData";
@@ -21,8 +21,97 @@ const prettyStatus = (value: string) => value === "ALL" ? "All Statuses" : value
 const testDataActionsEnabled = import.meta.env.MODE !== "production";
 export const canAuthorizePurchaseOrderTest = (role:Role,order:PurchaseOrder,enabled=true) => enabled && role==="owner" && !order.testAuthorizedAt && ["DRAFT","ORDERED","CANCELLED"].includes(order.status) && order.items.every((item)=>item.quantityReceived===0);
 export const canDeletePurchaseOrderTest = (role:Role,order:PurchaseOrder,enabled=true) => enabled && role==="owner" && order.isTestData && Boolean(order.testAuthorizedAt);
+const latestReceiptCountDate = (order: PurchaseOrder, purchaseOrderItemIds?: string[]) => {
+  const selectedIds = purchaseOrderItemIds ? new Set(purchaseOrderItemIds) : null;
+  return order.items
+    .filter((item) => (!selectedIds || selectedIds.has(item.id)) && item.latestPhysicalCountDate)
+    .map((item) => item.latestPhysicalCountDate!)
+    .sort()
+    .at(-1);
+};
+export const receiptDateError = (order: PurchaseOrder, receivedDate: string, purchaseOrderItemIds?: string[]) => {
+  if (receivedDate < order.orderDate) return "Received date cannot be before the order date.";
+  const latestCountDate = latestReceiptCountDate(order, purchaseOrderItemIds);
+  return latestCountDate && receivedDate <= latestCountDate
+    ? `Receipt date must be after the latest physical count date (${latestCountDate}).`
+    : null;
+};
+const dayAfter = (date: string) => {
+  const value = new Date(`${date}T12:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + 1);
+  return value.toISOString().slice(0, 10);
+};
+
+export const purchaseOrderFormValidationError = ({ supplierName, orderDate, expectedDeliveryDate, rowCount, validRowCount }: {
+  supplierName: string;
+  orderDate: string;
+  expectedDeliveryDate: string;
+  rowCount: number;
+  validRowCount: number;
+}) => {
+  const supplierMissing = supplierName.trim().length < 2;
+  const orderDateMissing = !orderDate;
+  const expectedDeliveryMissing = !expectedDeliveryDate;
+  const itemsIncomplete = validRowCount !== rowCount;
+
+  if (supplierMissing) {
+    if (orderDateMissing && expectedDeliveryMissing && itemsIncomplete) return "Complete the supplier, dates, and all item details.";
+    if (!orderDateMissing && !expectedDeliveryMissing && itemsIncomplete) return "Select a supplier and complete all item details.";
+    if (!orderDateMissing && !expectedDeliveryMissing) return "Select a supplier.";
+    return "Complete the supplier, dates, and all item details.";
+  }
+  if (orderDateMissing) {
+    if (itemsIncomplete) return "Select order date and fill all item details.";
+    if (expectedDeliveryMissing) return "Select order date and expected delivery date.";
+    return "Select order date.";
+  }
+  if (expectedDeliveryMissing) {
+    if (itemsIncomplete) return "Select expected delivery date and complete all item details.";
+    return "Select expected delivery date.";
+  }
+  if (expectedDeliveryDate < orderDate) return "Expected delivery date cannot be before the order date.";
+  if (itemsIncomplete) return "Complete all item details.";
+  return null;
+};
+
+export type PurchaseOrderDraftRow = {
+  inventoryItemId: string;
+  quantityOrdered: string;
+  unitCost: string;
+  purchaseUom: string;
+  conversionFactor: string;
+};
+
+export const isCompletePurchaseOrderItem = (row: PurchaseOrderDraftRow) => {
+  const quantity = Number(row.quantityOrdered);
+  const unitCost = Number(row.unitCost);
+  const conversionFactor = Number(row.conversionFactor);
+  return Boolean(row.inventoryItemId)
+    && row.quantityOrdered.trim() !== "" && Number.isFinite(quantity) && quantity > 0
+    && ["g", "kg", "ml", "L", "pc"].includes(row.purchaseUom)
+    && row.conversionFactor.trim() !== "" && Number.isFinite(conversionFactor) && conversionFactor > 0
+    && row.unitCost.trim() !== "" && Number.isFinite(unitCost) && unitCost >= 0;
+};
+
+export const isPhysicalCountRequiredError = (cause: unknown) => {
+  if (!cause || typeof cause !== "object") return false;
+  return (cause as { response?: { data?: { error?: { code?: unknown } } } }).response?.data?.error?.code === "PHYSICAL_COUNT_REQUIRED";
+};
+
+export const formatPurchaseOrderCountDate = (date: string) => new Intl.DateTimeFormat("en-US", {
+  year: "numeric", month: "long", day: "numeric", timeZone: "Asia/Manila",
+}).format(new Date(`${date}T00:00:00+08:00`));
+
+export function PhysicalCountRequiredNotice({ orderDate, onGoToInventoryCount }: { orderDate: string; onGoToInventoryCount: () => void }) {
+  return <div className="mt-4 rounded-xl border p-4" role="alert" style={{ borderColor: C.amber, background: C.amberBg }}>
+    <p className="text-sm font-bold text-[var(--app-text)]">Physical Inventory Count Required</p>
+    <p className="mt-1 text-sm text-[var(--app-text-muted)]">No physical inventory count has been submitted for {formatPurchaseOrderCountDate(orderDate)}. Submit the physical inventory count before creating this purchase order.</p>
+    <div className="mt-3"><Btn size="sm" onClick={onGoToInventoryCount}>Go to Inventory Count</Btn></div>
+  </div>;
+}
 
 export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; scopeBranchId?: string }) {
+  const navigate = useNavigate();
   const [orders, setOrders] = useState<PurchaseOrder[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
@@ -158,7 +247,6 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
           </TR>)}
         </tbody>
       </TableWrapper>
-      <Pagination total={filtered.length} page={1} perPage={Math.max(filtered.length, 1)}/>
     </TableCard>
     {creating && (
       <CreatePurchaseOrder
@@ -167,6 +255,10 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
         initialItem={prefillItem}
         onInventoryCreated={(item) => setInventory((current) => [...current, item].sort((a, b) => a.name.localeCompare(b.name)))}
         onClose={closeCreate}
+        onGoToInventoryCount={(countDate) => {
+          closeCreate();
+          navigate(`/inventory/physical-count?countDate=${encodeURIComponent(countDate)}`);
+        }}
         onCreated={() => {
           closeCreate();
           void load();
@@ -176,20 +268,24 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
     {selected && (
       <OrderDetail order={selected} role={role} onClose={() => setSelected(null)} onOrder={() => void setOrderStatus(selected, "ORDERED")} onCancel={() => {setLifecycleTarget(selected);setControlledValue({reason:"",verificationPin:""});}} onReceive={() => { setReceiving(selected); setSelected(null); }}/>
     )}
-    {receiving && <ReceiveOrder order={receiving} onClose={() => setReceiving(null)} onReceived={() => { setReceiving(null); void load(); }}/>}
+    {receiving && <ReceiveOrder
+      order={receiving}
+      onClose={() => setReceiving(null)}
+      onReceived={() => { setReceiving(null); void load(); }}
+    />}
     {authorizeTestTarget&&<TestPurchaseOrderDialog mode="authorize" order={authorizeTestTarget} reason={testActionReason} busy={testActionBusy} onReasonChange={setTestActionReason} onClose={()=>{if(!testActionBusy){setAuthorizeTestTarget(null);setTestActionReason("");}}} onConfirm={()=>void authorizeTestOrder()}/>}
     {deleteTestTarget&&<TestPurchaseOrderDialog mode="delete" order={deleteTestTarget} reason={testActionReason} busy={testActionBusy} onReasonChange={setTestActionReason} onClose={()=>{if(!testActionBusy){setDeleteTestTarget(null);setTestActionReason("");}}} onConfirm={()=>void deleteTestOrder()}/>}
     {lifecycleTarget&&lifecycleAction(lifecycleTarget)&&<ControlledActionDialog title={`${lifecycleAction(lifecycleTarget)==="DELETE"?"Delete draft":lifecycleAction(lifecycleTarget)==="CANCEL"?"Cancel order":"Reverse received order"} ${lifecycleTarget.poNo}?`} description={lifecycleAction(lifecycleTarget)==="REVERSE"?"Received quantities are preserved in the PO history and offset with approved decrease movements. A later physical count blocks reversal.":"Only the appropriate current PO state can use this action; the server rechecks received quantities and dependencies."} confirmLabel={lifecycleAction(lifecycleTarget)==="DELETE"?"Delete Draft":lifecycleAction(lifecycleTarget)==="CANCEL"?"Cancel Order":"Reverse Receipt"} value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setLifecycleTarget(null)} onConfirm={()=>void applyLifecycle()}/>}
   </div>;
 }
 
-function ModalShell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
-  return <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.45)" }}><div role="dialog" aria-modal="true" aria-label={title} className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-2xl border p-6" style={{ background: C.surface, borderColor: C.border }}><div className="flex items-center justify-between mb-5"><h2 className="text-lg font-bold">{title}</h2><button onClick={onClose} className="p-2 rounded-lg bg-[var(--app-surface-muted)]" aria-label="Close"><X size={15}/></button></div>{children}</div></div>;
+function ModalShell({ title, onClose, children, dismissOnBackdrop=true }: { title: string; onClose: () => void; children: React.ReactNode; dismissOnBackdrop?: boolean }) {
+  return <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.45)" }} onMouseDown={(event)=>{if(dismissOnBackdrop&&event.target===event.currentTarget)onClose();}}><div role="dialog" aria-modal="true" aria-label={title} className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-2xl border p-6" style={{ background: C.surface, borderColor: C.border }}><div className="flex items-center justify-between mb-5"><h2 className="text-lg font-bold">{title}</h2><button onClick={onClose} className="p-2 rounded-lg bg-[var(--app-surface-muted)]" aria-label="Close"><X size={15}/></button></div>{children}</div></div>;
 }
 
 export function TestPurchaseOrderDialog({mode,order,reason,busy,onReasonChange,onClose,onConfirm}:{mode:"authorize"|"delete";order:PurchaseOrder;reason:string;busy:boolean;onReasonChange:(value:string)=>void;onClose:()=>void;onConfirm:()=>void}) {
   const authorize=mode==="authorize";
-  return <ModalShell title={authorize?"Authorize as Test Data":"Clean Up Test Purchase Order"} onClose={onClose}>
+  return <ModalShell title={authorize?"Authorize as Test Data":"Clean Up Test Purchase Order"} onClose={onClose} dismissOnBackdrop={false}>
     <div className="rounded-xl border border-[var(--app-warning)] bg-[var(--app-warning-bg)] p-4 text-sm leading-6"><strong>{order.poNo}</strong> · {order.supplierName}<br/>{authorize?"This development-only classification is permanent for this PO and remains after receiving. It cannot be applied after any quantity has been received.":"This removes only this authorized test PO, its test receipt movements, and safely reversible test cost effects. Real business data is not deleted."}</div>
     <label className="mt-4 block text-sm font-medium">{authorize?"Authorization reason":"Cleanup reason"}<textarea className="field mt-1.5 min-h-24" value={reason} maxLength={500} onChange={(event)=>onReasonChange(event.target.value)} placeholder="Enter a clear development/testing reason"/></label>
     <div className="mt-5 flex justify-end gap-2"><Btn variant="outline" disabled={busy} onClick={onClose}>Cancel</Btn><Btn variant={authorize?"primary":"danger"} disabled={busy||reason.trim().length<10} onClick={onConfirm}>{busy?"Working…":authorize?"Authorize This PO":"Clean Up Test PO"}</Btn></div>
@@ -202,6 +298,7 @@ function CreatePurchaseOrder({
   initialItem,
   onInventoryCreated,
   onClose,
+  onGoToInventoryCount,
   onCreated,
 }: {
   inventory: InventoryItem[];
@@ -209,6 +306,7 @@ function CreatePurchaseOrder({
   initialItem?: { ingredientId: string; quantity: string } | null;
   onInventoryCreated: (item: InventoryItem) => void;
   onClose: () => void;
+  onGoToInventoryCount: (countDate: string) => void;
   onCreated: () => void;
 }) {
   const [supplierChoice, setSupplierChoice] = useState("");
@@ -244,27 +342,32 @@ function CreatePurchaseOrder({
   }, [inventory, initialItem]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [physicalCountRequired, setPhysicalCountRequired] = useState(false);
   const [ingredientTarget, setIngredientTarget] = useState<number | null>(null);
   const update = (index: number, patch: Partial<(typeof rows)[number]>) => setRows((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row));
   const save = async (status: "DRAFT" | "ORDERED") => {
     const supplierName = supplierChoice === "__OTHER__" ? otherSupplier.trim() : supplierChoice.trim();
-    const validRows = rows.map((row) => ({ inventoryItemId: row.inventoryItemId, quantityOrdered: Number(row.quantityOrdered), unitCost: Number(row.unitCost), purchaseUom: row.purchaseUom as "g" | "kg" | "ml" | "L" | "pc", conversionFactor: Number(row.conversionFactor) })).filter((row) => row.inventoryItemId && row.quantityOrdered > 0 && row.unitCost >= 0 && row.conversionFactor > 0 && rows.every((source) => source.quantityOrdered !== "" && source.unitCost !== "" && source.conversionFactor !== ""));
-    if (supplierName.trim().length < 2 || !orderDate || !expectedDeliveryDate || validRows.length !== rows.length) { setError("Complete the supplier, dates, and all item details."); return; }
-    setSaving(true); setError("");
+    const validRows = rows.filter(isCompletePurchaseOrderItem).map((row) => ({ inventoryItemId: row.inventoryItemId, quantityOrdered: Number(row.quantityOrdered), unitCost: Number(row.unitCost), purchaseUom: row.purchaseUom as "g" | "kg" | "ml" | "L" | "pc", conversionFactor: Number(row.conversionFactor) }));
+    const validationError = purchaseOrderFormValidationError({ supplierName, orderDate, expectedDeliveryDate, rowCount: rows.length, validRowCount: validRows.length });
+    if (validationError) { setPhysicalCountRequired(false); setError(validationError); return; }
+    setSaving(true); setError(""); setPhysicalCountRequired(false);
     try { await operationsService.createPurchaseOrder({ supplierName: supplierName.trim(), orderDate, expectedDeliveryDate, status, notes: notes.trim() || undefined, items: validRows }); toast.success(status === "DRAFT" ? "Purchase order saved as draft" : "Purchase order created"); onCreated(); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to create purchase order."); }
+    catch (cause) {
+      if (isPhysicalCountRequiredError(cause)) { setPhysicalCountRequired(true); setError(""); }
+      else setError(cause instanceof Error ? cause.message : "Unable to create purchase order.");
+    }
     finally { setSaving(false); }
   };
   return <ModalShell title="New Purchase Order" onClose={onClose}><div className="grid sm:grid-cols-3 gap-4">
-    <label className="sm:col-span-3 text-sm font-medium">Supplier Name<Select className="mt-1.5 w-full" value={supplierChoice} onChange={setSupplierChoice} options={[{value:"",label:"Select supplier"},...suppliers.map((name)=>({value:name,label:name})),{value:"__OTHER__",label:"Others"}]}/></label>
+    <label className="sm:col-span-3 text-sm font-medium">Supplier Name<Select className="mt-1.5 w-full" value={supplierChoice} onChange={setSupplierChoice} options={[{value:"",label:"Select supplier"},...suppliers.map((name)=>({value:name,label:name})),{value:"__OTHER__",label:"Others"}]} searchable searchPlaceholder="Search suppliers…"/></label>
     {supplierChoice === "__OTHER__" && <label className="sm:col-span-3 text-sm font-medium">Specify Supplier<input className="field mt-1.5" value={otherSupplier} onChange={(e) => setOtherSupplier(e.target.value)} placeholder="Enter supplier name" maxLength={160}/></label>}
     <CalendarDateField label="Order Date" value={orderDate} onChange={setOrderDate}/>
     <CalendarDateField label="Expected Delivery" value={expectedDeliveryDate} min={orderDate} onChange={setExpectedDeliveryDate}/>
     <label className="text-sm font-medium">Notes<input className="field mt-1.5" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional"/></label>
   </div><div className="mt-4 rounded-xl border px-4 py-3 text-xs" style={{ borderColor:C.amber,background:C.amberBg,color:C.secondary }}>A physical inventory count for the selected Order Date must be submitted before this PO can be created.</div><div className="mt-5 space-y-3">
-    {rows.map((row, index) => { const stockItem=inventory.find((candidate)=>candidate.id===row.inventoryItemId); const purchaseUnits=stockItem?.unit==="g"||stockItem?.unit==="kg"?["g","kg"]:stockItem?.unit==="ml"||stockItem?.unit==="L"?["ml","L"]:["pc"]; return <div className="grid grid-cols-1 md:grid-cols-[minmax(180px,1fr)_90px_90px_120px_130px_36px] gap-2 rounded-xl border border-[var(--app-border)] p-3" key={index}><Select className="min-w-0" value={row.inventoryItemId} onChange={(value) => { if(value==="__NEW__"){setIngredientTarget(index);return;} const item=inventory.find((candidate)=>candidate.id===value);update(index,{inventoryItemId:value,unitCost:item?String(item.unitCost):row.unitCost,purchaseUom:item?.unit??"g",conversionFactor:"1"}); }} options={[{ value: "", label: "Select ingredient" }, ...inventory.filter((item)=>item.status==="ACTIVE").map((item) => ({ value: item.id, label: `${item.name} (${item.unit})` })),{value:"__NEW__",label:"+ New Ingredient"}]}/><input aria-label="Purchase quantity" className="field" type="number" min="0.001" step="any" value={row.quantityOrdered} placeholder="Qty" onChange={(e) => update(index, { quantityOrdered: e.target.value })}/><Select aria-label="Purchase unit" value={row.purchaseUom} onChange={(value)=>update(index,{purchaseUom:value,conversionFactor:value===stockItem?.unit?"1":""})} options={purchaseUnits.map((unit)=>({value:unit,label:unit}))}/><input aria-label="Base-unit conversion" title={stockItem?`Base stock unit: ${stockItem.unit}`:"Select an ingredient"} className="field" type="number" min="0.000001" step="any" value={row.conversionFactor} disabled={!stockItem||row.purchaseUom===stockItem.unit} placeholder={`Base ${stockItem?.unit??"units"}`} onChange={(e)=>update(index,{conversionFactor:e.target.value})}/><input aria-label="Cost per purchase unit" className="field" type="number" min="0" step=".01" value={row.unitCost} placeholder="Cost / UOM" onChange={(e) => update(index, { unitCost: e.target.value })}/><button disabled={rows.length === 1} onClick={() => setRows((current) => current.filter((_, rowIndex) => rowIndex !== index))} className="rounded-lg border disabled:opacity-30" aria-label="Remove item"><X size={14} className="mx-auto"/></button>{stockItem&&row.purchaseUom!==stockItem.unit&&<p className="md:col-span-6 text-xs text-[var(--app-text-muted)]">Enter how many {stockItem.unit} are contained in 1 {row.purchaseUom}. Receiving is blocked until this conversion is valid.</p>}</div>;})}
+    {rows.map((row, index) => { const stockItem=inventory.find((candidate)=>candidate.id===row.inventoryItemId); const purchaseUnits=stockItem?.unit==="g"||stockItem?.unit==="kg"?["g","kg"]:stockItem?.unit==="ml"||stockItem?.unit==="L"?["ml","L"]:["pc"]; return <div className="grid grid-cols-1 md:grid-cols-[minmax(180px,1fr)_90px_90px_120px_130px_36px] gap-2 rounded-xl border border-[var(--app-border)] p-3" key={index}><Select className="min-w-0" value={row.inventoryItemId} onChange={(value) => { if(value==="__NEW__"){setIngredientTarget(index);return;} const item=inventory.find((candidate)=>candidate.id===value);update(index,{inventoryItemId:value,unitCost:item?String(item.unitCost):row.unitCost,purchaseUom:item?.unit??"g",conversionFactor:"1"}); }} options={[{ value: "", label: "Select ingredient" }, ...inventory.filter((item)=>item.status==="ACTIVE").map((item) => ({ value: item.id, label: `${item.name} (${item.unit})` })),{value:"__NEW__",label:"+ New Ingredient"}]} searchable searchPlaceholder="Search ingredients…"/><input aria-label="Purchase quantity" className="field" type="number" min="0.001" step="any" value={row.quantityOrdered} placeholder="Qty" onChange={(e) => update(index, { quantityOrdered: e.target.value })}/><Select aria-label="Purchase unit" value={row.purchaseUom} onChange={(value)=>update(index,{purchaseUom:value,conversionFactor:value===stockItem?.unit?"1":""})} options={purchaseUnits.map((unit)=>({value:unit,label:unit}))}/><input aria-label="Base-unit conversion" title={stockItem?`Base stock unit: ${stockItem.unit}`:"Select an ingredient"} className="field" type="number" min="0.000001" step="any" value={row.conversionFactor} disabled={!stockItem||row.purchaseUom===stockItem.unit} placeholder={`Base ${stockItem?.unit??"units"}`} onChange={(e)=>update(index,{conversionFactor:e.target.value})}/><input aria-label="Cost per purchase unit" className="field" type="number" min="0" step=".01" value={row.unitCost} placeholder="Cost / UOM" onChange={(e) => update(index, { unitCost: e.target.value })}/><button disabled={rows.length === 1} onClick={() => setRows((current) => current.filter((_, rowIndex) => rowIndex !== index))} className="rounded-lg border disabled:opacity-30" aria-label="Remove item"><X size={14} className="mx-auto"/></button>{stockItem&&row.purchaseUom!==stockItem.unit&&<p className="md:col-span-6 text-xs text-[var(--app-text-muted)]">Enter how many {stockItem.unit} are contained in 1 {row.purchaseUom}. Receiving is blocked until this conversion is valid.</p>}</div>;})}
     <Btn variant="outline" size="sm" icon={Plus} onClick={() => setRows((current) => [...current, { inventoryItemId: "", quantityOrdered: "", unitCost: "", purchaseUom: "g", conversionFactor: "1" }])}>Add Item</Btn>
-  </div><div className="mt-4 flex justify-between rounded-xl p-3 bg-[var(--app-surface-muted)]"><span className="text-sm">Estimated Total</span><strong>{peso(rows.reduce((sum, row) => sum + Number(row.quantityOrdered || 0) * Number(row.unitCost || 0), 0))}</strong></div>{error && <p className="text-sm mt-3 text-[var(--app-danger)]">{error}</p>}<div className="mt-5 flex justify-end gap-2"><Btn variant="outline" onClick={onClose}>Cancel</Btn><Btn variant="outline" disabled={saving} onClick={() => void save("DRAFT")}>Save Draft</Btn><Btn icon={Send} disabled={saving} onClick={() => void save("ORDERED")}>{saving ? "Saving…" : "Create Order"}</Btn></div>{ingredientTarget!==null&&<IngredientEditorModal categories={Array.from(new Set(inventory.map((item)=>item.category))).sort()} onClose={()=>setIngredientTarget(null)} onCreated={(item)=>{onInventoryCreated(item);update(ingredientTarget,{inventoryItemId:item.id,unitCost:String(item.unitCost),purchaseUom:item.unit,conversionFactor:"1"});setIngredientTarget(null);}}/>}</ModalShell>;
+  </div><div className="mt-4 flex justify-between rounded-xl p-3 bg-[var(--app-surface-muted)]"><span className="text-sm">Estimated Total</span><strong>{peso(rows.reduce((sum, row) => sum + Number(row.quantityOrdered || 0) * Number(row.unitCost || 0), 0))}</strong></div>{physicalCountRequired ? <PhysicalCountRequiredNotice orderDate={orderDate} onGoToInventoryCount={() => onGoToInventoryCount(orderDate)}/> : error && <p className="text-sm mt-3 text-[var(--app-danger)]">{error}</p>}<div className="mt-5 flex justify-end gap-2"><Btn variant="outline" onClick={onClose}>Cancel</Btn><Btn variant="outline" disabled={saving} onClick={() => void save("DRAFT")}>Save Draft</Btn><Btn icon={Send} disabled={saving} onClick={() => void save("ORDERED")}>{saving ? "Saving…" : "Create Order"}</Btn></div>{ingredientTarget!==null&&<IngredientEditorModal categories={Array.from(new Set(inventory.map((item)=>item.category))).sort()} onClose={()=>setIngredientTarget(null)} onCreated={(item)=>{onInventoryCreated(item);update(ingredientTarget,{inventoryItemId:item.id,unitCost:String(item.unitCost),purchaseUom:item.unit,conversionFactor:"1"});setIngredientTarget(null);}}/>}</ModalShell>;
 }
 
 function OrderDetail({ order, role, onClose, onOrder, onCancel, onReceive }: { order: PurchaseOrder; role: Role; onClose: () => void; onOrder: () => void; onCancel: () => void; onReceive: () => void }) {
@@ -302,9 +405,13 @@ function OrderDetail({ order, role, onClose, onOrder, onCancel, onReceive }: { o
 }
 
 function ReceiveOrder({ order, onClose, onReceived }: { order: PurchaseOrder; onClose: () => void; onReceived: () => void }) {
+  const [receiptRequestId] = useState(() => crypto.randomUUID());
   const [date, setDate] = useState("");
   const [quantities, setQuantities] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false); const [error, setError] = useState("");
-  const save = async () => { const items = order.items.map((item) => ({ purchaseOrderItemId: item.id, quantityReceived: Number(quantities[item.id] ?? 0) })).filter((item) => item.quantityReceived > 0); if (!date) { setError("Select the received date."); return; } if (!items.length) { setError("Enter at least one received quantity."); return; } setSaving(true); setError(""); try { await operationsService.receivePurchaseOrder(order.id, date, items); toast.success("Received stock added to inventory"); onReceived(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to receive purchase order."); } finally { setSaving(false); } };
-  return <ModalShell title={`Receive ${order.poNo}`} onClose={onClose}><div className="max-w-xs"><CalendarDateField label="Received Date" value={date} onChange={setDate}/></div><div className="mt-4 space-y-3">{order.items.map((item) => <label key={item.id} className="grid grid-cols-1 sm:grid-cols-[1fr_170px] gap-2 sm:gap-3 sm:items-center text-sm"><span>{item.name} <small className="text-[var(--app-text-muted)]">({item.quantityReceived}/{item.quantityOrdered} {item.purchaseUom} received; 1 {item.purchaseUom} = {item.conversionFactor} {item.unit})</small></span><input className="field" type="number" min="0.001" max={item.quantityOrdered - item.quantityReceived} step="any" value={quantities[item.id] ?? ""} placeholder={`Max ${item.quantityOrdered - item.quantityReceived}`} onChange={(e) => setQuantities((current) => ({ ...current, [item.id]: e.target.value }))}/></label>)}</div>{error && <p className="text-sm mt-3 text-[var(--app-danger)]">{error}</p>}<div className="mt-5 flex justify-end gap-2"><Btn variant="outline" onClick={onClose}>Cancel</Btn><Btn icon={PackageCheck} disabled={saving} onClick={() => void save()}>{saving ? "Saving…" : "Confirm Receipt"}</Btn></div></ModalShell>;
+  const selectedItemIds = order.items.filter((item) => Number(quantities[item.id] ?? 0) > 0).map((item) => item.id);
+  const latestCountDate = latestReceiptCountDate(order, selectedItemIds.length ? selectedItemIds : undefined);
+  const minimumDate = [order.orderDate, latestCountDate ? dayAfter(latestCountDate) : order.orderDate].sort().at(-1)!;
+  const save = async () => { const items = order.items.map((item) => ({ purchaseOrderItemId: item.id, quantityReceived: Number(quantities[item.id] ?? 0) })).filter((item) => item.quantityReceived > 0); if (!date) { setError("Select the received date."); return; } const dateError = receiptDateError(order, date, items.map((item) => item.purchaseOrderItemId)); if (dateError) { setError(dateError); return; } if (!items.length) { setError("Enter at least one received quantity."); return; } setSaving(true); setError(""); try { await operationsService.receivePurchaseOrder(order.id, receiptRequestId, date, items); toast.success("Received stock added to inventory"); onReceived(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to receive purchase order."); } finally { setSaving(false); } };
+  return <ModalShell title={`Receive ${order.poNo}`} onClose={onClose}><div className="max-w-xs"><CalendarDateField label="Received Date" value={date} min={minimumDate} onChange={setDate}/></div><div className="mt-4 space-y-3">{order.items.map((item) => <label key={item.id} className="grid grid-cols-1 sm:grid-cols-[1fr_170px] gap-2 sm:gap-3 sm:items-center text-sm"><span>{item.name} <small className="text-[var(--app-text-muted)]">({item.quantityReceived}/{item.quantityOrdered} {item.purchaseUom} received; 1 {item.purchaseUom} = {item.conversionFactor} {item.unit})</small></span><input className="field" type="number" min="0.001" max={item.quantityOrdered - item.quantityReceived} step="any" value={quantities[item.id] ?? ""} placeholder={`Max ${item.quantityOrdered - item.quantityReceived}`} onChange={(e) => setQuantities((current) => ({ ...current, [item.id]: e.target.value }))}/></label>)}</div>{error && <p className="text-sm mt-3 text-[var(--app-danger)]">{error}</p>}<div className="mt-5 flex justify-end gap-2"><Btn variant="outline" onClick={onClose}>Cancel</Btn><Btn icon={PackageCheck} disabled={saving} onClick={() => void save()}>{saving ? "Saving…" : "Confirm Receipt"}</Btn></div></ModalShell>;
 }

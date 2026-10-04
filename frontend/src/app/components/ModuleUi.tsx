@@ -315,37 +315,147 @@ export function SearchInput({ placeholder = "Search...", width = 220, value, onC
   );
 }
 
-type SelectOption = string | { value: string; label: string };
+export type SelectOption = string | { value: string; label: string };
 
-export function Select({ options, value, onChange, small, icon: Icon, disabled = false, className = "", ariaLabel, "aria-label": ariaLabelAttribute }: { options: SelectOption[]; value?: string; onChange?: (v: string) => void; small?: boolean; icon?: React.ElementType; disabled?: boolean; className?: string; ariaLabel?: string; "aria-label"?: string }) {
+export const normalizeSelectOptions = (options: SelectOption[]) =>
+  options.map((option) => typeof option === "string" ? { value: option, label: option } : option);
+
+export const filterSelectOptions = (options: SelectOption[], query: string) => {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const normalized = normalizeSelectOptions(options);
+  return normalizedQuery ? normalized.filter((option) => option.label.toLocaleLowerCase().includes(normalizedQuery)) : normalized;
+};
+
+export const moveSelectActiveIndex = (current: number, optionCount: number, direction: 1 | -1) => {
+  if (optionCount === 0) return -1;
+  if (current < 0) return direction === 1 ? 0 : optionCount - 1;
+  return (current + direction + optionCount) % optionCount;
+};
+
+export const selectFilteredOption = (options: SelectOption[], query: string, activeIndex: number) =>
+  filterSelectOptions(options, query)[activeIndex]?.value;
+
+export const sharedSelectPopoverProps = {
+  side: "bottom",
+  align: "start",
+  sideOffset: 8,
+  collisionPadding: 12,
+  avoidCollisions: true,
+  sticky: "always",
+} as const;
+
+export const sharedSelectMenuStyle: React.CSSProperties = {
+  width: "var(--radix-popover-trigger-width)",
+  minWidth: "min(150px, calc(100vw - 24px))",
+  maxWidth: "min(280px, calc(100vw - 24px))",
+  maxHeight: "min(320px, var(--radix-popover-content-available-height))",
+  overflowY: "auto",
+  overscrollBehavior: "contain",
+};
+
+export function Select({ options, value, onChange, small, icon: Icon, disabled = false, className = "", ariaLabel, "aria-label": ariaLabelAttribute, searchable = false, searchPlaceholder = "Search options…" }: { options: SelectOption[]; value?: string; onChange?: (v: string) => void; small?: boolean; icon?: React.ElementType; disabled?: boolean; className?: string; ariaLabel?: string; "aria-label"?: string; searchable?: boolean; searchPlaceholder?: string }) {
   const [open, setOpen] = useState(false);
-  const normalized = options.map((option) => typeof option === "string" ? { value: option, label: option } : option);
+  const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  const optionRefs = React.useRef<Array<HTMLButtonElement | null>>([]);
+  const listboxId = React.useId();
+  const normalized = normalizeSelectOptions(options);
   const selected = normalized.find((option) => option.value === value) ?? normalized[0];
+  const filtered = filterSelectOptions(options, query);
+  const close = () => { setOpen(false); setQuery(""); setActiveIndex(-1); };
+  const choose = (optionValue: string) => { onChange?.(optionValue); close(); };
+  const changeOpen = (next: boolean) => {
+    if (disabled) return;
+    setOpen(next);
+    if (!next) { setQuery(""); setActiveIndex(-1); }
+  };
+  const handleSearchKeyDown = (event: React.KeyboardEvent) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!open) setOpen(true);
+      setActiveIndex((current) => moveSelectActiveIndex(current, filtered.length, event.key === "ArrowDown" ? 1 : -1));
+    } else if (event.key === "Enter" && open) {
+      event.preventDefault();
+      const nextValue = selectFilteredOption(options, query, activeIndex);
+      if (nextValue !== undefined) choose(nextValue);
+    } else if (event.key === "Escape" && open) {
+      event.preventDefault();
+      close();
+    }
+  };
+  useEffect(() => {
+    if (open && activeIndex >= 0) optionRefs.current[activeIndex]?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex, open]);
   return (
-    <div className={cn("dropdown-control relative", className)}>
-      <button type="button" disabled={disabled} onClick={() => setOpen((current) => !current)}
-        className={cn("custom-select-trigger w-full min-w-[150px] flex items-center gap-2 rounded-xl border text-left font-semibold",
-          small ? "min-h-9 px-3 py-1.5 text-xs" : "min-h-10 px-3 py-2 text-sm")}
-        aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel ?? ariaLabelAttribute}>
-        {Icon && <Icon size={13} className="flex-shrink-0 text-[var(--app-primary)]"/>}
-        <span className="min-w-0 flex-1 truncate">{selected?.label ?? "Select"}</span>
-        <span className={cn("dropdown-chevron flex flex-shrink-0 items-center justify-center", open && "is-open")}><ChevronDown size={12}/></span>
-      </button>
-      {open && <>
-        <button type="button" className="fixed inset-0 z-40 cursor-default" aria-label="Close dropdown" onClick={() => setOpen(false)}/>
-        <div className="custom-select-menu absolute left-0 top-full z-50 mt-2 min-w-full w-max max-w-[280px] rounded-2xl border p-1.5 shadow-2xl" role="listbox">
-          {normalized.map((option) => {
+    <Popover.Root open={open} onOpenChange={changeOpen}>
+      <div className={cn("dropdown-control relative", className)}>
+        {searchable ? <Popover.Anchor asChild>
+          <div className={cn("custom-select-trigger w-full min-w-[150px] flex items-center gap-2 rounded-xl border text-left font-semibold",
+            small ? "min-h-9 px-3 py-1.5 text-xs" : "min-h-10 px-3 py-2 text-sm")}
+            aria-expanded={open}>
+            {Icon && <Icon size={13} className="flex-shrink-0 text-[var(--app-primary)]"/>}
+            <input
+              ref={inputRef}
+              type="text"
+              role="combobox"
+              aria-label={ariaLabel ?? ariaLabelAttribute}
+              aria-expanded={open}
+              aria-controls={listboxId}
+              aria-autocomplete="list"
+              aria-activedescendant={activeIndex >= 0 ? `${listboxId}-option-${activeIndex}` : undefined}
+              autoComplete="off"
+              disabled={disabled}
+              value={open ? query : selected?.label ?? ""}
+              placeholder={searchPlaceholder}
+              onFocus={() => changeOpen(true)}
+              onClick={() => changeOpen(true)}
+              onChange={(event) => { setQuery(event.target.value); setActiveIndex(0); if (!open) setOpen(true); }}
+              onKeyDown={handleSearchKeyDown}
+              className="min-w-0 flex-1 bg-transparent outline-none placeholder:font-normal placeholder:text-[var(--app-text-faint)]"
+            />
+            <button type="button" tabIndex={-1} disabled={disabled} aria-label={open ? "Close options" : "Open options"}
+              onMouseDown={(event) => event.preventDefault()} onClick={() => changeOpen(!open)}
+              className={cn("dropdown-chevron flex flex-shrink-0 items-center justify-center", open && "is-open")}><ChevronDown size={12}/></button>
+          </div>
+        </Popover.Anchor> : <Popover.Trigger asChild>
+          <button type="button" disabled={disabled}
+            className={cn("custom-select-trigger w-full min-w-[150px] flex items-center gap-2 rounded-xl border text-left font-semibold",
+              small ? "min-h-9 px-3 py-1.5 text-xs" : "min-h-10 px-3 py-2 text-sm")}
+            aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel ?? ariaLabelAttribute}>
+            {Icon && <Icon size={13} className="flex-shrink-0 text-[var(--app-primary)]"/>}
+            <span className="min-w-0 flex-1 truncate">{selected?.label ?? "Select"}</span>
+            <span className={cn("dropdown-chevron flex flex-shrink-0 items-center justify-center", open && "is-open")}><ChevronDown size={12}/></span>
+          </button>
+        </Popover.Trigger>}
+      </div>
+      <Popover.Portal>
+        <Popover.Content
+          {...sharedSelectPopoverProps}
+          className="custom-select-menu z-[100] rounded-2xl border p-1.5 shadow-2xl"
+          style={sharedSelectMenuStyle}
+          role="listbox"
+          id={listboxId}
+          onOpenAutoFocus={(event) => { if (searchable) event.preventDefault(); }}
+          onCloseAutoFocus={(event) => { if (searchable) event.preventDefault(); }}
+          onInteractOutside={(event) => { if (searchable && event.target === inputRef.current) event.preventDefault(); }}
+          onKeyDown={searchable ? handleSearchKeyDown : undefined}
+        >
+          {filtered.map((option, index) => {
             const active = option.value === selected?.value;
-            return <button type="button" key={option.value} role="option" aria-selected={active}
-              className={cn("custom-select-option w-full rounded-xl px-3 py-2.5 flex items-center gap-2 text-left text-sm", active && "is-selected")}
-              onClick={() => { onChange?.(option.value); setOpen(false); }}>
-              <span className="flex-1">{option.label}</span>
-              {active && <span className="w-1.5 h-1.5 rounded-full bg-white"/>}
+            return <button type="button" key={option.value} role="option" id={`${listboxId}-option-${index}`} aria-selected={active}
+              ref={(element) => { optionRefs.current[index] = element; }}
+              className={cn("custom-select-option w-full rounded-xl px-3 py-2.5 flex items-center gap-2 text-left text-sm", active && "is-selected", searchable && index === activeIndex && !active && "bg-[var(--app-primary-subtle)] text-[var(--app-primary)]")}
+              onMouseMove={() => setActiveIndex(index)}
+              onClick={() => choose(option.value)}>
+              <span className="min-w-0 flex-1 break-words">{option.label}</span>
+              {active && <span className="w-1.5 h-1.5 flex-shrink-0 rounded-full bg-white"/>}
             </button>;
           })}
-        </div>
-      </>}
-    </div>
+          {filtered.length === 0 && <div className="px-3 py-5 text-center text-sm text-[var(--app-text-muted)]" role="status">No results found</div>}
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 
@@ -618,19 +728,64 @@ export function TableWrapper({
   children,
   minWidth = 720,
   className = "",
+  paginate = true,
+  pageSize = 10,
 }: {
   children: React.ReactNode;
   minWidth?: number | string;
   className?: string;
+  paginate?: boolean;
+  pageSize?: number;
 }) {
+  const childArray = React.Children.toArray(children);
+  const bodyIndex = childArray.findIndex((child) => React.isValidElement(child) && child.type === "tbody");
+  const body = bodyIndex >= 0 && React.isValidElement<{ children?: React.ReactNode }>(childArray[bodyIndex])
+    ? childArray[bodyIndex]
+    : null;
+  const rows = body ? React.Children.toArray(body.props.children) : [];
+  const rowSignature = tableRowsSignature(rows);
+  const [page, setPage] = useState(1);
+  const safePageSize = Math.max(1, pageSize);
+  const pages = Math.max(1, Math.ceil(rows.length / safePageSize));
+
+  useEffect(() => { setPage(1); }, [rowSignature]);
+  useEffect(() => { setPage((current) => clampTablePage(current, rows.length, safePageSize)); }, [pages, rows.length, safePageSize]);
+
+  const visibleChildren = paginate && body
+    ? childArray.map((child, index) => index === bodyIndex
+      ? React.cloneElement(body, undefined, rows.slice((page - 1) * safePageSize, page * safePageSize))
+      : child)
+    : children;
+
   return (
-    <div className={cn("overflow-x-auto border-t border-[var(--app-border)]", className)}>
-      <table className="data-table w-full text-center border-collapse" style={{ minWidth }}>
-        {children}
-      </table>
+    <div className={className}>
+      <div className="overflow-x-auto border-t border-[var(--app-border)]">
+        <table className="data-table w-full text-center border-collapse" style={{ minWidth }}>
+          {visibleChildren}
+        </table>
+      </div>
+      {paginate && rows.length > safePageSize && (
+        <Pagination total={rows.length} page={page} perPage={safePageSize} onPageChange={setPage} />
+      )}
     </div>
   );
 }
+
+export const isModalBackdropEvent = (event: Pick<React.MouseEvent, "target" | "currentTarget">) =>
+  event.target === event.currentTarget;
+
+export const tableRowsSignature = (rows: React.ReactNode[]) => rows
+  .map((row, index) => React.isValidElement(row) ? String(row.key ?? index) : String(index))
+  .join("|");
+
+export const clampTablePage = (page: number, total: number, pageSize = 10) =>
+  Math.min(Math.max(1, page), Math.max(1, Math.ceil(total / Math.max(1, pageSize))));
+
+export const paginationPageNumbers = (page: number, pages: number, maxVisible = 5) => {
+  const count = Math.min(Math.max(1, maxVisible), Math.max(1, pages));
+  const start = Math.min(Math.max(1, page - Math.floor(count / 2)), Math.max(1, pages - count + 1));
+  return Array.from({ length: count }, (_, index) => start + index);
+};
 
 export function TableEmptyRow({
   colSpan,
@@ -701,13 +856,13 @@ export function Pagination({
 
   return (
     <div
-      className="flex items-center justify-between px-5 py-3 border-t bg-[var(--app-surface)]"
+      className="flex flex-col gap-3 px-4 py-3 border-t bg-[var(--app-surface)] sm:flex-row sm:items-center sm:justify-between sm:px-5"
       style={{ borderColor: C.border }}
     >
       <span className="text-xs font-medium text-[var(--app-text-muted)]">
         Showing <span className="font-semibold text-[var(--app-text)]">{start}</span>–<span className="font-semibold text-[var(--app-text)]">{end}</span> of <span className="font-semibold text-[var(--app-text)]">{total}</span>
       </span>
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 sm:pb-0">
         <button
           type="button"
           onClick={() => onPageChange?.(Math.max(1, page - 1))}
@@ -717,7 +872,7 @@ export function Pagination({
         >
           <ChevronLeft size={14} />
         </button>
-        {Array.from({ length: Math.min(pages, 5) }, (_, i) => i + 1).map((p) => (
+        {paginationPageNumbers(page, pages).map((p) => (
           <button
             key={p}
             type="button"

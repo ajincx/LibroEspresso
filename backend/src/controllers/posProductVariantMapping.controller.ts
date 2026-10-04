@@ -50,6 +50,9 @@ const mappingReviewInput = z.object({
 
 function databaseConflict(error: unknown): never {
   if (typeof error === "object" && error !== null && "code" in error && error.code === "23505") {
+    if ("constraint" in error && error.constraint === "uq_pos_sources_one_active_per_branch") {
+      throw new AppError(409, "POS_SOURCE_ACTIVE_BRANCH_CONFLICT", "Deactivate the branch's current active POS source before activating another one.");
+    }
     throw new AppError(409, "POS_MAPPING_CONFLICT", "An active mapping already exists for this exact POS identity and scope.");
   }
   if (typeof error === "object" && error !== null && "code" in error && (error.code === "23503" || error.code === "23514")) {
@@ -90,7 +93,7 @@ export const updatePosSource: RequestHandler = async (req, res) => {
   const value = sourceUpdateInput.parse(req.body);
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
     const current = await client.query<{ supportedFormat: z.infer<typeof supportedFormat>; status: "ACTIVE" | "INACTIVE"; branchId: string | null }>(
       `SELECT supported_format "supportedFormat",status,branch_id "branchId" FROM pos_sources WHERE id=$1 FOR UPDATE`, [id],
     );
@@ -99,6 +102,17 @@ export const updatePosSource: RequestHandler = async (req, res) => {
     const nextStatus = value.status ?? current.rows[0].status;
     const nextBranchId = value.branchId ?? current.rows[0].branchId;
     if (nextStatus === "ACTIVE" && !nextBranchId) throw new AppError(422, "POS_SOURCE_BRANCH_REQUIRED", "Choose the branch that uses this POS source before activation.");
+    if (nextStatus === "ACTIVE") {
+      const branch = await client.query(`SELECT id FROM branches WHERE id=$1 AND status='ACTIVE' FOR UPDATE`, [nextBranchId]);
+      if (!branch.rows[0]) throw new AppError(422, "POS_SOURCE_BRANCH_INVALID", "Choose an active branch for this POS source.");
+      const activeSource = await client.query<{ id: string }>(
+        `SELECT id FROM pos_sources WHERE branch_id=$1 AND status='ACTIVE' AND id<>$2 LIMIT 1`,
+        [nextBranchId, id],
+      );
+      if (activeSource.rows[0]) {
+        throw new AppError(409, "POS_SOURCE_ACTIVE_BRANCH_CONFLICT", "Deactivate the branch's current active POS source before activating another one.");
+      }
+    }
     const requiresFormatReview = nextStatus === "ACTIVE"
       && (current.rows[0].status !== "ACTIVE" || nextFormat !== current.rows[0].supportedFormat);
     if (requiresFormatReview && value.confirmedSupportedFormat !== nextFormat) {

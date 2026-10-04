@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   Bell,
+  BookOpen,
   Building2,
   Eye,
   EyeOff,
@@ -24,6 +25,8 @@ import {
   type AppPreferences,
 } from "../../utils/appPreferences";
 import { Select } from "../../components/ModuleUi";
+import { HelpGuide } from "./HelpGuide";
+import type { UserRole } from "../../types/auth";
 
 const inputClass =
   "w-full rounded-xl border px-3.5 py-2.5 text-sm outline-none transition-colors bg-[var(--app-surface)] text-[var(--app-text)] border-[var(--app-border)] focus:border-[var(--app-primary)] focus:ring-4 focus:ring-[var(--app-primary-faint)] disabled:cursor-not-allowed disabled:bg-[var(--app-surface-muted)]";
@@ -37,7 +40,31 @@ type SettingsSection =
   | "security"
   | "notifications"
   | "preferences"
-  | "business";
+  | "business"
+  | "help";
+
+export function settingsMenuForRole(role: UserRole): {
+  id: SettingsSection;
+  label: string;
+  icon: React.ElementType;
+}[] {
+  return role === "OWNER"
+    ? [
+        { id: "profile", label: "Profile & Account", icon: UserRound },
+        { id: "security", label: "Password & Security", icon: LockKeyhole },
+        { id: "notifications", label: "Notification Preferences", icon: Bell },
+        { id: "preferences", label: "System Preferences", icon: SlidersHorizontal },
+        { id: "business", label: "Business Information", icon: Building2 },
+        { id: "help", label: "Help & User Guide", icon: BookOpen },
+      ]
+    : [
+        { id: "profile", label: "Profile", icon: UserRound },
+        { id: "security", label: "Password & Security", icon: LockKeyhole },
+        { id: "notifications", label: "Notification Preferences", icon: Bell },
+        { id: "preferences", label: "UI Preferences", icon: MonitorCog },
+        { id: "help", label: "Help & User Guide", icon: BookOpen },
+      ];
+}
 const defaultNotifications = {
   lowStock: true,
   criticalStock: true,
@@ -137,28 +164,7 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void } = {}) {
     `${user.firstName[0] ?? ""}${user.lastName[0] ?? ""}`.toUpperCase();
   const isOwner = user.role === "OWNER";
   const isStaff = user.role === "STAFF";
-  const menu: {
-    id: SettingsSection;
-    label: string;
-    icon: React.ElementType;
-  }[] = isOwner
-    ? [
-        { id: "profile", label: "Profile & Account", icon: UserRound },
-        { id: "security", label: "Password & Security", icon: LockKeyhole },
-        { id: "notifications", label: "Notification Preferences", icon: Bell },
-        {
-          id: "preferences",
-          label: "System Preferences",
-          icon: SlidersHorizontal,
-        },
-        { id: "business", label: "Business Information", icon: Building2 },
-      ]
-    : [
-        { id: "profile", label: "Profile", icon: UserRound },
-        { id: "security", label: "Password & Security", icon: LockKeyhole },
-        { id: "notifications", label: "Notification Preferences", icon: Bell },
-        { id: "preferences", label: "UI Preferences", icon: MonitorCog },
-      ];
+  const menu = settingsMenuForRole(user.role);
 
   const persistPreferences = async (includeSystemSettings = false) => {
     setSavingSettings(true);
@@ -955,6 +961,7 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void } = {}) {
             )}
           </section>
         )}
+        {active === "help" && <HelpGuide role={user.role} />}
       </div>
       {onLogout && (
         <div className="flex justify-center pt-2">

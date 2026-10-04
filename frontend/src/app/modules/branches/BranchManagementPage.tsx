@@ -204,7 +204,7 @@ export function BranchManagementPage({
       {deactivateTarget&&<ControlledActionDialog title={`Deactivate ${deactivateTarget.name}?`} description="The branch, its active accounts, and branch menu availability will be disabled. Sales, counts, incidents, and audit history remain unchanged." confirmLabel="Deactivate Branch" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setDeactivateTarget(null)} onConfirm={()=>void deactivate()}/>}
 
       {open && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/45">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/45" onMouseDown={(event)=>{if(event.target===event.currentTarget)setOpen(false);}}>
           <div role="dialog" aria-modal="true" aria-labelledby="add-branch-title" className="rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto p-6 bg-[var(--app-surface)] border border-[var(--app-border)]">
             <div className="flex justify-between mb-5">
               <div>

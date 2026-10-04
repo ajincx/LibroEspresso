@@ -12,7 +12,8 @@ describe("database concurrency guards", () => {
 
   it("locks purchase orders and lines while receiving deliveries", () => {
     const controller = source("../controllers/operations.controller.ts");
-    expect(controller).toMatch(/purchase_orders[\s\S]*status IN \('ORDERED','PARTIALLY_RECEIVED'\) FOR UPDATE/);
+    expect(controller).toContain('FROM purchase_orders WHERE id=$1 AND branch_id=$2 FOR UPDATE');
+    expect(controller).toContain('if (!["ORDERED", "PARTIALLY_RECEIVED"].includes(order.rows[0].status))');
     expect(controller).toMatch(/purchase_order_items[\s\S]*purchase_order_id=\$2 FOR UPDATE/);
   });
 

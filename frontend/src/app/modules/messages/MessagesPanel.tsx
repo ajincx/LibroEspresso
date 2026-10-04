@@ -1,11 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MessageCircle, RefreshCw, Search, Send, Users } from "lucide-react";
+import { MessageCircle, RefreshCw, Search, Send, Trash2, Users } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "../../contexts/AuthContext";
 import { messageService } from "../../services/message.service";
 import type { DirectMessage, MessageContact } from "../../types/messaging";
 
 function initials(contact: MessageContact) { return `${contact.firstName[0] ?? ""}${contact.lastName[0] ?? ""}`.toUpperCase(); }
+export const canDeleteSentMessage = (message: DirectMessage, currentUserId?: string) => Boolean(currentUserId && message.senderUserId === currentUserId);
+export const withoutDeletedMessage = (messages: DirectMessage[], messageId: string) => messages.filter((message) => message.id !== messageId);
+
+export function SentMessageDeleteButton({ visible, onDelete }: { visible: boolean; onDelete: () => void }) {
+  if (!visible) return null;
+  return <button type="button" aria-label="Delete sent message" title="Delete message" onClick={onDelete} className="absolute -left-9 top-1 flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-danger)] opacity-70 shadow-sm transition-opacity hover:opacity-100 focus:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"><Trash2 size={13}/></button>;
+}
 
 export function MessagesPanel({ embedded = false, initialMessageId = null }: { embedded?: boolean; initialMessageId?: string | null }) {
   const { user } = useAuth();
@@ -16,6 +23,8 @@ export function MessagesPanel({ embedded = false, initialMessageId = null }: { e
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<DirectMessage | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const loadContacts = async () => {
@@ -86,6 +95,19 @@ export function MessagesPanel({ embedded = false, initialMessageId = null }: { e
     finally { setSending(false); }
   };
 
+  const removeMessage = async () => {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
+    try {
+      await messageService.deleteMessage(deleteTarget.id);
+      setMessages((current) => withoutDeletedMessage(current, deleteTarget.id));
+      setDeleteTarget(null);
+      await loadContacts();
+      toast.success("Message deleted");
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Unable to delete message"); }
+    finally { setDeleting(false); }
+  };
+
   return <div className={embedded ? "h-full" : "p-4 sm:p-6 h-full min-h-[620px]"}>
     <div className="h-full max-w-7xl mx-auto flex flex-col">
       {!embedded && <div className="mb-5"><h1 className="text-xl font-bold text-[var(--app-text)]">Messages</h1><p className="text-sm mt-1 text-[var(--app-text-muted)]">Communicate securely with other active Libro Espresso users.</p></div>}
@@ -106,13 +128,14 @@ export function MessagesPanel({ embedded = false, initialMessageId = null }: { e
             <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-3 bg-[var(--app-bg)]">
               {messages.length === 0 ? <div className="h-full flex items-center justify-center text-sm text-[var(--app-text-muted)]">No messages yet. Start the conversation.</div> : messages.map(message => {
                 const mine = message.senderUserId === user?.id;
-                return <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}><div className="max-w-[82%] sm:max-w-[68%] rounded-2xl px-3.5 py-2.5" style={{ background: mine ? "var(--app-primary)" : "var(--app-surface)", color: mine ? "white" : "var(--app-text)", border: mine ? "none" : "1px solid var(--app-border)", borderBottomRightRadius: mine ? 5 : undefined, borderBottomLeftRadius: mine ? undefined : 5 }}><p className="text-sm whitespace-pre-wrap break-words">{message.body}</p><p className="text-[10px] mt-1.5" style={{ color: mine ? "rgba(255,255,255,.72)" : "var(--app-text-faint)" }}>{new Date(message.createdAt).toLocaleString("en-PH", { dateStyle: "medium", timeStyle: "short" })}{mine && message.readAt ? " · Read" : ""}</p></div></div>;
+                return <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}><div className="group relative max-w-[82%] sm:max-w-[68%]"><SentMessageDeleteButton visible={canDeleteSentMessage(message,user?.id)} onDelete={()=>setDeleteTarget(message)}/><div className="rounded-2xl px-3.5 py-2.5" style={{ background: mine ? "var(--app-primary)" : "var(--app-surface)", color: mine ? "white" : "var(--app-text)", border: mine ? "none" : "1px solid var(--app-border)", borderBottomRightRadius: mine ? 5 : undefined, borderBottomLeftRadius: mine ? undefined : 5 }}><p className="text-sm whitespace-pre-wrap break-words">{message.body}</p><p className="text-[10px] mt-1.5" style={{ color: mine ? "rgba(255,255,255,.72)" : "var(--app-text-faint)" }}>{new Date(message.createdAt).toLocaleString("en-PH", { dateStyle: "medium", timeStyle: "short" })}{mine && message.readAt ? " · Read" : ""}</p></div></div></div>;
               })}<div ref={bottomRef}/>
             </div>
             <form onSubmit={send} className="p-3 sm:p-4 border-t border-[var(--app-border)]"><div className="flex items-end gap-2"><textarea value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} maxLength={2000} rows={1} placeholder={`Message ${selected.firstName}...`} className="flex-1 max-h-32 min-h-11 resize-y rounded-xl border px-3.5 py-2.5 text-sm outline-none bg-[var(--app-surface)] text-[var(--app-text)] border-[var(--app-border)] focus:border-[var(--app-primary)]"/><button disabled={!draft.trim() || sending} className="h-11 px-4 rounded-xl flex items-center gap-2 text-sm font-semibold text-white bg-[var(--app-primary)] disabled:opacity-50"><Send size={16}/><span className="hidden sm:inline">{sending ? "Sending..." : "Send"}</span></button></div><p className="text-[11px] mt-1.5 text-[var(--app-text-faint)]">Enter to send · Shift+Enter for a new line</p></form>
           </>}
         </section>
       </div>
+      {deleteTarget&&<div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="delete-message-title"><div className="w-full max-w-sm rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-6 shadow-2xl"><h2 id="delete-message-title" className="text-lg font-bold">Delete sent message?</h2><p className="mt-2 text-sm leading-relaxed text-[var(--app-text-muted)]">This permanently removes the message from the conversation. This action is recorded for security and audit purposes.</p><div className="mt-6 flex justify-end gap-2"><button type="button" disabled={deleting} onClick={()=>setDeleteTarget(null)} className="rounded-xl border border-[var(--app-border)] px-4 py-2.5 text-sm font-semibold">Cancel</button><button type="button" disabled={deleting} onClick={()=>void removeMessage()} className="rounded-xl bg-[var(--app-danger)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60">{deleting?"Deleting…":"Delete Message"}</button></div></div></div>}
     </div>
   </div>;
 }

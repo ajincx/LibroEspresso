@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as XLSX from "xlsx";
 import { parsePosCsv } from "../services/posCsvImport.service.js";
 import { parsePosExcel } from "../services/posExcelImport.service.js";
+import { posResolutionFingerprint } from "../services/posProductVariantMapping.service.js";
 import { AppError } from "../utils/appError.js";
 
 const mocks = vi.hoisted(() => ({
@@ -29,12 +30,18 @@ const mappingRow = { id: "map-1", status: "ACTIVE", branchId: null, sourceProduc
   productStatus: "ACTIVE", approvalStatus: "APPROVED", branchAvailable: true, recipeValid: true, updatedAt: "2026-09-16T00:00:00Z" };
 const csvText =
   "product_code,quantity_sold,selling_price,business_date,transaction_id,line_id\nLATTE-L,2,190,2026-09-08,R-1,1";
+const csvResolutionFingerprint = posResolutionFingerprint(sourceId, [{
+  itemClassification: "SELLABLE_ITEM", menuItemId: "menu-1", menuItemVariantId: variantId,
+  mappingId: "map-1", mappingVersion: `map-1:${mappingRow.updatedAt}`, recipeVersionId: "recipe-v1",
+}]);
 const request = () =>
   ({
     body: {
       sourceFilename: "sales.csv",
       csvText,
       expectedContentHash: parsePosCsv(csvText).contentHash,
+      expectedResolutionFingerprint: csvResolutionFingerprint,
+      posSourceId: sourceId,
       branchId: "00000000-0000-4000-8000-000000000099",
     },
     user: { id: "manager-1", role: "BRANCH_MANAGER", branchId },
@@ -93,7 +100,7 @@ const deleteRequest = (id=importId) => ({params:{id},body:{reason:"Reset an expl
 
 function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate" | "reconciliation", mappingVersion?: string,
   variantRows?: Array<{id:string;menuItemId:string;name:string;status:"ACTIVE"|"INACTIVE";recipeVersionId:string|null;recipeUnits:Array<{recipeUnit:string;inventoryUnit:string}>}>,
-  sourceFormat = "SUMMARY_ITEMS_SOLD_LEGACY_XLS") {
+  sourceFormat = "CANONICAL_CSV", lateHistorical = false) {
   const queries: Array<{ sql: string; values?: unknown[] }> = [];
   const query = vi.fn(async (statement: unknown, values?: unknown[]) => {
     const sql = String(statement);
@@ -122,7 +129,7 @@ function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate" | "reco
     if (sql.includes('r.id "recipeVersionId",ri.inventory_item_id')) return { rows: [{recipeVersionId:"recipe-v1",inventoryItemId:"ingredient-1",sku:"BEANS",name:"Coffee Beans",recipeQuantity:18,recipeUnit:"g",inventoryUnit:"kg",unitCost:800,yieldQuantity:1}] };
     if (sql.includes("FROM pos_import_approvals WHERE")) return { rows: [{id:approvalId,sourceSalesTotal:380,sourceQuantity:2}] };
     if (sql.includes("FROM pos_sources WHERE")) return { rows: [{ id: sourceId, sourceCode: "VERIFIED", displayName: "Verified POS", supportedFormat: sourceFormat }] };
-    if (sql.includes("FROM pos_product_variant_mappings pm")) return { rows: [{ ...mappingRow, updatedAt: mappingVersion ?? mappingRow.updatedAt }] };
+    if (sql.includes("FROM pos_product_variant_mappings pm")) return { rows: [{ ...mappingRow, sourceProductCode: sourceFormat === "CANONICAL_CSV" ? "LATTE-L" : null, updatedAt: mappingVersion ?? mappingRow.updatedAt }] };
     if (sql.includes("SELECT id FROM pos_imports")) return { rows: [] };
     if (sql.includes("INSERT INTO pos_imports")) {
       if (failAt === "concurrent-duplicate") throw Object.assign(new Error("duplicate"), { code: "23505" });
@@ -138,6 +145,12 @@ function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate" | "reco
     if (sql.includes("INSERT INTO pos_sale_ingredient_usage")) {
       if (failAt === "usage") throw new Error("usage generation failed");
       return { rows: [] };
+    }
+    if (sql.includes('max(ic.count_date)::text "latestBaselineDate"')) {
+      return { rows: [{ latestBaselineDate: lateHistorical ? "2026-10-02" : null }] };
+    }
+    if (sql.includes("WITH affected_items AS")) {
+      return { rows: lateHistorical ? [{ id: "count-1", countNo: "IC-2026-00009", countDate: "2026-10-02", affectedItemCount: 1, varianceCount: 1 }] : [] };
     }
     if (sql.includes("sum(usage.quantity_consumed)")) {
       return {
@@ -181,6 +194,56 @@ beforeEach(() => {
 });
 
 describe("Excel POS preview and canonical import integration", () => {
+  const csvPreviewRequest = (posSourceId?: string) => ({
+    body: { sourceFilename: "sales.csv", csvText, ...(posSourceId ? { posSourceId } : {}) },
+    user: { id: "manager-1", role: "BRANCH_MANAGER", branchId },
+  }) as never;
+
+  it("requires a configured source for canonical CSV preview", async () => {
+    await expect(previewPosSales(csvPreviewRequest(), response() as never, vi.fn())).rejects.toBeDefined();
+    expect(mocks.poolQuery).not.toHaveBeenCalled();
+  });
+
+  it("rejects canonical CSV when the active source uses another format", async () => {
+    mocks.poolQuery.mockImplementation(async (statement: unknown) => {
+      const sql = String(statement);
+      if (sql.includes('SELECT name "branchName" FROM branches')) return { rows: [{ branchName: "Lipa" }] };
+      if (sql.includes("FROM menu_items mi")) return { rows: [{ id: "menu-1", code: "LATTE-L", name: "Iced Latte, Large", sellingPrice: 190 }] };
+      if (sql.includes("FROM menu_item_variants v")) return { rows: [] };
+      if (sql.includes("FROM pos_sources WHERE")) return { rows: [{ id: sourceId, sourceCode: "LEGACY", displayName: "Legacy", supportedFormat: "SUMMARY_ITEMS_SOLD_LEGACY_XLS" }] };
+      return { rows: [] };
+    });
+
+    await expect(previewPosSales(csvPreviewRequest(sourceId), response() as never, vi.fn()))
+      .rejects.toMatchObject({ code: "POS_SOURCE_FORMAT_MISMATCH" });
+  });
+
+  it("resolves canonical CSV through source-specific mappings and uses commit duplicate identity", async () => {
+    const queries: Array<{ sql: string; values?: unknown[] }> = [];
+    mocks.poolQuery.mockImplementation(async (statement: unknown, values?: unknown[]) => {
+      const sql = String(statement); queries.push({ sql, values });
+      if (sql.includes('SELECT name "branchName" FROM branches')) return { rows: [{ branchName: "Lipa" }] };
+      if (sql.includes("FROM menu_items mi")) return { rows: [{ id: "menu-1", code: "LATTE-L", name: "Iced Latte, Large", sellingPrice: 190 }] };
+      if (sql.includes("FROM menu_item_variants v")) return { rows: [{ id: variantId, menuItemId: "menu-1", name: "Standard", status: "ACTIVE", sellingPrice: 190, recipeVersionId: "recipe-v1", recipeVersion: 1, recipeUnits: [{ recipeUnit: "g", inventoryUnit: "kg" }] }] };
+      if (sql.includes("FROM pos_sources WHERE")) return { rows: [{ id: sourceId, sourceCode: "CSV", displayName: "Canonical CSV", supportedFormat: "CANONICAL_CSV" }] };
+      if (sql.includes("FROM pos_product_variant_mappings pm")) return { rows: [{ ...mappingRow, sourceProductCode: "LATTE-L" }] };
+      if (sql.includes('r.id "recipeVersionId",ri.inventory_item_id')) return { rows: [{ recipeVersionId: "recipe-v1", inventoryItemId: "ingredient-1", sku: "BEANS", name: "Coffee Beans", recipeQuantity: 18, recipeUnit: "g", inventoryUnit: "kg", unitCost: 800, yieldQuantity: 1 }] };
+      return { rows: [] };
+    });
+    const res = response();
+
+    await previewPosSales(csvPreviewRequest(sourceId), res as never, vi.fn());
+
+    const preview = (res.json.mock.calls[0]?.[0] as { data: { preview: { posSourceId: string; rows: Array<{ mappingStatus: string; menuItemVariantId: string }>; summary: { canImport: boolean } } } }).data.preview;
+    expect(preview).toMatchObject({ posSourceId: sourceId, summary: { canImport: true } });
+    expect(preview.rows[0]).toMatchObject({ mappingStatus: "APPROVED", menuItemVariantId: variantId });
+    const sourceLookup = queries.find(({ sql }) => sql.includes("FROM pos_sources WHERE"));
+    expect(sourceLookup?.values).toEqual([sourceId, branchId]);
+    const duplicateLookup = queries.find(({ sql }) => sql.includes("SELECT id FROM pos_imports"));
+    expect(duplicateLookup?.sql).toContain("branch_id=$1 AND business_date=$2 AND content_hash=$3");
+    expect(duplicateLookup?.values).toEqual([branchId, "2026-09-08", parsePosCsv(csvText).contentHash]);
+  });
+
   it.each([
     ["12OZ PAPER CUP", "OPERATIONAL_ITEM", 1, 0],
     ["MILK", "OPERATIONAL_ITEM", 1, 0],
@@ -202,7 +265,7 @@ describe("Excel POS preview and canonical import integration", () => {
     expect(preview.summary).toMatchObject({ operationalRows, unknownReviewRows, canImport: false });
   });
 
-  it("previews Format A but blocks an unconfigured source without writing", async () => {
+  it("rejects Format A preview without a configured source before writing", async () => {
     mocks.poolQuery.mockImplementation(async (statement: unknown) => {
       const sql = String(statement);
       if (sql.includes("SELECT name \"branchName\" FROM branches")) return { rows: [{ branchName: "Lipa" }] };
@@ -210,16 +273,15 @@ describe("Excel POS preview and canonical import integration", () => {
       if (sql.includes("FROM menu_item_variants v")) return { rows: [{ id: variantId, menuItemId: "menu-1", name: "Standard", status: "ACTIVE", recipeVersionId: "recipe-v1", recipeVersion: 1, recipeUnits: [{ recipeUnit: "g", inventoryUnit: "kg" }] }] };
       return { rows: [] };
     });
-    const res = response();
-    await previewPosSales(excelRequest(legacyExcelBuffer(), "renamed.xls"), res as never, vi.fn());
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, data: { preview: expect.objectContaining({ sourceFormat: "SUMMARY_ITEMS_SOLD_LEGACY_XLS", summary: expect.objectContaining({ canImport: false }) }) } }));
+    await expect(previewPosSales(excelRequest(legacyExcelBuffer(), "renamed.xls"), response() as never, vi.fn()))
+      .rejects.toMatchObject({ code: "POS_SOURCE_INVALID" });
     expect(mocks.poolQuery.mock.calls.some(([sql]) => String(sql).includes("INSERT"))).toBe(false);
   });
 
   it("passes Format A confirmation through the existing sale and recipe snapshot transaction", async () => {
     const buffer = legacyExcelBuffer();
     const hash = parsePosExcel("sales.xls", buffer).contentHash;
-    const { client, queries } = createClient();
+    const { client, queries } = createClient(undefined, undefined, undefined, "SUMMARY_ITEMS_SOLD_LEGACY_XLS");
     mocks.connect.mockResolvedValue(client);
     const preview = response();
     mocks.poolQuery.mockImplementation(async (statement: unknown) => {
@@ -298,7 +360,7 @@ describe("Excel POS preview and canonical import integration", () => {
     });
     await previewPosSales(excelRequest(buffer, "sales.xls", undefined, undefined, sourceId), preview as never, vi.fn());
     const before = (preview.json.mock.calls[0]?.[0] as { data: { preview: { contentHash: string; resolutionFingerprint: string } } }).data.preview;
-    const { client, queries } = createClient(undefined, "2026-09-17T00:00:00Z");
+    const { client, queries } = createClient(undefined, "2026-09-17T00:00:00Z", undefined, "SUMMARY_ITEMS_SOLD_LEGACY_XLS");
     mocks.connect.mockResolvedValue(client);
     await expect(importPosSales(excelRequest(buffer, "sales.xls", before.contentHash, before.resolutionFingerprint, sourceId), response() as never, vi.fn())).rejects.toMatchObject({ code: "POS_MAPPING_CHANGED" });
     expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_imports"))).toBe(false);
@@ -320,12 +382,13 @@ describe("Excel POS preview and canonical import integration", () => {
     });
     const previewResponse = response();
     await previewPosSales(excelRequest(buffer, "transactions.xlsx", undefined, undefined, sourceId), previewResponse as never, vi.fn());
-    const preview = (previewResponse.json.mock.calls[0]?.[0] as {data:{preview:{contentHash:string;resolutionFingerprint:string;rows:Array<{unitPrice:number;lineAmount:null;calculatedSalesAmount:number;pricingSource:string}>;pricing:{method:string;notice:string;fallbackRows:number};summary:{canImport:boolean};simulation:{estimatedSales:number;estimatedCogs:number;estimatedGrossProfit:number;estimatedGrossMargin:number}}}}).data.preview;
+    const preview = (previewResponse.json.mock.calls[0]?.[0] as {data:{preview:{contentHash:string;resolutionFingerprint:string;rows:Array<{unitPrice:number;lineAmount:null;calculatedSalesAmount:number;pricingSource:string;status:string}>;pricing:{method:string;notice:string;fallbackRows:number};summary:{canImport:boolean;validRows:number;warningRows:number;quality:string};simulation:{estimatedSales:number;estimatedCogs:number;estimatedGrossProfit:number;estimatedGrossMargin:number}}}}).data.preview;
     expect(preview.contentHash).toBe(hash);
     expect(preview.rows[0]).toMatchObject({unitPrice:190,lineAmount:null,calculatedSalesAmount:380,pricingSource:"MENU_VARIANT_CAPSTONE_FALLBACK"});
     expect(preview.pricing).toMatchObject({method:"MENU_VARIANT_CAPSTONE_FALLBACK",fallbackRows:1});
     expect(preview.pricing.notice).toContain("CAPSTONE demonstration");
-    expect(preview.summary.canImport).toBe(true);
+    expect(preview.rows[0]).toMatchObject({status:"VALID"});
+    expect(preview.summary).toMatchObject({canImport:true,validRows:1,warningRows:0,quality:"COMPLETE"});
     expect(preview.simulation).toMatchObject({estimatedSales:380,estimatedCogs:28.8,estimatedGrossProfit:351.2});
     expect(preview.simulation.estimatedGrossMargin).toBeCloseTo(92.4210526316);
 
@@ -399,7 +462,7 @@ describe("transactional POS import persistence", () => {
     expect(sale?.values).toEqual([
       "import-1",
       branchId,
-      null,
+      sourceId,
       "2026-09-08",
       ["menu-1"],
       [2],
@@ -424,7 +487,8 @@ describe("transactional POS import persistence", () => {
     expect(sale?.sql).toContain("pos_source_id");
     expect(queries.some(({sql})=>sql.includes("pos_test_fixture_authorizations"))).toBe(false);
     const duplicateCheck=queries.find(({sql})=>sql.includes("SELECT id FROM pos_imports"));
-    expect(duplicateCheck?.sql).toContain("pos_source_id IS NOT DISTINCT FROM $2::uuid");
+    expect(duplicateCheck?.sql).toContain("branch_id=$1 AND business_date=$2 AND content_hash=$3");
+    expect(duplicateCheck?.sql).not.toContain("pos_source_id");
     expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_sale_items"))).toBe(true);
     expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_sale_ingredient_usage"))).toBe(true);
     expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_import_reconciliations"))).toBe(true);
@@ -448,6 +512,33 @@ describe("transactional POS import persistence", () => {
         }),
       }),
     );
+  });
+
+  it("flags a late historical import for count reconciliation without changing current inventory", async () => {
+    const { client, queries } = createClient(undefined, undefined, undefined, "CANONICAL_CSV", true);
+    mocks.connect.mockResolvedValue(client);
+    const res = response();
+
+    await importPosSales(request(), res as never, vi.fn());
+
+    expect(queries.some(({ sql }) => sql.includes("POS_LATE_HISTORICAL_IMPORT"))).toBe(true);
+    expect(queries.some(({ sql }) => /(?:INSERT INTO|UPDATE) branch_inventory_balances/i.test(sql))).toBe(false);
+    expect(mocks.writeAudit).toHaveBeenCalledWith(
+      expect.anything(), "IMPORT_POS_SALES", "POS_IMPORT", "import-1", expect.any(String),
+      expect.objectContaining({
+        inventoryDateAssessment: expect.objectContaining({
+          lateHistoricalImport: true,
+          latestBaselineDate: "2026-10-02",
+          affectedCountPeriods: [expect.objectContaining({ countNo: "IC-2026-00009" })],
+        }),
+      }),
+      client,
+    );
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        inventoryDateAssessment: expect.objectContaining({ lateHistoricalImport: true }),
+      }),
+    }));
   });
 
   it("maps a concurrent uniqueness conflict to a duplicate rejection", async () => {

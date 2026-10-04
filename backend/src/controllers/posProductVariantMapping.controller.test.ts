@@ -84,6 +84,8 @@ describe("POS source review metadata", () => {
         if (sql.includes("SELECT supported_format")) {
           return { rows: [{ supportedFormat: format, status: "INACTIVE", branchId }], rowCount: 1 };
         }
+        if (sql.includes("FROM branches")) return { rows: [{ id: branchId }], rowCount: 1 };
+        if (sql.includes("FROM pos_sources WHERE branch_id")) return { rows: [], rowCount: 0 };
         if (sql.includes("UPDATE pos_sources")) return { rows: [activated], rowCount: 1 };
         return { rows: [], rowCount: 0 };
       }),
@@ -105,9 +107,62 @@ describe("POS source review metadata", () => {
     expect(update?.values).toEqual([sourceId, null, null, null, "ACTIVE", false, ownerId, true, null]);
     expect(activated.formatVerifiedBy).toBe(ownerId);
     expect(activated.formatVerifiedAt).toBe(reviewedAt);
+    expect(calls[0]?.sql).toBe("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    expect(calls.some(({ sql }) => sql.includes("FROM branches") && sql.includes("FOR UPDATE"))).toBe(true);
     expect(calls.at(-1)?.sql).toBe("COMMIT");
     expect(client.release).toHaveBeenCalledOnce();
     expect(res.json).toHaveBeenCalledWith({ success: true, data: { source: activated } });
+  });
+
+  it("rejects activation when the branch already has another active source", async () => {
+    const calls: string[] = [];
+    const client = {
+      query: vi.fn(async (statement: unknown) => {
+        const sql = String(statement); calls.push(sql);
+        if (sql.includes("SELECT supported_format")) return { rows: [{ supportedFormat: format, status: "INACTIVE", branchId }] };
+        if (sql.includes("FROM branches")) return { rows: [{ id: branchId }] };
+        if (sql.includes("FROM pos_sources WHERE branch_id")) return { rows: [{ id: "66666666-6666-4666-8666-666666666666" }] };
+        return { rows: [] };
+      }),
+      release: vi.fn(),
+    };
+    mocks.connect.mockResolvedValue(client);
+
+    await expect(updatePosSource({
+      params: { id: sourceId },
+      body: { status: "ACTIVE", confirmedSupportedFormat: format },
+      user: { id: ownerId, role: "OWNER", branchId: null },
+    } as never, response() as never, vi.fn())).rejects.toMatchObject({
+      status: 409,
+      code: "POS_SOURCE_ACTIVE_BRANCH_CONFLICT",
+    });
+
+    expect(calls).toContain("ROLLBACK");
+    expect(calls.some((sql) => sql.includes("UPDATE pos_sources"))).toBe(false);
+  });
+
+  it("maps a concurrent database uniqueness conflict to the same activation conflict", async () => {
+    const client = {
+      query: vi.fn(async (statement: unknown) => {
+        const sql = String(statement);
+        if (sql.includes("SELECT supported_format")) return { rows: [{ supportedFormat: format, status: "INACTIVE", branchId }] };
+        if (sql.includes("FROM branches")) return { rows: [{ id: branchId }] };
+        if (sql.includes("FROM pos_sources WHERE branch_id")) return { rows: [] };
+        if (sql.includes("UPDATE pos_sources")) throw Object.assign(new Error("duplicate"), { code: "23505", constraint: "uq_pos_sources_one_active_per_branch" });
+        return { rows: [] };
+      }),
+      release: vi.fn(),
+    };
+    mocks.connect.mockResolvedValue(client);
+
+    await expect(updatePosSource({
+      params: { id: sourceId },
+      body: { status: "ACTIVE", confirmedSupportedFormat: format },
+      user: { id: ownerId, role: "OWNER", branchId: null },
+    } as never, response() as never, vi.fn())).rejects.toMatchObject({
+      status: 409,
+      code: "POS_SOURCE_ACTIVE_BRANCH_CONFLICT",
+    });
   });
 });
 

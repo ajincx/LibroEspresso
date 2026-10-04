@@ -5,6 +5,7 @@ import {
   authorizePurchaseOrderTestCleanup,
   deletePurchaseOrderTestData,
   getInventoryOverview,
+  getInventoryStockLedger,
   getPurchaseOrder,
   listIncidentItemOptions,
   listIncidentReports,
@@ -26,9 +27,14 @@ inventoryOverviewRouter.get(
   authorize("OWNER", "BRANCH_MANAGER"),
   asyncHandler(getInventoryOverview),
 );
+inventoryOverviewRouter.get(
+  "/:inventoryItemId/ledger",
+  authorize("OWNER", "BRANCH_MANAGER"),
+  asyncHandler(getInventoryStockLedger),
+);
 inventoryOverviewRouter.patch(
   "/:inventoryItemId/settings",
-  authorize("BRANCH_MANAGER"),
+  authorize("OWNER"),
   asyncHandler(updateBranchInventorySettings),
 );
 

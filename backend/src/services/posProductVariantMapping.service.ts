@@ -45,6 +45,7 @@ export interface PosMappingResolution {
 
 export function resolvePosMapping(row: ParsedPosRow, branchId: string, mappings: readonly PosMappingRecord[]): PosMappingResolution {
   const name = normalizePosIdentity(row.sourceProductName ?? row.sourceProduct);
+  const explicitName = row.sourceProductName ? normalizePosIdentity(row.sourceProductName) : null;
   const code = row.sourceProductId ? normalizePosIdentity(row.sourceProductId) : null;
   const candidates = mappings.filter((mapping) => {
     if (mapping.status !== "ACTIVE") return false;
@@ -55,7 +56,7 @@ export function resolvePosMapping(row: ParsedPosRow, branchId: string, mappings:
   const scoped = candidates.some((mapping) => mapping.branchId === branchId)
     ? candidates.filter((mapping) => mapping.branchId === branchId)
     : candidates.filter((mapping) => mapping.branchId === null);
-  const matching = code ? scoped.filter((mapping) => normalizePosIdentity(mapping.sourceProductName) === name) : scoped;
+  const matching = code && explicitName ? scoped.filter((mapping) => normalizePosIdentity(mapping.sourceProductName) === explicitName) : scoped;
   const empty = (status: "UNMATCHED" | "AMBIGUOUS", issue: string): PosMappingResolution => ({
     status, scope: null, mappingId: null, menuItemId: null, menuItemVariantId: null,
     menuItemName: null, variantName: null, issue, version: null,

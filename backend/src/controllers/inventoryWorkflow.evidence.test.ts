@@ -35,7 +35,9 @@ describe("shrinkage supporting-record evidence", () => {
 
     const incidentCall = mocks.poolQuery.mock.calls.find(([sql]) => String(sql).includes("FROM incident_reports ir"));
     expect(incidentCall).toBeDefined();
-    expect(String(incidentCall![0])).toContain("ir.branch_id=$2 AND ir.inventory_item_id=$3");
+    expect(String(incidentCall![0])).toContain("JOIN incident_report_items iri ON iri.incident_report_id=ir.id");
+    expect(String(incidentCall![0])).toContain("ir.branch_id=$2 AND iri.inventory_item_id=$3");
+    expect(String(incidentCall![0])).toContain("incident_shrinkage_links");
     expect(String(incidentCall![0])).toContain("NOT ir.is_test_data");
     expect(String(incidentCall![0])).toContain("ir.status IN ('PENDING','VERIFIED')");
     expect(String(incidentCall![0])).toContain("AT TIME ZONE 'Asia/Manila'");

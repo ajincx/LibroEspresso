@@ -15,11 +15,45 @@ export interface InventoryOverviewItem {
   unitCost: number;
   reorderLevel: number;
   reorderDays: number;
+  reorderCategory?: "FAST" | "MEDIUM" | "SLOW";
   lastActualQuantity: number;
   lastCountAt: string | null;
   systemStock: number;
   inventoryValue: number;
   status: InventoryHealthStatus;
+}
+
+export type InventoryLedgerActivityType =
+  | "STARTING_STOCK"
+  | "BALANCE_BASELINE"
+  | "POS_CONSUMPTION"
+  | "RECEIPT"
+  | "APPROVED_INCREASE"
+  | "APPROVED_DECREASE"
+  | "PHYSICAL_COUNT";
+
+export interface InventoryLedgerActivity {
+  id: string;
+  occurredAt: string;
+  activityType: InventoryLedgerActivityType;
+  reference: string;
+  quantity: number;
+  quantityChange: number | null;
+  runningBalance: number;
+}
+
+export interface InventoryStockLedger {
+  branchId: string;
+  branchName: string;
+  inventoryItemId: string;
+  sku: string;
+  name: string;
+  unit: string;
+  startingStock: number | null;
+  operationalPosConsumption: number;
+  calculatedBalance: number;
+  currentExpectedStock: number;
+  activities: InventoryLedgerActivity[];
 }
 
 export type IncidentType =
@@ -33,6 +67,8 @@ export type IncidentType =
   | "UNAUTHORIZED_CONSUMPTION"
   | "OTHER";
 export type IncidentStatus = "PENDING" | "VERIFIED" | "REJECTED";
+export interface IncidentAffectedItem { id: string; inventoryItemId: string; sku: string; name: string; quantity: number; unit: string; }
+export interface IncidentShrinkageLink { id: string; incidentReportItemId: string; shrinkageReportId: string; shrinkageReportNo: string; }
 
 export interface IncidentReport {
   id: string;
@@ -45,6 +81,8 @@ export interface IncidentReport {
   productId: string | null;
   productCode: string | null;
   productName: string | null;
+  productVariantId?: string | null;
+  productVariantName?: string | null;
   shrinkageReportId: string | null;
   shrinkageReportNo: string | null;
   incidentType: IncidentType;
@@ -63,6 +101,8 @@ export interface IncidentReport {
   verifiedAt: string | null;
   managerComment: string | null;
   createdAt: string;
+  items?: IncidentAffectedItem[];
+  shrinkageLinks?: IncidentShrinkageLink[];
 }
 
 export type PurchaseOrderStatus =
@@ -83,6 +123,7 @@ export interface PurchaseOrderItem {
   unitCost: number;
   purchaseUom: string;
   conversionFactor: number;
+  latestPhysicalCountDate: string | null;
 }
 
 export interface PurchaseOrder {
@@ -118,5 +159,7 @@ export interface IncidentProductOption {
   productId: string;
   code: string;
   name: string;
+  variantId: string;
+  variantName: string;
   ingredientIds: string[];
 }

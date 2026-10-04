@@ -57,15 +57,15 @@ describe("official COGS and profitability calculations", () => {
 });
 
 describe("detected and verified shrinkage contributions", () => {
-  it("includes only positive variance in Detected Shortage Value", () => {
-    expect(detectedShortageContribution(75)).toBe(75);
-    expect(detectedShortageContribution(-75)).toBe(0);
+  it("includes only negative variance magnitude in Detected Shortage Value", () => {
+    expect(detectedShortageContribution(-75)).toBe(75);
+    expect(detectedShortageContribution(75)).toBe(0);
     expect(detectedShortageContribution(0)).toBe(0);
   });
 
   it("excludes unresolved shortages from Verified Shrinkage Cost", () => {
     expect(verifiedShrinkageContribution({
-      varianceValue: 75,
+      varianceValue: -75,
       status: "DETECTED",
       classification: null,
     })).toBe(0);
@@ -73,19 +73,19 @@ describe("detected and verified shrinkage contributions", () => {
 
   it("includes verified legitimate shrinkage", () => {
     expect(verifiedShrinkageContribution({
-      varianceValue: 75,
+      varianceValue: -75,
       status: "VERIFIED",
       classification: "SPOILAGE",
     })).toBe(75);
     expect(verifiedShrinkageContribution({
-      varianceValue: 50,
+      varianceValue: -50,
       status: "REVIEWED",
       classification: "PILFERAGE",
     })).toBe(50);
   });
 
   it.each(["SPILLAGE", "OVERPRODUCTION", "EXPIRATION", "UNAUTHORIZED_CONSUMPTION"] as const)("includes verified %s in Verified Shrinkage Cost", (classification) => {
-    expect(verifiedShrinkageContribution({ varianceValue: 40, status: "VERIFIED", classification })).toBe(40);
+    expect(verifiedShrinkageContribution({ varianceValue: -40, status: "VERIFIED", classification })).toBe(40);
   });
 
   it("excludes COUNT_ERROR and excess inventory from Verified Shrinkage Cost", () => {
@@ -95,7 +95,7 @@ describe("detected and verified shrinkage contributions", () => {
       classification: "COUNT_ERROR",
     })).toBe(0);
     expect(verifiedShrinkageContribution({
-      varianceValue: -75,
+      varianceValue: 75,
       status: "VERIFIED",
       classification: "WASTAGE",
     })).toBe(0);

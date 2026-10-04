@@ -46,7 +46,7 @@ export function IncidentReportDetailsModal({
   );
   const pendingReview = canReview && report.status === "PENDING";
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/55">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/55" onMouseDown={(event)=>{if(event.target===event.currentTarget)onClose();}}>
       <div role="dialog" aria-modal="true" aria-labelledby="incident-details-title" className="w-full sm:max-w-2xl max-h-[95vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5 sm:p-6">
         <div className="flex items-start justify-between gap-4 pb-5 border-b border-[var(--app-border)]">
           <div>
@@ -96,23 +96,12 @@ export function IncidentReportDetailsModal({
             label="Related Product"
             value={
               report.productName
-                ? `${report.productName}${report.productCode ? ` (${report.productCode})` : ""}`
+                ? `${report.productName}${report.productVariantName ? ` — ${report.productVariantName}` : ""}${report.productCode ? ` (${report.productCode})` : ""}`
                 : "Not related to a specific product"
             }
           />
-          <ReadOnlyField
-            label="Inventory Item"
-            value={report.inventoryItemName}
-          />
-          <ReadOnlyField label="SKU" value={report.sku} />
-          <ReadOnlyField
-            label="Quantity Affected"
-            value={`${report.quantity} ${report.unit}`}
-          />
-          <ReadOnlyField
-            label="Linked Variance Case"
-            value={report.shrinkageReportNo ?? "Not yet matched"}
-          />
+          <div className="sm:col-span-2"><div className="text-xs font-semibold text-[var(--app-text-muted)]">Affected Items</div><div className="mt-1.5 divide-y divide-[var(--app-border)] rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)]">{(report.items?.length?report.items:[{id:"legacy",inventoryItemId:report.inventoryItemId,sku:report.sku,name:report.inventoryItemName,quantity:report.quantity,unit:report.unit}]).map((item)=><div key={item.id} className="flex items-center justify-between gap-3 px-3.5 py-2.5 text-sm"><span><strong>{item.name}</strong> <span className="text-[var(--app-text-muted)]">({item.sku})</span></span><span className="font-semibold whitespace-nowrap">{item.quantity} {item.unit}</span></div>)}</div></div>
+          <ReadOnlyField label="Linked Variance Cases" value={report.shrinkageLinks?.length?report.shrinkageLinks.map((link)=>link.shrinkageReportNo).join(", "):report.shrinkageReportNo??"Not yet matched"} wide />
           <label className="block sm:col-span-2 text-xs font-semibold text-[var(--app-text-muted)]">
             <span>Reason / Incident Description</span>
             <div className={`${fieldClass} min-h-24 whitespace-pre-wrap`}>

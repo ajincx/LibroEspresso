@@ -144,7 +144,7 @@ export function summarizeSalesRows(rows: Record<string, unknown>[]): {
 
 export function getVarianceStatus(varianceQuantity: unknown) {
   const quantity = n(varianceQuantity);
-  return quantity > 0 ? "SHORTAGE" : quantity < 0 ? "EXCESS" : "MATCHED";
+  return quantity < 0 ? "SHORTAGE" : quantity > 0 ? "EXCESS" : "MATCHED";
 }
 
 export function summarizeShrinkageRows(rows: Record<string, unknown>[]) {
@@ -153,7 +153,7 @@ export function summarizeShrinkageRows(rows: Record<string, unknown>[]) {
     row.investigationStatus === "REVIEWED";
   return {
     detected: rows.reduce(
-      (sum, row) => sum + Math.max(n(row.varianceValue), 0),
+      (sum, row) => sum + Math.max(-n(row.varianceValue), 0),
       0,
     ),
     underInvestigation: rows
@@ -162,7 +162,7 @@ export function summarizeShrinkageRows(rows: Record<string, unknown>[]) {
           row.investigationStatus === "DETECTED" ||
           row.investigationStatus === "PENDING_REVIEW",
       )
-      .reduce((sum, row) => sum + Math.max(n(row.varianceValue), 0), 0),
+      .reduce((sum, row) => sum + Math.max(-n(row.varianceValue), 0), 0),
     verified: rows
       .filter(
         (row) =>
@@ -173,12 +173,12 @@ export function summarizeShrinkageRows(rows: Record<string, unknown>[]) {
               : null,
           ),
       )
-      .reduce((sum, row) => sum + Math.max(n(row.varianceValue), 0), 0),
+      .reduce((sum, row) => sum + Math.max(-n(row.varianceValue), 0), 0),
     correction: rows
       .filter(
         (row) => isReviewed(row) && row.finalClassification === "COUNT_ERROR",
       )
-      .reduce((sum, row) => sum + Math.max(n(row.varianceValue), 0), 0),
+      .reduce((sum, row) => sum + Math.max(-n(row.varianceValue), 0), 0),
     verifiedCases: rows.filter((row) => n(row.verifiedShrinkageCost) > 0)
       .length,
   };
@@ -423,8 +423,11 @@ export async function buildReportDataset(
   if (selected.has("INVENTORY_VARIANCE")) {
     const result = await pool.query(
       `SELECT ic.count_date::text "countDate",b.name branch,ii.name ingredient,ici.unit,
-      ici.expected_quantity::float8 "expectedQuantity",ici.actual_quantity::float8 "actualQuantity",ici.variance_quantity::float8 "varianceQuantity",
-      ici.variance_value::float8 "varianceValue",CASE WHEN ici.expected_quantity>0 THEN (ici.variance_quantity/ici.expected_quantity*100)::float8 ELSE NULL END "variancePercentage"
+      ici.expected_quantity::float8 "expectedQuantity",ici.actual_quantity::float8 "actualQuantity",
+      (ici.actual_quantity-ici.expected_quantity)::float8 "varianceQuantity",
+      CASE WHEN ici.actual_quantity>ici.expected_quantity THEN abs(ici.variance_value)
+           WHEN ici.actual_quantity<ici.expected_quantity THEN -abs(ici.variance_value) ELSE 0 END::float8 "varianceValue",
+      CASE WHEN ici.expected_quantity>0 THEN ((ici.actual_quantity-ici.expected_quantity)/ici.expected_quantity*100)::float8 ELSE NULL END "variancePercentage"
       FROM inventory_counts ic JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id JOIN branches b ON b.id=ic.branch_id JOIN inventory_items ii ON ii.id=ici.inventory_item_id
       WHERE NOT ic.is_test_data AND ic.count_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR ic.branch_id=$3::uuid) AND ($4::uuid IS NULL OR ii.id=$4::uuid)
       ORDER BY ic.count_date DESC,abs(ici.variance_value) DESC LIMIT 5001`,
@@ -451,7 +454,7 @@ export async function buildReportDataset(
         key: "detected",
         label: "Detected Shortage Value",
         value: rows.reduce(
-          (sum, row) => sum + Math.max(n(row.varianceValue), 0),
+          (sum, row) => sum + Math.max(-n(row.varianceValue), 0),
           0,
         ),
         type: "currency",
@@ -487,15 +490,17 @@ export async function buildReportDataset(
         rows,
         request,
         forExport,
-        "Positive variance is shortage; negative variance is excess. Exported signs are preserved.",
+        "Variance is Actual minus Expected. Negative variance is shortage; positive variance is excess.",
       ),
     );
   }
 
   if (selected.has("SHRINKAGE")) {
     const result = await pool.query(
-      `SELECT coalesce(sr.investigated_at,sr.detected_at) "investigationDate",b.name branch,ii.name ingredient,sr.variance_value::float8 "varianceValue",sr.status::text "investigationStatus",
-      sr.classification::text "finalClassification",CASE WHEN sr.status IN ('VERIFIED','REVIEWED') AND sr.classification IN (${VERIFIED_SHRINKAGE_CLASSIFICATIONS_SQL}) THEN greatest(sr.variance_value,0)::float8 ELSE 0 END "verifiedShrinkageCost",
+      `SELECT coalesce(sr.investigated_at,sr.detected_at) "investigationDate",b.name branch,ii.name ingredient,
+      CASE WHEN sr.actual_quantity>sr.expected_quantity THEN abs(sr.variance_value)
+           WHEN sr.actual_quantity<sr.expected_quantity THEN -abs(sr.variance_value) ELSE 0 END::float8 "varianceValue",sr.status::text "investigationStatus",
+      sr.classification::text "finalClassification",CASE WHEN sr.status IN ('VERIFIED','REVIEWED') AND sr.classification IN (${VERIFIED_SHRINKAGE_CLASSIFICATIONS_SQL}) AND sr.actual_quantity<sr.expected_quantity THEN abs(sr.variance_value)::float8 ELSE 0 END "verifiedShrinkageCost",
       CASE WHEN sr.status IN ('VERIFIED','REVIEWED') THEN concat(mu.first_name,' ',mu.last_name) ELSE NULL END "branchManagerVerification",
       CASE WHEN sr.status='REVIEWED' THEN 'REVIEWED' WHEN sr.status='VERIFIED' THEN 'AWAITING OWNER REVIEW' ELSE 'NOT YET SUBMITTED' END "ownerReviewState"
       FROM shrinkage_reports sr JOIN branches b ON b.id=sr.branch_id JOIN inventory_items ii ON ii.id=sr.inventory_item_id LEFT JOIN users mu ON mu.id=sr.submitted_by

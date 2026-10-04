@@ -8,7 +8,7 @@ import { inventoryWorkflowService } from "../../services/inventoryWorkflow.servi
 import { masterDataService } from "../../services/masterData.service";
 import type { VarianceRecord } from "../../types/inventoryWorkflow";
 import type { Branch } from "../../types/masterData";
-import { CalendarDateField, Select, SearchInput, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, TableLoadingRow, StatusBadge, Pagination } from "../../components/ModuleUi";
+import { CalendarDateField, Select, SearchInput, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, TableLoadingRow, StatusBadge } from "../../components/ModuleUi";
 import { formatAppDate } from "../../utils/appPreferences";
 import { classificationLabel } from "../../utils/shrinkageTaxonomy";
 import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
@@ -25,11 +25,11 @@ type DisplayStatus =
   | "PENDING_REVIEW"
   | "REVIEWED";
 
-function displayStatus(record: VarianceRecord): DisplayStatus {
+export function displayStatus(record: VarianceRecord): DisplayStatus {
   if (record.anomalyStatus) return record.anomalyStatus;
   const v = record.varianceQuantity;
   if (Math.abs(v) <= 0.0001) return "MATCHED";
-  if (v > 0) return "SHORTAGE_WITHIN_TOLERANCE";
+  if (v < 0) return "SHORTAGE_WITHIN_TOLERANCE";
   return "EXCESS_WITHIN_TOLERANCE";
 }
 
@@ -66,8 +66,8 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
 
   const metrics = useMemo(() => ({
     net: records.reduce((sum, record) => sum + record.varianceValue, 0),
-    shortage: records.filter((record) => record.varianceValue > 0).reduce((sum, record) => sum + record.varianceValue, 0),
-    excess: records.filter((record) => record.varianceValue < 0).reduce((sum, record) => sum + Math.abs(record.varianceValue), 0),
+    shortage: records.filter((record) => record.varianceValue < 0).reduce((sum, record) => sum + Math.abs(record.varianceValue), 0),
+    excess: records.filter((record) => record.varianceValue > 0).reduce((sum, record) => sum + record.varianceValue, 0),
     investigate: records.filter((record) => record.anomalyStatus === "DETECTED").length,
   }), [records]);
 
@@ -80,7 +80,7 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
   const voidRecord=async()=>{if(!voidTarget)return;setControlledBusy(true);try{await controlledActionService.voidVariance(voidTarget.countItemId,controlledValue);toast.success("Variance voided; the original count history was preserved");setVoidTarget(null);setControlledValue({reason:"",verificationPin:""});await load();}catch(reason){toast.error(reason instanceof Error?reason.message:"Unable to void variance");}finally{setControlledBusy(false);}};
 
   return <div className="p-4 md:p-6 space-y-5">
-    <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4"><div><h1 className="text-xl font-bold">Variance &amp; Discrepancies</h1><p className="text-sm mt-1" style={{ color: "var(--app-text-muted)" }}>System-calculated comparison of expected inventory and submitted physical counts (Expected − Actual). Positive values indicate shortages.</p></div><div className="flex gap-2 flex-wrap">
+    <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4"><div><h1 className="text-xl font-bold">Variance &amp; Discrepancies</h1><p className="text-sm mt-1" style={{ color: "var(--app-text-muted)" }}>System-calculated comparison of submitted physical counts and expected inventory (Actual − Expected). Negative values indicate shortages.</p></div><div className="flex gap-2 flex-wrap">
       <CalendarDateField label="Count date" value={countDate} onChange={setCountDate}/>
       {owner && <Select value={branchId} onChange={setBranchId} options={[{ value: "", label: "All Branches" }, ...branches.map((branch) => ({ value: branch.id, label: branch.name }))]}/>}
       <button onClick={() => void load()} className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border text-sm font-semibold"><RefreshCw size={14} />Refresh</button>
@@ -97,7 +97,7 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
 
     <TableCard
       title="Variance & Discrepancy Records"
-      subtitle="System-calculated variance between expected inventory and actual physical counts (Expected − Actual)"
+      subtitle="System-calculated variance between actual physical counts and expected inventory (Actual − Expected)"
       badge={
         filtered.length > 0 ? (
           <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-0.5 rounded-full text-rose-700 bg-rose-50 border border-rose-200">
@@ -171,9 +171,9 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
                     className="font-bold"
                     style={{
                       color:
-                        record.varianceQuantity > 0
+                        record.varianceQuantity < 0
                           ? "var(--app-danger)"
-                          : record.varianceQuantity < 0
+                          : record.varianceQuantity > 0
                             ? "var(--app-info)"
                             : "var(--app-text-muted)",
                     }}
@@ -189,9 +189,9 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
                       color:
                         record.variancePercentage === null
                           ? "var(--app-text-muted)"
-                          : record.variancePercentage > 0
+                          : record.variancePercentage < 0
                             ? "var(--app-danger)"
-                            : record.variancePercentage < 0
+                            : record.variancePercentage > 0
                               ? "var(--app-info)"
                               : "var(--app-text-muted)",
                     }}
@@ -226,7 +226,6 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
           )}
         </tbody>
       </TableWrapper>
-      <Pagination total={filtered.length} page={1} perPage={Math.max(filtered.length, 1)} />
     </TableCard>
     {voidTarget&&<ControlledActionDialog title={`Void ${voidTarget.itemName} variance?`} description="The variance and linked anomaly are retained for audit but removed from active discrepancy and shrinkage views. This does not alter the submitted physical count values." confirmLabel="Void Variance" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setVoidTarget(null)} onConfirm={()=>void voidRecord()}/>}
   </div>;

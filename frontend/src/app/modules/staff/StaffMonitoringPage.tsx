@@ -13,7 +13,6 @@ import {
   C,
   CalendarDateField,
   KPICard,
-  Pagination,
   SearchInput,
   SectionHeader,
   Select,
@@ -316,7 +315,6 @@ export function StaffMonitoringPage({
               ))}
           </tbody>
         </TableWrapper>
-        <Pagination total={visible.length} page={1} perPage={Math.max(visible.length, 1)} />
       </TableCard>
       <p className="text-center text-xs text-[var(--app-text-faint)]">
         Incident reports support inventory reconciliation and do not change

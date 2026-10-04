@@ -4,6 +4,49 @@ import { inventoryWorkflowService } from "./inventoryWorkflow.service";
 
 afterEach(() => vi.restoreAllMocks());
 
+describe("physical-count baseline availability", () => {
+  it("preserves valid items and the non-countable No Baseline list", async () => {
+    const data = {
+      branchId: "branch-1",
+      countDate: "2026-10-03",
+      items: [{ inventoryItemId: "espresso", sku: "RM-002" }],
+      unavailableItems: [{
+        inventoryItemId: "test-oat",
+        sku: "ING-00073",
+        itemName: "TEST_Oat Milk",
+        unit: "ml",
+        availability: "NO_BASELINE",
+      }],
+    };
+    const get = vi.spyOn(api, "get").mockResolvedValue({
+      data: { success: true, data },
+    });
+
+    await expect(inventoryWorkflowService.expected("2026-10-03", "branch-1"))
+      .resolves.toBe(data);
+    expect(get).toHaveBeenCalledWith("/inventory-counts/expected", {
+      params: { countDate: "2026-10-03", branchId: "branch-1" },
+    });
+  });
+
+  it("submits the entered quantity and unit without frontend canonicalization", async () => {
+    const post = vi.spyOn(api, "post").mockResolvedValue({
+      data: { success: true, data: { count: { id: "count-1" } } },
+    });
+    const items = [{
+      inventoryItemId: "espresso",
+      quantity: 3.864,
+      enteredUnit: "kg" as const,
+    }];
+
+    await inventoryWorkflowService.submitCount("2026-10-03", items);
+    expect(post).toHaveBeenCalledWith("/inventory-counts", {
+      countDate: "2026-10-03",
+      items,
+    });
+  });
+});
+
 describe("POS preview and confirmation API workflow", () => {
   it("sends the untouched CSV to the backend preview endpoint", async () => {
     const csvText = 'product_name,quantity,price,date\n"Iced Latte, Large",2,190,2026-09-08';
@@ -16,11 +59,13 @@ describe("POS preview and confirmation API workflow", () => {
       inventoryWorkflowService.previewPosSales({
         sourceFilename: "renamed-sales.csv",
         csvText,
+        posSourceId: "source-1",
       }),
     ).resolves.toBe(preview);
     expect(post).toHaveBeenCalledWith("/pos-sales/preview", {
       sourceFilename: "renamed-sales.csv",
       csvText,
+      posSourceId: "source-1",
     });
   });
 
@@ -29,6 +74,8 @@ describe("POS preview and confirmation API workflow", () => {
       sourceFilename: "sales.csv",
       csvText: "product_code,quantity,price,date\nLATTE-L,1,190,2026-09-08",
       expectedContentHash: "b".repeat(64),
+      expectedResolutionFingerprint: "c".repeat(64),
+      posSourceId: "source-1",
     };
     const imported = { importId: "import-1", rowsImported: 1 };
     const post = vi.spyOn(api, "post").mockResolvedValue({
@@ -43,10 +90,11 @@ describe("POS preview and confirmation API workflow", () => {
     const file = new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], "renamed.xlsx");
     const preview = { contentHash: "c".repeat(64) };
     const post = vi.spyOn(api, "post").mockResolvedValue({ data: { success: true, data: { preview } } });
-    await expect(inventoryWorkflowService.previewPosSales({ sourceFilename: file.name, file })).resolves.toBe(preview);
+    await expect(inventoryWorkflowService.previewPosSales({ sourceFilename: file.name, file, posSourceId: "source-1" })).resolves.toBe(preview);
     expect(post).toHaveBeenCalledWith("/pos-sales/preview", file, { headers: {
       "Content-Type": "application/octet-stream",
       "X-POS-Filename": "renamed.xlsx",
+      "X-POS-Source-Id": "source-1",
     } });
   });
 
@@ -55,11 +103,13 @@ describe("POS preview and confirmation API workflow", () => {
     const expectedContentHash = "d".repeat(64);
     const imported = { importId: "import-2", rowsImported: 2 };
     const post = vi.spyOn(api, "post").mockResolvedValue({ data: { success: true, data: imported } });
-    await expect(inventoryWorkflowService.importPosSales({ sourceFilename: file.name, file, expectedContentHash })).resolves.toBe(imported);
+    await expect(inventoryWorkflowService.importPosSales({ sourceFilename: file.name, file, posSourceId: "source-1", expectedContentHash, expectedResolutionFingerprint: "e".repeat(64) })).resolves.toBe(imported);
     expect(post).toHaveBeenCalledWith("/pos-sales/import", file, { headers: {
       "Content-Type": "application/octet-stream",
       "X-POS-Filename": "sales.xls",
+      "X-POS-Source-Id": "source-1",
       "X-POS-Content-Hash": expectedContentHash,
+      "X-POS-Resolution-Fingerprint": "e".repeat(64),
     } });
   });
 
@@ -125,5 +175,16 @@ describe("notification API workflow", () => {
     await inventoryWorkflowService.markAllNotificationsRead();
     expect(patch).toHaveBeenCalledOnce();
     expect(patch).toHaveBeenCalledWith("/notifications/read-all");
+  });
+});
+
+describe("opening inventory baseline API workflow", () => {
+  it("loads centralized baselines for the Owner and supports an explicit branch scope", async () => {
+    const baselines = [{ id: "baseline-1", branchName: "Gulod / Main Branch", items: [] }];
+    const get = vi.spyOn(api, "get").mockResolvedValue({ data: { success: true, data: { baselines } } });
+    await expect(inventoryWorkflowService.openingBaselines()).resolves.toBe(baselines);
+    expect(get).toHaveBeenLastCalledWith("/inventory-opening-baselines", { params: { branchId: undefined } });
+    await inventoryWorkflowService.openingBaselines("branch-1");
+    expect(get).toHaveBeenLastCalledWith("/inventory-opening-baselines", { params: { branchId: "branch-1" } });
   });
 });

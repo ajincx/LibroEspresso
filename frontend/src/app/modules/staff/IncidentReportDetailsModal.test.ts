@@ -13,4 +13,14 @@ describe("incident report details",()=>{
     expect(markup).toContain("Packaging issue");
     expect(markup).toContain("The packaging was defective.");
   });
+  it("shows every affected item while keeping one Manager review workflow",()=>{
+    const multi={...report,items:[
+      {id:"child-1",inventoryItemId:"syrup",sku:"ING-1",name:"Strawberry Syrup",quantity:500,unit:"ml"},
+      {id:"child-2",inventoryItemId:"milk",sku:"RM-1",name:"Whole Milk",quantity:1000,unit:"ml"},
+      {id:"child-3",inventoryItemId:"salt",sku:"ING-2",name:"Salt",quantity:50,unit:"g"},
+    ]};
+    const markup=renderToStaticMarkup(React.createElement(IncidentReportDetailsModal,{report:multi,canReview:true,onClose:()=>undefined,onReview:()=>undefined}));
+    expect(markup).toContain("Strawberry Syrup"); expect(markup).toContain("Whole Milk"); expect(markup).toContain("Salt");
+    expect((markup.match(/Verify Report/g)??[])).toHaveLength(1);
+  });
 });

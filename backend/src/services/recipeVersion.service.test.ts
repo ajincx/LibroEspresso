@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createIngredientUsageSnapshots, isEffectiveOn, periodsOverlap, resolveEffectiveRecipe, saveRecipeDefinition, shouldCreateNewRecipeVersion } from "./recipeVersion.service.js";
+import { computeExpectedStock } from "./inventoryCalculation.service.js";
 
 const version = (id: string, number: number, from: string, to: string | null) => ({ id, version: number, effectiveFrom: from, effectiveTo: to });
 
@@ -27,16 +28,18 @@ const recipeInput={recipeId:"v1",menuItemId:"menu-1",menuItemVariantId:"small-1"
 describe("recipe version persistence",()=>{
   it("edits an unused recipe in place",async()=>{
     const queries:{sql:string;values?:unknown[]}[]=[];
-    const client={query:vi.fn(async(statement:unknown,values?:unknown[])=>{const sql=String(statement);queries.push({sql,values});if(sql.includes("FROM menu_item_variants"))return{rows:[{id:"small-1"}]};if(sql.includes('menu_item_id "menuItemId"'))return{rows:[{id:"v1",menuItemId:"menu-1",version:1,effectiveFrom:"2026-09-01",effectiveTo:null}]};if(sql.includes("pos_sale_ingredient_usage"))return{rows:[]};return{rows:[]};})};
+    const client={query:vi.fn(async(statement:unknown,values?:unknown[])=>{const sql=String(statement);queries.push({sql,values});if(sql.includes("FROM inventory_items"))return{rows:[{id:"beans",name:"Beans",unit:"g"}]};if(sql.includes("FROM menu_item_variants"))return{rows:[{id:"small-1"}]};if(sql.includes('menu_item_id "menuItemId"'))return{rows:[{id:"v1",menuItemId:"menu-1",version:1,effectiveFrom:"2026-09-01",effectiveTo:null}]};if(sql.includes("pos_sale_ingredient_usage"))return{rows:[]};return{rows:[]};})};
     const result=await saveRecipeDefinition(client as never,recipeInput);
     expect(result).toEqual({recipeId:"v1",version:1,createdVersion:false});
     expect(queries.some(({sql})=>sql.startsWith("UPDATE recipes SET name="))).toBe(true);
     expect(queries.some(({sql})=>sql.includes("INSERT INTO recipes"))).toBe(false);
+    expect(queries.find(({sql})=>sql.includes("DELETE FROM recipe_items"))?.values).toEqual(["v1"]);
+    expect(queries.some(({sql})=>sql.includes("DELETE FROM inventory_items"))).toBe(false);
   });
 
   it("creates a dated version without changing old recipe items after historical use",async()=>{
     const queries:{sql:string;values?:unknown[]}[]=[];
-    const client={query:vi.fn(async(statement:unknown,values?:unknown[])=>{const sql=String(statement);queries.push({sql,values});if(sql.includes("FROM menu_item_variants"))return{rows:[{id:"small-1"}]};if(sql.includes('menu_item_id "menuItemId"'))return{rows:[{id:"v1",menuItemId:"menu-1",version:1,effectiveFrom:"-infinity",effectiveTo:null}]};if(sql.includes("pos_sale_ingredient_usage"))return{rows:[{exists:1}]};if(sql.includes("id<>$2"))return{rows:[]};if(sql.includes("max(version)"))return{rows:[{version:2}]};if(sql.includes("INSERT INTO recipes"))return{rows:[{id:"v2"}]};return{rows:[]};})};
+    const client={query:vi.fn(async(statement:unknown,values?:unknown[])=>{const sql=String(statement);queries.push({sql,values});if(sql.includes("FROM inventory_items"))return{rows:[{id:"beans",name:"Beans",unit:"g"}]};if(sql.includes("FROM menu_item_variants"))return{rows:[{id:"small-1"}]};if(sql.includes('menu_item_id "menuItemId"'))return{rows:[{id:"v1",menuItemId:"menu-1",version:1,effectiveFrom:"-infinity",effectiveTo:null}]};if(sql.includes("pos_sale_ingredient_usage"))return{rows:[{exists:1}]};if(sql.includes("id<>$2"))return{rows:[]};if(sql.includes("max(version)"))return{rows:[{version:2}]};if(sql.includes("INSERT INTO recipes"))return{rows:[{id:"v2"}]};return{rows:[]};})};
     const result=await saveRecipeDefinition(client as never,recipeInput);
     expect(result).toEqual({recipeId:"v2",version:2,createdVersion:true});
     expect(queries.find(({sql})=>sql.startsWith("UPDATE recipes SET effective_to"))?.values).toEqual(["v1","2026-09-10"]);
@@ -45,13 +48,30 @@ describe("recipe version persistence",()=>{
   });
 
   it("rejects an overlapping effective version",async()=>{
-    const client={query:vi.fn(async(statement:unknown)=>{const sql=String(statement);if(sql.includes("FROM menu_item_variants"))return{rows:[{id:"small-1"}]};if(sql.includes('menu_item_id "menuItemId"'))return{rows:[{id:"v1",menuItemId:"menu-1",version:1,effectiveFrom:"-infinity",effectiveTo:null}]};if(sql.includes("pos_sale_ingredient_usage"))return{rows:[{exists:1}]};if(sql.includes("id<>$2"))return{rows:[{id:"future"}]};return{rows:[]};})};
+    const client={query:vi.fn(async(statement:unknown)=>{const sql=String(statement);if(sql.includes("FROM inventory_items"))return{rows:[{id:"beans",name:"Beans",unit:"g"}]};if(sql.includes("FROM menu_item_variants"))return{rows:[{id:"small-1"}]};if(sql.includes('menu_item_id "menuItemId"'))return{rows:[{id:"v1",menuItemId:"menu-1",version:1,effectiveFrom:"-infinity",effectiveTo:null}]};if(sql.includes("pos_sale_ingredient_usage"))return{rows:[{exists:1}]};if(sql.includes("id<>$2"))return{rows:[{id:"future"}]};return{rows:[]};})};
     await expect(saveRecipeDefinition(client as never,recipeInput)).rejects.toMatchObject({code:"RECIPE_PERIOD_OVERLAP"});
   });
 
   it("rejects a variant that does not belong to the parent product",async()=>{
-    const client={query:vi.fn(async()=>({rows:[]}))};
+    const client={query:vi.fn(async(statement:unknown)=>String(statement).includes("FROM inventory_items")?{rows:[{id:"beans",name:"Beans",unit:"g"}]}:{rows:[]})};
     await expect(saveRecipeDefinition(client as never,recipeInput)).rejects.toMatchObject({code:"RECIPE_VARIANT_INVALID"});
+  });
+
+  it.each([["g","kg"],["kg","g"],["ml","L"],["L","ml"],["pc","pc"]])("accepts compatible recipe unit %s for inventory unit %s",async(recipeUnit,inventoryUnit)=>{
+    const input={...recipeInput,recipeId:undefined,items:[{inventoryItemId:"beans",quantity:0.5,unit:recipeUnit}]};
+    const client={query:vi.fn(async(statement:unknown)=>{const sql=String(statement);if(sql.includes("FROM inventory_items"))return{rows:[{id:"beans",name:"Beans",unit:inventoryUnit}]};if(sql.includes("FROM menu_item_variants"))return{rows:[{id:"small-1"}]};if(sql.includes("SELECT id FROM recipes"))return{rows:[]};if(sql.includes("INSERT INTO recipes"))return{rows:[{id:"v1"}]};return{rows:[]};})};
+    await expect(saveRecipeDefinition(client as never,input)).resolves.toMatchObject({recipeId:"v1"});
+  });
+
+  it.each([["g","ml"],["kg","L"],["ml","pc"]])("rejects incompatible recipe unit %s for inventory unit %s",async(recipeUnit,inventoryUnit)=>{
+    const client={query:vi.fn(async(statement:unknown)=>String(statement).includes("FROM inventory_items")?{rows:[{id:"beans",name:"Beans",unit:inventoryUnit}]}:{rows:[]})};
+    await expect(saveRecipeDefinition(client as never,{...recipeInput,items:[{inventoryItemId:"beans",quantity:1.25,unit:recipeUnit}]})).rejects.toMatchObject({code:"RECIPE_UNIT_MISMATCH"});
+  });
+
+  it("rejects unsupported units and zero quantities before persistence",async()=>{
+    const client={query:vi.fn(async(statement:unknown)=>String(statement).includes("FROM inventory_items")?{rows:[{id:"beans",name:"Beans",unit:"kg"}]}:{rows:[]})};
+    await expect(saveRecipeDefinition(client as never,{...recipeInput,items:[{inventoryItemId:"beans",quantity:1,unit:"bag"}]})).rejects.toMatchObject({code:"RECIPE_UNIT_UNSUPPORTED"});
+    await expect(saveRecipeDefinition(client as never,{...recipeInput,items:[{inventoryItemId:"beans",quantity:0,unit:"g"}]})).rejects.toMatchObject({code:"RECIPE_QUANTITY_INVALID"});
   });
 });
 
@@ -65,5 +85,16 @@ describe("sale-time recipe snapshots",()=>{
     expect(insert?.sql).toContain("recipe_version_id");
     expect(queries[0]?.sql).toContain("candidate.effective_from<=psi.business_date");
     expect(queries[0]?.sql).toContain("candidate.menu_item_variant_id=psi.menu_item_variant_id");
+  });
+
+  it("verifies the controlled 5-sale espresso conversion and inventory calculation",async()=>{
+    const queries:{sql:string;values?:unknown[]}[]=[];
+    const client={query:vi.fn(async(statement:unknown,values?:unknown[])=>{const sql=String(statement);queries.push({sql,values});if(sql.includes('psi.id "saleItemId"'))return{rows:[{saleItemId:"test-sale",quantitySold:5,recipeVersionId:"test-v1",yieldQuantity:1,inventoryItemId:"test-beans",recipeQuantity:5,recipeUnit:"g",inventoryUnit:"kg",unitCost:800}]};return{rows:[]};})};
+    await createIngredientUsageSnapshots(client as never,"test-import");
+    const usage=queries.find(({sql})=>sql.includes("INSERT INTO pos_sale_ingredient_usage"))?.values?.[2] as number[];
+    expect(usage).toEqual([0.025]);
+    expect(computeExpectedStock(3,0,usage[0]!)).toBeCloseTo(2.975,8);
+    expect(usage[0]! * 800).toBeCloseTo(20,8);
+    expect(queries.some(({sql})=>sql.includes("INSERT INTO inventory_movements"))).toBe(false);
   });
 });

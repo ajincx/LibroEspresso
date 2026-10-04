@@ -72,6 +72,30 @@ describe("access controls", () => {
     expect(response.status).toBe(403);
   });
 
+  it("keeps UAT opening-inventory creation Owner-only", async () => {
+    const manager = await request(app)
+      .post("/api/inventory-opening-baselines")
+      .set("Cookie", session({ id: "manager", role: "BRANCH_MANAGER", branchId: "00000000-0000-4000-8000-000000000002" }))
+      .send({});
+    const owner = await request(app)
+      .post("/api/inventory-opening-baselines")
+      .set("Cookie", session({ id: "owner", role: "OWNER", branchId: null }))
+      .send({});
+    expect(manager.status).toBe(403);
+    expect(owner.status).toBe(422);
+  });
+
+  it("keeps UAT/Test physical-count history and classification Owner-only", async () => {
+    const cookie = session({ id: "manager", role: "BRANCH_MANAGER", branchId: "00000000-0000-4000-8000-000000000002" });
+    const history = await request(app).get("/api/inventory-counts/uat-history").set("Cookie", cookie);
+    const classification = await request(app)
+      .post("/api/inventory-counts/9c084a0a-2283-4d4a-b333-b985a3126ff3/classify-uat-test")
+      .set("Cookie", cookie)
+      .send({ reason: "Known UAT placeholder count", verificationPin: "12345", confirmed: true });
+    expect(history.status).toBe(403);
+    expect(classification.status).toBe(403);
+  });
+
   it("allows Manager branch ingredient creation while validating the submitted fields", async () => {
     const response = await request(app)
       .post("/api/inventory-items")
@@ -83,7 +107,7 @@ describe("access controls", () => {
     expect(response.status).toBe(422);
   });
 
-  it("keeps branch inventory settings writable by Managers but read-only for the Owner", async () => {
+  it("keeps branch reorder settings writable by the Owner and read-only for Managers", async () => {
     const path =
       "/api/inventory-overview/00000000-0000-0000-0000-000000000001/settings";
     const manager = await request(app)
@@ -101,8 +125,8 @@ describe("access controls", () => {
       .patch(path)
       .set("Cookie", session({ id: "owner", role: "OWNER", branchId: null }))
       .send({});
-    expect(manager.status).toBe(422);
-    expect(owner.status).toBe(403);
+    expect(manager.status).toBe(403);
+    expect(owner.status).toBe(422);
   });
 
   it("allows an Owner into global product creation validation", async () => {
@@ -122,6 +146,22 @@ describe("access controls", () => {
       )
       .send({});
     expect(response.status).toBe(403);
+  });
+
+  it("keeps controlled test-product retirement Owner-only", async () => {
+    const path = "/api/menu-items/00000000-0000-4000-8000-000000000073/retire-test-data";
+    for (const identity of [
+      { id: "manager", role: "BRANCH_MANAGER", branchId: "00000000-0000-4000-8000-000000000002" },
+      { id: "staff", role: "STAFF", branchId: "00000000-0000-4000-8000-000000000002" },
+    ]) {
+      const denied = await request(app).post(path).set("Cookie", session(identity)).send({});
+      expect(denied.status).toBe(403);
+    }
+    const owner = await request(app)
+      .post(path)
+      .set("Cookie", session({ id: "owner", role: "OWNER", branchId: null }))
+      .send({});
+    expect(owner.status).toBe(422);
   });
 
   it("allows only Managers into branch product status validation", async () => {
@@ -205,14 +245,12 @@ describe("access controls", () => {
   });
 
   it("blocks a Manager from managing menu categories", async () => {
-    const response = await request(app)
-      .post("/api/menu-categories")
-      .set(
-        "Cookie",
-        session({ id: "manager", role: "BRANCH_MANAGER", branchId: "lipa" }),
-      )
-      .send({});
-    expect(response.status).toBe(403);
+    const cookie=session({ id: "manager", role: "BRANCH_MANAGER", branchId: "lipa" });
+    const responses=await Promise.all([
+      request(app).post("/api/menu-categories").set("Cookie",cookie).send({}),
+      request(app).patch("/api/menu-categories/00000000-0000-4000-8000-000000000045").set("Cookie",cookie).send({name:"Blocked"}),
+    ]);
+    expect(responses.map((response)=>response.status)).toEqual([403,403]);
   });
 
   it("keeps POS source and mapping administration Owner-only", async () => {
@@ -303,6 +341,7 @@ describe("access controls", () => {
       .set("Cookie", manager)
       .set("Content-Type", "application/octet-stream")
       .set("X-POS-Filename", "sales.xlsx")
+      .set("X-POS-Source-Id", "00000000-0000-4000-8000-000000000030")
       .send(Buffer.from("not a workbook"));
     const ownerResponse = await request(app)
       .post("/api/pos-sales/preview")
@@ -448,8 +487,9 @@ describe("access controls", () => {
         }),
       )
       .send({});
-    expect([owner.status, manager.status, staff.status]).toEqual([
-      422, 422, 403,
+    const anonymous = await request(app).post(path).send({});
+    expect([owner.status, manager.status, staff.status, anonymous.status]).toEqual([
+      422, 422, 403, 401,
     ]);
   });
 

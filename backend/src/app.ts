@@ -16,6 +16,7 @@ import {
 import { userRouter } from "./routes/user.routes.js";
 import {
   inventoryMovementRouter,
+  openingInventoryRouter,
   inventoryWorkflowRouter,
   notificationRouter,
   posSalesRouter,
@@ -66,6 +67,7 @@ app.use("/api/recipes", recipeRouter);
 app.use("/api/pos-sales", posSalesRouter);
 app.use("/api/inventory-counts", inventoryWorkflowRouter);
 app.use("/api/inventory-movements", inventoryMovementRouter);
+app.use("/api/inventory-opening-baselines", openingInventoryRouter);
 app.use("/api/shrinkage-reports", shrinkageReportRouter);
 app.use("/api/notifications", notificationRouter);
 app.use("/api/profile", accountRouter);

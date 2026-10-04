@@ -3,7 +3,7 @@ import { X } from "lucide-react";
 import { toast } from "sonner";
 import { operationsService } from "../services/operations.service";
 import type { IncidentReport, IncidentType, InventoryOverviewItem } from "../types/operations";
-import { Btn, CalendarDateTimeField, Select } from "./ModuleUi";
+import { Btn, CalendarDateTimeField, isModalBackdropEvent, Select } from "./ModuleUi";
 import { businessDateTime } from "../utils/businessDate";
 import { incidentTypeOptions } from "../utils/shrinkageTaxonomy";
 
@@ -50,7 +50,7 @@ export function LossRecordModal({ items = [], onClose, onSaved }: {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.45)" }}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.45)" }} onMouseDown={(event)=>{if(isModalBackdropEvent(event))onClose();}}>
       <div role="dialog" aria-modal="true" aria-labelledby="loss-record-title" className="rounded-2xl shadow-2xl w-full max-w-xl p-6 border" style={{ background: "var(--app-surface)", borderColor: "var(--app-border)" }}>
         <div className="flex items-start justify-between mb-5">
           <div><h3 id="loss-record-title" className="font-bold text-lg">Record Loss / Incident</h3><p className="text-xs mt-1 text-[var(--app-text-muted)]">This report supports variance investigation and does not directly deduct inventory.</p></div>

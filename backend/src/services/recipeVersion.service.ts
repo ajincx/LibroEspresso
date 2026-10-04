@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { AppError } from "../utils/appError.js";
-import { convertQuantity, normalizeUnit } from "./unitConversion.service.js";
+import { areUnitsCompatible, convertQuantity, normalizeUnit, UnitConversionError } from "./unitConversion.service.js";
 
 export type RecipePeriod = {
   id: string;
@@ -46,6 +46,36 @@ type SaveRecipeInput = {
   createdBy: string;
 };
 
+async function validateRecipeItemUnits(client: Pick<PoolClient, "query">, items: RecipeItemInput[]) {
+  const inventoryItemIds = [...new Set(items.map((item) => item.inventoryItemId))];
+  const ingredients = await client.query<{ id: string; name: string; unit: string }>(
+    `SELECT id,name,unit FROM inventory_items WHERE id=ANY($1::uuid[]) AND status='ACTIVE'`,
+    [inventoryItemIds],
+  );
+  if (ingredients.rows.length !== inventoryItemIds.length) {
+    throw new AppError(422, "RECIPE_INGREDIENT_INVALID", "One or more inventory ingredients are missing or inactive");
+  }
+  const byId = new Map(ingredients.rows.map((ingredient) => [ingredient.id, ingredient]));
+  for (const item of items) {
+    if (!Number.isFinite(item.quantity) || item.quantity <= 0) {
+      throw new AppError(422, "RECIPE_QUANTITY_INVALID", "Recipe ingredient quantities must be greater than zero");
+    }
+    const ingredient = byId.get(item.inventoryItemId)!;
+    try {
+      const recipeUnit = normalizeUnit(item.unit);
+      if (!areUnitsCompatible(recipeUnit, ingredient.unit)) {
+        throw new AppError(422, "RECIPE_UNIT_MISMATCH", `${ingredient.name} uses ${ingredient.unit}; select a compatible measurement unit`);
+      }
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      if (error instanceof UnitConversionError) {
+        throw new AppError(422, "RECIPE_UNIT_UNSUPPORTED", error.message);
+      }
+      throw error;
+    }
+  }
+}
+
 async function insertItems(client: Pick<PoolClient, "query">, recipeId: string, items: RecipeItemInput[]) {
   for (const item of items) {
     await client.query(
@@ -56,6 +86,7 @@ async function insertItems(client: Pick<PoolClient, "query">, recipeId: string, 
 }
 
 export async function saveRecipeDefinition(client: Pick<PoolClient, "query">, input: SaveRecipeInput) {
+  await validateRecipeItemUnits(client, input.items);
   const variant = await client.query(
     `SELECT id FROM menu_item_variants WHERE id=$1 AND menu_item_id=$2 AND status='ACTIVE'`,
     [input.menuItemVariantId, input.menuItemId],

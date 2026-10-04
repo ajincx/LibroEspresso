@@ -20,3 +20,44 @@ export function periodDates(range: string, customStart?: string, customEnd?: str
   if (range === 'custom' && customStart && customEnd) return { startDate: customStart, endDate: customEnd };
   return { startDate: range === 'today' ? endDate : range === '7d' ? addDateDays(endDate, -6) : range === '30d' ? addDateDays(endDate, -29) : `${endDate.slice(0,7)}-01`, endDate };
 }
+
+export type DateRangeAdjustment = {
+  range: "today" | "7d" | "30d" | "mtd" | "custom";
+  customStart?: string;
+  customEnd?: string;
+};
+
+export function adjustRangeForImport(
+  currentRange: string,
+  currentStartDate: string,
+  currentEndDate: string,
+  importedDate: string,
+  today = businessDate(),
+): DateRangeAdjustment | null {
+  if (currentRange === "today" && importedDate !== today) {
+    if (importedDate.slice(0, 7) === today.slice(0, 7)) {
+      return { range: "mtd" };
+    }
+  }
+  if (importedDate < currentStartDate || importedDate > currentEndDate) {
+    return {
+      range: "custom",
+      customStart: importedDate < currentStartDate ? importedDate : currentStartDate,
+      customEnd: importedDate > currentEndDate ? importedDate : currentEndDate,
+    };
+  }
+  return null;
+}
+
+export function adjustRangeForAutomaticImport(
+  userSelected: boolean,
+  currentRange: string,
+  currentStartDate: string,
+  currentEndDate: string,
+  importedDate: string,
+  today = businessDate(),
+): DateRangeAdjustment | null {
+  return userSelected
+    ? null
+    : adjustRangeForImport(currentRange, currentStartDate, currentEndDate, importedDate, today);
+}

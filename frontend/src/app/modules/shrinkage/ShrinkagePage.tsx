@@ -10,7 +10,7 @@ import type { EvidenceBasis, ShrinkageClassification, ShrinkageEvidence, Shrinka
 import type { Branch, InventoryItem, MenuItem } from "../../types/masterData";
 import type { IncidentType } from "../../types/operations";
 import { ShrinkageIncidentReports } from "./ShrinkageIncidentReports";
-import { CalendarDateField, Select, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, TableLoadingRow, Pagination } from "../../components/ModuleUi";
+import { CalendarDateField, Select, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, TableLoadingRow } from "../../components/ModuleUi";
 import { formatAppDate } from "../../utils/appPreferences";
 import { classificationLabel, evidenceBasisOptions, incidentTypeLabel, incidentTypeOptions, managerClassificationOptions } from "../../utils/shrinkageTaxonomy";
 import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
@@ -71,7 +71,7 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
   };
 
   const metrics = useMemo(() => ({
-    detectedValue: reports.reduce((sum, report) => sum + Math.max(report.varianceValue, 0), 0),
+    detectedValue: reports.reduce((sum, report) => sum + Math.max(-report.varianceValue, 0), 0),
     detected: reports.filter((report) => report.status === "DETECTED").length,
     pending: reports.filter((report) => report.status === "PENDING_REVIEW" || report.status === "VERIFIED").length,
     spoilage: reports.filter((report) => report.classification === "SPOILAGE").length,
@@ -113,11 +113,11 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
     finally { setSaving(false); }
   };
 
-  const linkIncident = async (incidentId: string) => {
+  const linkIncident = async (incidentId: string, incidentReportItemId: string) => {
     if (!selected) return;
     setSaving(true);
     try {
-      await operationsService.linkIncident(incidentId, selected.id);
+      await operationsService.linkIncident(incidentId, selected.id, incidentReportItemId);
       setEvidence(await inventoryWorkflowService.evidence(selected.id));
       toast.success("Incident linked as supporting evidence");
     } catch (reason) { toast.error(reason instanceof Error ? reason.message : "Unable to link incident evidence"); }
@@ -127,7 +127,7 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
   return <div className="p-4 md:p-6 space-y-5">
     <div className="flex items-start justify-between gap-4"><div><h1 className="text-xl font-bold">Classification &amp; Investigation</h1><p className="text-sm mt-1" style={{ color: "var(--app-text-muted)" }}>{owner ? "Review Manager findings for system-detected inventory shortages across branches." : "Investigate shortages automatically detected from expected stock and physical counts."}</p></div><button onClick={() => void load()} className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border text-sm font-semibold" style={{ borderColor: "var(--app-border)", background: "var(--app-surface)" }}><RefreshCw size={14} />Refresh</button></div>
 
-    <div className="flex gap-3 p-4 rounded-2xl border" style={{ borderColor: "var(--app-border)", background: "var(--app-primary-faint)" }}><SearchCheck size={20} style={{ color: "var(--app-primary)" }} /><div><div className="text-sm font-semibold">System-generated workflow</div><p className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>POS sales and standard recipes calculate expected usage. Physical counts create variance automatically. Positive shortages above tolerance become investigation cases; Managers document findings but cannot edit the calculated quantities.</p></div></div>
+    <div className="flex gap-3 p-4 rounded-2xl border" style={{ borderColor: "var(--app-border)", background: "var(--app-primary-faint)" }}><SearchCheck size={20} style={{ color: "var(--app-primary)" }} /><div><div className="text-sm font-semibold">System-generated workflow</div><p className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>POS sales and standard recipes calculate expected usage. Physical counts create variance automatically. Shortages above tolerance become investigation cases; Managers document findings but cannot edit the calculated quantities.</p></div></div>
 
     <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">{[
       ["Detected Value", `₱${metrics.detectedValue.toLocaleString("en-PH", { maximumFractionDigits: 2 })}`], ["Needs Investigation", String(metrics.detected)], ["Pending Owner Review", String(metrics.pending)], ["Spoilage", String(metrics.spoilage)], ["Wastage", String(metrics.wastage)], ["Verified Pilferage", String(metrics.pilferage)],
@@ -135,7 +135,7 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
 
     <TableCard
       title="System-Detected Anomaly Cases"
-      subtitle="Positive shortages above tolerance flagged automatically from physical counts for Manager investigation"
+      subtitle="Shortages above tolerance flagged automatically from physical counts for Manager investigation"
       badge={
         reports.length > 0 ? (
           <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-0.5 rounded-full text-rose-700 bg-rose-50 border border-rose-200">
@@ -199,7 +199,6 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
           )}
         </tbody>
       </TableWrapper>
-      <Pagination total={reports.length} page={1} perPage={Math.max(reports.length, 1)} />
     </TableCard>
     {archiveTarget&&<ControlledActionDialog title={`Archive ${archiveTarget.reportNo}?`} description="This dismisses the case from active anomaly monitoring without deleting the physical count, variance, evidence, or investigation history." confirmLabel="Archive Case" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setArchiveTarget(null)} onConfirm={()=>void archiveReport()}/>}
 
@@ -214,7 +213,7 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
       <div className="mb-5 rounded-xl border p-4" style={{ borderColor: "var(--app-border)", background: "var(--app-surface-elevated)" }}>
         <h3 className="text-sm font-semibold">Supporting Records</h3>
         {!evidence ? <p className="text-xs mt-2" style={{ color: "var(--app-text-muted)" }}>Loading available operational evidence…</p> : <>
-          {evidence.incidents.length ? <div className="mt-3 space-y-2">{evidence.incidents.map((incident) => <div key={incident.id} className="rounded-xl border p-3 text-xs" style={{ borderColor: "var(--app-border)" }}><div className="flex justify-between gap-2"><strong>{incidentTypeLabel(incident.incidentType)}</strong><span>{incident.explicitlyLinked ? "Linked evidence" : "Possible match"}</span></div><div className="mt-1" style={{ color: "var(--app-text-muted)" }}>{incident.submittedByName} · {formatDate(incident.occurredAt)} · {incident.quantity} {selected.unit} · {incident.status}</div><p className="mt-2">{incident.reason}</p><div className="flex items-center gap-3 mt-2">{incident.photoUrl && <a href={incident.photoUrl} target="_blank" rel="noreferrer" className="font-semibold" style={{ color: "var(--app-primary)" }}>View supporting image</a>}{!owner && !incident.explicitlyLinked && <button disabled={saving} onClick={() => void linkIncident(incident.id)} className="font-semibold" style={{ color: "var(--app-primary)" }}>Link as evidence</button>}</div></div>)}</div> : <p className="text-xs mt-2" style={{ color: "var(--app-text-muted)" }}>No linked or potentially relevant Staff incidents were found.</p>}
+          {evidence.incidents.length ? <div className="mt-3 space-y-2">{evidence.incidents.map((incident) => <div key={incident.incidentReportItemId} className="rounded-xl border p-3 text-xs" style={{ borderColor: "var(--app-border)" }}><div className="flex justify-between gap-2"><strong>{incidentTypeLabel(incident.incidentType)}</strong><span>{incident.explicitlyLinked ? "Linked evidence" : "Possible match"}</span></div><div className="mt-1" style={{ color: "var(--app-text-muted)" }}>{incident.submittedByName} · {formatDate(incident.occurredAt)} · {incident.quantity} {incident.unit} · {incident.status}</div><p className="mt-2">{incident.reason}</p><div className="flex items-center gap-3 mt-2">{incident.photoUrl && <a href={incident.photoUrl} target="_blank" rel="noreferrer" className="font-semibold" style={{ color: "var(--app-primary)" }}>View supporting image</a>}{!owner && !incident.explicitlyLinked && <button disabled={saving} onClick={() => void linkIncident(incident.id,incident.incidentReportItemId)} className="font-semibold" style={{ color: "var(--app-primary)" }}>Link as evidence</button>}</div></div>)}</div> : <p className="text-xs mt-2" style={{ color: "var(--app-text-muted)" }}>No linked or potentially relevant Staff incidents were found.</p>}
           <div className="grid sm:grid-cols-2 gap-3 mt-3"><div className="rounded-xl p-3" style={{ background: "var(--app-bg)" }}><div className="text-xs font-semibold">Recent inventory records</div>{evidence.movements.length ? <div className="mt-2 space-y-1.5">{evidence.movements.map((movement, index) => <div key={`${movement.occurredAt}-${index}`} className="text-xs" style={{ color: "var(--app-text-muted)" }}><strong>{movement.movementType.replaceAll("_", " ")}</strong> · {movement.quantity} {selected.unit} · {formatDate(movement.occurredAt)}{movement.referenceNo ? ` · ${movement.referenceNo}` : ""}</div>)}</div> : <div className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>No nearby receipt or adjustment records.</div>}</div><div className="rounded-xl p-3" style={{ background: "var(--app-bg)" }}><div className="text-xs font-semibold">Related sales usage</div>{evidence.usage.length ? <div className="mt-2 space-y-1.5">{evidence.usage.map((entry) => <div key={entry.date} className="text-xs" style={{ color: "var(--app-text-muted)" }}>{formatDate(entry.date)} · {entry.expectedUsage.toFixed(2)} {selected.unit} expected usage</div>)}</div> : <div className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>No recent recipe-derived usage.</div>}</div></div>
           <div className="mt-3 rounded-xl p-3 text-xs" style={{ background: "var(--app-primary-subtle)", color: "var(--app-text-muted)" }}><strong>AI-assisted analysis</strong><div className="mt-1">{evidence.aiSuggestion ?? "No AI suggestion was requested for this investigation."}</div><div className="mt-1 font-semibold">{evidence.aiAdvisoryLabel}</div></div>
         </>}

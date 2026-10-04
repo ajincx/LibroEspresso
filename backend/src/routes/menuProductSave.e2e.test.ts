@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import pg from "pg";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createIngredientUsageSnapshots, saveRecipeDefinition } from "../services/recipeVersion.service.js";
+import { createIngredientUsageSnapshots } from "../services/recipeVersion.service.js";
 
 // Set MENU_PRODUCT_E2E_DATABASE_URL to a dedicated database named *_e2e.
 // The ordinary application database is intentionally never used by this test.
@@ -23,11 +23,13 @@ suite("authenticated Menu & Recipe product saves", () => {
   let oldProductId = "";
   let oldImportId = "";
   let ingredientId = "";
+  let secondIngredientId = "";
   let ownerCookie = "";
   let managerCookie = "";
   let staffCookie = "";
   let originalSnapshot: Record<string, unknown> | undefined;
   const createdProductIds: string[] = [];
+  const createdImportIds: string[] = [];
   const runId = crypto.randomUUID().slice(0, 8);
   const businessDate = new Date().toISOString().slice(0, 10);
   const password = `E2e-${runId}-password`;
@@ -91,6 +93,7 @@ suite("authenticated Menu & Recipe product saves", () => {
       managerId = await insertUser("BRANCH_MANAGER", branchId);
       staffId = await insertUser("STAFF", branchId);
       ingredientId = (await client.query<{ id: string }>("INSERT INTO inventory_items (sku,name,category,unit,unit_cost,reorder_level) VALUES ($1,$2,'E2E','g',2,0) RETURNING id", [`E2E-I-${runId}`, `E2E Beans ${runId}`])).rows[0]!.id;
+      secondIngredientId = (await client.query<{ id: string }>("INSERT INTO inventory_items (sku,name,category,unit,unit_cost,reorder_level) VALUES ($1,$2,'E2E','ml',1,0) RETURNING id", [`E2E-I2-${runId}`, `E2E Syrup ${runId}`])).rows[0]!.id;
       oldProductId = (await client.query<{ id: string }>(
         "INSERT INTO menu_items (code,name,category_id,category,selling_price,created_by) VALUES ($1,$2,$3,'Coffee',100,$4) RETURNING id",
         [`E2E-P-${runId}`, `Existing Recipe Product ${runId}`, categoryId, ownerId],
@@ -127,11 +130,13 @@ suite("authenticated Menu & Recipe product saves", () => {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      if (oldImportId) await client.query("DELETE FROM pos_imports WHERE id=$1", [oldImportId]);
+      const importIds=[oldImportId,...createdImportIds].filter(Boolean);
+      if(importIds.length) await client.query("DELETE FROM pos_imports WHERE id=ANY($1::uuid[])", [importIds]);
       const productIds = [...createdProductIds, oldProductId].filter(Boolean);
       if (productIds.length) await client.query("DELETE FROM recipes WHERE menu_item_id=ANY($1::uuid[])", [productIds]);
       if (productIds.length) await client.query("DELETE FROM menu_items WHERE id=ANY($1::uuid[])", [productIds]);
       if (ingredientId) await client.query("DELETE FROM inventory_items WHERE id=$1", [ingredientId]);
+      if (secondIngredientId) await client.query("DELETE FROM inventory_items WHERE id=$1", [secondIngredientId]);
       const userIds = [ownerId, managerId, staffId].filter(Boolean);
       if (userIds.length) {
         await client.query("DELETE FROM audit_logs WHERE user_id=ANY($1::uuid[])", [userIds]);
@@ -211,10 +216,22 @@ suite("authenticated Menu & Recipe product saves", () => {
     expect(variants.Small).toMatchObject({ recipeCost: 20, marginRate: 80 });
     expect(variants.Large).toMatchObject({ recipeCost: 40 });
     expect(variants.Large.marginRate).toBeCloseTo(73.3333333, 5);
+    const readRecipeState=()=>pool.query(`SELECT jsonb_agg(to_jsonb(snapshot) ORDER BY snapshot.recipe_id,snapshot.item_id) value FROM (
+      SELECT r.id recipe_id,r.version,r.effective_from,r.effective_to,ri.id item_id,ri.inventory_item_id,ri.quantity,ri.unit
+      FROM recipes r JOIN recipe_items ri ON ri.recipe_id=r.id WHERE r.menu_item_id=$1) snapshot`,[product.id]);
+    const beforeMismatch=await readRecipeState();
+    const rejected=await request(app).put(`/api/menu-items/${product.id}/with-recipe`).set("Cookie",ownerCookie).send({...input,variants:[
+      {...input.variants[0],id:variants.Small.id,recipe:{yieldQuantity:1,items:[{inventoryItemId:ingredientId,quantity:13,unit:"g"},{inventoryItemId:secondIngredientId,quantity:15,unit:"ml"}]}},
+      {...input.variants[1],id:variants.Large.id,recipe:{yieldQuantity:1,items:[{inventoryItemId:ingredientId,quantity:25,unit:"g"}]}},
+    ]});
+    expect(rejected.status).toBe(422);
+    expect((await readRecipeState()).rows[0]).toEqual(beforeMismatch.rows[0]);
+    let importId="";
+    let snapshotsBefore:unknown[]=[];
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      const importId = (await client.query<{ id: string }>(
+      importId = (await client.query<{ id: string }>(
         "INSERT INTO pos_imports (branch_id,business_date,source_filename,imported_by) VALUES ($1,$2,$3,$4) RETURNING id",
         [branchId,businessDate,`variant-recipe-${runId}.csv`,ownerId],
       )).rows[0]!.id;
@@ -226,28 +243,34 @@ suite("authenticated Menu & Recipe product saves", () => {
         JOIN menu_item_variants v ON v.id=s.menu_item_variant_id WHERE s.pos_import_id=$1 ORDER BY v.name`, [importId]);
       expect(snapshots.rows.map((row)=>[row.variant,row.quantity])).toEqual([["Large",20],["Small",10]]);
       expect(snapshots.rows[0]!.recipeVersionId).not.toBe(snapshots.rows[1]!.recipeVersionId);
-      const nextDate = new Date(Date.parse(`${businessDate}T00:00:00Z`)+86_400_000).toISOString().slice(0,10);
-      const nextSmall = await saveRecipeDefinition(client,{recipeId:variants.Small.recipeId,menuItemId:product.id,menuItemVariantId:variants.Small.id,
-        name:"Small recipe revision",yieldQuantity:1,status:"ACTIVE",effectiveFrom:nextDate,createdBy:ownerId,
-        items:[{inventoryItemId:ingredientId,quantity:12,unit:"g"}]});
-      expect(nextSmall.version).toBe(2);
-      const versions = await client.query<{ name:string; versions:number[] }>(`SELECT v.name,array_agg(r.version ORDER BY r.version) versions FROM recipes r
-        JOIN menu_item_variants v ON v.id=r.menu_item_variant_id WHERE v.menu_item_id=$1 GROUP BY v.id`,[product.id]);
-      expect(Object.fromEntries(versions.rows.map((row)=>[row.name,row.versions]))).toEqual({Small:[1,2],Large:[1]});
-    } finally {
+      snapshotsBefore=snapshots.rows;
+      await client.query("COMMIT");
+      createdImportIds.push(importId);
+    } catch(error){
       await client.query("ROLLBACK");
+      throw error;
+    } finally {
       client.release();
     }
+    const nextDate = new Date(Date.parse(`${businessDate}T00:00:00Z`)+86_400_000).toISOString().slice(0,10);
     const changed = await request(app).put(`/api/menu-items/${product.id}/with-recipe`).set("Cookie",ownerCookie).send({
       ...input,variants:[
-        { ...input.variants[0],id:variants.Small.id,recipe:{yieldQuantity:1,items:[{inventoryItemId:ingredientId,quantity:12,unit:"g"}]} },
-        { name:"Large",id:variants.Large.id,sellingPrice:150,status:"ACTIVE" },
+        { ...input.variants[0],id:variants.Small.id,recipe:{yieldQuantity:1,effectiveFrom:nextDate,changeReason:"Add syrup",items:[{inventoryItemId:ingredientId,quantity:12,unit:"g"},{inventoryItemId:secondIngredientId,quantity:15,unit:"ml"}]} },
+        { ...input.variants[1],id:variants.Large.id,recipe:{yieldQuantity:1,effectiveFrom:nextDate,changeReason:"Add syrup",items:[{inventoryItemId:ingredientId,quantity:24,unit:"g"},{inventoryItemId:secondIngredientId,quantity:20,unit:"ml"}]} },
       ],
     });
     expect(changed.status).toBe(200);
-    const updated = Object.fromEntries(changed.body.data.product.variants.map((variant: { name: string; recipeCost: number | null })=>[variant.name,variant]));
-    expect(updated.Small.recipeCost).toBe(24);
-    expect(updated.Large.recipeCost).toBe(40);
+    const versions = await pool.query<{ name:string; version:number; ingredientIds:string[] }>(`SELECT v.name,r.version,array_agg(ri.inventory_item_id::text ORDER BY ri.inventory_item_id) "ingredientIds"
+      FROM recipes r JOIN menu_item_variants v ON v.id=r.menu_item_variant_id JOIN recipe_items ri ON ri.recipe_id=r.id
+      WHERE v.menu_item_id=$1 GROUP BY v.id,r.id ORDER BY v.name,r.version`,[product.id]);
+    expect(versions.rows.filter((row)=>row.version===2)).toEqual(expect.arrayContaining([
+      expect.objectContaining({name:"Small",ingredientIds:expect.arrayContaining([ingredientId,secondIngredientId])}),
+      expect.objectContaining({name:"Large",ingredientIds:expect.arrayContaining([ingredientId,secondIngredientId])}),
+    ]));
+    const snapshotsAfter=await pool.query(`SELECT v.name variant,u.quantity_consumed::float8 quantity,u.recipe_version_id "recipeVersionId"
+      FROM pos_sale_ingredient_usage u JOIN pos_sale_items s ON s.id=u.pos_sale_item_id
+      JOIN menu_item_variants v ON v.id=s.menu_item_variant_id WHERE s.pos_import_id=$1 ORDER BY v.name`,[importId]);
+    expect(snapshotsAfter.rows).toEqual(snapshotsBefore);
     const wrongParent = await request(app).put(`/api/menu-items/${oldProductId}/with-recipe`).set("Cookie",ownerCookie).send({
       name:`Existing Recipe Product ${runId}`,categoryId,description:"",status:"ACTIVE",
       variants:[{id:variants.Small.id,name:"Standard",sellingPrice:100,status:"ACTIVE"}],

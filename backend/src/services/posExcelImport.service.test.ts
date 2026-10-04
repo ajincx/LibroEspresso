@@ -141,8 +141,8 @@ describe("Transaction Summary XLSX adapter", () => {
     expect(parsed.rows).toHaveLength(2);
     expect(parsed.rows.map((item) => [item.sourceProduct, item.quantitySold])).toEqual([["Americano", 1], ["Spanish Latte", 2]]);
     expect(parsed.rows.every((item) => item.unitPrice === null && item.lineAmount === null)).toBe(true);
-    expect(parsed.rows.every((item) => item.status === "WARNING")).toBe(true);
-    expect(parsed.rows.every((item) => item.issues.includes(TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE))).toBe(true);
+    expect(parsed.rows.every((item) => item.status === "VALID")).toBe(true);
+    expect(parsed.rows.every((item) => !item.issues.includes(TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE))).toBe(true);
     expect(parsed.importBlockedReason).toBeNull();
   });
 

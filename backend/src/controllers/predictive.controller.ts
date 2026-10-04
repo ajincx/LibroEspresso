@@ -14,6 +14,7 @@ import { predictiveForecastInput } from "../validators/predictive.js";
 import { VERIFIED_SHRINKAGE_CLASSIFICATIONS_SQL } from "../services/shrinkageWorkflow.service.js";
 import { manilaBusinessDate } from "../services/businessTime.service.js";
 import { convertQuantity, normalizeUnit } from "../services/unitConversion.service.js";
+import { inventoryLedgerKey, loadInventoryLedgerBalances } from "../services/inventoryLedger.service.js";
 import type { TokenUser } from "../types/auth.js";
 
 const DAY = 86_400_000;
@@ -28,7 +29,7 @@ const clamp = (value: number, min: number, max: number) => Math.min(max, Math.ma
 type SalesRow = { date: string; sales: number; cogs: number };
 type InventoryRow = {
   branchId: string; branchName: string; inventoryItemId: string; sku: string; name: string; unit: string;
-  unitCost: number; reorderLevel: number; reorderDays: number; systemStock: number; dailyUsage: number; outstandingQuantity: number;
+  unitCost: number; reorderLevel: number; reorderDays: number; dailyUsage: number; outstandingQuantity: number;
 };
 type EvaluationSalesRow = { branchId: string; branchName: string; date: string; sales: number };
 type IngredientUsageRow = {
@@ -114,28 +115,25 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
     pool.query<SalesRow>(
       `SELECT pi.business_date::text date, sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price))::float8 sales,
               coalesce(sum(costs.cogs),0)::float8 cogs
-         FROM pos_imports pi JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
+         FROM pos_imports pi JOIN pos_sources source ON source.id=pi.pos_source_id AND source.status='ACTIVE'
+         JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
          JOIN menu_items mi ON mi.id=psi.menu_item_id
          LEFT JOIN LATERAL (SELECT sum(u.quantity_consumed*u.unit_cost_snapshot)::float8 cogs
            FROM pos_sale_ingredient_usage u WHERE u.pos_sale_item_id=psi.id) costs ON true
-        WHERE pi.business_date BETWEEN $1::date AND $2::date ${salesBranchClause}
+        WHERE NOT pi.is_test_data AND pi.business_date BETWEEN $1::date AND $2::date ${salesBranchClause}
         GROUP BY pi.business_date ORDER BY pi.business_date`, scopeParams),
     pool.query<InventoryRow>(
       `SELECT b.id "branchId",b.name "branchName",ii.id "inventoryItemId",ii.sku,ii.name,ii.unit,
               coalesce(bis.current_unit_cost,ii.unit_cost)::float8 "unitCost",
               coalesce(bis.reorder_level,ii.reorder_level)::float8 "reorderLevel",
               coalesce(bis.reorder_days,7)::int "reorderDays",
-              (coalesce(bal.actual_quantity,0)
-                + coalesce((SELECT sum(im.quantity) FROM inventory_movements im WHERE im.branch_id=b.id AND im.inventory_item_id=ii.id AND NOT im.is_test_data AND im.movement_type='RECEIPT' AND im.occurred_at>coalesce(bal.as_of,'1970-01-01'::timestamptz)),0)
-                - coalesce((SELECT sum(u.quantity_consumed) FROM pos_sale_ingredient_usage u JOIN pos_sale_items psi ON psi.id=u.pos_sale_item_id JOIN pos_imports pi ON pi.id=psi.pos_import_id WHERE pi.branch_id=b.id AND u.inventory_item_id=ii.id AND pi.business_date>coalesce(bal.as_of::date,'1970-01-01'::date)),0)
-                + coalesce((SELECT sum(im.quantity) FROM inventory_movements im WHERE im.branch_id=b.id AND im.inventory_item_id=ii.id AND NOT im.is_test_data AND im.movement_type='APPROVED_ADJUSTMENT_INCREASE' AND im.occurred_at>coalesce(bal.as_of,'1970-01-01'::timestamptz)),0)
-                - coalesce((SELECT sum(im.quantity) FROM inventory_movements im WHERE im.branch_id=b.id AND im.inventory_item_id=ii.id AND NOT im.is_test_data AND im.movement_type IN ('APPROVED_ADJUSTMENT','APPROVED_ADJUSTMENT_DECREASE') AND im.occurred_at>coalesce(bal.as_of,'1970-01-01'::timestamptz)),0))::float8 "systemStock",
               coalesce((SELECT avg(recent.daily_usage) FROM (
                 SELECT sum(u.quantity_consumed)::float8 daily_usage
                   FROM pos_sale_ingredient_usage u
                   JOIN pos_sale_items psi ON psi.id=u.pos_sale_item_id
                   JOIN pos_imports pi ON pi.id=psi.pos_import_id
-                 WHERE pi.branch_id=b.id AND u.inventory_item_id=ii.id
+                   JOIN pos_sources source ON source.id=pi.pos_source_id AND source.status='ACTIVE'
+                 WHERE pi.branch_id=b.id AND u.inventory_item_id=ii.id AND NOT pi.is_test_data
                    AND pi.business_date BETWEEN $1::date AND $2::date
                  GROUP BY pi.business_date
                  ORDER BY pi.business_date DESC
@@ -143,12 +141,11 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
               ) recent),0)::float8 "dailyUsage",
               coalesce((SELECT sum((poi.quantity_ordered-poi.quantity_received)*poi.conversion_factor) FROM purchase_order_items poi JOIN purchase_orders po ON po.id=poi.purchase_order_id WHERE po.branch_id=b.id AND NOT po.is_test_data AND poi.inventory_item_id=ii.id AND po.status IN ('ORDERED','PARTIALLY_RECEIVED')),0)::float8 "outstandingQuantity"
          FROM branches b CROSS JOIN inventory_items ii
-         LEFT JOIN branch_inventory_balances bal ON bal.branch_id=b.id AND bal.inventory_item_id=ii.id AND NOT bal.is_test_data
          LEFT JOIN branch_inventory_settings bis ON bis.branch_id=b.id AND bis.inventory_item_id=ii.id
         WHERE b.status='ACTIVE' AND ii.status='ACTIVE' AND (ii.item_scope='GLOBAL' OR ii.origin_branch_id=b.id) ${inventoryBranchClause}
         ORDER BY b.name,ii.name`, inventoryParams),
     pool.query<{ verifiedShrinkageCost: number }>(
-      `SELECT coalesce(sum(greatest(sr.variance_value,0)),0)::float8 "verifiedShrinkageCost"
+      `SELECT coalesce(sum(CASE WHEN sr.actual_quantity<sr.expected_quantity THEN abs(sr.variance_value) ELSE 0 END),0)::float8 "verifiedShrinkageCost"
          FROM shrinkage_reports sr
         WHERE NOT sr.is_test_data AND sr.detected_at::date BETWEEN $1::date AND $2::date
           AND sr.status IN ('VERIFIED', 'REVIEWED')
@@ -159,9 +156,10 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
               sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price))::float8 sales
          FROM pos_imports pi
          JOIN branches b ON b.id=pi.branch_id
+         JOIN pos_sources source ON source.id=pi.pos_source_id AND source.status='ACTIVE'
          JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
          JOIN menu_items mi ON mi.id=psi.menu_item_id
-        WHERE pi.business_date BETWEEN $1::date AND $2::date ${evaluationBranchClause}
+        WHERE NOT pi.is_test_data AND pi.business_date BETWEEN $1::date AND $2::date ${evaluationBranchClause}
         GROUP BY pi.branch_id,b.name,pi.business_date
         ORDER BY pi.branch_id,pi.business_date`, evaluationParams),
     pool.query<IngredientUsageRow>(
@@ -170,9 +168,10 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
          FROM pos_sale_ingredient_usage usage
          JOIN pos_sale_items psi ON psi.id=usage.pos_sale_item_id
          JOIN pos_imports pi ON pi.id=psi.pos_import_id
+          JOIN pos_sources source ON source.id=pi.pos_source_id AND source.status='ACTIVE'
          JOIN branches b ON b.id=pi.branch_id
          JOIN inventory_items ii ON ii.id=usage.inventory_item_id
-        WHERE pi.business_date BETWEEN $1::date AND $2::date ${evaluationBranchClause}
+        WHERE NOT pi.is_test_data AND pi.business_date BETWEEN $1::date AND $2::date ${evaluationBranchClause}
          GROUP BY pi.branch_id,b.name,usage.inventory_item_id,ii.name,usage.unit,ii.unit,pi.business_date
         ORDER BY pi.branch_id,usage.inventory_item_id,pi.business_date`, evaluationParams),
     pool.query<IncomingOrderRow>(
@@ -185,6 +184,12 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
           AND poi.quantity_ordered>poi.quantity_received ${incomingBranchClause}
         GROUP BY po.branch_id,poi.inventory_item_id,po.expected_delivery_date`, incomingParams),
   ]);
+
+  const inventoryLedgers = await loadInventoryLedgerBalances(pool, inventoryResult.rows.map((row) => ({
+    branchId: row.branchId,
+    inventoryItemId: row.inventoryItemId,
+    canonicalUnit: row.unit,
+  })));
 
   const branchName = branchId ? scope.rows[0]?.branchName ?? "Assigned Branch" : "All Branches";
   const salesRows = salesResult.rows.map((row) => ({ ...row, sales: Number(row.sales), cogs: Number(row.cogs) }));
@@ -265,7 +270,7 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
   const projectedDemand = groupForecast(futureDaily, forecastDays);
 
   const inventory = inventoryResult.rows.map((row) => {
-    const stock = Math.max(0, Number(row.systemStock));
+    const stock = inventoryLedgers.get(inventoryLedgerKey(row.branchId, row.inventoryItemId))?.calculatedBalance ?? 0;
     const dailyUsage = Math.max(0, Number(row.dailyUsage));
     const deliveries = incomingByItem.get(`${row.branchId}:${row.inventoryItemId}`) ?? [];
     const supply = projectStockAvailability({

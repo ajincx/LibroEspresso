@@ -4,6 +4,8 @@ import { pool } from "../config/database.js";
 import { env } from "../config/env.js";
 import { getEffectiveBranchId } from "../services/branchScope.js";
 import { writeAudit } from "../services/audit.service.js";
+import { loadInventoryLedger } from "../services/inventoryLedger.service.js";
+import { configureBranchReorderPolicy } from "../services/branchInventorySettings.service.js";
 import { baseStockUnitCost, receivedStockQuantity, resolvePurchaseConversion } from "../services/purchaseUom.service.js";
 import { AppError } from "../utils/appError.js";
 import { idParams } from "../validators/masterData.js";
@@ -37,42 +39,28 @@ function requiredBranchId(
   return branchId;
 }
 
-export const getInventoryOverview: RequestHandler = async (req, res) => {
-  const filters = inventoryOverviewFilters.parse(req.query);
-  const branchId = getEffectiveBranchId(req.user!, filters.branchId);
+async function loadInventoryOverviewItems(branchId?: string, inventoryItemId?: string) {
   const values: unknown[] = [];
   const branchWhere = branchId ? `AND b.id=$${values.push(branchId)}` : "";
+  const itemWhere = inventoryItemId ? `AND ii.id=$${values.push(inventoryItemId)}` : "";
   const result = await pool.query(
     `SELECT b.id "branchId",b.name "branchName",ii.id "inventoryItemId",ii.sku,ii.name,ii.category,ii.unit,
             COALESCE(bis.current_unit_cost,ii.unit_cost)::float8 "unitCost",
             COALESCE(bis.reorder_level,ii.reorder_level)::float8 "reorderLevel",
             COALESCE(bis.reorder_days,7)::int "reorderDays",
-            COALESCE(bal.actual_quantity,0)::float8 "lastActualQuantity",bal.as_of "lastCountAt",
-            (COALESCE(bal.actual_quantity,0)
-              + COALESCE((SELECT sum(im.quantity) FROM inventory_movements im
-                          WHERE im.branch_id=b.id AND im.inventory_item_id=ii.id AND NOT im.is_test_data AND im.movement_type='RECEIPT'
-                            AND im.occurred_at>COALESCE(bal.as_of,'1970-01-01'::timestamptz)),0)
-              + COALESCE((SELECT sum(im.quantity) FROM inventory_movements im
-                          WHERE im.branch_id=b.id AND im.inventory_item_id=ii.id AND NOT im.is_test_data AND im.movement_type='APPROVED_ADJUSTMENT_INCREASE'
-                            AND im.occurred_at>COALESCE(bal.as_of,'1970-01-01'::timestamptz)),0)
-              - COALESCE((SELECT sum(u.quantity_consumed) FROM pos_sale_ingredient_usage u
-                          JOIN pos_sale_items psi ON psi.id=u.pos_sale_item_id JOIN pos_imports pi ON pi.id=psi.pos_import_id
-                          WHERE pi.branch_id=b.id AND u.inventory_item_id=ii.id
-                            AND pi.business_date>COALESCE(bal.as_of::date,'1970-01-01'::date)),0)
-              - COALESCE((SELECT sum(im.quantity) FROM inventory_movements im
-                          WHERE im.branch_id=b.id AND im.inventory_item_id=ii.id AND NOT im.is_test_data
-                            AND im.movement_type IN ('APPROVED_ADJUSTMENT','APPROVED_ADJUSTMENT_DECREASE')
-                            AND im.occurred_at>COALESCE(bal.as_of,'1970-01-01'::timestamptz)),0))::float8 "systemStock"
+            COALESCE(bis.reorder_category,'MEDIUM') "reorderCategory",
+            COALESCE(bal.actual_quantity,0)::float8 "lastActualQuantity",bal.as_of "lastCountAt"
        FROM branches b CROSS JOIN inventory_items ii
        LEFT JOIN branch_inventory_balances bal ON bal.branch_id=b.id AND bal.inventory_item_id=ii.id AND NOT bal.is_test_data
        LEFT JOIN branch_inventory_settings bis ON bis.branch_id=b.id AND bis.inventory_item_id=ii.id
       WHERE b.status='ACTIVE' AND ii.status='ACTIVE'
-        AND (ii.item_scope='GLOBAL' OR ii.origin_branch_id=b.id) ${branchWhere}
+        AND (ii.item_scope='GLOBAL' OR ii.origin_branch_id=b.id) ${branchWhere} ${itemWhere}
       ORDER BY b.name,ii.name`,
     values,
   );
-  const items = result.rows.map((row) => {
-    const stock = Number(row.systemStock);
+  const items = await Promise.all(result.rows.map(async (row) => {
+    const ledger = await loadInventoryLedger(pool, row.branchId, row.inventoryItemId, row.unit);
+    const stock = ledger.calculatedBalance;
     const reorder = Number(row.reorderLevel);
     const status =
       stock <= 0
@@ -88,8 +76,39 @@ export const getInventoryOverview: RequestHandler = async (req, res) => {
       inventoryValue: Math.max(stock, 0) * Number(row.unitCost),
       status,
     };
-  });
+  }));
+  return items;
+}
+
+export const getInventoryOverview: RequestHandler = async (req, res) => {
+  const filters = inventoryOverviewFilters.parse(req.query);
+  const branchId = getEffectiveBranchId(req.user!, filters.branchId);
+  const items = await loadInventoryOverviewItems(branchId);
   res.json({ success: true, data: { items } });
+};
+
+export const getInventoryStockLedger: RequestHandler = async (req, res) => {
+  const { inventoryItemId } = inventorySettingsParams.parse(req.params);
+  const filters = inventoryOverviewFilters.parse(req.query);
+  const branchId = requiredBranchId(req.user!, filters.branchId);
+  const item = (await loadInventoryOverviewItems(branchId, inventoryItemId))[0];
+  if (!item) throw new AppError(404, "INVENTORY_ITEM_NOT_FOUND", "Inventory item not found");
+  const ledger = await loadInventoryLedger(pool, branchId, inventoryItemId, item.unit);
+  res.json({
+    success: true,
+    data: {
+      ledger: {
+        branchId: item.branchId,
+        branchName: item.branchName,
+        inventoryItemId: item.inventoryItemId,
+        sku: item.sku,
+        name: item.name,
+        unit: item.unit,
+        currentExpectedStock: item.systemStock,
+        ...ledger,
+      },
+    },
+  });
 };
 
 export const updateBranchInventorySettings: RequestHandler = async (
@@ -98,50 +117,36 @@ export const updateBranchInventorySettings: RequestHandler = async (
 ) => {
   const { inventoryItemId } = inventorySettingsParams.parse(req.params);
   const input = branchInventorySettingsInput.parse(req.body);
-  const branchId = requiredBranchId(req.user!);
-  const result = await pool.query(
-    `INSERT INTO branch_inventory_settings (branch_id,inventory_item_id,current_unit_cost,reorder_level,reorder_days,updated_by)
-     SELECT $1,ii.id,$3,$4,$5,$2 FROM inventory_items ii WHERE ii.id=$6 AND ii.status='ACTIVE'
-       AND (ii.item_scope='GLOBAL' OR ii.origin_branch_id=$1)
-     ON CONFLICT (branch_id,inventory_item_id) DO UPDATE
-       SET current_unit_cost=excluded.current_unit_cost,reorder_level=excluded.reorder_level,
-           reorder_days=excluded.reorder_days,updated_by=excluded.updated_by,updated_at=now()
-     RETURNING inventory_item_id "inventoryItemId",current_unit_cost::float8 "currentUnitCost",
-               reorder_level::float8 "reorderLevel",reorder_days "reorderDays"`,
-    [
-      branchId,
-      req.user!.id,
-      input.currentUnitCost,
-      input.reorderLevel,
-      input.reorderDays,
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const settings = await configureBranchReorderPolicy(client, req.user!, {
+      ...input,
       inventoryItemId,
-    ],
-  );
-  if (!result.rows[0])
-    throw new AppError(
-      404,
-      "INVENTORY_ITEM_NOT_FOUND",
-      "Inventory item not found",
-    );
-  await writeAudit(
-    req.user!,
-    "UPDATE_BRANCH_INVENTORY_SETTINGS",
-    "INVENTORY_ITEM",
-    inventoryItemId,
-    "Updated branch inventory cost and reorder settings",
-    { branchId, reorderDays: input.reorderDays },
-  );
-  res.json({ success: true, data: { settings: result.rows[0] } });
+    });
+    await client.query("COMMIT");
+    res.json({ success: true, data: { settings } });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 };
 
 const incidentSelection = `SELECT ir.id,ir.branch_id "branchId",b.name "branchName",ir.inventory_item_id "inventoryItemId",
   ii.sku,ii.name "inventoryItemName",ii.unit,ir.shrinkage_report_id "shrinkageReportId",sr.report_no "shrinkageReportNo",
-  ir.menu_item_id "productId",mi.code "productCode",mi.name "productName",
+  ir.menu_item_id "productId",mi.code "productCode",mi.name "productName",ir.menu_item_variant_id "productVariantId",miv.name "productVariantName",
   ir.incident_type "incidentType",ir.other_incident_type "otherIncidentType",ir.quantity::float8,ir.occurred_at "occurredAt",ir.reason,ir.notes,ir.photo_url "photoUrl",
   ir.status,ir.manager_comment "managerComment",ir.submitted_by "submittedByUserId",concat(su.first_name,' ',su.last_name) "submittedByName",su.role "submittedByRole",
-  ir.verified_by "verifiedByUserId",concat(vu.first_name,' ',vu.last_name) "verifiedByName",ir.verified_at "verifiedAt",ir.created_at "createdAt"
+  ir.verified_by "verifiedByUserId",concat(vu.first_name,' ',vu.last_name) "verifiedByName",ir.verified_at "verifiedAt",ir.created_at "createdAt",
+  COALESCE((SELECT json_agg(json_build_object('id',iri.id,'inventoryItemId',child.id,'sku',child.sku,'name',child.name,'quantity',iri.quantity::float8,'unit',iri.unit) ORDER BY iri.created_at,iri.id)
+    FROM incident_report_items iri JOIN inventory_items child ON child.id=iri.inventory_item_id WHERE iri.incident_report_id=ir.id),'[]') items,
+  COALESCE((SELECT json_agg(json_build_object('id',isl.id,'incidentReportItemId',isl.incident_report_item_id,'shrinkageReportId',isl.shrinkage_report_id,'shrinkageReportNo',linked.report_no) ORDER BY isl.created_at)
+    FROM incident_shrinkage_links isl JOIN shrinkage_reports linked ON linked.id=isl.shrinkage_report_id WHERE isl.incident_report_id=ir.id),'[]') "shrinkageLinks"
   FROM incident_reports ir JOIN branches b ON b.id=ir.branch_id JOIN inventory_items ii ON ii.id=ir.inventory_item_id
   LEFT JOIN menu_items mi ON mi.id=ir.menu_item_id
+  LEFT JOIN menu_item_variants miv ON miv.id=ir.menu_item_variant_id
   JOIN users su ON su.id=ir.submitted_by LEFT JOIN users vu ON vu.id=ir.verified_by LEFT JOIN shrinkage_reports sr ON sr.id=ir.shrinkage_report_id`;
 
 export const listIncidentReports: RequestHandler = async (req, res) => {
@@ -164,11 +169,11 @@ export const listIncidentReports: RequestHandler = async (req, res) => {
   }
   if (filters.inventoryItemId) {
     values.push(filters.inventoryItemId);
-    clauses.push(`ir.inventory_item_id=$${values.length}`);
+    clauses.push(`EXISTS (SELECT 1 FROM incident_report_items iri WHERE iri.incident_report_id=ir.id AND iri.inventory_item_id=$${values.length})`);
   }
   if (filters.shrinkageReportId) {
     values.push(filters.shrinkageReportId);
-    clauses.push(`ir.shrinkage_report_id=$${values.length}`);
+    clauses.push(`EXISTS (SELECT 1 FROM incident_shrinkage_links isl WHERE isl.incident_report_id=ir.id AND isl.shrinkage_report_id=$${values.length})`);
   }
   if (filters.startDate) {
     values.push(filters.startDate);
@@ -199,7 +204,7 @@ export const listIncidentItemOptions: RequestHandler = async (req, res) => {
       [branchId],
     ),
     pool.query(
-      `SELECT mi.id "productId",mi.code,mi.name,
+      `SELECT mi.id "productId",mi.code,mi.name,v.id "variantId",v.name "variantName",
               array_agg(DISTINCT ri.inventory_item_id::text) "ingredientIds"
        FROM menu_items mi
        JOIN menu_item_branches mib ON mib.menu_item_id=mi.id AND mib.branch_id=$1
@@ -209,8 +214,8 @@ export const listIncidentItemOptions: RequestHandler = async (req, res) => {
        JOIN recipe_items ri ON ri.recipe_id=r.id
       WHERE mi.status='ACTIVE' AND mi.approval_status='APPROVED'
         AND mib.availability_status='APPROVED' AND mib.is_active=true
-      GROUP BY mi.id
-      ORDER BY mi.name`,
+      GROUP BY mi.id,v.id,v.name
+      ORDER BY mi.name,v.name`,
       [branchId],
     ),
   ]);
@@ -226,91 +231,82 @@ export const createIncidentReport: RequestHandler = async (req, res) => {
   if (req.user!.role === "STAFF" && input.shrinkageReportId) {
     throw new AppError(403, "INCIDENT_LINK_FORBIDDEN", "Only the Branch Manager may link an incident to an investigation");
   }
-  const item = await pool.query(
-    `SELECT 1 FROM inventory_items WHERE id=$1 AND status='ACTIVE'
-    AND (item_scope='GLOBAL' OR origin_branch_id=$2)`,
-    [input.inventoryItemId, branchId],
-  );
-  if (!item.rows[0])
-    throw new AppError(
-      422,
-      "INVENTORY_ITEM_INVALID",
-      "Select an active inventory item",
+  const client = await pool.connect();
+  let incidentId: string;
+  try {
+    await client.query("BEGIN");
+    const itemIds = input.items.map((item) => item.inventoryItemId);
+    const foundItems = await client.query<{ id: string; name: string; unit: string }>(
+      `SELECT id,name,unit FROM inventory_items WHERE id=ANY($1::uuid[]) AND status='ACTIVE'
+       AND (item_scope='GLOBAL' OR origin_branch_id=$2) FOR SHARE`,
+      [itemIds, branchId],
     );
-  if (input.productId) {
-    const product = await pool.query(
-      `SELECT 1 FROM menu_items mi JOIN menu_item_branches mib ON mib.menu_item_id=mi.id
-        WHERE mi.id=$1 AND mib.branch_id=$2 AND mi.status='ACTIVE' AND mi.approval_status='APPROVED'
-          AND mib.availability_status='APPROVED' AND mib.is_active=true
-          AND EXISTS (
-            SELECT 1
-              FROM menu_item_variants v
-              JOIN recipes r ON r.menu_item_variant_id=v.id AND r.status='ACTIVE'
-              JOIN recipe_items ri ON ri.recipe_id=r.id
-             WHERE v.menu_item_id=mi.id AND v.status='ACTIVE'
-               AND ri.inventory_item_id=$3
-               AND r.effective_from<=($4::timestamptz AT TIME ZONE 'Asia/Manila')::date
-               AND (r.effective_to IS NULL OR r.effective_to>($4::timestamptz AT TIME ZONE 'Asia/Manila')::date)
-          )`,
-      [input.productId, branchId, input.inventoryItemId, input.occurredAt],
-    );
-    if (!product.rows[0])
-      throw new AppError(
-        422,
-        "PRODUCT_INVALID",
-        "Select an active branch product whose recipe uses the selected ingredient",
+    if (foundItems.rows.length !== itemIds.length)
+      throw new AppError(422, "INVENTORY_ITEM_INVALID", "Select only active inventory items available to this branch");
+
+    let productId = input.productId ?? null;
+    if (input.productVariantId) {
+      const variant = await client.query<{ productId: string }>(
+        `SELECT mi.id "productId" FROM menu_item_variants v
+         JOIN menu_items mi ON mi.id=v.menu_item_id
+         JOIN menu_item_branches mib ON mib.menu_item_id=mi.id AND mib.branch_id=$2
+         WHERE v.id=$1 AND v.status='ACTIVE' AND mi.status='ACTIVE' AND mi.approval_status='APPROVED'
+           AND mib.availability_status='APPROVED' AND mib.is_active=true
+           AND NOT EXISTS (SELECT 1 FROM unnest($3::uuid[]) affected(item_id) WHERE NOT EXISTS (
+             SELECT 1 FROM recipes r JOIN recipe_items ri ON ri.recipe_id=r.id
+              WHERE r.menu_item_variant_id=v.id AND r.status='ACTIVE' AND ri.inventory_item_id=affected.item_id
+                AND r.effective_from<=($4::timestamptz AT TIME ZONE 'Asia/Manila')::date
+                AND (r.effective_to IS NULL OR r.effective_to>($4::timestamptz AT TIME ZONE 'Asia/Manila')::date)))`,
+        [input.productVariantId, branchId, itemIds, input.occurredAt],
       );
-  }
-  if (input.shrinkageReportId) {
-    const report = await pool.query(
-      `SELECT 1 FROM shrinkage_reports WHERE id=$1 AND branch_id=$2 AND inventory_item_id=$3`,
-      [input.shrinkageReportId, branchId, input.inventoryItemId],
-    );
-    if (!report.rows[0])
-      throw new AppError(
-        422,
-        "SHRINKAGE_REPORT_INVALID",
-        "The selected variance does not match this branch and inventory item",
+      if (!variant.rows[0]) throw new AppError(422, "PRODUCT_VARIANT_INVALID", "Select an active branch product variant whose recipe uses every affected ingredient");
+      productId = variant.rows[0].productId;
+      if (input.productId && input.productId !== productId)
+        throw new AppError(422, "PRODUCT_VARIANT_INVALID", "The selected variant does not belong to the selected product");
+    } else if (input.productId) {
+      const product = await client.query(
+        `SELECT 1 FROM menu_items mi JOIN menu_item_branches mib ON mib.menu_item_id=mi.id
+         WHERE mi.id=$1 AND mib.branch_id=$2 AND mi.status='ACTIVE' AND mi.approval_status='APPROVED'
+           AND mib.availability_status='APPROVED' AND mib.is_active=true`,
+        [input.productId, branchId],
       );
-  }
-  const inserted = await pool.query<{ id: string }>(
-    `INSERT INTO incident_reports (submitted_by,branch_id,inventory_item_id,menu_item_id,shrinkage_report_id,incident_type,other_incident_type,quantity,occurred_at,reason,notes,photo_url)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
-    [
-      req.user!.id,
-      branchId,
-      input.inventoryItemId,
-      input.productId ?? null,
-      input.shrinkageReportId ?? null,
-      input.incidentType,
-      input.otherIncidentType ?? null,
-      input.quantity,
-      input.occurredAt,
-      input.reason,
-      input.notes ?? null,
-      input.photoUrl ?? null,
-    ],
-  );
-  await writeAudit(
-    req.user!,
-    "CREATE_INCIDENT_REPORT",
-    "INCIDENT_REPORT",
-    inserted.rows[0]!.id,
-    `Recorded ${input.incidentType.toLowerCase()} incident`,
-    {
-      branchId,
-      inventoryItemId: input.inventoryItemId,
-      productId: input.productId ?? null,
-      incidentType: input.incidentType,
-      otherIncidentType: input.otherIncidentType ?? null,
-      shrinkageReportId: input.shrinkageReportId ?? null,
-    },
-  );
-  const result = await pool.query(`${incidentSelection} WHERE ir.id=$1`, [
-    inserted.rows[0]!.id,
-  ]);
-  if (req.user!.role === "STAFF") {
-    await pool.query(
+      if (!product.rows[0]) throw new AppError(422, "PRODUCT_INVALID", "Select an active branch product");
+    }
+
+    if (input.shrinkageReportId && input.items.length !== 1)
+      throw new AppError(422, "SHRINKAGE_REPORT_INVALID", "Legacy direct shrinkage linking supports only a one-item incident");
+    if (input.shrinkageReportId) {
+      const report = await client.query(`SELECT 1 FROM shrinkage_reports WHERE id=$1 AND branch_id=$2 AND inventory_item_id=$3`, [input.shrinkageReportId, branchId, itemIds[0]]);
+      if (!report.rows[0]) throw new AppError(422, "SHRINKAGE_REPORT_INVALID", "The selected variance does not match this branch and inventory item");
+    }
+
+    const first = input.items[0]!;
+    const inserted = await client.query<{ id: string }>(
+      `INSERT INTO incident_reports (submitted_by,branch_id,inventory_item_id,menu_item_id,menu_item_variant_id,shrinkage_report_id,incident_type,other_incident_type,quantity,occurred_at,reason,notes,photo_url)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+      [req.user!.id,branchId,first.inventoryItemId,productId,input.productVariantId??null,input.shrinkageReportId??null,input.incidentType,input.otherIncidentType??null,first.quantity,input.occurredAt,input.reason,input.notes??null,input.photoUrl??null],
+    );
+    incidentId = inserted.rows[0]!.id;
+    for (const affected of input.items) {
+      await client.query(
+        `INSERT INTO incident_report_items (incident_report_id,inventory_item_id,quantity,unit)
+         SELECT $1,ii.id,$3,ii.unit FROM inventory_items ii WHERE ii.id=$2`,
+        [incidentId, affected.inventoryItemId, affected.quantity],
+      );
+    }
+    if (input.shrinkageReportId) {
+      await client.query(
+        `INSERT INTO incident_shrinkage_links (incident_report_id,incident_report_item_id,shrinkage_report_id)
+         SELECT $1,iri.id,$2 FROM incident_report_items iri WHERE iri.incident_report_id=$1 AND iri.inventory_item_id=$3`,
+        [incidentId,input.shrinkageReportId,first.inventoryItemId],
+      );
+    }
+    await writeAudit(req.user!,"CREATE_INCIDENT_REPORT","INCIDENT_REPORT",incidentId,`Recorded ${input.incidentType.toLowerCase()} incident`,{
+      branchId,itemCount:input.items.length,inventoryItemIds:itemIds,productId,productVariantId:input.productVariantId??null,incidentType:input.incidentType,otherIncidentType:input.otherIncidentType??null,
+    },client);
+    if (req.user!.role === "STAFF") {
+      const itemSummary = foundItems.rows.map((item) => item.name).join(", ");
+      await client.query(
       `INSERT INTO notifications (recipient_user_id,branch_id,type,title,message,entity_type,entity_id)
        SELECT id,$1,'INCIDENT_SUBMITTED','New staff incident report',$2,'INCIDENT_REPORT',$3
        FROM users u WHERE role='BRANCH_MANAGER' AND branch_id=$1 AND status='ACTIVE'
@@ -321,11 +317,19 @@ export const createIncidentReport: RequestHandler = async (req, res) => {
          )`,
       [
         branchId,
-        `${result.rows[0].inventoryItemName}: ${input.incidentType.toLowerCase().replaceAll("_", " ")}`,
-        inserted.rows[0]!.id,
+        `${input.items.length} affected item${input.items.length===1?"":"s"} (${itemSummary}): ${input.incidentType.toLowerCase().replaceAll("_", " ")}`,
+        incidentId,
       ],
     );
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
   }
+  const result = await pool.query(`${incidentSelection} WHERE ir.id=$1`, [incidentId!]);
   res.status(201).json({ success: true, data: { incident: result.rows[0] } });
 };
 
@@ -380,16 +384,31 @@ export const linkIncidentToInvestigation: RequestHandler = async (req, res) => {
   const { id } = idParams.parse(req.params);
   const input = incidentLinkInput.parse(req.body);
   const branchId = requiredBranchId(req.user!);
-  const updated = await pool.query(
-    `UPDATE incident_reports ir SET shrinkage_report_id=$3,updated_at=now()
-      FROM shrinkage_reports sr
-     WHERE ir.id=$1 AND ir.branch_id=$2 AND sr.id=$3 AND sr.branch_id=$2
-       AND sr.inventory_item_id=ir.inventory_item_id
-     RETURNING ir.id`,
-    [id, branchId, input.shrinkageReportId],
-  );
-  if (!updated.rows[0]) throw new AppError(422, "INCIDENT_LINK_INVALID", "The incident and investigation must belong to the same branch and ingredient");
-  await writeAudit(req.user!, "LINK_INCIDENT_EVIDENCE", "INCIDENT_REPORT", id, "Linked an incident report as supporting investigation evidence", { branchId, shrinkageReportId: input.shrinkageReportId });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const linked = await client.query<{ incidentReportItemId: string }>(
+      `SELECT iri.id "incidentReportItemId"
+         FROM incident_reports ir
+         JOIN incident_report_items iri ON iri.incident_report_id=ir.id
+         JOIN shrinkage_reports sr ON sr.id=$3 AND sr.branch_id=ir.branch_id AND sr.inventory_item_id=iri.inventory_item_id
+        WHERE ir.id=$1 AND ir.branch_id=$2 AND NOT ir.is_test_data AND ir.archived_at IS NULL
+          AND ir.status IN ('PENDING','VERIFIED') AND NOT sr.is_test_data AND sr.archived_at IS NULL
+          AND sr.status IN ('DETECTED','VERIFIED','PENDING_REVIEW')
+          AND ($4::uuid IS NULL OR iri.id=$4::uuid)
+        FOR UPDATE OF ir`,
+      [id,branchId,input.shrinkageReportId,input.incidentReportItemId??null],
+    );
+    if (!linked.rows[0]) throw new AppError(422, "INCIDENT_LINK_INVALID", "The active incident item and investigation must belong to the same branch and ingredient");
+    await client.query(
+      `INSERT INTO incident_shrinkage_links (incident_report_id,incident_report_item_id,shrinkage_report_id)
+       VALUES ($1,$2,$3) ON CONFLICT (incident_report_item_id,shrinkage_report_id) DO NOTHING`,
+      [id,linked.rows[0].incidentReportItemId,input.shrinkageReportId],
+    );
+    await client.query(`UPDATE incident_reports SET shrinkage_report_id=COALESCE(shrinkage_report_id,$2),updated_at=now() WHERE id=$1`,[id,input.shrinkageReportId]);
+    await writeAudit(req.user!, "LINK_INCIDENT_EVIDENCE", "INCIDENT_REPORT", id, "Linked an incident item as supporting investigation evidence", { branchId, incidentReportItemId:linked.rows[0].incidentReportItemId, shrinkageReportId: input.shrinkageReportId },client);
+    await client.query("COMMIT");
+  } catch(error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   const result = await pool.query(`${incidentSelection} WHERE ir.id=$1`, [id]);
   res.json({ success: true, data: { incident: result.rows[0] } });
 };
@@ -402,7 +421,10 @@ const purchaseOrderSelection = `SELECT po.id,po.po_no "poNo",po.branch_id "branc
   COALESCE(sum(poi.quantity_ordered*poi.unit_cost),0)::float8 "totalAmount",
   COALESCE(json_agg(json_build_object('id',poi.id,'inventoryItemId',ii.id,'sku',ii.sku,'name',ii.name,'unit',ii.unit,
     'quantityOrdered',poi.quantity_ordered::float8,'quantityReceived',poi.quantity_received::float8,'unitCost',poi.unit_cost::float8,
-    'purchaseUom',poi.purchase_uom,'conversionFactor',poi.conversion_factor::float8)
+    'purchaseUom',poi.purchase_uom,'conversionFactor',poi.conversion_factor::float8,
+    'latestPhysicalCountDate',(SELECT max(ic.count_date)::text FROM inventory_counts ic
+      JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id
+      WHERE ic.branch_id=po.branch_id AND ici.inventory_item_id=ii.id AND NOT ic.is_test_data))
     ORDER BY ii.name) FILTER (WHERE poi.id IS NOT NULL),'[]') items
   FROM purchase_orders po JOIN branches b ON b.id=po.branch_id JOIN users u ON u.id=po.created_by
   LEFT JOIN purchase_order_items poi ON poi.purchase_order_id=po.id LEFT JOIN inventory_items ii ON ii.id=poi.inventory_item_id`;
@@ -471,7 +493,7 @@ export const createPurchaseOrder: RequestHandler = async (req, res) => {
   try {
     await client.query("BEGIN");
     const completedCount = await client.query(
-      `SELECT id FROM inventory_counts WHERE branch_id=$1 AND count_date=$2::date LIMIT 1`,
+      `SELECT id FROM inventory_counts WHERE branch_id=$1 AND count_date=$2::date AND NOT is_test_data LIMIT 1`,
       [branchId, input.orderDate],
     );
     if (!completedCount.rows[0]) {
@@ -647,8 +669,9 @@ export const receivePurchaseOrder: RequestHandler = async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const order = await client.query<{ poNo: string; orderDate: string; isTestData: boolean }>(
-      `SELECT po_no "poNo",order_date::text "orderDate",is_test_data "isTestData" FROM purchase_orders WHERE id=$1 AND branch_id=$2 AND status IN ('ORDERED','PARTIALLY_RECEIVED') FOR UPDATE`,
+    const order = await client.query<{ poNo: string; orderDate: string; isTestData: boolean; status: string }>(
+      `SELECT po_no "poNo",order_date::text "orderDate",is_test_data "isTestData",status
+         FROM purchase_orders WHERE id=$1 AND branch_id=$2 FOR UPDATE`,
       [id, branchId],
     );
     if (!order.rows[0])
@@ -663,6 +686,14 @@ export const receivePurchaseOrder: RequestHandler = async (req, res) => {
         "PO_RECEIPT_DATE_INVALID",
         "Received date cannot be before the order date",
       );
+    const lockedItems: {
+      purchaseOrderItemId: string;
+      quantityReceived: number;
+      inventoryItemId: string;
+      remaining: number;
+      unitCost: number;
+      conversionFactor: number;
+    }[] = [];
     for (const item of input.items) {
       const current = await client.query<{
         inventoryItemId: string;
@@ -681,19 +712,84 @@ export const receivePurchaseOrder: RequestHandler = async (req, res) => {
           "PO_ITEM_NOT_FOUND",
           "A received item does not belong to this purchase order",
         );
-      if (item.quantityReceived > current.rows[0].remaining)
+      lockedItems.push({
+        ...item,
+        ...current.rows[0],
+        conversionFactor: Number(current.rows[0].conversionFactor ?? 1),
+      });
+    }
+    const priorReceipt = await client.query<{
+      inventoryItemId: string;
+      quantity: number;
+      receivedDate: string;
+    }>(
+      `SELECT inventory_item_id "inventoryItemId",quantity::float8,
+              occurred_at::date::text "receivedDate"
+         FROM inventory_movements
+        WHERE branch_id=$1 AND reference_no=$2 AND movement_type='RECEIPT'
+          AND receipt_request_id=$3::uuid
+        ORDER BY inventory_item_id`,
+      [branchId, order.rows[0].poNo, input.receiptRequestId],
+    );
+    if (priorReceipt.rows.length > 0) {
+      const exactReplay = priorReceipt.rows.length === lockedItems.length
+        && lockedItems.every((item) => priorReceipt.rows.some((movement) =>
+          movement.inventoryItemId === item.inventoryItemId
+          && Number(movement.quantity).toFixed(4) === receivedStockQuantity(
+            item.quantityReceived,
+            item.conversionFactor,
+          ).toFixed(4)
+          && movement.receivedDate === input.receivedDate
+        ));
+      if (!exactReplay)
+        throw new AppError(
+          409,
+          "PO_RECEIPT_IDEMPOTENCY_CONFLICT",
+          "This receipt request ID was already used with different receipt details",
+        );
+      await client.query("COMMIT");
+      res.json({
+        success: true,
+        data: {
+          purchaseOrder: (await readPurchaseOrders(branchId, undefined, id))[0],
+        },
+      });
+      return;
+    }
+    const latestPhysicalCount = await client.query<{ countDate: string }>(
+      `SELECT max(ic.count_date)::text "countDate"
+         FROM inventory_counts ic
+         JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id
+        WHERE ic.branch_id=$1 AND ici.inventory_item_id=ANY($2::uuid[]) AND NOT ic.is_test_data`,
+      [branchId, [...new Set(lockedItems.map((item) => item.inventoryItemId))]],
+    );
+    const latestCountDate = latestPhysicalCount.rows[0]?.countDate;
+    if (latestCountDate && input.receivedDate <= latestCountDate)
+      throw new AppError(
+        422,
+        "PO_RECEIPT_DATE_BEFORE_LATEST_COUNT",
+        `Receipt date must be after the latest physical count date (${latestCountDate})`,
+      );
+    if (!["ORDERED", "PARTIALLY_RECEIVED"].includes(order.rows[0].status))
+      throw new AppError(
+        409,
+        "PO_NOT_RECEIVABLE",
+        "Only ordered or partially received purchase orders can be received",
+      );
+    for (const item of lockedItems) {
+      if (item.quantityReceived > item.remaining)
         throw new AppError(
           422,
           "PO_RECEIPT_EXCEEDS_ORDER",
           "Received quantity cannot exceed the remaining ordered quantity",
         );
-      const conversionFactor = Number(current.rows[0].conversionFactor ?? 1);
+      const conversionFactor = item.conversionFactor;
       if (order.rows[0].isTestData) {
         const priorSetting = await client.query<{ currentUnitCost: number }>(
           `SELECT current_unit_cost::float8 "currentUnitCost"
              FROM branch_inventory_settings
             WHERE branch_id=$1 AND inventory_item_id=$2 FOR UPDATE`,
-          [branchId, current.rows[0].inventoryItemId],
+          [branchId, item.inventoryItemId],
         );
         await client.query(
           `UPDATE purchase_order_items
@@ -712,16 +808,17 @@ export const receivePurchaseOrder: RequestHandler = async (req, res) => {
         [item.purchaseOrderItemId, item.quantityReceived],
       );
       await client.query(
-        `INSERT INTO inventory_movements (branch_id,inventory_item_id,movement_type,quantity,occurred_at,reference_no,notes,created_by,is_test_data)
-         VALUES ($1,$2,'RECEIPT',$3,$4::date + time '12:00',$5,'Received through Purchase Orders',$6,$7)`,
+        `INSERT INTO inventory_movements (branch_id,inventory_item_id,movement_type,quantity,occurred_at,reference_no,notes,created_by,is_test_data,receipt_request_id)
+         VALUES ($1,$2,'RECEIPT',$3,$4::date + time '12:00',$5,'Received through Purchase Orders',$6,$7,$8::uuid)`,
         [
           branchId,
-          current.rows[0].inventoryItemId,
+          item.inventoryItemId,
           receivedStockQuantity(item.quantityReceived, conversionFactor),
           input.receivedDate,
           order.rows[0].poNo,
           req.user!.id,
           order.rows[0].isTestData,
+          input.receiptRequestId,
         ],
       );
       const appliedSetting = await client.query<{ updatedAt: Date }>(
@@ -733,8 +830,8 @@ export const receivePurchaseOrder: RequestHandler = async (req, res) => {
         [
           branchId,
           req.user!.id,
-          baseStockUnitCost(current.rows[0].unitCost, conversionFactor),
-          current.rows[0].inventoryItemId,
+          baseStockUnitCost(item.unitCost, conversionFactor),
+          item.inventoryItemId,
         ],
       );
       if (order.rows[0].isTestData) {

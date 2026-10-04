@@ -254,7 +254,7 @@ function parseTransactionSummary(rows: SheetRows, worksheet: string, headerRowNu
     const quantityMismatch = expectedQuantity !== null && Math.abs(expectedQuantity - parsedQuantity) > 0.0001;
     if (!tokens.length) tokens.push({ raw: "", name: "", quantity: null });
     tokens.forEach((token) => {
-      const issues = [TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE];
+      const issues: string[] = [];
       if (!token.name || token.quantity === null || token.quantity <= 0) issues.unshift("The Item Name(s) value contains a malformed product token.");
       if (quantityMismatch) issues.push("Parsed product quantities do not match Item Qty.");
       if (!date) issues.push("The transaction has no valid business date.");
@@ -267,7 +267,7 @@ function parseTransactionSummary(rows: SheetRows, worksheet: string, headerRowNu
         sourceFormat: POS_SOURCE_FORMATS.TRANSACTION_SUMMARY, sourceWorksheet: worksheet, sourceRow,
         lineAmount: null, sourceOrNumber: transactionId, sourceTransactionNumber: null,
         transactionStatus: status, transactionTimestampRaw: timestampRaw,
-        status: issues.length === 1 ? "WARNING" : "INVALID", issues,
+        status: issues.length ? "INVALID" : "VALID", issues,
       });
     });
   });

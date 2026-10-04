@@ -16,6 +16,7 @@ export interface ExpectedInventoryResult {
   approvedAdjustmentDecreases: number;
   expectedQuantity: number;
   baselineDate: string;
+  baselineSource: "PHYSICAL_COUNT" | "OPENING_BASELINE" | "BALANCE";
 }
 
 export interface VarianceResult {
@@ -45,7 +46,7 @@ export function computeVariance(
   actualQuantity: number,
   unitCost: number,
 ): VarianceResult {
-  const varianceQuantity = expectedQuantity - actualQuantity;
+  const varianceQuantity = actualQuantity - expectedQuantity;
   const varianceValue = varianceQuantity * unitCost;
   const variancePercentage =
     expectedQuantity > 0 ? (varianceQuantity / expectedQuantity) * 100 : null;
@@ -72,20 +73,45 @@ export async function calculateExpectedInventory(
   const item = itemResult.rows[0];
   if (!item) throw new AppError(404, "INVENTORY_ITEM_NOT_FOUND", "Inventory item not found");
 
-  const priorCount = await client.query<{ actualQuantity: number; baselineDate: string }>(
-    `SELECT ici.actual_quantity::float8 "actualQuantity",ic.count_date::text "baselineDate"
+  type InventoryBaseline = { actualQuantity: number; baselineDate: string; baselineAt: string; baselineSource: ExpectedInventoryResult["baselineSource"] };
+  const priorCount = await client.query<InventoryBaseline>(
+    `SELECT ici.actual_quantity::float8 "actualQuantity",ic.count_date::text "baselineDate",
+            ((ic.count_date::timestamp + interval '1 day') AT TIME ZONE 'Asia/Manila')::text "baselineAt",
+            'PHYSICAL_COUNT'::text "baselineSource"
        FROM inventory_count_items ici
        JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
-      WHERE ic.branch_id=$1 AND ici.inventory_item_id=$2 AND NOT ic.is_test_data AND ic.count_date < $3::date
+      WHERE ic.branch_id=$1 AND ici.inventory_item_id=$2 AND NOT ic.is_test_data AND ic.count_date <= $3::date
       ORDER BY ic.count_date DESC,ic.submitted_at DESC LIMIT 1`,
     [branchId, inventoryItemId, countDate],
   );
-  const openingBalance = await client.query<{ actualQuantity: number; baselineDate: string }>(
-    `SELECT actual_quantity::float8 "actualQuantity",as_of::date::text "baselineDate"
-       FROM branch_inventory_balances WHERE branch_id=$1 AND inventory_item_id=$2 AND NOT is_test_data`,
-    [branchId, inventoryItemId],
+  const openingBaseline = await client.query<InventoryBaseline>(
+    `SELECT obi.quantity::float8 "actualQuantity",ob.effective_at::date::text "baselineDate",
+            ob.effective_at::text "baselineAt",'OPENING_BASELINE'::text "baselineSource"
+       FROM inventory_opening_baseline_items obi
+       JOIN inventory_opening_baselines ob ON ob.id=obi.opening_baseline_id
+      WHERE ob.branch_id=$1 AND obi.inventory_item_id=$2
+        AND ob.effective_at < ($3::date + interval '1 day')
+      ORDER BY ob.effective_at DESC LIMIT 1`,
+    [branchId, inventoryItemId, countDate],
   );
-  const baseline = priorCount.rows[0] ?? openingBalance.rows[0] ?? { actualQuantity: 0, baselineDate: "1970-01-01" };
+  const openingBalance = await client.query<InventoryBaseline>(
+    `SELECT actual_quantity::float8 "actualQuantity",as_of::date::text "baselineDate",
+            as_of::text "baselineAt",'BALANCE'::text "baselineSource"
+       FROM branch_inventory_balances
+      WHERE branch_id=$1 AND inventory_item_id=$2 AND NOT is_test_data
+        AND as_of::date <= $3::date`,
+    [branchId, inventoryItemId, countDate],
+  );
+  const baseline = [priorCount.rows[0], openingBaseline.rows[0], openingBalance.rows[0]]
+    .filter((candidate): candidate is InventoryBaseline => Boolean(candidate))
+    .sort((left, right) => new Date(right.baselineAt).getTime() - new Date(left.baselineAt).getTime())[0];
+  if (!baseline) {
+    throw new AppError(
+      422,
+      "NO_VALID_HISTORICAL_BASELINE",
+      `No inventory baseline exists for ${item.sku} on or before ${countDate}.`,
+    );
+  }
 
   const movements = await client.query<{ received: number; adjustmentIncreases: number; adjustmentDecreases: number }>(
     `SELECT
@@ -94,8 +120,10 @@ export async function calculateExpectedInventory(
        COALESCE(sum(quantity) FILTER (WHERE movement_type IN ('APPROVED_ADJUSTMENT', 'APPROVED_ADJUSTMENT_DECREASE')),0)::float8 "adjustmentDecreases"
        FROM inventory_movements
       WHERE branch_id=$1 AND inventory_item_id=$2 AND NOT is_test_data
-        AND occurred_at::date > $3::date AND occurred_at::date <= $4::date`,
-    [branchId, inventoryItemId, baseline.baselineDate, countDate],
+        AND (($5::text='OPENING_BASELINE' AND occurred_at >= $6::timestamptz)
+          OR ($5::text<>'OPENING_BASELINE' AND occurred_at::date > $3::date))
+        AND occurred_at::date <= $4::date`,
+    [branchId, inventoryItemId, baseline.baselineDate, countDate, baseline.baselineSource, baseline.baselineAt],
   );
 
   const consumption = await client.query<{ unit: string; quantity: number }>(
@@ -103,9 +131,13 @@ export async function calculateExpectedInventory(
        FROM pos_sale_ingredient_usage usage
        JOIN pos_sale_items psi ON psi.id=usage.pos_sale_item_id
        JOIN pos_imports pi ON pi.id=psi.pos_import_id
-      WHERE pi.branch_id=$1 AND usage.inventory_item_id=$2 AND pi.business_date > $3::date AND pi.business_date <= $4::date
+       JOIN pos_sources source ON source.id=pi.pos_source_id AND source.status='ACTIVE'
+      WHERE pi.branch_id=$1 AND usage.inventory_item_id=$2
+        AND (($5::text='OPENING_BASELINE' AND pi.business_date >= $3::date)
+          OR ($5::text<>'OPENING_BASELINE' AND pi.business_date > $3::date))
+        AND pi.business_date <= $4::date
       GROUP BY usage.unit`,
-    [branchId, inventoryItemId, baseline.baselineDate, countDate],
+    [branchId, inventoryItemId, baseline.baselineDate, countDate, baseline.baselineSource],
   );
 
   const stockReceived = Number(movements.rows[0]?.received ?? 0);
@@ -136,5 +168,6 @@ export async function calculateExpectedInventory(
     approvedAdjustmentDecreases,
     expectedQuantity,
     baselineDate: baseline.baselineDate,
+    baselineSource: baseline.baselineSource,
   };
 }

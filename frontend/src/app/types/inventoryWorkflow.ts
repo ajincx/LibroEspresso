@@ -10,6 +10,28 @@ export interface ExpectedInventoryItem {
   approvedAdjustments: number;
   expectedQuantity: number;
   baselineDate: string;
+  baselineSource?: "PHYSICAL_COUNT" | "OPENING_BASELINE" | "BALANCE";
+}
+
+export interface UnavailableInventoryCountItem {
+  inventoryItemId: string;
+  sku: string;
+  itemName: string;
+  unit: string;
+  availability: "NO_BASELINE";
+}
+
+export interface OpeningInventoryBaseline {
+  id: string;
+  baselineNo: string;
+  branchId: string;
+  branchName: string;
+  effectiveAt: string;
+  designation: "UAT_OPENING";
+  notes: string;
+  createdAt: string;
+  createdBy: string;
+  items: Array<{ id: string; inventoryItemId: string; sku: string; name: string; quantity: number; unit: string }>;
 }
 
 export interface PosImportRecord {
@@ -37,6 +59,8 @@ export interface PosImportRecord {
   cleanupReason: string | null;
   canAuthorizeCleanup: boolean;
   canCleanup: boolean;
+  lateHistoricalImport?: boolean;
+  latestBaselineDate?: string | null;
 }
 
 export interface PosImportPreviewRow {
@@ -135,6 +159,17 @@ export interface PosImportReconciliation {
   importedQuantity:number; expectedCogs:number; generatedCogs:number; salesTotalMatches:boolean;
   quantityMatches:boolean; recipeConsumptionMatches:boolean; cogsMatches:boolean; branchIsolated:boolean;
 }
+export interface PosInventoryDateAssessment {
+  lateHistoricalImport: boolean;
+  latestBaselineDate: string | null;
+  affectedCountPeriods: Array<{
+    id: string;
+    countNo: string;
+    countDate: string;
+    affectedItemCount: number;
+    varianceCount: number;
+  }>;
+}
 
 export interface PosSource {
   id: string;
@@ -199,6 +234,8 @@ export interface PosAnalytics {
 
 export interface InventoryCountSummary {
   canEdit: boolean;
+  canClassifyAsTestData?: boolean;
+  isTestData?: boolean;
   id: string;
   countNo: string;
   countDate: string;
@@ -273,7 +310,7 @@ export interface ShrinkageReport {
 
 export interface ShrinkageEvidence {
   incidents: {
-    id: string; incidentType: string; quantity: number; occurredAt: string; reason: string;
+    id: string; incidentReportItemId: string; incidentType: string; quantity: number; unit: string; occurredAt: string; reason: string;
     notes: string | null; photoUrl: string | null; status: string; managerComment: string | null;
     submittedByName: string; explicitlyLinked: boolean;
   }[];

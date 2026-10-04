@@ -8,9 +8,11 @@ export const inventorySettingsParams = z.object({
   inventoryItemId: z.string().uuid(),
 });
 export const branchInventorySettingsInput = z.object({
-  currentUnitCost: z.coerce.number().min(0),
+  branchId: z.string().uuid(),
+  category: z.enum(["FAST", "MEDIUM", "SLOW"]),
   reorderLevel: z.coerce.number().min(0),
   reorderDays: z.coerce.number().int().min(1).max(365),
+  reason: z.string().trim().min(10).max(500),
 });
 
 export const incidentFilters = z.object({
@@ -26,13 +28,23 @@ export const incidentFilters = z.object({
   path: ["endDate"],
 });
 
-export const incidentCreateInput = z.object({
+const incidentItemInput = z.object({
   inventoryItemId: z.string().uuid(),
+  quantity: z.coerce.number().finite().positive(),
+});
+
+export const incidentCreateInput = z.object({
+  items: z.array(incidentItemInput).min(1).refine(
+    (items) => new Set(items.map((item) => item.inventoryItemId)).size === items.length,
+    "Affected inventory items must be unique",
+  ).optional(),
+  inventoryItemId: z.string().uuid().optional(),
+  quantity: z.coerce.number().finite().positive().optional(),
   productId: z.string().uuid().optional(),
+  productVariantId: z.string().uuid().optional(),
   shrinkageReportId: z.string().uuid().optional(),
   incidentType: z.enum(STAFF_INCIDENT_TYPES),
   otherIncidentType: z.string().trim().min(1, "Please specify the incident type.").max(120).nullish(),
-  quantity: z.coerce.number().positive(),
   occurredAt: z.iso.datetime(),
   reason: z.string().trim().min(3).max(1000),
   notes: z.string().trim().max(3000).optional(),
@@ -46,6 +58,9 @@ export const incidentCreateInput = z.object({
     )
     .optional(),
 }).superRefine((value, context) => {
+  if (!value.items && (!value.inventoryItemId || value.quantity == null)) {
+    context.addIssue({ code: "custom", path: ["items"], message: "At least one affected item is required" });
+  }
   if (value.incidentType === "OTHER" && !value.otherIncidentType) {
     context.addIssue({
       code: "custom",
@@ -55,6 +70,7 @@ export const incidentCreateInput = z.object({
   }
 }).transform((value) => ({
   ...value,
+  items: value.items ?? [{ inventoryItemId: value.inventoryItemId!, quantity: value.quantity! }],
   otherIncidentType:
     value.incidentType === "OTHER" ? value.otherIncidentType : undefined,
 }));
@@ -66,6 +82,7 @@ export const incidentReviewInput = z.object({
 
 export const incidentLinkInput = z.object({
   shrinkageReportId: z.string().uuid(),
+  incidentReportItemId: z.string().uuid().optional(),
 });
 
 const purchaseOrderItem = z.object({
@@ -110,6 +127,7 @@ export const purchaseOrderStatusInput = z.object({
 });
 
 export const purchaseOrderReceiveInput = z.object({
+  receiptRequestId: z.string().uuid(),
   receivedDate: z.iso.date(),
   items: z
     .array(

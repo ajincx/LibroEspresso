@@ -6,6 +6,7 @@ import type {
   IncidentStatus,
   IncidentType,
   InventoryOverviewItem,
+  InventoryStockLedger,
   PurchaseOrder,
   PurchaseOrderStatus,
 } from "../types/operations";
@@ -20,12 +21,22 @@ export const operationsService = {
       )
     ).data.data.items;
   },
+  async inventoryStockLedger(inventoryItemId: string, branchId: string) {
+    return (
+      await api.get<ApiSuccess<{ ledger: InventoryStockLedger }>>(
+        `/inventory-overview/${inventoryItemId}/ledger`,
+        { params: { branchId } },
+      )
+    ).data.data.ledger;
+  },
   async updateInventorySettings(
     inventoryItemId: string,
     input: {
-      currentUnitCost: number;
+      branchId: string;
+      category: "FAST" | "MEDIUM" | "SLOW";
       reorderLevel: number;
       reorderDays: number;
+      reason: string;
     },
   ) {
     return (
@@ -33,7 +44,7 @@ export const operationsService = {
         ApiSuccess<{
           settings: {
             inventoryItemId: string;
-            currentUnitCost: number;
+            category: "FAST" | "MEDIUM" | "SLOW";
             reorderLevel: number;
             reorderDays: number;
           };
@@ -67,12 +78,14 @@ export const operationsService = {
     ).data.data;
   },
   async createIncident(input: {
-    inventoryItemId: string;
+    items?: { inventoryItemId: string; quantity: number }[];
+    inventoryItemId?: string;
+    quantity?: number;
     productId?: string;
+    productVariantId?: string;
     shrinkageReportId?: string;
     incidentType: IncidentType;
     otherIncidentType?: string;
-    quantity: number;
     occurredAt: string;
     reason: string;
     notes?: string;
@@ -97,8 +110,8 @@ export const operationsService = {
       )
     ).data.data.incident;
   },
-  async linkIncident(id: string, shrinkageReportId: string) {
-    return (await api.patch<ApiSuccess<{ incident: IncidentReport }>>(`/incidents/${id}/link`, { shrinkageReportId })).data.data.incident;
+  async linkIncident(id: string, shrinkageReportId: string, incidentReportItemId?: string) {
+    return (await api.patch<ApiSuccess<{ incident: IncidentReport }>>(`/incidents/${id}/link`, { shrinkageReportId, incidentReportItemId })).data.data.incident;
   },
   async purchaseOrders(filters?: {
     branchId?: string;
@@ -142,13 +155,14 @@ export const operationsService = {
   },
   async receivePurchaseOrder(
     id: string,
+    receiptRequestId: string,
     receivedDate: string,
     items: { purchaseOrderItemId: string; quantityReceived: number }[],
   ) {
     return (
       await api.post<ApiSuccess<{ purchaseOrder: PurchaseOrder }>>(
         `/purchase-orders/${id}/receive`,
-        { receivedDate, items },
+        { receiptRequestId, receivedDate, items },
       )
     ).data.data.purchaseOrder;
   },

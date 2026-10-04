@@ -482,6 +482,7 @@ export function UserManagementPage({
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4"
           style={{ background: "rgba(0,0,0,.48)" }}
+          onMouseDown={(event)=>{if(event.target===event.currentTarget)closeModal();}}
         >
           <div role="dialog" aria-modal="true" aria-labelledby="user-account-dialog-title" className="w-full max-w-2xl max-h-[92vh] overflow-y-auto rounded-2xl shadow-2xl p-5 sm:p-6 bg-[var(--app-surface)] border border-[var(--app-border)]">
             <div className="flex items-start justify-between mb-5">

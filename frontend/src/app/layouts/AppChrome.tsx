@@ -1,4 +1,5 @@
 import React, { lazy, Suspense, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   LayoutDashboard, Package, TrendingDown, FileText, Sparkles, Users, Building2, Settings,
   LogOut, Bell, Search, ChevronDown, ChevronRight, X, Coffee, MapPin, Shield,
@@ -6,7 +7,23 @@ import {
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import type { Page, Role } from "../types/navigation";
-import { C, cn, getInitials, EmptyState, Btn, ModuleLoadingFallback, Select } from "../components/ModuleUi";
+import { C, cn, getInitials, EmptyState, Btn, isModalBackdropEvent, ModuleLoadingFallback, Select } from "../components/ModuleUi";
+
+export function CurrentAccessCard({ role, branchName, onOpenSettings }: { role: "owner" | "manager"; branchName?: string; onOpenSettings: () => void }) {
+  return <div className="mt-5 min-w-0 overflow-hidden rounded-xl p-4 sm:p-5" style={{ background: C.mainBg }}>
+    <div className="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: C.muted }}>Current access</p>
+        <p className="mt-1 break-words font-semibold leading-snug">{role === "owner" ? "Owner · All branches" : `Manager · ${branchName ?? "Assigned branch"}`}</p>
+        <p className="mt-2 break-words text-xs leading-relaxed" style={{ color: C.secondary }}>Use Search to open a module, the branch selector to scope Owner records, Messages for internal communication, and Notifications for operational updates.</p>
+      </div>
+      <button onClick={onOpenSettings} className="w-full shrink-0 rounded-xl px-4 py-2.5 text-sm font-semibold text-white sm:w-auto" style={{ background: C.maroon }}>Open Profile &amp; Settings</button>
+    </div>
+  </div>;
+}
+
+export const SYSTEM_INFO_OVERLAY_CLASS = "fixed inset-0 z-[100] flex items-start justify-center p-4 sm:justify-end sm:p-5";
+export const SYSTEM_INFO_PANEL_CLASS = "mt-0 w-full min-w-0 max-w-lg max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-2xl border p-5 shadow-2xl sm:mt-[3.75rem] sm:max-h-[calc(100dvh-6.25rem)] sm:p-6";
 
 const MessagesPanel = lazy(() => import("../modules/messages/MessagesPanel").then((module) => ({ default: module.MessagesPanel })));
 
@@ -346,21 +363,17 @@ export function TopHeader({ role, page, branch, branches, setBranch, unreadCount
           </>
         )}
       </div>
-      {helpOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.45)" }} onMouseDown={(event) => { if (event.target === event.currentTarget) setHelpOpen(false); }}>
-          <div className="w-full max-w-md rounded-2xl border p-6 shadow-2xl" style={{ background: C.surface, borderColor: C.border }}>
+      {helpOpen && typeof document !== "undefined" && createPortal(
+        <div className={SYSTEM_INFO_OVERLAY_CLASS} style={{ background: "rgba(0,0,0,.45)" }} onMouseDown={(event) => { if (isModalBackdropEvent(event)) setHelpOpen(false); }}>
+          <div className={SYSTEM_INFO_PANEL_CLASS} style={{ background: C.surface, borderColor: C.border }}>
             <div className="flex items-start justify-between gap-4">
               <div><h2 className="text-lg font-bold">Libro Espresso</h2><p className="text-sm mt-1" style={{ color: C.secondary }}>COGS, inventory, shrinkage, and branch operations platform.</p></div>
               <button onClick={() => setHelpOpen(false)} className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: C.grayBg }} aria-label="Close information"><X size={15}/></button>
             </div>
-            <div className="mt-5 rounded-xl p-4" style={{ background: C.mainBg }}>
-              <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: C.muted }}>Current access</p>
-              <p className="font-semibold mt-1">{role === "owner" ? "Owner · All branches" : `Manager · ${user?.branch?.name ?? "Assigned branch"}`}</p>
-              <p className="text-xs mt-2 leading-relaxed" style={{ color: C.secondary }}>Use Search to open a module, the branch selector to scope Owner records, Messages for internal communication, and Notifications for operational updates.</p>
-            </div>
-            <button onClick={() => { setHelpOpen(false); onSettings(); }} className="mt-5 w-full py-2.5 rounded-xl text-sm font-semibold text-white" style={{ background: C.maroon }}>Open Profile &amp; Settings</button>
+            <CurrentAccessCard role={role} branchName={user?.branch?.name} onOpenSettings={() => { setHelpOpen(false); onSettings(); }}/>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </header>
   );
@@ -383,7 +396,7 @@ export function NotifDrawer({ open, onClose, notifs, markAllRead, onOpenNotifica
 }) {
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 backdrop-blur-sm" style={{ background:"rgba(24,10,14,.55)" }} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 backdrop-blur-sm" style={{ background:"rgba(24,10,14,.55)" }} onMouseDown={(event) => { if (isModalBackdropEvent(event)) onClose(); }}>
       <section role="dialog" aria-modal="true" aria-label="Notifications" className="w-full max-w-lg max-h-[82vh] overflow-hidden rounded-3xl border flex flex-col"
         style={{ background:"var(--app-surface)",borderColor:"var(--app-border)",boxShadow:"0 28px 80px rgba(43,14,22,.28)" }}>
         <div className="flex items-center justify-between px-5 sm:px-6 py-5 border-b" style={{ borderColor:"var(--app-border)",background:"linear-gradient(135deg,var(--app-primary-faint),var(--app-surface))" }}>

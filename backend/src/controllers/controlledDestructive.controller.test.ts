@@ -4,14 +4,20 @@ const mocks = vi.hoisted(() => ({ connect: vi.fn(), poolQuery: vi.fn(), writeAud
 vi.mock("../config/database.js", () => ({ pool: { connect: mocks.connect, query: mocks.poolQuery } }));
 vi.mock("../services/audit.service.js", () => ({ writeAudit: mocks.writeAudit }));
 
-import { applyPurchaseOrderLifecycle, deletePosSourceConfiguration, removeInventoryItem } from "./controlledDestructive.controller.js";
+import { applyPurchaseOrderLifecycle, deletePosSourceConfiguration, removeInventoryItem, retireTestDataProductChain } from "./controlledDestructive.controller.js";
 
 const itemId = "00000000-0000-4000-8000-000000000099";
 const posSourceId = "00000000-0000-4000-8000-000000000088";
+const testProductId = "bc8e8f7a-03c6-4e78-8aad-0258578d0798";
+const testVariantId = "b6a66c00-d66a-4d07-9e2b-197964b812e4";
+const testRecipeId = "18532e4d-960f-4cf2-a6df-0f086568ccd5";
+const testIngredientId = "9dd929ed-0416-4bf0-9cb9-b114956f3beb";
 const owner = { id: "00000000-0000-4000-8000-000000000001", role: "OWNER", branchId: null } as const;
 const input = { reason: "Remove duplicate demonstration ingredient", verificationPin: "12345" };
 const request = (user: unknown = owner, body: unknown = input) => ({ params: { id: itemId }, body, user }) as never;
 const posSourceRequest = (user: unknown = owner, body: unknown = input) => ({ params: { id: posSourceId }, body, user }) as never;
+const retirementInput = { reason: "Retire the approved UAT-only product chain", verificationPin: "12345", confirmed: true };
+const retirementRequest = (user: unknown = owner, body: unknown = retirementInput) => ({ params: { id: testProductId }, body, user }) as never;
 const response = () => { const res = { json: vi.fn() }; return res; };
 
 function clientWithDependency(used: boolean) {
@@ -75,6 +81,114 @@ describe("controlled destructive actions", () => {
     await expect(applyPurchaseOrderLifecycle(request(manager, { ...input, action: "REVERSE" }), response() as never, vi.fn())).rejects.toMatchObject({ status: 409, code: "PO_REVERSAL_COUNT_DEPENDENCY" });
     expect(statements).toContain("ROLLBACK");
     expect(statements.some((sql) => sql.includes("INSERT INTO inventory_movements"))).toBe(false);
+  });
+});
+
+describe("controlled test product retirement", () => {
+  const chain = {
+    productId: testProductId,
+    productCode: "PRD-00073",
+    productName: "Test Caramel Latte",
+    productStatus: "ACTIVE",
+    variantId: testVariantId,
+    variantName: "Standard",
+    variantStatus: "ACTIVE",
+    recipeId: testRecipeId,
+    recipeName: "Test Caramel Latte Standard Recipe",
+    recipeStatus: "ACTIVE",
+    recipeVersion: 1,
+    ingredientId: testIngredientId,
+    ingredientSku: "ING-00073",
+    ingredientStatus: "ACTIVE",
+  };
+
+  function retirementClient(dependency = 0) {
+    const statements: string[] = [];
+    const client = { query: vi.fn(async (statement: unknown) => {
+      const sql = String(statement); statements.push(sql);
+      if (sql.includes(`FROM menu_items mi`)) return { rows: [chain] };
+      if (sql.includes(`SELECT branch_id FROM menu_item_branches`)) return { rows: [{ branch_id: "branch-1" }] };
+      if (sql.includes(`pos_product_variant_mappings WHERE`)) return { rows: [{
+        mappings: dependency,
+        sales: 0,
+        usage: 0,
+        purchaseOrders: 0,
+        startingStock: 0,
+        operationalBalances: 0,
+        operationalCounts: 0,
+        movements: 0,
+        shrinkage: 0,
+        incidents: 0,
+      }] };
+      return { rows: [] };
+    }), release: vi.fn() };
+    return { client, statements };
+  }
+
+  it("allows only the Owner to retire the approved test chain", async () => {
+    for (const role of ["BRANCH_MANAGER", "STAFF"] as const) {
+      await expect(retireTestDataProductChain(
+        retirementRequest({ ...owner, role, branchId: "branch-1" }),
+        response() as never,
+        vi.fn(),
+      )).rejects.toMatchObject({ status: 403, code: "FORBIDDEN" });
+    }
+    expect(mocks.connect).not.toHaveBeenCalled();
+  });
+
+  it("requires explicit confirmation before opening a transaction", async () => {
+    await expect(retireTestDataProductChain(
+      retirementRequest(owner, { ...retirementInput, confirmed: false }),
+      response() as never,
+      vi.fn(),
+    )).rejects.toBeTruthy();
+    expect(mocks.connect).not.toHaveBeenCalled();
+  });
+
+  it("retires the product, variant, and recipe atomically while preserving the ingredient and history", async () => {
+    const { client, statements } = retirementClient();
+    mocks.connect.mockResolvedValue(client);
+    const res = response();
+    await retireTestDataProductChain(retirementRequest(), res as never, vi.fn());
+
+    expect(statements.some((sql) => sql.includes(`UPDATE menu_items SET status='INACTIVE'`))).toBe(true);
+    expect(statements.some((sql) => sql.includes(`UPDATE menu_item_variants SET status='INACTIVE'`))).toBe(true);
+    expect(statements.some((sql) => sql.includes(`UPDATE recipes SET status='INACTIVE'`))).toBe(true);
+    expect(statements.some((sql) => sql.includes(`UPDATE inventory_items`))).toBe(false);
+    expect(statements.some((sql) => sql.includes(`DELETE FROM`))).toBe(false);
+    expect(mocks.writeAudit).toHaveBeenCalledWith(
+      owner,
+      "TEST_DATA_PRODUCT_RETIREMENT",
+      "MENU_ITEM",
+      testProductId,
+      expect.any(String),
+      expect.objectContaining({
+        variantId: testVariantId,
+        recipeId: testRecipeId,
+        ingredientId: testIngredientId,
+        previousStatus: { product: "ACTIVE", variant: "ACTIVE", recipe: "ACTIVE", ingredient: "ACTIVE" },
+        newStatus: { product: "INACTIVE", variant: "INACTIVE", recipe: "INACTIVE" },
+        reason: retirementInput.reason,
+      }),
+      client,
+    );
+    expect(statements).toContain("COMMIT");
+    expect(res.json).toHaveBeenCalledWith({ success: true, data: {
+      productId: testProductId,
+      variantId: testVariantId,
+      recipeId: testRecipeId,
+      action: "TEST_DATA_PRODUCT_RETIREMENT",
+    } });
+  });
+
+  it("rolls back without changing statuses when an operational dependency appears", async () => {
+    const { client, statements } = retirementClient(1);
+    mocks.connect.mockResolvedValue(client);
+    await expect(retireTestDataProductChain(retirementRequest(), response() as never, vi.fn()))
+      .rejects.toMatchObject({ status: 409, code: "TEST_PRODUCT_OPERATIONAL_DEPENDENCY" });
+    expect(statements).toContain("ROLLBACK");
+    expect(statements.some((sql) => sql.startsWith("UPDATE "))).toBe(false);
+    expect(mocks.writeAudit).not.toHaveBeenCalled();
   });
 });
 

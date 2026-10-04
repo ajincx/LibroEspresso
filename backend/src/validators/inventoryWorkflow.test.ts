@@ -15,7 +15,7 @@ describe("Inventory Workflow Input Validation (QA Suite)", () => {
     const csvText = "product_code,quantity_sold,selling_price,business_date\nLATTE,2,180,2026-09-04";
 
     it("accepts raw CSV preview payloads", () => {
-      expect(posPreviewInput.parse({ sourceFilename: "pos_sales.csv", csvText })).toEqual({ sourceFilename: "pos_sales.csv", csvText });
+      expect(posPreviewInput.parse({ sourceFilename: "pos_sales.csv", csvText, posSourceId: sampleUuid1 })).toEqual({ sourceFilename: "pos_sales.csv", csvText, posSourceId: sampleUuid1 });
     });
 
     it("requires a preview fingerprint for final import", () => {
@@ -24,18 +24,20 @@ describe("Inventory Workflow Input Validation (QA Suite)", () => {
         sourceFilename: "pos_sales.csv",
         csvText,
         expectedContentHash: "a".repeat(64),
+        expectedResolutionFingerprint: "b".repeat(64),
+        posSourceId: sampleUuid1,
       });
       expect(parsed.expectedContentHash).toHaveLength(64);
       expect(parsed).not.toHaveProperty("approvalId");
     });
 
     it("rejects non-CSV filenames and oversized source content", () => {
-      expect(() => posPreviewInput.parse({ sourceFilename: "sales.xlsx", csvText })).toThrow();
-      expect(() => posPreviewInput.parse({ sourceFilename: "sales.csv", csvText: "x".repeat(4_500_001) })).toThrow();
+      expect(() => posPreviewInput.parse({ sourceFilename: "sales.xlsx", csvText, posSourceId: sampleUuid1 })).toThrow();
+      expect(() => posPreviewInput.parse({ sourceFilename: "sales.csv", csvText: "x".repeat(4_500_001), posSourceId: sampleUuid1 })).toThrow();
     });
 
     it("strips submitted branch overrides", () => {
-      expect(posPreviewInput.parse({ sourceFilename: "sales.csv", csvText, branchId: sampleUuid1 })).not.toHaveProperty("branchId");
+      expect(posPreviewInput.parse({ sourceFilename: "sales.csv", csvText, posSourceId: sampleUuid2, branchId: sampleUuid1 })).not.toHaveProperty("branchId");
     });
   });
 
@@ -44,19 +46,19 @@ describe("Inventory Workflow Input Validation (QA Suite)", () => {
       const valid = {
         countDate: "2026-09-04",
         items: [
-          { inventoryItemId: sampleUuid1, actualQuantity: 2500 },
-          { inventoryItemId: sampleUuid2, actualQuantity: 0 }, // 0 is allowed (out of stock)
+          { inventoryItemId: sampleUuid1, quantity: 2.5, enteredUnit: "kg" },
+          { inventoryItemId: sampleUuid2, quantity: 0, enteredUnit: "pc" }, // 0 is allowed (out of stock)
         ],
       };
       const parsed = inventoryCountInput.parse(valid);
       expect(parsed.countDate).toBe("2026-09-04");
-      expect(parsed.items[1]!.actualQuantity).toBe(0);
+      expect(parsed.items[1]!.quantity).toBe(0);
     });
 
     it("rejects negative physical counts", () => {
       const invalid = {
         countDate: "2026-09-04",
-        items: [{ inventoryItemId: sampleUuid1, actualQuantity: -5 }],
+        items: [{ inventoryItemId: sampleUuid1, quantity: -5, enteredUnit: "g" }],
       };
       expect(() => inventoryCountInput.parse(invalid)).toThrow();
     });

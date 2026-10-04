@@ -10,6 +10,9 @@ import { saveRecipeDefinition } from "../services/recipeVersion.service.js";
 import { verifyDestructiveAction, writeDestructiveActionAudit } from "../services/destructiveAction.service.js";
 import { destructiveActionInput } from "../validators/destructiveAction.js";
 
+export const sameIngredientIdentitySet=(first:string[],second:string[])=>
+  JSON.stringify([...new Set(first)].sort())===JSON.stringify([...new Set(second)].sort());
+
 const inventorySelection = `SELECT ii.id,ii.sku,ii.name,ii.category,ii.unit,ii.unit_cost::float8 "unitCost",ii.reorder_level::float8 "reorderLevel",
   ii.status,ii.item_scope "itemScope",ii.origin_branch_id "originBranchId",b.name "originBranchName",
   ii.created_at "createdAt",ii.updated_at "updatedAt" FROM inventory_items ii LEFT JOIN branches b ON b.id=ii.origin_branch_id`;
@@ -182,7 +185,7 @@ async function readMenuProducts(user: NonNullable<Express.Request["user"]>, id?:
        LEFT JOIN inventory_items ii ON ii.id=ri.inventory_item_id
        ${where}
       GROUP BY m.id,c.id,r.id,r.menu_item_variant_id,r.name,r.yield_quantity,r.version,r.effective_from,r.effective_to,r.change_reason,ob.id,cu.id
-      ORDER BY m.name`,
+      ORDER BY m.created_at DESC,m.name`,
     values,
   );
   const productIds = result.rows.map((row: { id: string }) => row.id);
@@ -339,6 +342,26 @@ async function saveMenuProduct(req: Parameters<RequestHandler>[0], productId?: s
     if (productId && req.user!.role === "OWNER" && previous!.productScope !== "GLOBAL") {
       throw new AppError(403, "PRODUCT_SCOPE_FORBIDDEN", "Owners may review branch product proposals but may edit only global products");
     }
+    const sizedVariants=(value.variants??[]).filter((variant)=>variant.status==="ACTIVE"&&["small","large"].includes(variant.name.trim().toLowerCase()));
+    const small=sizedVariants.find((variant)=>variant.name.trim().toLowerCase()==="small");
+    const large=sizedVariants.find((variant)=>variant.name.trim().toLowerCase()==="large");
+    const pendingIngredientIds=async(variant:typeof small):Promise<string[]|null>=>{
+      if(!variant) return null;
+      if(variant.recipe) return variant.recipe.items.map((item)=>item.inventoryItemId);
+      if(!productId||!variant.id) return null;
+      const saved=await client.query<{inventoryItemId:string}>(`SELECT ri.inventory_item_id::text "inventoryItemId"
+        FROM menu_item_variants v JOIN LATERAL (
+          SELECT candidate.id FROM recipes candidate WHERE candidate.menu_item_variant_id=v.id AND candidate.status='ACTIVE'
+            AND candidate.effective_from<=CURRENT_DATE AND (candidate.effective_to IS NULL OR candidate.effective_to>CURRENT_DATE)
+          ORDER BY candidate.effective_from DESC LIMIT 1
+        ) r ON true JOIN recipe_items ri ON ri.recipe_id=r.id
+        WHERE v.id=$1 AND v.menu_item_id=$2 ORDER BY ri.inventory_item_id`,[variant.id,productId]);
+      return saved.rows.length?saved.rows.map((item)=>item.inventoryItemId):null;
+    };
+    const [smallIngredientIds,largeIngredientIds]=await Promise.all([pendingIngredientIds(small),pendingIngredientIds(large)]);
+    if(smallIngredientIds&&largeIngredientIds&&!sameIngredientIdentitySet(smallIngredientIds,largeIngredientIds)) {
+      throw new AppError(422,"VARIANT_INGREDIENT_MISMATCH","Small and Large recipes must use the same ingredients; quantities may differ");
+    }
     if (productId) {
       const updated = await client.query(
         `UPDATE menu_items SET name=$2,category_id=$3,category=$4,description=$5,status='ACTIVE',
@@ -391,14 +414,6 @@ async function saveMenuProduct(req: Parameters<RequestHandler>[0], productId?: s
         recipeId:existingRecipe.rows[0]?.id,menuItemId:savedProductId!,menuItemVariantId:variant.id,name:`${value.name} ${variant.name} Recipe`,yieldQuantity:variant.recipe.yieldQuantity,
         status:"ACTIVE",items:variant.recipe.items,effectiveFrom:variant.recipe.effectiveFrom,changeReason:variant.recipe.changeReason,createdBy:req.user!.id,
       });
-    }
-    const siblingRecipes = await client.query<{ variantName: string; ingredientIds: string[] }>(`SELECT v.name "variantName",array_agg(ri.inventory_item_id::text ORDER BY ri.inventory_item_id) "ingredientIds"
-      FROM menu_item_variants v JOIN recipes r ON r.menu_item_variant_id=v.id AND r.status='ACTIVE' AND r.effective_to IS NULL
-      JOIN recipe_items ri ON ri.recipe_id=r.id
-      WHERE v.menu_item_id=$1 AND v.status='ACTIVE' AND lower(v.name) IN ('small','large')
-      GROUP BY v.id`, [savedProductId]);
-    if (siblingRecipes.rows.length === 2 && JSON.stringify(siblingRecipes.rows[0]!.ingredientIds) !== JSON.stringify(siblingRecipes.rows[1]!.ingredientIds)) {
-      throw new AppError(422, "VARIANT_INGREDIENT_MISMATCH", "Small and Large recipes must use the same ingredients; quantities may differ");
     }
     if (!productId && req.user!.role === "OWNER") {
       await client.query(`INSERT INTO menu_item_branches (menu_item_id,branch_id,availability_status) SELECT $1,id,'PENDING_MANAGER' FROM branches WHERE status='ACTIVE'`, [savedProductId]);
@@ -471,6 +486,8 @@ export const deleteMenuProduct: RequestHandler = async (req, res) => {
     const existing = await client.query<{ name: string; productScope: "GLOBAL" | "BRANCH"; originBranchId: string | null }>(`SELECT name,product_scope "productScope",origin_branch_id "originBranchId" FROM menu_items WHERE id=$1 FOR UPDATE`, [id]);
     const product = existing.rows[0];
     if (!product) throw new AppError(404, "MENU_PRODUCT_NOT_FOUND", "Menu product not found");
+    const productCode = await client.query<{ code: string }>(`SELECT code FROM menu_items WHERE id=$1`, [id]);
+    if (productCode.rows[0]?.code === "PRD-00073") throw new AppError(409, "TEST_PRODUCT_RETIREMENT_REQUIRED", "Use the controlled test-data retirement action for this product");
     if (req.user!.role === "BRANCH_MANAGER" && (product.productScope !== "BRANCH" || product.originBranchId !== req.user!.branchId)) throw new AppError(403, "PRODUCT_SCOPE_FORBIDDEN", "Managers may delete only unused products proposed for their branch");
     if (req.user!.role === "OWNER" && product.productScope !== "GLOBAL") throw new AppError(403, "PRODUCT_SCOPE_FORBIDDEN", "Owners may delete only global products");
     const usage = await client.query<{ used: boolean }>(`SELECT EXISTS(

@@ -1,11 +1,11 @@
 import type { ApiSuccess } from "../types/auth";
-import type { CountVarianceItem, DailyPosUploadStatus, EvidenceBasis, ExpectedInventoryItem, InventoryCountSummary, PosAnalytics, PosImportPreview, PosImportReconciliation, PosImportRecord, PosMapping, PosMappingReviewStatus, PosSource, ShrinkageClassification, ShrinkageEvidence, ShrinkageReport, VarianceRecord, WorkflowNotification } from "../types/inventoryWorkflow";
+import type { CountVarianceItem, DailyPosUploadStatus, EvidenceBasis, ExpectedInventoryItem, InventoryCountSummary, OpeningInventoryBaseline, PosAnalytics, PosImportPreview, PosImportReconciliation, PosImportRecord, PosInventoryDateAssessment, PosMapping, PosMappingReviewStatus, PosSource, ShrinkageClassification, ShrinkageEvidence, ShrinkageReport, UnavailableInventoryCountItem, VarianceRecord, WorkflowNotification } from "../types/inventoryWorkflow";
 import { api } from "./api";
 
 type PosPreviewSource =
-  | { sourceFilename: string; csvText: string; file?: never; posSourceId?: string }
-  | { sourceFilename: string; file: File; csvText?: never; posSourceId?: string };
-type PosImportSource = PosPreviewSource & { expectedContentHash: string; expectedResolutionFingerprint?: string };
+  | { sourceFilename: string; csvText: string; file?: never; posSourceId: string }
+  | { sourceFilename: string; file: File; csvText?: never; posSourceId: string };
+type PosImportSource = PosPreviewSource & { expectedContentHash: string; expectedResolutionFingerprint: string };
 
 function excelHeaders(sourceFilename: string, posSourceId?: string, expectedContentHash?: string, expectedResolutionFingerprint?: string) {
   return {
@@ -19,19 +19,31 @@ function excelHeaders(sourceFilename: string, posSourceId?: string, expectedCont
 
 export const inventoryWorkflowService = {
   async expected(countDate: string, branchId?: string) {
-    return (await api.get<ApiSuccess<{ branchId: string; countDate: string; items: ExpectedInventoryItem[] }>>("/inventory-counts/expected", { params: { countDate, branchId } })).data.data;
+    return (await api.get<ApiSuccess<{ branchId: string; countDate: string; items: ExpectedInventoryItem[]; unavailableItems: UnavailableInventoryCountItem[] }>>("/inventory-counts/expected", { params: { countDate, branchId } })).data.data;
   },
-  async submitCount(countDate: string, items: { inventoryItemId: string; actualQuantity: number }[]) {
+  async submitCount(countDate: string, items: { inventoryItemId: string; quantity: number; enteredUnit: "g" | "kg" | "ml" | "L" | "pc" }[]) {
     return (await api.post<ApiSuccess<{ count: { id: string; countNo: string; branchId: string; countDate: string; items: CountVarianceItem[] } }>>("/inventory-counts", { countDate, items })).data.data.count;
   },
-  async updateCount(id: string, countDate: string, items: { inventoryItemId: string; actualQuantity: number }[]) {
+  async updateCount(id: string, countDate: string, items: { inventoryItemId: string; quantity: number; enteredUnit: "g" | "kg" | "ml" | "L" | "pc" }[]) {
     return (await api.patch<ApiSuccess<{ count: { id: string; countNo: string; branchId: string; countDate: string; items: CountVarianceItem[] } }>>(`/inventory-counts/${id}`, { countDate, items })).data.data.count;
   },
   async counts(branchId?: string) {
-    return (await api.get<ApiSuccess<{ counts: InventoryCountSummary[] }>>("/inventory-counts", { params: { branchId } })).data.data.counts;
+    return (await api.get<ApiSuccess<{ counts: InventoryCountSummary[]; uatTestControlsEnabled: boolean }>>("/inventory-counts", { params: { branchId } })).data.data;
   },
   async count(id: string) {
     return (await api.get<ApiSuccess<{ count: { id: string; countNo: string; countDate: string; canEdit: boolean; items: (CountVarianceItem & ExpectedInventoryItem)[] } }>>("/inventory-counts/" + id)).data.data.count;
+  },
+  async uatCounts(branchId?: string) {
+    return (await api.get<ApiSuccess<{ counts: InventoryCountSummary[] }>>("/inventory-counts/uat-history", { params: { branchId } })).data.data.counts;
+  },
+  async uatCount(id: string) {
+    return (await api.get<ApiSuccess<{ count: { id: string; countNo: string; countDate: string; branchId: string; branchName: string; canEdit: false; isTestData: true; items: (CountVarianceItem & ExpectedInventoryItem)[] } }>>(`/inventory-counts/uat-history/${id}`)).data.data.count;
+  },
+  async classifyCountAsUatTest(id: string, input: { reason: string; verificationPin: string }) {
+    return (await api.post<ApiSuccess<{ id: string; countNo: string; classified: true; balanceRowsClassified: number; shrinkageReportNo: string }>>(`/inventory-counts/${id}/classify-uat-test`, { ...input, confirmed: true })).data.data;
+  },
+  async openingBaselines(branchId?: string) {
+    return (await api.get<ApiSuccess<{ baselines: OpeningInventoryBaseline[] }>>("/inventory-opening-baselines", { params: { branchId } })).data.data.baselines;
   },
   async reports(filters?: { branchId?: string; status?: string; classification?: string; inventoryItemId?: string; incidentType?: string; startDate?: string; endDate?: string }) {
     return (await api.get<ApiSuccess<{ reports: ShrinkageReport[] }>>("/shrinkage-reports", { params: filters })).data.data.reports;
@@ -51,13 +63,13 @@ export const inventoryWorkflowService = {
   async previewPosSales(input: PosPreviewSource) {
     const response = input.file
       ? await api.post<ApiSuccess<{ preview: PosImportPreview }>>("/pos-sales/preview", input.file, { headers: excelHeaders(input.sourceFilename,input.posSourceId) })
-      : await api.post<ApiSuccess<{ preview: PosImportPreview }>>("/pos-sales/preview", { sourceFilename: input.sourceFilename, csvText: input.csvText, ...(input.posSourceId ? { posSourceId: input.posSourceId } : {}) });
+      : await api.post<ApiSuccess<{ preview: PosImportPreview }>>("/pos-sales/preview", { sourceFilename: input.sourceFilename, csvText: input.csvText, posSourceId: input.posSourceId });
     return response.data.data.preview;
   },
   async importPosSales(input: PosImportSource) {
     const response = input.file
-      ? await api.post<ApiSuccess<{ importId: string; branchId: string; businessDate: string; rowsImported: number; productsMatched: number; totalQuantitySold: number; totalSales: number; fingerprintIndicator: string; quality: "COMPLETE" | "NEEDS_REVIEW"; pricing: PosImportPreview["pricing"]; reconciliation:PosImportReconciliation; consumption: { inventoryItemId: string; sku: string; name: string; unit: string; expectedConsumption: number }[] }>>("/pos-sales/import", input.file, { headers: excelHeaders(input.sourceFilename,input.posSourceId,input.expectedContentHash,input.expectedResolutionFingerprint) })
-      : await api.post<ApiSuccess<{ importId: string; branchId: string; businessDate: string; rowsImported: number; productsMatched: number; totalQuantitySold: number; totalSales: number; fingerprintIndicator: string; quality: "COMPLETE" | "NEEDS_REVIEW"; pricing: PosImportPreview["pricing"]; reconciliation:PosImportReconciliation; consumption: { inventoryItemId: string; sku: string; name: string; unit: string; expectedConsumption: number }[] }>>("/pos-sales/import", { sourceFilename: input.sourceFilename, csvText: input.csvText, expectedContentHash: input.expectedContentHash, ...(input.expectedResolutionFingerprint ? { expectedResolutionFingerprint: input.expectedResolutionFingerprint } : {}), ...(input.posSourceId ? { posSourceId: input.posSourceId } : {}) });
+      ? await api.post<ApiSuccess<{ importId: string; branchId: string; businessDate: string; rowsImported: number; productsMatched: number; totalQuantitySold: number; totalSales: number; fingerprintIndicator: string; quality: "COMPLETE" | "NEEDS_REVIEW"; pricing: PosImportPreview["pricing"]; reconciliation:PosImportReconciliation; inventoryDateAssessment:PosInventoryDateAssessment; consumption: { inventoryItemId: string; sku: string; name: string; unit: string; expectedConsumption: number }[] }>>("/pos-sales/import", input.file, { headers: excelHeaders(input.sourceFilename,input.posSourceId,input.expectedContentHash,input.expectedResolutionFingerprint) })
+      : await api.post<ApiSuccess<{ importId: string; branchId: string; businessDate: string; rowsImported: number; productsMatched: number; totalQuantitySold: number; totalSales: number; fingerprintIndicator: string; quality: "COMPLETE" | "NEEDS_REVIEW"; pricing: PosImportPreview["pricing"]; reconciliation:PosImportReconciliation; inventoryDateAssessment:PosInventoryDateAssessment; consumption: { inventoryItemId: string; sku: string; name: string; unit: string; expectedConsumption: number }[] }>>("/pos-sales/import", { sourceFilename: input.sourceFilename, csvText: input.csvText, expectedContentHash: input.expectedContentHash, expectedResolutionFingerprint: input.expectedResolutionFingerprint, posSourceId: input.posSourceId });
     return response.data.data;
   },
   async posSources() {

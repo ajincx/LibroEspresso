@@ -12,8 +12,8 @@ describe("inventory variance materiality", () => {
     ["g", 100, 1],
     ["ml", 10, 1],
     ["pc", 20, 1],
-  ])("keeps a one-base-unit %s difference immaterial", (_unit, expected, shortage) => {
-    expect(requiresVarianceInvestigation(expected, shortage, tolerance)).toBe(false);
+  ])("keeps a one-base-unit %s shortage immaterial", (_unit, expected, shortage) => {
+    expect(requiresVarianceInvestigation(expected, -shortage, tolerance)).toBe(false);
   });
 
   it("uses the larger of absolute and relative tolerance", () => {
@@ -22,8 +22,8 @@ describe("inventory variance materiality", () => {
   });
 
   it("distinguishes moderate and significant shortages without changing raw variance", () => {
-    expect(classifyShortageVariance(100, 3, tolerance)).toBe("MATERIAL");
-    expect(classifyShortageVariance(100, 4, tolerance)).toBe("SIGNIFICANT");
-    expect(classifyShortageVariance(100, -10, tolerance)).toBe("IMMATERIAL");
+    expect(classifyShortageVariance(100, -3, tolerance)).toBe("MATERIAL");
+    expect(classifyShortageVariance(100, -4, tolerance)).toBe("SIGNIFICANT");
+    expect(classifyShortageVariance(100, 10, tolerance)).toBe("IMMATERIAL");
   });
 });

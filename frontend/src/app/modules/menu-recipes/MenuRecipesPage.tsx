@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { BookOpen, Boxes, Check, ChefHat, Edit3, Eye, PackagePlus, Plus, RefreshCw, Trash2, X } from "lucide-react";
+import { BookOpen, Boxes, Check, ChefHat, Edit3, Eye, Info, PackagePlus, Plus, RefreshCw, Tags, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "../../contexts/AuthContext";
 import { masterDataService } from "../../services/masterData.service";
@@ -8,16 +8,59 @@ import { Btn, SearchInput, Select, StatusBadge, TableCard, TableWrapper, TD, THe
 import { formatAppCurrency } from "../../utils/appPreferences";
 import { compatibleUnits, units } from "../../utils/units";
 import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/tooltip";
 
-type RecipeRow = { key: string; inventoryItemId: string; quantity: number; unit: string };
-type VariantRow = { key:string; id?:string; name:string; sellingPrice:number|""; status:RecordStatus };
-type ProductForm = { name: string; categoryId: string; variants:VariantRow[]; description: string; status: RecordStatus; recipeEnabled:boolean; recipeVariantKey:string|null; yieldQuantity: number; effectiveFrom:string; changeReason:string; items: RecipeRow[] };
+export type RecipeRow = { key: string; inventoryItemId: string; quantity: number | ""; unit: string };
+export type VariantRow = { key:string; id?:string; name:string; sellingPrice:number|""; status:RecordStatus };
+export type RecipeDraft = { yieldQuantity:number; effectiveFrom:string; changeReason:string; items:RecipeRow[] };
+type ProductForm = { name: string; categoryId: string; variants:VariantRow[]; description: string; status: RecordStatus; recipeVariantKey:string|null; recipeDrafts:Record<string,RecipeDraft> };
 type IngredientForm = { name: string; categoryChoice: string; otherCategory: string; unit: string; unitCost: number | ""; reorderLevel: number | "" };
+type CategoryForm = { name:string;description:string;status:RecordStatus };
 const newRow = (): RecipeRow => ({ key: crypto.randomUUID(), inventoryItemId: "", quantity: 1, unit: "" });
 const localToday=()=>{const now=new Date();return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;};
-const emptyForm = (): ProductForm => ({ name: "", categoryId: "", variants:[{key:crypto.randomUUID(),name:"Standard",sellingPrice:"",status:"ACTIVE"}], description: "", status: "ACTIVE", recipeEnabled:false, recipeVariantKey:null, yieldQuantity: 1, effectiveFrom:"", changeReason:"", items: [newRow()] });
+const emptyForm = (): ProductForm => ({ name: "", categoryId: "", variants:[{key:crypto.randomUUID(),name:"Standard",sellingPrice:"",status:"ACTIVE"}], description: "", status: "ACTIVE", recipeVariantKey:null, recipeDrafts:{} });
 const emptyIngredientForm = (): IngredientForm => ({ name: "", categoryChoice: "", otherCategory: "", unit: "", unitCost: "", reorderLevel: "" });
 const money = formatAppCurrency;
+export const categoryDescription=(name:string,categories:MenuCategory[])=>categories.find((item)=>item.name===name)?.description.trim()??"";
+export const canManageMenuCategories=(role:string|undefined)=>role==="OWNER";
+export const isControlledTestProductRetirement=(role:string|undefined,product:Pick<MenuProduct,"code">)=>role==="OWNER"&&product.code==="PRD-00073";
+export function CategoryLabel({name,categories}:{name:string;categories:MenuCategory[]}){
+  const description=categoryDescription(name,categories);
+  if(!description) return <span>{name}</span>;
+  return <span className="inline-flex items-center gap-1.5"><span>{name}</span><Tooltip><TooltipTrigger asChild><button type="button" title={description} aria-label={`About ${name}`} onClick={(event)=>event.stopPropagation()} className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[var(--app-primary)] hover:bg-[var(--app-primary-faint)]"><Info size={12}/><span className="sr-only">Category information</span></button></TooltipTrigger><TooltipContent><div className="max-w-64"><div className="font-semibold">{name}</div><div className="mt-1">{description}</div></div></TooltipContent></Tooltip></span>;
+}
+export const removeRecipeIngredientRow = (items: RecipeRow[], key: string) => items.filter((item) => item.key !== key);
+export const recipeIngredientExists = (inventoryItemId: string, inventory: InventoryItem[]) =>
+  inventory.some((item) => item.id === inventoryItemId && item.status === "ACTIVE");
+export const normalizeRecipeQuantityInput = (value: string): number | "" => value === "" ? "" : Number(value);
+export const isValidRecipeQuantity = (value: RecipeRow["quantity"]) => value !== "" && Number.isFinite(Number(value)) && Number(value) > 0;
+export const selectInitialZeroQuantity = (input: Pick<HTMLInputElement, "value" | "select">) => {
+  if (input.value !== "" && Number(input.value) === 0) input.select();
+};
+export const normalizedIngredientIds=(draft:RecipeDraft)=>[...new Set(draft.items.map((item)=>item.inventoryItemId))].sort();
+export const ingredientSetsMatch = (first: RecipeDraft, second: RecipeDraft) =>
+  JSON.stringify(normalizedIngredientIds(first)) === JSON.stringify(normalizedIngredientIds(second));
+export const updatePendingRecipeDraftRow=(drafts:Record<string,RecipeDraft>,variantKey:string,rowKey:string,changes:Partial<RecipeRow>)=>{
+  const draft=drafts[variantKey];
+  if(!draft) return drafts;
+  return {...drafts,[variantKey]:{...draft,items:draft.items.map((item)=>item.key===rowKey?{...item,...changes}:item)}};
+};
+export const attachPendingRecipeDrafts = (variants:VariantRow[], drafts:Record<string,RecipeDraft>) =>
+  variants.map(({key,id,name,sellingPrice,status})=>({id,name:name.trim(),sellingPrice:Number(sellingPrice),status,...(drafts[key]?{recipe:{yieldQuantity:drafts[key].yieldQuantity,
+    ...(drafts[key].effectiveFrom?{effectiveFrom:drafts[key].effectiveFrom,changeReason:drafts[key].changeReason}:{}),
+    items:drafts[key].items.map(({inventoryItemId,quantity,unit})=>({inventoryItemId,quantity:Number(quantity),unit}))}}:{})}));
+export const initializePendingRecipeDrafts=(selected:VariantRow,variants:VariantRow[],drafts:Record<string,RecipeDraft>,savedVariants:MenuProduct["variants"]|undefined,today:string)=>{
+  const sized=["small","large"].includes(selected.name.trim().toLowerCase());
+  const pendingVariants=sized?variants.filter((item)=>item.status==="ACTIVE"&&["small","large"].includes(item.name.trim().toLowerCase())):[selected];
+  const next={...drafts};
+  for(const pendingVariant of pendingVariants){
+    if(next[pendingVariant.key]) continue;
+    const existing=savedVariants?.find((item)=>item.id===pendingVariant.id);
+    next[pendingVariant.key]={yieldQuantity:existing?.yieldQuantity??1,effectiveFrom:existing?.recipeHasHistoricalSales?today:"",changeReason:"",
+      items:existing?.ingredients?.length?existing.ingredients.map((item)=>({key:item.id,inventoryItemId:item.inventoryItemId,quantity:item.quantity,unit:item.unit})):[newRow()]};
+  }
+  return next;
+};
 
 export function MenuRecipesPage() {
   const { user } = useAuth();
@@ -31,6 +74,7 @@ export function MenuRecipesPage() {
   const [selected, setSelected] = useState<MenuProduct | null>(null);
   const [editing, setEditing] = useState<MenuProduct | null>(null);
   const [productModal, setProductModal] = useState(false);
+  const [categoryManagerOpen,setCategoryManagerOpen]=useState(false);
   const [form, setForm] = useState<ProductForm>(emptyForm);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
@@ -61,7 +105,7 @@ export function MenuRecipesPage() {
   const openCreate = () => { setEditing(null); setForm(emptyForm()); setFormErrors({}); setProductModal(true); };
   const openEdit = (product: MenuProduct) => {
     setEditing(product); setFormErrors({});
-    setForm({ name: product.name, categoryId: product.categoryId ?? categories.find((item) => item.name === product.category)?.id ?? "", variants:product.variants.map((variant)=>({key:variant.id||crypto.randomUUID(),id:variant.id||undefined,name:variant.name,sellingPrice:variant.sellingPrice,status:variant.status})), description: product.description ?? "", status: product.status, recipeEnabled:false, recipeVariantKey:null, yieldQuantity: 1, effectiveFrom:"",changeReason:"", items: [newRow()] });
+    setForm({ name: product.name, categoryId: product.categoryId ?? categories.find((item) => item.name === product.category)?.id ?? "", variants:product.variants.map((variant)=>({key:variant.id||crypto.randomUUID(),id:variant.id||undefined,name:variant.name,sellingPrice:variant.sellingPrice,status:variant.status})), description: product.description ?? "", status: product.status, recipeVariantKey:null, recipeDrafts:{} });
     setProductModal(true);
   };
   const validate = () => {
@@ -71,27 +115,39 @@ export function MenuRecipesPage() {
     if (!form.variants.length || !form.variants.some((variant)=>variant.status==="ACTIVE")) errors.variants = "Keep at least one active size or variant.";
     if (form.variants.some((variant)=>!variant.name.trim() || variant.sellingPrice==="" || Number(variant.sellingPrice)<=0)) errors.variants = "Give every variant a name and a selling price greater than zero.";
     if (new Set(form.variants.map((variant)=>variant.name.trim().toLowerCase())).size!==form.variants.length) errors.variants = "Variant names must be unique.";
-    if (form.recipeEnabled) {
-      if (!form.recipeVariantKey || !form.variants.some((variant)=>variant.key===form.recipeVariantKey && variant.status==="ACTIVE")) errors.recipeVariantKey = "Choose an active variant for this recipe.";
-      if (!form.items.length) errors.items = "Add at least one ingredient.";
-      if (form.items.some((item) => !item.inventoryItemId || !(item.quantity > 0) || !item.unit)) errors.items = "Complete every ingredient row with a positive quantity.";
-      if (new Set(form.items.map((item) => item.inventoryItemId)).size !== form.items.length) errors.items = "Each inventory ingredient may only appear once.";
-      if(editing?.variants.find((variant)=>variant.id===form.variants.find((item)=>item.key===form.recipeVariantKey)?.id)?.recipeHasHistoricalSales&&!form.effectiveFrom)errors.effectiveFrom="Choose when the new recipe version becomes effective.";
+    const draftEntries=Object.entries(form.recipeDrafts);
+    for(const [variantKey,draft] of draftEntries){
+      const variant=form.variants.find((item)=>item.key===variantKey);
+      if(!variant||variant.status!=="ACTIVE") errors.recipeVariantKey="Recipes may only be changed for active variants.";
+      if(!draft.items.length) errors.items="Add at least one ingredient to every recipe being changed.";
+      else if(draft.items.some((item)=>item.inventoryItemId&&!recipeIngredientExists(item.inventoryItemId,inventory))) errors.items="Select an existing active inventory ingredient for every recipe row.";
+      else if(draft.items.some((item)=>!item.inventoryItemId||!isValidRecipeQuantity(item.quantity)||!item.unit)) errors.items="Complete every ingredient row with a positive quantity.";
+      if(new Set(draft.items.map((item)=>item.inventoryItemId)).size!==draft.items.length) errors.items="Each inventory ingredient may only appear once per recipe.";
+      if(editing?.variants.find((item)=>item.id===variant?.id)?.recipeHasHistoricalSales&&!draft.effectiveFrom) errors.effectiveFrom="Choose when each changed historical recipe becomes effective.";
     }
+    const sizedVariants=form.variants.filter((variant)=>variant.status==="ACTIVE"&&(variant.name.trim().toLowerCase()==="small"||variant.name.trim().toLowerCase()==="large"));
+    const effectiveDraft=(variant:VariantRow):RecipeDraft|undefined=>{
+      if(form.recipeDrafts[variant.key]) return form.recipeDrafts[variant.key];
+      const saved=editing?.variants.find((item)=>item.id===variant.id);
+      if(!saved?.ingredients?.length) return undefined;
+      return {yieldQuantity:saved.yieldQuantity??1,effectiveFrom:"",changeReason:"",items:saved.ingredients.map((item)=>({key:item.id,inventoryItemId:item.inventoryItemId,quantity:item.quantity,unit:item.unit}))};
+    };
+    const small=sizedVariants.find((variant)=>variant.name.trim().toLowerCase()==="small");
+    const large=sizedVariants.find((variant)=>variant.name.trim().toLowerCase()==="large");
+    const smallDraft=small?effectiveDraft(small):undefined;
+    const largeDraft=large?effectiveDraft(large):undefined;
+    if(smallDraft&&largeDraft&&!ingredientSetsMatch(smallDraft,largeDraft)) errors.items="Small and Large recipes must use the same ingredients; quantities may differ.";
     setFormErrors(errors); return Object.keys(errors).length === 0;
   };
   const saveProduct = async () => {
     if (!validate()) return;
     setSaving(true);
-    const selectedVariant=editing?.variants.find((variant)=>variant.id===form.variants.find((item)=>item.key===form.recipeVariantKey)?.id);
-    const input = { name: form.name, categoryId: form.categoryId, variants:form.variants.map(({key,id,name,sellingPrice,status})=>({id,name:name.trim(),sellingPrice:Number(sellingPrice),status,
-      ...(form.recipeEnabled&&key===form.recipeVariantKey?{recipe:{yieldQuantity:form.yieldQuantity,
-        ...(selectedVariant?.recipeHasHistoricalSales?{effectiveFrom:form.effectiveFrom,changeReason:form.changeReason}:{}),
-        items:form.items.map(({inventoryItemId,quantity,unit})=>({inventoryItemId,quantity,unit}))}}:{})})), description: form.description, status: form.status };
+    const input = { name: form.name, categoryId: form.categoryId, variants:attachPendingRecipeDrafts(form.variants,form.recipeDrafts), description: form.description, status: form.status };
+    const changesHistoricalRecipe=form.variants.some((variant)=>Boolean(form.recipeDrafts[variant.key]&&editing?.variants.find((item)=>item.id===variant.id)?.recipeHasHistoricalSales));
     try {
       if (editing) await masterDataService.updateMenuProduct(editing.id, input); else await masterDataService.createMenuProduct(input);
       const message = editing
-        ? (manager ? "Changes submitted for Owner approval" : form.recipeEnabled&&selectedVariant?.recipeHasHistoricalSales?"New recipe version saved; historical COGS was preserved":"Menu product updated")
+        ? (manager ? "Changes submitted for Owner approval" : changesHistoricalRecipe?"New recipe versions saved; historical COGS was preserved":"Menu product updated")
         : (manager ? "Product submitted for Owner approval" : "Product sent to Branch Managers for review");
       toast.success(message); setProductModal(false); await load();
     } catch (reason) { toast.error(reason instanceof Error ? reason.message : "Unable to save product"); }
@@ -116,8 +172,13 @@ export function MenuRecipesPage() {
     if (!deleteTarget) return;
     setActionProductId(deleteTarget.id);
     try {
-      const result=await masterDataService.deleteMenuProduct(deleteTarget.id,deleteConfirmation);
-      toast.success(result.action==="DELETED"?`${deleteTarget.name} was deleted`:`${deleteTarget.name} was deactivated because history depends on it`);
+      if(isControlledTestProductRetirement(user?.role,deleteTarget)){
+        await masterDataService.retireTestMenuProduct(deleteTarget.id,deleteConfirmation);
+        toast.success(`${deleteTarget.name} test product chain was retired`);
+      }else{
+        const result=await masterDataService.deleteMenuProduct(deleteTarget.id,deleteConfirmation);
+        toast.success(result.action==="DELETED"?`${deleteTarget.name} was deleted`:`${deleteTarget.name} was deactivated because history depends on it`);
+      }
       setDeleteTarget(null);
       setDeleteConfirmation({reason:"",verificationPin:""});
       setSelected(null);
@@ -147,7 +208,7 @@ export function MenuRecipesPage() {
   };
 
   return <div className="p-4 md:p-6 space-y-5">
-    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4"><div><h1 className="text-xl font-bold" style={{ color: "var(--app-text)" }}>Menu &amp; Recipe Management</h1><p className="text-sm mt-1" style={{ color: "var(--app-text-muted)" }}>{owner ? "Create global products and monitor each branch's availability decision." : "Manage approved products for your assigned branch."}</p></div><div className="flex gap-2 flex-wrap"><button onClick={() => void load()} className="inline-flex items-center gap-2 px-3 py-2.5 rounded-xl border text-sm font-semibold" style={{ borderColor: "var(--app-border)", background: "var(--app-surface)" }}><RefreshCw size={14} />Refresh</button>{owner && <button onClick={openCreate} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white" style={{ background: "var(--app-primary)" }}><Plus size={16} />Add Product</button>}</div></div>
+    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4"><div><h1 className="text-xl font-bold" style={{ color: "var(--app-text)" }}>Menu &amp; Recipe Management</h1><p className="text-sm mt-1" style={{ color: "var(--app-text-muted)" }}>{owner ? "Create global products and monitor each branch's availability decision." : "Manage approved products for your assigned branch."}</p></div><div className="flex gap-2 flex-wrap"><button onClick={() => void load()} className="inline-flex items-center gap-2 px-3 py-2.5 rounded-xl border text-sm font-semibold" style={{ borderColor: "var(--app-border)", background: "var(--app-surface)" }}><RefreshCw size={14} />Refresh</button>{owner && <button onClick={()=>setCategoryManagerOpen(true)} className="inline-flex items-center gap-2 px-3 py-2.5 rounded-xl border text-sm font-semibold" style={{ borderColor:"var(--app-border)",background:"var(--app-surface)" }}><Tags size={15}/>Manage Categories</button>}{owner && <button onClick={openCreate} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white" style={{ background: "var(--app-primary)" }}><Plus size={16} />Add Product</button>}</div></div>
         <div className="flex items-center gap-2.5 px-4 py-3 rounded-xl border" style={{ borderColor: "var(--app-border)", background: "var(--app-primary-faint)", color: "var(--app-text-muted)" }}><BookOpen size={15} style={{ color: "var(--app-primary)" }} /><p className="text-sm">POS quantity sold × the sold variant's verified recipe determines expected inventory consumption.</p></div>
     <TableCard
       title="Menu Products & Recipes"
@@ -176,6 +237,7 @@ export function MenuRecipesPage() {
       ) : (
         <ProductTable
           products={filtered}
+          categories={categories}
           owner={owner}
           manager={manager}
           managerBranchId={user?.branchId ?? null}
@@ -189,17 +251,18 @@ export function MenuRecipesPage() {
         />
       )}
     </TableCard>
-    {selected && <ProductDetails product={selected} owner={owner} canEdit={(owner && selected.productScope === "GLOBAL") || (manager && selected.productScope === "BRANCH" && selected.originBranchId === user?.branchId)} onClose={() => setSelected(null)} onEdit={() => { setSelected(null); openEdit(selected); }} />}
-    {reviewTarget && <ProductReviewModal product={reviewTarget} comment={reviewComment} setComment={setReviewComment} saving={actionProductId === reviewTarget.id} onClose={() => { if (!actionProductId) { setReviewTarget(null); setReviewComment(""); } }} onDecision={(decision) => void reviewProduct(reviewTarget, decision, reviewComment)} />}
+    {selected && <ProductDetails product={selected} categories={categories} owner={owner} canEdit={(owner && selected.productScope === "GLOBAL") || (manager && selected.productScope === "BRANCH" && selected.originBranchId === user?.branchId)} onClose={() => setSelected(null)} onEdit={() => { setSelected(null); openEdit(selected); }} />}
+    {reviewTarget && <ProductReviewModal product={reviewTarget} categories={categories} comment={reviewComment} setComment={setReviewComment} saving={actionProductId === reviewTarget.id} onClose={() => { if (!actionProductId) { setReviewTarget(null); setReviewComment(""); } }} onDecision={(decision) => void reviewProduct(reviewTarget, decision, reviewComment)} />}
     {productModal && <ProductEditor editing={editing} form={form} setForm={setForm} errors={formErrors} categories={categories} inventory={owner ? inventory.filter((item) => item.itemScope === "GLOBAL") : inventory} canCreateIngredient={owner || manager} saving={saving} onInventoryCreated={(item) => setInventory((current) => [...current, item].sort((a, b) => a.name.localeCompare(b.name)))} onClose={() => setProductModal(false)} onSave={() => void saveProduct()} />}
-    {deleteTarget && <ControlledActionDialog title={`Remove ${deleteTarget.name}?`} description="Unused products are deleted. Products with sales, mappings, or investigation history are deactivated so historical reports remain valid." confirmLabel="Remove Product" value={deleteConfirmation} busy={Boolean(actionProductId)} onChange={setDeleteConfirmation} onCancel={()=>{setDeleteTarget(null);setDeleteConfirmation({reason:"",verificationPin:""});}} onConfirm={()=>void deleteProduct()}/>}
+    {categoryManagerOpen&&canManageMenuCategories(user?.role)&&<CategoryManagerModal categories={categories} onClose={()=>setCategoryManagerOpen(false)} onChanged={load}/>}
+    {deleteTarget && <ControlledActionDialog title={isControlledTestProductRetirement(user?.role,deleteTarget)?`Retire ${deleteTarget.name} as test data?`:`Remove ${deleteTarget.name}?`} description={isControlledTestProductRetirement(user?.role,deleteTarget)?"This preserves the product, Standard variant, recipe, recipe quantities, and history while making the approved UAT product chain non-operational. ING-00073 and its reorder settings are not changed.":"Unused products are deleted. Products with sales, mappings, or investigation history are deactivated so historical reports remain valid."} confirmLabel={isControlledTestProductRetirement(user?.role,deleteTarget)?"Retire Test Product":"Remove Product"} value={deleteConfirmation} busy={Boolean(actionProductId)} onChange={setDeleteConfirmation} onCancel={()=>{setDeleteTarget(null);setDeleteConfirmation({reason:"",verificationPin:""});}} onConfirm={()=>void deleteProduct()}/>}
   </div>;
 }
 
 export const marginTextClass = (margin:number|null) => margin === null ? "text-[var(--app-text-muted)]" : margin > 0 ? "text-[var(--app-success)]" : margin < 0 ? "text-[var(--app-danger)]" : "text-[var(--app-text-muted)]";
 export const variantMarginRate = (sellingPrice:number,recipeCost:number|null) => recipeCost===null || sellingPrice<=0 ? null : (sellingPrice-recipeCost)/sellingPrice*100;
 
-function ProductTable({ products, owner, manager, managerBranchId, actionProductId, onView, onEdit, onToggleStatus, onDelete, onOwnerReview, onManagerReview }: { products:MenuProduct[];owner:boolean;manager:boolean;managerBranchId:string|null;actionProductId:string|null;onView:(product:MenuProduct)=>void;onEdit:(product:MenuProduct)=>void;onToggleStatus:(product:MenuProduct)=>void;onDelete:(product:MenuProduct)=>void;onOwnerReview:(product:MenuProduct)=>void;onManagerReview:(product:MenuProduct,decision:"APPROVE"|"REJECT")=>void }) {
+function ProductTable({ products, categories, owner, manager, managerBranchId, actionProductId, onView, onEdit, onToggleStatus, onDelete, onOwnerReview, onManagerReview }: { products:MenuProduct[];categories:MenuCategory[];owner:boolean;manager:boolean;managerBranchId:string|null;actionProductId:string|null;onView:(product:MenuProduct)=>void;onEdit:(product:MenuProduct)=>void;onToggleStatus:(product:MenuProduct)=>void;onDelete:(product:MenuProduct)=>void;onOwnerReview:(product:MenuProduct)=>void;onManagerReview:(product:MenuProduct,decision:"APPROVE"|"REJECT")=>void }) {
   const headings = ["Product Code", "Product Name", "Scope", "Category", "Selling Price", "Ingredients", "Recipe Cost", "Margin", "Status", "Actions"];
   return (
     <TableWrapper minWidth={940}>
@@ -224,7 +287,7 @@ function ProductTable({ products, owner, manager, managerBranchId, actionProduct
                   {product.productScope === "GLOBAL" ? "All Branches" : product.originBranchName ?? "Branch"}
                 </span>
               </TD>
-              <TD muted>{product.category}</TD>
+              <TD muted><CategoryLabel name={product.category} categories={categories}/></TD>
               <TD right bold><div className="space-y-1">{product.variants.filter((variant)=>variant.status==="ACTIVE").map((variant)=><div key={variant.id} className="whitespace-nowrap"><span className="text-xs font-normal text-[var(--app-text-muted)]">{variant.name}: </span>{money(variant.sellingPrice)}</div>)}</div></TD>
               <TD right muted>{product.variants.filter((variant)=>variant.status==="ACTIVE").map((variant)=>variant.ingredients?.length??0).join(" / ")} item(s)</TD>
               <TD right muted><div className="space-y-1">{product.variants.filter((variant)=>variant.status==="ACTIVE").map((variant)=><div key={variant.id}>{variant.name}: {variant.recipeCost==null?"Not configured":money(variant.recipeCost)}</div>)}</div></TD>
@@ -298,7 +361,7 @@ function ProductTable({ products, owner, manager, managerBranchId, actionProduct
   );
 }
 
-function ProductDetails({ product, owner, canEdit, onClose, onEdit }: { product: MenuProduct; owner: boolean; canEdit: boolean; onClose: () => void; onEdit: () => void }) {
+function ProductDetails({ product, categories, owner, canEdit, onClose, onEdit }: { product: MenuProduct;categories:MenuCategory[]; owner: boolean; canEdit: boolean; onClose: () => void; onEdit: () => void }) {
   const approvedBranches = product.branchApprovals.filter((item) => item.status === "APPROVED").length;
   const approvalSummary = product.productScope === "GLOBAL"
     ? (owner ? `${approvedBranches}/${product.branchApprovals.length} branches approved` : (product.branchAvailabilityStatus ?? "NOT ASSIGNED").replaceAll("_", " "))
@@ -307,8 +370,8 @@ function ProductDetails({ product, owner, canEdit, onClose, onEdit }: { product:
   return <Modal onClose={onClose} width="max-w-2xl">
     <div className="flex justify-between gap-4"><div><h2 className="text-xl font-bold">{product.name}</h2><p className="text-xs font-mono mt-1" style={{ color: "var(--app-primary)" }}>{product.code}</p></div><button aria-label="Close product details" onClick={onClose}><X size={18} /></button></div>
     <p className="text-sm mt-4" style={{ color: "var(--app-text-muted)" }}>{product.description || "No product description."}</p>
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 my-5">{[["Variants",String(product.variants.filter((variant)=>variant.status==="ACTIVE").length)],["Recipes configured",`${product.variants.filter((variant)=>variant.status==="ACTIVE"&&variant.recipeId).length}/${product.variants.filter((variant)=>variant.status==="ACTIVE").length}`],["Category",product.category],["Scope",product.productScope==="GLOBAL"?"All Branches":product.originBranchName??"Branch Product"]].map(([label,value])=><div key={label} className="p-3 rounded-xl" style={{background:"var(--app-bg)"}}><div className="text-[10px] uppercase" style={{color:"var(--app-text-faint)"}}>{label}</div><div className="font-bold mt-1">{value}</div></div>)}</div>
-    <div className="flex flex-wrap gap-2 mb-4"><span className="px-2.5 py-1 rounded-full text-xs" style={{ background: "var(--app-primary-subtle)", color: "var(--app-primary)" }}>{product.category}</span><span className="px-2.5 py-1 rounded-full text-xs font-semibold" style={{ background: "var(--app-primary-faint)", color: "var(--app-primary)" }}>{product.productScope === "GLOBAL" ? "All Branches" : product.originBranchName ?? "Branch Product"}</span>{!owner && product.branchAvailabilityStatus === "APPROVED" && product.branchMenuStatus && <StatusBadge status={product.branchMenuStatus} />}</div>
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 my-5">{[{label:"Variants",value:String(product.variants.filter((variant)=>variant.status==="ACTIVE").length)},{label:"Recipes configured",value:`${product.variants.filter((variant)=>variant.status==="ACTIVE"&&variant.recipeId).length}/${product.variants.filter((variant)=>variant.status==="ACTIVE").length}`},{label:"Category",value:<CategoryLabel name={product.category} categories={categories}/>},{label:"Scope",value:product.productScope==="GLOBAL"?"All Branches":product.originBranchName??"Branch Product"}].map(({label,value})=><div key={label} className="p-3 rounded-xl" style={{background:"var(--app-bg)"}}><div className="text-[10px] uppercase" style={{color:"var(--app-text-faint)"}}>{label}</div><div className="font-bold mt-1">{value}</div></div>)}</div>
+    <div className="flex flex-wrap gap-2 mb-4"><span className="px-2.5 py-1 rounded-full text-xs" style={{ background: "var(--app-primary-subtle)", color: "var(--app-primary)" }}><CategoryLabel name={product.category} categories={categories}/></span><span className="px-2.5 py-1 rounded-full text-xs font-semibold" style={{ background: "var(--app-primary-faint)", color: "var(--app-primary)" }}>{product.productScope === "GLOBAL" ? "All Branches" : product.originBranchName ?? "Branch Product"}</span>{!owner && product.branchAvailabilityStatus === "APPROVED" && product.branchMenuStatus && <StatusBadge status={product.branchMenuStatus} />}</div>
     <div className="p-4 rounded-xl border mb-5" style={{ borderColor:"var(--app-border)",background:"var(--app-surface-elevated)" }}>
       <div className="text-[10px] font-bold uppercase tracking-wider" style={{ color:"var(--app-text-faint)" }}>Approval</div>
       <div className="font-semibold mt-1 capitalize">{approvalSummary.toLowerCase()}</div>
@@ -322,11 +385,11 @@ function ProductDetails({ product, owner, canEdit, onClose, onEdit }: { product:
   </Modal>;
 }
 
-function ProductReviewModal({ product, comment, setComment, saving, onClose, onDecision }: { product:MenuProduct;comment:string;setComment:(value:string)=>void;saving:boolean;onClose:()=>void;onDecision:(decision:"APPROVE"|"REJECT")=>void }) {
+function ProductReviewModal({ product, categories, comment, setComment, saving, onClose, onDecision }: { product:MenuProduct;categories:MenuCategory[];comment:string;setComment:(value:string)=>void;saving:boolean;onClose:()=>void;onDecision:(decision:"APPROVE"|"REJECT")=>void }) {
   return <Modal onClose={onClose} width="max-w-2xl">
     <div className="flex justify-between gap-4"><div><div className="text-[10px] font-bold uppercase tracking-wider" style={{ color:"var(--app-warning)" }}>Pending Owner Approval</div><h2 className="text-xl font-bold mt-1">Review {product.name}</h2><p className="text-xs mt-1" style={{ color:"var(--app-text-muted)" }}>Submitted by {product.createdByName ?? "Branch Manager"} · {product.originBranchName ?? "Assigned branch"}</p></div><button aria-label="Close product review" disabled={saving} onClick={onClose}><X size={18}/></button></div>
     <p className="text-sm mt-4 p-3 rounded-xl" style={{ color:"var(--app-text-muted)",background:"var(--app-bg)" }}>{product.description || "No product description."}</p>
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 my-5">{[["Product Code",product.code],["Category",product.category],["Variants",String(product.variants.filter((variant)=>variant.status==="ACTIVE").length)],["Recipes configured",`${product.variants.filter((variant)=>variant.recipeId).length}/${product.variants.length}`]].map(([label,value])=><div key={label} className="p-3 rounded-xl border" style={{borderColor:"var(--app-border)"}}><div className="text-[10px] uppercase" style={{color:"var(--app-text-faint)"}}>{label}</div><div className="font-bold mt-1">{value}</div></div>)}</div>
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 my-5">{[{label:"Product Code",value:product.code},{label:"Category",value:<CategoryLabel name={product.category} categories={categories}/>},{label:"Variants",value:String(product.variants.filter((variant)=>variant.status==="ACTIVE").length)},{label:"Recipes configured",value:`${product.variants.filter((variant)=>variant.recipeId).length}/${product.variants.length}`}].map(({label,value})=><div key={label} className="p-3 rounded-xl border" style={{borderColor:"var(--app-border)"}}><div className="text-[10px] uppercase" style={{color:"var(--app-text-faint)"}}>{label}</div><div className="font-bold mt-1">{value}</div></div>)}</div>
     <h3 className="text-xs font-bold uppercase tracking-wider mb-2" style={{color:"var(--app-text-muted)"}}>Proposed Variant Recipes</h3>
     <div className="space-y-2">{product.variants.filter((variant)=>variant.status==="ACTIVE").map((variant)=><div key={variant.id} className="rounded-xl border p-3" style={{borderColor:"var(--app-border)"}}><div className="font-semibold text-sm">{variant.name} · {money(variant.sellingPrice)} · Cost: {variant.recipeCost==null?"Not available":money(variant.recipeCost)}</div><div className="text-xs mt-1 text-[var(--app-text-muted)]">{variant.ingredients?.length?variant.ingredients.map((item)=>`${item.name}: ${item.quantity} ${item.unit}`).join(" · "):"No recipe configured"}</div></div>)}</div>
     <label className="block text-sm font-semibold mt-5">Comment <span className="font-normal" style={{ color:"var(--app-text-faint)" }}>(optional)</span><textarea maxLength={1000} value={comment} onChange={(event)=>setComment(event.target.value)} placeholder="Add suggestions or explain your decision…" rows={3} className="mt-2 w-full px-3 py-2.5 rounded-xl border resize-none outline-none" style={inputStyle}/><span className="block text-right text-[10px] mt-1" style={{ color:"var(--app-text-faint)" }}>{comment.length}/1000</span></label>
@@ -334,18 +397,46 @@ function ProductReviewModal({ product, comment, setComment, saving, onClose, onD
   </Modal>;
 }
 
+function CategoryManagerModal({categories,onClose,onChanged}:{categories:MenuCategory[];onClose:()=>void;onChanged:()=>Promise<void>}){
+  const empty:CategoryForm={name:"",description:"",status:"ACTIVE"};
+  const [editing,setEditing]=useState<MenuCategory|null>(null);
+  const [form,setForm]=useState<CategoryForm>(empty);
+  const [saving,setSaving]=useState(false);
+  const [error,setError]=useState("");
+  const startCreate=()=>{setEditing(null);setForm(empty);setError("");};
+  const startEdit=(category:MenuCategory)=>{setEditing(category);setForm({name:category.name,description:category.description,status:category.status});setError("");};
+  const save=async()=>{
+    if(form.name.trim().length<2){setError("Category name must contain at least 2 characters.");return;}
+    setSaving(true);setError("");
+    try{
+      if(editing) await masterDataService.updateMenuCategory(editing.id,{name:form.name.trim(),description:form.description.trim(),status:form.status});
+      else await masterDataService.createMenuCategory({name:form.name.trim(),description:form.description.trim(),status:form.status});
+      toast.success(editing?"Category updated":"Category created");
+      await onChanged();startCreate();
+    }catch(reason){setError(reason instanceof Error?reason.message:"Unable to save category");}
+    finally{setSaving(false);}
+  };
+  return <Modal onClose={onClose} width="max-w-3xl">
+    <div className="flex items-start justify-between gap-4"><div><h2 className="text-xl font-bold">Menu Categories</h2><p className="text-sm mt-1 text-[var(--app-text-muted)]">Rename categories without changing their stable identity, and add optional user guidance.</p></div><button aria-label="Close category management" disabled={saving} onClick={onClose}><X size={18}/></button></div>
+    <div className="grid md:grid-cols-[1fr_1.2fr] gap-5 mt-5">
+      <div className="rounded-xl border overflow-hidden" style={{borderColor:"var(--app-border)"}}><div className="flex items-center justify-between px-3 py-2 border-b" style={{borderColor:"var(--app-border)"}}><span className="text-xs font-bold uppercase tracking-wider text-[var(--app-text-muted)]">Existing categories</span><Btn size="sm" variant="outline" icon={Plus} onClick={startCreate}>New</Btn></div><div className="max-h-96 overflow-y-auto divide-y" style={{borderColor:"var(--app-border)"}}>{categories.map((category)=><button type="button" key={category.id} onClick={()=>startEdit(category)} className="w-full text-left px-3 py-3 hover:bg-[var(--app-primary-faint)]"><div className="flex items-center justify-between gap-2"><span className="font-semibold text-sm">{category.name}</span><StatusBadge status={category.status.toLowerCase()}/></div><div className="text-xs mt-1 text-[var(--app-text-muted)] line-clamp-2">{category.description||"No description"}</div></button>)}</div></div>
+      <div><h3 className="font-bold">{editing?`Edit ${editing.name}`:"Create category"}</h3><div className="space-y-4 mt-4"><Field label="Category Name *" value={form.name} onChange={(name)=>setForm((current)=>({...current,name}))}/><label className="block text-sm font-semibold">Description <span className="font-normal text-[var(--app-text-faint)]">(optional)</span><textarea value={form.description} maxLength={1000} rows={4} onChange={(event)=>setForm((current)=>({...current,description:event.target.value}))} className="mt-2 w-full px-3 py-2.5 rounded-xl border resize-none outline-none" style={inputStyle} placeholder="Explain this category in user-friendly terms."/></label><SelectField label="Status" value={form.status} onChange={(status)=>setForm((current)=>({...current,status:status as RecordStatus}))} options={[{value:"ACTIVE",label:"Active"},{value:"INACTIVE",label:"Inactive"}]}/>{error&&<p role="alert" className="text-sm text-[var(--app-danger)]">{error}</p>}<div className="flex justify-end gap-2"><Btn variant="outline" disabled={saving} onClick={startCreate}>Clear</Btn><Btn disabled={saving} onClick={()=>void save()}>{saving?"Saving…":editing?"Save Category":"Create Category"}</Btn></div></div></div>
+    </div>
+  </Modal>;
+}
+
 function ProductEditor({ editing, form, setForm, errors, categories, inventory, canCreateIngredient, saving, onInventoryCreated, onClose, onSave }: { editing: MenuProduct|null; form: ProductForm; setForm: React.Dispatch<React.SetStateAction<ProductForm>>; errors: Record<string,string>; categories: MenuCategory[]; inventory: InventoryItem[]; canCreateIngredient:boolean; saving:boolean; onInventoryCreated:(item:InventoryItem)=>void; onClose:()=>void; onSave:()=>void }) {
-  const [ingredientTarget,setIngredientTarget]=useState<string|null>(null);
+  const [ingredientTarget,setIngredientTarget]=useState<{variantKey:string;rowKey:string}|null>(null);
   const selectedRecipeVariant=form.variants.find((variant)=>variant.key===form.recipeVariantKey);
   const existingRecipeVariant=editing?.variants.find((variant)=>variant.id===selectedRecipeVariant?.id);
+  const selectedRecipeDraft=selectedRecipeVariant?form.recipeDrafts[selectedRecipeVariant.key]:undefined;
   const chooseRecipeVariant=(variant:VariantRow)=>{
-    const existing=editing?.variants.find((item)=>item.id===variant.id);
-    setForm((current)=>({...current,recipeEnabled:true,recipeVariantKey:variant.key,
-      yieldQuantity:existing?.yieldQuantity??1,effectiveFrom:existing?.recipeHasHistoricalSales?localToday():"",changeReason:"",
-      items:existing?.ingredients?.length?existing.ingredients.map((item)=>({key:item.id,inventoryItemId:item.inventoryItemId,quantity:item.quantity,unit:item.unit})):[newRow()]}));
+    setForm((current)=>({...current,recipeVariantKey:variant.key,
+      recipeDrafts:initializePendingRecipeDrafts(variant,current.variants,current.recipeDrafts,editing?.variants,localToday())}));
   };
-  const updateRow=(key:string,changes:Partial<RecipeRow>)=>setForm((current)=>({...current,items:current.items.map((item)=>item.key===key?{...item,...changes}:item)}));
-  const appendRow=()=>{const row=newRow();setForm((current)=>({...current,items:[...current.items,row]}));return row.key;};
+  const updateRecipeDraft=(changes:Partial<RecipeDraft>)=>setForm((current)=>{const key=current.recipeVariantKey;if(!key||!current.recipeDrafts[key])return current;return {...current,recipeDrafts:{...current.recipeDrafts,[key]:{...current.recipeDrafts[key],...changes}}};});
+  const updateRow=(variantKey:string,key:string,changes:Partial<RecipeRow>)=>setForm((current)=>({...current,recipeDrafts:updatePendingRecipeDraftRow(current.recipeDrafts,variantKey,key,changes)}));
+  const appendRow=(variantKey:string)=>{const row=newRow();setForm((current)=>{const draft=current.recipeDrafts[variantKey];if(!draft)return current;return {...current,recipeDrafts:{...current.recipeDrafts,[variantKey]:{...draft,items:[...draft.items,row]}}};});return row.key;};
   return <>
     <Modal onClose={onClose} width="max-w-5xl">
       <div className="-m-6 mb-6 px-6 py-5 flex items-start justify-between gap-4 border-b" style={{background:"linear-gradient(135deg,var(--app-primary-faint),var(--app-surface))",borderColor:"var(--app-border)"}}>
@@ -356,31 +447,31 @@ function ProductEditor({ editing, form, setForm, errors, categories, inventory, 
         <div className="flex items-center gap-2 mb-4"><BookOpen size={16} style={{color:"var(--app-primary)"}}/><h3 className="text-xs font-bold uppercase tracking-wider" style={{color:"var(--app-primary)"}}>Product Information</h3></div>
         <div className="grid md:grid-cols-2 gap-4">
           <Field label="Product Name *" value={form.name} error={errors.name} placeholder="e.g., Spanish Latte" onChange={(value)=>setForm((current)=>({...current,name:value}))}/>
-          <SelectField label="Category *" value={form.categoryId} error={errors.categoryId} onChange={(value)=>setForm((current)=>({...current,categoryId:value}))} options={categories.filter((item)=>item.status==="ACTIVE"||item.id===form.categoryId).map((item)=>({value:item.id,label:item.name}))}/>
+          <div><SelectField label="Category *" value={form.categoryId} error={errors.categoryId} onChange={(value)=>setForm((current)=>({...current,categoryId:value}))} options={categories.filter((item)=>item.status==="ACTIVE"||item.id===form.categoryId).map((item)=>({value:item.id,label:item.name}))}/>{categories.find((item)=>item.id===form.categoryId)?.description&&<p className="mt-1.5 text-xs text-[var(--app-text-muted)]">{categories.find((item)=>item.id===form.categoryId)!.description}</p>}</div>
           <div className="md:col-span-2 space-y-3"><div className="flex justify-between items-center"><h4 className="text-sm font-semibold">Sizes / Variants *</h4><button type="button" onClick={()=>setForm((current)=>({...current,variants:[...current.variants,{key:crypto.randomUUID(),name:"",sellingPrice:"",status:"ACTIVE"}]}))} className="text-xs font-semibold text-[var(--app-primary)]">+ Add variant</button></div>{form.variants.map((variant)=><div key={variant.key} className="grid grid-cols-[1fr_1fr_auto_auto] gap-2 items-end"><Field label="Name" value={variant.name} placeholder="e.g., Small" onChange={(value)=>setForm((current)=>({...current,variants:current.variants.map((item)=>item.key===variant.key?{...item,name:value}:item)}))}/><Field label="Selling Price" type="number" value={variant.sellingPrice} placeholder="0.00" onChange={(value)=>setForm((current)=>({...current,variants:current.variants.map((item)=>item.key===variant.key?{...item,sellingPrice:value===""?"":Number(value)}:item)}))}/><button type="button" className="h-12 px-2 text-xs rounded-xl border" style={{borderColor:"var(--app-border)"}} onClick={()=>setForm((current)=>({...current,variants:current.variants.map((item)=>item.key===variant.key?{...item,status:item.status==="ACTIVE"?"INACTIVE":"ACTIVE"}:item)}))}>{variant.status==="ACTIVE"?"Active":"Inactive"}</button><button type="button" disabled={form.variants.length===1} title={variant.id?"Deactivate saved variant":"Remove new variant"} className="h-12 px-2 rounded-xl border disabled:opacity-30" style={{borderColor:"var(--app-border)",color:"var(--app-danger)"}} onClick={()=>setForm((current)=>({...current,variants:variant.id?current.variants.map((item)=>item.key===variant.key?{...item,status:"INACTIVE"}:item):current.variants.filter((item)=>item.key!==variant.key)}))}><Trash2 size={15}/></button></div>)}{errors.variants&&<p className="text-xs text-[var(--app-danger)]">{errors.variants}</p>}</div>
           <label className="md:col-span-2 text-sm font-semibold">Description <span className="font-normal" style={{color:"var(--app-text-faint)"}}>(optional)</span><textarea value={form.description} onChange={(event)=>setForm((current)=>({...current,description:event.target.value}))} placeholder="Add a short product description…" rows={3} className="mt-2 w-full px-4 py-3 rounded-2xl border resize-none outline-none transition-shadow focus:ring-2" style={inputStyle}/></label>
         </div>
       </section>
-      <div className="mt-5 grid gap-3 sm:grid-cols-2">{form.variants.filter((variant)=>variant.status==="ACTIVE").map((variant)=>{const saved=editing?.variants.find((item)=>item.id===variant.id);return <div key={variant.key} className="rounded-2xl border p-4" style={{borderColor:form.recipeVariantKey===variant.key?"var(--app-primary)":"var(--app-border)",background:"var(--app-surface-elevated)"}}><div className="font-semibold">{variant.name||"New variant"} · {variant.sellingPrice===""?"Price pending":money(Number(variant.sellingPrice))}</div><p className="text-xs mt-1 text-[var(--app-text-muted)]">Recipe cost: {saved?.recipeCost==null?"Not available":money(saved.recipeCost)} · Margin: {saved?.marginAmount==null?"Not available":money(saved.marginAmount)}</p><button type="button" disabled={form.recipeEnabled&&form.recipeVariantKey!==variant.key} onClick={()=>form.recipeVariantKey===variant.key?setForm((current)=>({...current,recipeEnabled:false,recipeVariantKey:null})):chooseRecipeVariant(variant)} className="mt-3 px-3 py-2 rounded-xl border text-xs font-semibold disabled:opacity-50" style={{borderColor:"var(--app-border)",color:"var(--app-primary)"}}>{form.recipeVariantKey===variant.key?"Skip recipe changes":saved?.recipeId?"Edit Recipe":"Add Recipe"}</button></div>;})}</div>
+      <div className="mt-5 grid gap-3 sm:grid-cols-2">{form.variants.filter((variant)=>variant.status==="ACTIVE").map((variant)=>{const saved=editing?.variants.find((item)=>item.id===variant.id);return <div key={variant.key} className="rounded-2xl border p-4" style={{borderColor:form.recipeVariantKey===variant.key?"var(--app-primary)":"var(--app-border)",background:"var(--app-surface-elevated)"}}><div className="font-semibold">{variant.name||"New variant"} · {variant.sellingPrice===""?"Price pending":money(Number(variant.sellingPrice))}</div><p className="text-xs mt-1 text-[var(--app-text-muted)]">Recipe cost: {saved?.recipeCost==null?"Not available":money(saved.recipeCost)} · Margin: {saved?.marginAmount==null?"Not available":money(saved.marginAmount)}</p><button type="button" onClick={()=>form.recipeVariantKey===variant.key?setForm((current)=>({...current,recipeVariantKey:null})):chooseRecipeVariant(variant)} className="mt-3 px-3 py-2 rounded-xl border text-xs font-semibold" style={{borderColor:"var(--app-border)",color:"var(--app-primary)"}}>{form.recipeVariantKey===variant.key?"Done Editing Recipe":form.recipeDrafts[variant.key]?"Continue Recipe Changes":saved?.recipeId?"Edit Recipe":"Add Recipe"}</button></div>;})}</div>
       {errors.recipeVariantKey&&<p className="text-xs text-[var(--app-danger)]">{errors.recipeVariantKey}</p>}
-      {form.recipeEnabled&&<section className="rounded-2xl border p-4 md:p-5 mt-5" style={{borderColor:"var(--app-border)",background:"var(--app-surface-elevated)"}}>
+      {selectedRecipeDraft&&<section className="rounded-2xl border p-4 md:p-5 mt-5" style={{borderColor:"var(--app-border)",background:"var(--app-surface-elevated)"}}>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-          <div><div className="flex items-center gap-2"><Boxes size={16} style={{color:"var(--app-primary)"}}/><h3 className="text-xs font-bold uppercase tracking-wider" style={{color:"var(--app-primary)"}}>{selectedRecipeVariant?.name||"Variant"} Recipe Ingredients</h3></div><p className="text-xs mt-1.5" style={{color:"var(--app-text-muted)"}}>This recipe belongs only to {selectedRecipeVariant?.name||"the selected variant"}. Save before editing another variant. Ingredient units come from the inventory catalog.</p></div>
-          <div className="flex gap-2 flex-wrap">{canCreateIngredient&&<button type="button" onClick={()=>setIngredientTarget(form.items.find((item)=>!item.inventoryItemId)?.key??appendRow())} className="inline-flex gap-2 items-center px-3 py-2 rounded-xl border text-xs font-semibold" style={{borderColor:"var(--app-primary)",color:"var(--app-primary)",background:"var(--app-primary-faint)"}}><PackagePlus size={14}/>New Inventory Ingredient</button>}<button type="button" onClick={appendRow} className="inline-flex gap-2 items-center px-3 py-2 rounded-xl text-xs font-semibold text-white shadow-sm" style={{background:"var(--app-primary)"}}><Plus size={14}/>Add Recipe Row</button></div>
+          <div><div className="flex items-center gap-2"><Boxes size={16} style={{color:"var(--app-primary)"}}/><h3 className="text-xs font-bold uppercase tracking-wider" style={{color:"var(--app-primary)"}}>{selectedRecipeVariant?.name||"Variant"} Recipe Ingredients</h3></div><p className="text-xs mt-1.5" style={{color:"var(--app-text-muted)"}}>Changes for each variant remain pending until Save Changes. Small and Large must use the same ingredients; quantities may differ.</p></div>
+          <div className="flex gap-2 flex-wrap">{canCreateIngredient&&<button type="button" onClick={()=>{const variantKey=selectedRecipeVariant?.key;if(!variantKey)return;setIngredientTarget({variantKey,rowKey:selectedRecipeDraft.items.find((item)=>!item.inventoryItemId)?.key??appendRow(variantKey)});}} className="inline-flex gap-2 items-center px-3 py-2 rounded-xl border text-xs font-semibold" style={{borderColor:"var(--app-primary)",color:"var(--app-primary)",background:"var(--app-primary-faint)"}}><PackagePlus size={14}/>New Inventory Ingredient</button>}<button type="button" onClick={()=>{if(selectedRecipeVariant)appendRow(selectedRecipeVariant.key);}} className="inline-flex gap-2 items-center px-3 py-2 rounded-xl text-xs font-semibold text-white shadow-sm" style={{background:"var(--app-primary)"}}><Plus size={14}/>Add Recipe Row</button></div>
         </div>
         {!canCreateIngredient&&<div className="mb-4 px-4 py-3 rounded-xl text-xs" style={{background:"var(--app-warning-bg)",color:"var(--app-text-muted)"}}>Missing an ingredient? Ask the Owner to add it to the centralized inventory catalog, then refresh this form.</div>}
-        {existingRecipeVariant?.recipeHasHistoricalSales&&<div className="mb-4 p-4 rounded-xl border" style={{background:"var(--app-warning-bg)",borderColor:"var(--app-warning)",color:"var(--app-text-muted)"}}><p className="text-sm font-semibold" style={{color:"var(--app-text)"}}>This variant has historical sales.</p><p className="text-xs mt-1">Saving these changes will create a new recipe version and will not modify previous COGS records.</p><div className="grid sm:grid-cols-2 gap-3 mt-3"><Field label="New Version Effective Date *" type="date" value={form.effectiveFrom} error={errors.effectiveFrom} onChange={(value)=>setForm((current)=>({...current,effectiveFrom:value}))}/><Field label="Change Reason (optional)" value={form.changeReason} placeholder="e.g., Updated serving size" onChange={(value)=>setForm((current)=>({...current,changeReason:value}))}/></div></div>}
-        <div className="space-y-3">{form.items.map((row,index)=>{const ingredient=inventory.find((candidate)=>candidate.id===row.inventoryItemId);return <div key={row.key} className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_130px_110px_42px] gap-3 items-end p-3.5 rounded-2xl border" style={{background:"var(--app-bg)",borderColor:"var(--app-border)"}}>
-          <SelectField label={index===0?"Ingredient":""} value={row.inventoryItemId} onChange={(value)=>{const item=inventory.find((candidate)=>candidate.id===value);updateRow(row.key,{inventoryItemId:value,unit:item?.unit??""});}} options={inventory.filter((item)=>item.status==="ACTIVE").map((item)=>({value:item.id,label:`${item.name} (${item.sku})`}))}/>
-          <Field label={index===0?"Quantity":""} type="number" value={row.quantity} placeholder="0.00" onChange={(value)=>updateRow(row.key,{quantity:Number(value)})}/>
-          <SelectField label={index===0?"Recipe Unit":""} value={row.unit} onChange={(value)=>updateRow(row.key,{unit:value})} options={compatibleUnits(ingredient?.unit??"").map((unit)=>({value:unit,label:unit}))}/>
-          <button type="button" disabled={form.items.length===1} onClick={()=>setForm((current)=>({...current,items:current.items.filter((item)=>item.key!==row.key)}))} className="h-[46px] rounded-xl border flex items-center justify-center disabled:opacity-30" style={{color:"var(--app-danger)",borderColor:"var(--app-border)",background:"var(--app-surface)"}} title="Remove ingredient"><Trash2 size={15}/></button>
+        {existingRecipeVariant?.recipeHasHistoricalSales&&<div className="mb-4 p-4 rounded-xl border" style={{background:"var(--app-warning-bg)",borderColor:"var(--app-warning)",color:"var(--app-text-muted)"}}><p className="text-sm font-semibold" style={{color:"var(--app-text)"}}>This variant has historical sales.</p><p className="text-xs mt-1">Saving these changes will create a new recipe version and will not modify previous COGS records.</p><div className="grid sm:grid-cols-2 gap-3 mt-3"><Field label="New Version Effective Date *" type="date" value={selectedRecipeDraft.effectiveFrom} error={errors.effectiveFrom} onChange={(value)=>updateRecipeDraft({effectiveFrom:value})}/><Field label="Change Reason (optional)" value={selectedRecipeDraft.changeReason} placeholder="e.g., Updated serving size" onChange={(value)=>updateRecipeDraft({changeReason:value})}/></div></div>}
+        <div className="space-y-3">{selectedRecipeDraft.items.map((row,index)=>{const ingredient=inventory.find((candidate)=>candidate.id===row.inventoryItemId);return <div key={row.key} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-[minmax(220px,1fr)_130px_160px_46px] gap-3 items-end p-3.5 rounded-2xl border" style={{background:"var(--app-bg)",borderColor:"var(--app-border)"}}>
+          <SelectField label={index===0?"Ingredient":""} value={row.inventoryItemId} searchable searchPlaceholder="Search ingredients…" onChange={(value)=>{if(!selectedRecipeVariant)return;const item=inventory.find((candidate)=>candidate.id===value);updateRow(selectedRecipeVariant.key,row.key,{inventoryItemId:value,unit:item?.unit??""});}} options={inventory.filter((item)=>item.status==="ACTIVE").map((item)=>({value:item.id,label:`${item.name} (${item.sku})`}))}/>
+          <Field label={index===0?"Quantity":""} type="number" value={row.quantity} placeholder="0.00" selectInitialZero onChange={(value)=>{if(selectedRecipeVariant)updateRow(selectedRecipeVariant.key,row.key,{quantity:normalizeRecipeQuantityInput(value)});}}/>
+          <SelectField label={index===0?"Recipe Unit":""} value={row.unit} onChange={(value)=>{if(selectedRecipeVariant)updateRow(selectedRecipeVariant.key,row.key,{unit:value});}} options={compatibleUnits(ingredient?.unit??"").map((unit)=>({value:unit,label:unit}))}/>
+          <button type="button" aria-label={`Remove ${ingredient?.name??"ingredient"} from recipe`} onClick={()=>updateRecipeDraft({items:removeRecipeIngredientRow(selectedRecipeDraft.items,row.key)})} className="h-[46px] rounded-xl border flex items-center justify-center" style={{color:"var(--app-danger)",borderColor:"var(--app-border)",background:"var(--app-surface)"}} title="Remove ingredient from this recipe"><Trash2 size={15}/></button>
         </div>;})}</div>
         {errors.items&&<p className="text-xs mt-3" style={{color:"var(--app-danger)"}}>{errors.items}</p>}
       </section>}
       <div className="flex flex-col-reverse sm:flex-row justify-end gap-3 mt-6"><button type="button" onClick={onClose} className="px-5 py-3 rounded-xl border text-sm font-semibold" style={{borderColor:"var(--app-border)",background:"var(--app-surface)"}}>Cancel</button><button type="button" disabled={saving} onClick={onSave} className="px-6 py-3 rounded-xl text-white text-sm font-semibold shadow-md disabled:opacity-50" style={{background:"var(--app-primary)"}}>{saving?"Saving…":editing?"Save Changes":"Create Product"}</button></div>
     </Modal>
-    {ingredientTarget&&<IngredientEditorModal categories={Array.from(new Set(inventory.map((item)=>item.category))).sort()} onClose={()=>setIngredientTarget(null)} onCreated={(item)=>{onInventoryCreated(item);updateRow(ingredientTarget,{inventoryItemId:item.id,unit:item.unit});setIngredientTarget(null);}}/>}
+    {ingredientTarget&&<IngredientEditorModal categories={Array.from(new Set(inventory.map((item)=>item.category))).sort()} onClose={()=>setIngredientTarget(null)} onCreated={(item)=>{onInventoryCreated(item);updateRow(ingredientTarget.variantKey,ingredientTarget.rowKey,{inventoryItemId:item.id,unit:item.unit});setIngredientTarget(null);}}/>}
   </>;
 }
 
@@ -418,5 +509,5 @@ export function IngredientEditorModal({categories,onClose,onCreated}:{categories
 
 function Modal({ children, onClose, width }: { children:React.ReactNode; onClose:()=>void; width:string }) { return <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 backdrop-blur-sm" style={{ background:"rgba(24,10,14,.58)" }} onMouseDown={(event)=>{if(event.target===event.currentTarget)onClose();}}><div role="dialog" aria-modal="true" aria-label="Dialog" className={`w-full ${width} max-h-[94vh] overflow-y-auto rounded-3xl border p-6 shadow-2xl`} style={{ background:"var(--app-surface)",borderColor:"var(--app-border)",boxShadow:"0 30px 80px rgba(43,14,22,.24)" }}>{children}</div></div>; }
 const inputStyle = { borderColor:"var(--app-border)",background:"var(--app-surface-elevated)",color:"var(--app-text)" };
-function Field({ label,value,onChange,type="text",error,disabled=false,placeholder }: { label:string;value:string|number;onChange:(value:string)=>void;type?:string;error?:string;disabled?:boolean;placeholder?:string }) { return <label className="text-sm font-semibold">{label}<input disabled={disabled} type={type} min={type==="number"?0:undefined} step={type==="number"?"0.01":undefined} value={value} placeholder={placeholder} onChange={(event)=>onChange(event.target.value)} className="mt-2 w-full min-h-12 px-4 py-3 rounded-2xl border outline-none transition-all focus:ring-2 disabled:opacity-70" style={{...inputStyle,borderColor:error?"var(--app-danger)":"var(--app-border)"}}/>{error&&<span className="block text-xs mt-1.5" style={{ color:"var(--app-danger)" }}>{error}</span>}</label>; }
-function SelectField({ label,value,onChange,options,error }: { label:string;value:string;onChange:(value:string)=>void;options:{value:string;label:string}[];error?:string }) { return <label className="text-sm font-medium">{label}<Select className="mt-1.5 w-full" value={value} onChange={onChange} options={[{ value:"", label:"Select…" }, ...options]}/>{error&&<span className="block text-xs mt-1" style={{ color:"var(--app-danger)" }}>{error}</span>}</label>; }
+function Field({ label,value,onChange,type="text",error,disabled=false,placeholder,selectInitialZero=false }: { label:string;value:string|number;onChange:(value:string)=>void;type?:string;error?:string;disabled?:boolean;placeholder?:string;selectInitialZero?:boolean }) { return <label className="text-sm font-semibold">{label}<input disabled={disabled} type={type} min={type==="number"?0:undefined} step={type==="number"?"0.01":undefined} value={value} placeholder={placeholder} onFocus={(event)=>{if(selectInitialZero)selectInitialZeroQuantity(event.currentTarget);}} onChange={(event)=>onChange(event.target.value)} className="mt-2 w-full min-h-12 px-4 py-3 rounded-2xl border outline-none transition-all focus:ring-2 disabled:opacity-70" style={{...inputStyle,borderColor:error?"var(--app-danger)":"var(--app-border)"}}/>{error&&<span className="block text-xs mt-1.5" style={{ color:"var(--app-danger)" }}>{error}</span>}</label>; }
+function SelectField({ label,value,onChange,options,error,searchable=false,searchPlaceholder }: { label:string;value:string;onChange:(value:string)=>void;options:{value:string;label:string}[];error?:string;searchable?:boolean;searchPlaceholder?:string }) { return <label className="text-sm font-medium">{label}<Select className="mt-1.5 w-full" value={value} onChange={onChange} options={[{ value:"", label:"Select…" }, ...options]} searchable={searchable} searchPlaceholder={searchPlaceholder}/>{error&&<span className="block text-xs mt-1" style={{ color:"var(--app-danger)" }}>{error}</span>}</label>; }
