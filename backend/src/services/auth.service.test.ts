@@ -39,7 +39,7 @@ const userRow = {
   locked_until: null as Date | null,
 };
 
-function loginClient(row = userRow) {
+function loginClient(row: typeof userRow | null = userRow) {
   const calls: Array<{ sql: string; values?: unknown[] }> = [];
   const query = vi.fn(async (statement: unknown, values?: unknown[]) => {
     const sql = String(statement);
@@ -60,11 +60,58 @@ describe("persistent login protection", () => {
     mocks.connect.mockResolvedValue(client);
     mocks.compare.mockResolvedValue(false);
 
-    await expect(authenticateCredentials("manager@libro.com", "wrong-password", { ipAddress: "127.0.0.1" }, now)).rejects.toMatchObject({ code: "INVALID_CREDENTIALS" });
+    await expect(authenticateCredentials("manager@libro.com", "wrong-password", { ipAddress: "127.0.0.1" }, now)).rejects.toMatchObject({
+      code: "INVALID_PASSWORD",
+      message: "Incorrect password. Please try again.",
+    });
 
     expect(calls.find(({ sql }) => sql.includes("failed_login_attempts=$2"))?.values).toEqual([userRow.id, 1, null]);
     expect(calls.some(({ values }) => values?.[2] === "LOGIN_FAILED")).toBe(true);
     expect(calls.flatMap(({ values }) => values ?? [])).not.toContain("wrong-password");
+    expect(calls.at(-1)?.sql).toBe("COMMIT");
+  });
+
+  it("classifies an unknown email separately while retaining the dummy-hash timing check", async () => {
+    const { client, calls } = loginClient(null);
+    mocks.connect.mockResolvedValue(client);
+    mocks.compare.mockResolvedValue(false);
+
+    const unknown = authenticateCredentials("unknown@example.com", "wrong-password", {}, now);
+    await expect(unknown).rejects.toMatchObject({
+      status: 401,
+      code: "ACCOUNT_NOT_FOUND",
+      message: "Account not found. Please check your email address.",
+    });
+
+    expect(mocks.compare).toHaveBeenCalledWith("wrong-password", expect.any(String));
+    expect(calls.some(({ values }) => values?.[2] === "LOGIN_FAILED")).toBe(true);
+    expect(calls.at(-1)?.sql).toBe("COMMIT");
+  });
+
+  it("does not match an unknown email against another account even when the supplied password is technically valid", async () => {
+    const { client } = loginClient(null);
+    mocks.connect.mockResolvedValue(client);
+    mocks.compare.mockResolvedValue(true);
+
+    await expect(authenticateCredentials("unknown@example.com", "correct-password", {}, now)).rejects.toMatchObject({
+      status: 401,
+      code: "ACCOUNT_NOT_FOUND",
+      message: "Account not found. Please check your email address.",
+    });
+  });
+
+  it("preserves the existing inactive-account state without exposing extra details", async () => {
+    const { client, calls } = loginClient({ ...userRow, status: "INACTIVE" });
+    mocks.connect.mockResolvedValue(client);
+    mocks.compare.mockResolvedValue(true);
+
+    await expect(authenticateCredentials(userRow.email, "correct-password", {}, now)).rejects.toMatchObject({
+      status: 403,
+      code: "ACCOUNT_INACTIVE",
+      message: "This account is inactive. Please contact your administrator.",
+    });
+
+    expect(calls.some(({ values }) => values?.[2] === "LOGIN_FAILED")).toBe(true);
     expect(calls.at(-1)?.sql).toBe("COMMIT");
   });
 

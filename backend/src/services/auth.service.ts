@@ -19,6 +19,9 @@ interface SessionRow { userId: string; role: UserRole; branchId: string | null; 
 export interface LoginSecurityContext { ipAddress?: string | null; userAgent?: string | null }
 
 const DUMMY_PASSWORD_HASH = "$2b$12$1Gb3c9d2GMKbOIQ.TsJTJeNH98ZyLk0rFKFZs/qKhqDMy7ySv91v2";
+const ACCOUNT_NOT_FOUND_MESSAGE = "Account not found. Please check your email address.";
+const INVALID_PASSWORD_MESSAGE = "Incorrect password. Please try again.";
+const INACTIVE_ACCOUNT_MESSAGE = "This account is inactive. Please contact your administrator.";
 
 const publicUser = (row: UserRow) => ({
   id: row.id, firstName: row.first_name, lastName: row.last_name, email: row.email,
@@ -59,7 +62,7 @@ export async function authenticateCredentials(identifier: string, password: stri
       await securityAudit(client, "LOGIN_FAILED", null, "Unsuccessful sign-in attempt", metadata);
       await client.query("COMMIT");
       committed = true;
-      throw new AppError(401, "INVALID_CREDENTIALS", "Invalid email/username or password");
+      throw new AppError(401, "ACCOUNT_NOT_FOUND", ACCOUNT_NOT_FOUND_MESSAGE);
     }
 
     const userRef = { id: row.id, branchId: row.branch_id };
@@ -81,14 +84,14 @@ export async function authenticateCredentials(identifier: string, password: stri
       }
       await client.query("COMMIT");
       committed = true;
-      throw new AppError(next.lockedUntil ? 423 : 401, next.lockedUntil ? "ACCOUNT_TEMPORARILY_LOCKED" : "INVALID_CREDENTIALS", next.lockedUntil ? "Too many unsuccessful sign-in attempts. Please try again later." : "Invalid email/username or password");
+      throw new AppError(next.lockedUntil ? 423 : 401, next.lockedUntil ? "ACCOUNT_TEMPORARILY_LOCKED" : "INVALID_PASSWORD", next.lockedUntil ? "Too many unsuccessful sign-in attempts. Please try again later." : INVALID_PASSWORD_MESSAGE);
     }
 
     if (row.status !== "ACTIVE") {
       await securityAudit(client, "LOGIN_FAILED", userRef, "Sign-in rejected for an inactive account", metadata);
       await client.query("COMMIT");
       committed = true;
-      throw new AppError(403, "ACCOUNT_INACTIVE", "This account is inactive");
+      throw new AppError(403, "ACCOUNT_INACTIVE", INACTIVE_ACCOUNT_MESSAGE);
     }
 
     const sessionIdentifier = newSessionIdentifier();

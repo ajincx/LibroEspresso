@@ -4,11 +4,33 @@ import { toast } from "sonner";
 import "./LoginPage.css";
 
 export const REMEMBER_ME_ENABLED = false;
+export const LOGIN_PASSWORD_MIN_LENGTH = 8;
+const SIMPLE_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export function loginValidationMessage(email: string, password: string) {
+  const normalizedEmail = email.trim();
+  if (!normalizedEmail && !password) return "Enter your email address and password.";
+  if (!normalizedEmail) return "Enter your email address.";
+  if (!password) return "Enter your password.";
+  if (!SIMPLE_EMAIL_PATTERN.test(normalizedEmail)) return "Enter a valid email address.";
+  if (password.length < LOGIN_PASSWORD_MIN_LENGTH) return "Password must be at least 8 characters.";
+  return null;
+}
 
 export function loginErrorMessage(reason: unknown) {
-  const message = reason instanceof Error ? reason.message : "";
-  if (message.toLowerCase().includes("credential")) return "Invalid email or password.";
-  if (message.toLowerCase().includes("too many")) return message;
+  const error = reason as { message?: unknown; response?: { data?: { error?: { code?: unknown } } } } | null;
+  const code = typeof error?.response?.data?.error?.code === "string" ? error.response.data.error.code : "";
+  const message = typeof error?.message === "string" ? error.message : "";
+  if (code === "ACCOUNT_NOT_FOUND") {
+    return "Account not found. Please check your email address.";
+  }
+  if (code === "INVALID_PASSWORD") {
+    return "Incorrect password. Please try again.";
+  }
+  if (code === "ACCOUNT_INACTIVE" || message.toLowerCase().includes("account is inactive")) {
+    return "This account is inactive. Please contact your administrator.";
+  }
+  if (code === "ACCOUNT_TEMPORARILY_LOCKED" || code === "LOGIN_RATE_LIMITED" || message.toLowerCase().includes("too many")) return message;
   return "Unable to sign in. Please try again.";
 }
 
@@ -22,8 +44,8 @@ export function LoginPage({ onLogin }: LoginPageProps) {
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const emailError = error === "Email is required.";
-  const passwordError = error === "Password is required.";
+  const emailError = error === "Enter your email address." || error === "Enter a valid email address.";
+  const passwordError = error === "Enter your password." || error === "Password must be at least 8 characters.";
   const formError = error && !emailError && !passwordError ? error : "";
 
   useEffect(() => {
@@ -35,8 +57,9 @@ export function LoginPage({ onLogin }: LoginPageProps) {
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!email.trim()) return setError("Email is required.");
-    if (!password) return setError("Password is required.");
+    if (submitting) return;
+    const validationError = loginValidationMessage(email, password);
+    if (validationError) return setError(validationError);
     setError("");
     setSubmitting(true);
     try {
@@ -80,7 +103,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
                 <Mail size={18} aria-hidden="true" />
                 <input id="login-email" name="libro-login-email" type="email" autoComplete="off" value={email} onChange={(event) => { setEmail(event.target.value); if (error) setError(""); }} placeholder="Enter your email" aria-invalid={emailError} aria-describedby={emailError ? "login-email-error" : undefined} disabled={submitting} />
               </div>
-              {emailError && <p id="login-email-error" className="login-field__error">Email is required.</p>}
+              {emailError && <p id="login-email-error" className="login-field__error">{error}</p>}
             </div>
 
             <div className="login-field">
@@ -92,7 +115,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
                   {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                 </button>
               </div>
-              {passwordError && <p id="login-password-error" className="login-field__error">Password is required.</p>}
+              {passwordError && <p id="login-password-error" className="login-field__error">{error}</p>}
             </div>
 
             <div className="login-options">
