@@ -32,11 +32,17 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 
-# Ignore all Markdown files
+# Ignore ad-hoc Markdown reports by default
 *.md
 
-# Keep README files
+# Keep intentional workflow inputs and project documentation
 !README.md
+!Beverage_Ingredient_Implementation_Plan.md
+!Ingredient_Master_Proposal.md
+!docs/PERFORMANCE_EVIDENCE.md
+!docs/PRODUCTION_READINESS.md
+!docs/SMOKE_TEST_CHECKLIST.md
+!frontend/ATTRIBUTIONS.md
 
 database-backups/
 *.backup
