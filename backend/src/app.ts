@@ -1,6 +1,6 @@
 import cookieParser from "cookie-parser";
 import cors from "cors";
-import express from "express";
+import express, { type RequestHandler } from "express";
 import * as helmetModule from "helmet";
 import { env } from "./config/env.js";
 import { errorHandler, notFoundHandler } from "./middleware/error.js";
@@ -35,11 +35,20 @@ import { reportsRouter } from "./routes/reports.routes.js";
 import { pool } from "./config/database.js";
 import { requestContext } from "./middleware/requestContext.js";
 
+type HelmetFactory = (options?: unknown) => RequestHandler;
+
+const helmetCandidate: unknown =
+  typeof helmetModule.default === "function" ? helmetModule.default : helmetModule;
+if (typeof helmetCandidate !== "function") {
+  throw new TypeError("Helmet middleware factory is unavailable");
+}
+const helmet = helmetCandidate as HelmetFactory;
+
 export const app = express();
 app.disable("x-powered-by");
 if (env.TRUST_PROXY) app.set("trust proxy", 1);
 app.use(requestContext);
-app.use(helmetModule.default());
+app.use(helmet());
 app.use(cors({ origin: env.CLIENT_URL, credentials: true }));
 app.use(express.json({ limit: "5mb" }));
 app.use(cookieParser());
