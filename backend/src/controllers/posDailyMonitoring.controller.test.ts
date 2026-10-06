@@ -3,9 +3,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ poolQuery: vi.fn() }));
 
 vi.mock("../config/database.js", () => ({ pool: { query: mocks.poolQuery } }));
-vi.mock("../config/env.js", () => ({ env: { POS_REMINDER_HOUR_MANILA: 22, POS_REMINDER_MINUTE_MANILA: 0 } }));
+vi.mock("../config/env.js", () => ({ env: {
+  POS_REMINDER_HOUR_MANILA: 22,
+  POS_REMINDER_MINUTE_MANILA: 0,
+  CRON_SECRET: "deployment-cron-secret-at-least-32-characters",
+} }));
 
-import { listDailyPosStatus, runDailyPosReminderJob } from "./posDailyMonitoring.controller.js";
+import { listDailyPosStatus, runDailyPosReminderCron, runDailyPosReminderJob } from "./posDailyMonitoring.controller.js";
 
 describe("daily POS reminder persistence", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -23,6 +27,32 @@ describe("daily POS reminder persistence", () => {
   it("does not create reminders before the configured cutoff", async () => {
     expect(await runDailyPosReminderJob(new Date("2026-09-27T13:59:00.000Z"))).toEqual({ created: 0 });
     expect(mocks.poolQuery).not.toHaveBeenCalled();
+  });
+
+  it("rejects cron requests without the configured bearer secret", async () => {
+    await expect(runDailyPosReminderCron({
+      get: vi.fn().mockReturnValue(undefined),
+    } as never, { json: vi.fn() } as never, vi.fn())).rejects.toMatchObject({
+      status: 401,
+      code: "CRON_UNAUTHORIZED",
+    });
+    expect(mocks.poolQuery).not.toHaveBeenCalled();
+  });
+
+  it("runs the idempotent reminder job for an authorized cron request", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-27T14:05:00.000Z"));
+    mocks.poolQuery.mockResolvedValueOnce({ rows: [{ id: "notification-1" }], rowCount: 1 });
+    const json=vi.fn();
+    try {
+      await runDailyPosReminderCron({
+        get: vi.fn().mockReturnValue("Bearer deployment-cron-secret-at-least-32-characters"),
+      } as never, { json } as never, vi.fn());
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(json).toHaveBeenCalledWith({success:true,data:{created:1}});
+    expect(mocks.poolQuery).toHaveBeenCalledOnce();
   });
 
   it("rejects an unassigned Branch Manager instead of exposing all branches", async () => {

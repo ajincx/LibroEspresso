@@ -1,5 +1,13 @@
 # Production readiness and recovery
 
+## Vercel deployment preparation
+
+Deploy `frontend/` and `backend/` as separate Vercel Hobby projects using Node.js 24.x. The frontend is configured to send browser requests to same-origin `/api` URLs, preserving the existing secure, HTTP-only, `SameSite=Lax` session cookie. Before the first deployment, replace the non-routable `https://libro-espresso-api.invalid` destination in `frontend/vercel.json` with the verified backend production origin. Keep `VITE_API_URL=/api` in the frontend Vercel environment and set `CLIENT_URL` to the exact frontend production origin in the backend environment.
+
+The backend cron invokes `/api/internal/cron/pos-reminders` once daily at `14:00 UTC` (22:00 Asia/Manila). Configure the same random secret of at least 32 characters as `CRON_SECRET` in the backend Vercel environment. Vercel supplies it as a bearer token; the endpoint fails closed when the secret is absent or incorrect. The local `server.ts` process retains its existing startup and 15-minute reminder interval.
+
+Required production-only values include `NODE_ENV=production`, `DATA_LIFECYCLE_ENV=PRODUCTION`, the Neon pooled `DATABASE_URL`, `DATABASE_SSL_MODE=require`, `TRUST_PROXY=true`, a strong `JWT_SECRET`, and server-only `GEMINI_API_KEY`. Keep `GEMINI_MODEL=gemini-2.5-flash-lite`. Do not put database, JWT, cron, or Gemini secrets in `VITE_*` variables.
+
 ## Runtime configuration
 
 Use Node.js 20 LTS or newer and PostgreSQL 15 or newer. Production must set `NODE_ENV=production`, a single approved `CLIENT_URL`, a randomly generated JWT secret of at least 32 characters, and server-only database and Gemini credentials. Configure `TRUST_PROXY=true` only when the application is behind a trusted single reverse proxy. Set `DATABASE_SSL_MODE=require` when the provider requires encrypted PostgreSQL connections, or `verify-full` when its CA chain is available.

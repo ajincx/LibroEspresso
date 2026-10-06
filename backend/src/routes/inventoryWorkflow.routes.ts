@@ -29,9 +29,12 @@ import { authenticate, authorize } from "../middleware/auth.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { archiveShrinkageReport, deletePosSourceConfiguration, voidVarianceRecord } from "../controllers/controlledDestructive.controller.js";
 import { copyApprovedGlobalPosMappings, createPosMapping, createPosSource, deactivateApprovedPosMapping, listPosMappings, listPosSources, revisePendingPosMapping, updatePosMapping, updatePosSource } from "../controllers/posProductVariantMapping.controller.js";
-import { declareClosedPosDay, listDailyPosStatus } from "../controllers/posDailyMonitoring.controller.js";
+import { declareClosedPosDay, listDailyPosStatus, runDailyPosReminderCron } from "../controllers/posDailyMonitoring.controller.js";
 import { createOpeningInventoryBaseline, listOpeningInventoryBaselines } from "../controllers/openingInventory.controller.js";
 import { getShrinkageAiAnalysis } from "../controllers/shrinkageAi.controller.js";
+
+export const deploymentRouter = Router();
+deploymentRouter.get("/cron/pos-reminders", asyncHandler(runDailyPosReminderCron));
 
 export const posSalesRouter = Router();
 posSalesRouter.use(authenticate, authorize("OWNER", "BRANCH_MANAGER"));

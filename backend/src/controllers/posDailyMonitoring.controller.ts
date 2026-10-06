@@ -95,3 +95,11 @@ export async function runDailyPosReminderJob(now=new Date()){
     RETURNING id`,[today]);
   return {created:result.rowCount??0};
 }
+
+export const runDailyPosReminderCron:RequestHandler=async(req,res)=>{
+  if(!env.CRON_SECRET||req.get("authorization")!==`Bearer ${env.CRON_SECRET}`){
+    throw new AppError(401,"CRON_UNAUTHORIZED","Cron authorization failed.");
+  }
+  const result=await runDailyPosReminderJob();
+  res.json({success:true,data:result});
+};

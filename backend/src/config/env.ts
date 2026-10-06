@@ -20,6 +20,14 @@ const schema = z.object({
   GEMINI_MODEL: z.string().trim().default("gemini-2.5-flash-lite"),
   POS_REMINDER_HOUR_MANILA: z.coerce.number().int().min(0).max(23).default(22),
   POS_REMINDER_MINUTE_MANILA: z.coerce.number().int().min(0).max(59).default(0),
+  CRON_SECRET: z.string().trim().optional().transform((value) => value || undefined),
+}).superRefine((value, context) => {
+  if (value.CRON_SECRET && value.CRON_SECRET.length < 32) {
+    context.addIssue({ code: "custom", path: ["CRON_SECRET"], message: "CRON_SECRET must contain at least 32 characters" });
+  }
+  if (value.NODE_ENV === "production" && !value.CRON_SECRET) {
+    context.addIssue({ code: "custom", path: ["CRON_SECRET"], message: "CRON_SECRET is required in production" });
+  }
 });
 
 const parsed = schema.safeParse(process.env);

@@ -15,6 +15,7 @@ import {
 } from "./routes/catalog.routes.js";
 import { userRouter } from "./routes/user.routes.js";
 import {
+  deploymentRouter,
   inventoryMovementRouter,
   openingInventoryRouter,
   inventoryWorkflowRouter,
@@ -56,6 +57,7 @@ const readiness = async (_req: express.Request, res: express.Response) => {
 };
 app.get("/ready", readiness);
 app.get("/api/ready", readiness);
+app.use("/api/internal", deploymentRouter);
 app.use("/api/auth", authRouter);
 app.use("/api/access", accessRouter);
 app.use("/api/branches", branchRouter);
@@ -79,3 +81,7 @@ app.use("/api/predictive-analytics", predictiveRouter);
 app.use("/api/reports", reportsRouter);
 app.use(notFoundHandler);
 app.use(errorHandler);
+
+// Vercel detects this module as the serverless Express entry point. Local
+// development continues to import the named export from server.ts.
+export default app;
