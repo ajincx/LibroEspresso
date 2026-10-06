@@ -3,7 +3,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://libro-espresso-api.invalid/api/:path*"
+      "destination": "https://libro-espresso-api.vercel.app/api/:path*"
     },
     {
       "source": "/(.*)",
