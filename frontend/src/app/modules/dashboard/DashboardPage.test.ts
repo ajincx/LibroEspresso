@@ -7,6 +7,7 @@ import { C, StatusChip } from "../../components/ModuleUi";
 import {
   DASHBOARD_INVENTORY_TARGET,
   DASHBOARD_INVENTORY_ALERTS_ARE_PAGINATED,
+  DASHBOARD_LATEST_POS_PAGE_SIZE,
   DASHBOARD_SHOWS_DAILY_POS_MONITORING,
   DEFAULT_DASHBOARD_RANGE,
   STORAGE_KEY_DASHBOARD_USER_RANGE,
@@ -29,6 +30,9 @@ import { adjustRangeForAutomaticImport } from "../../utils/businessDate";
 const item=(name:string,status:InventoryOverviewItem["status"],stock:number,reorderLevel=10):InventoryOverviewItem=>({branchId:"branch",branchName:"Main",inventoryItemId:name,sku:name,name,category:"Coffee",unit:"g",unitCost:1,reorderLevel,reorderDays:7,lastActualQuantity:stock,lastCountAt:null,systemStock:stock,inventoryValue:stock,status});
 
 describe("dashboard presentation helpers",()=>{
+  it("uses a backend-valid page size when loading the latest POS import",()=>{
+    expect(DASHBOARD_LATEST_POS_PAGE_SIZE).toBeGreaterThanOrEqual(10);
+  });
   it("does not render daily POS upload monitoring on the Dashboard",()=>{
     expect(DASHBOARD_SHOWS_DAILY_POS_MONITORING).toBe(false);
   });

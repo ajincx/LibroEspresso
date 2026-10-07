@@ -5,6 +5,7 @@ describe("pagination", () => {
   it("uses deterministic defaults and bounded page sizes", () => {
     expect(paginationQuery.parse({})).toEqual({ page: 1, pageSize: 100 });
     expect(paginationQuery.safeParse({ pageSize: 101 }).success).toBe(false);
+    expect(paginationQuery.safeParse({ pageSize: 1 }).success).toBe(false);
   });
 
   it("calculates page boundaries and totals", () => {

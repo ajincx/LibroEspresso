@@ -164,6 +164,28 @@ describe("persistent login protection", () => {
 describe("server-side session enforcement", () => {
   const token = signSession({ id: userRow.id, role: userRow.role, branchId: userRow.branch_id }, "session-id");
 
+  it("classifies an invalid JWT as INVALID_SESSION without querying the session store", async () => {
+    await expect(validateSessionToken("not-a-valid-jwt", now)).rejects.toMatchObject({
+      status: 401,
+      code: "INVALID_SESSION",
+    });
+    expect(mocks.poolQuery).not.toHaveBeenCalled();
+  });
+
+  it("does not misclassify a session-store timeout as an invalid JWT", async () => {
+    const timeout = new Error("timeout exceeded when trying to connect");
+    mocks.poolQuery.mockRejectedValue(timeout);
+    await expect(validateSessionToken(token, now)).rejects.toBe(timeout);
+  });
+
+  it("preserves SESSION_REVOKED when the session row is missing", async () => {
+    mocks.poolQuery.mockResolvedValueOnce({ rows: [] });
+    await expect(validateSessionToken(token, now)).rejects.toMatchObject({
+      status: 401,
+      code: "SESSION_REVOKED",
+    });
+  });
+
   it("accepts an active session and refreshes authoritative role and branch", async () => {
     mocks.poolQuery.mockResolvedValueOnce({ rows: [{ userId: userRow.id, role: "BRANCH_MANAGER", branchId: userRow.branch_id, accountStatus: "ACTIVE", lastActivityAt: new Date(now.getTime() - 60_000), expiresAt: new Date(now.getTime() + 60_000), revokedAt: null }] });
     await expect(validateSessionToken(token, now)).resolves.toMatchObject({ id: userRow.id, role: "BRANCH_MANAGER", branchId: userRow.branch_id });

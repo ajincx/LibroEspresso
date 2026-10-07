@@ -20,6 +20,7 @@ const ALERT_PRIORITY: Record<InventoryOverviewItem["status"], number> = { OUT_OF
 export const DASHBOARD_INVENTORY_TARGET:Page="inventory";
 export const DASHBOARD_SHOWS_DAILY_POS_MONITORING=false;
 export const DASHBOARD_INVENTORY_ALERTS_ARE_PAGINATED=false;
+export const DASHBOARD_LATEST_POS_PAGE_SIZE=10;
 export const dashboardGreeting = (hour:number,firstName?:string) => `${hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"}, ${firstName ?? ""} 👋`.replace(",  ", ", ");
 export const prioritizeInventoryAlerts = (items:InventoryOverviewItem[]) => [...items].filter(item=>item.status!=="HEALTHY").sort((a,b)=>ALERT_PRIORITY[b.status]-ALERT_PRIORITY[a.status] || (b.reorderLevel-b.systemStock)-(a.reorderLevel-a.systemStock) || a.name.localeCompare(b.name));
 export const stockStatusChip=(status:InventoryOverviewItem["status"])=>status==="OUT_OF_STOCK"?"out_neutral":status==="LOW_STOCK"?"low":status.toLowerCase();
@@ -183,7 +184,7 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
   useEffect(() => {
     let active = true;
     if (!userSelected) {
-      workflow.posImports({ branchId, pageSize: 1 })
+      workflow.posImports({ branchId, pageSize: DASHBOARD_LATEST_POS_PAGE_SIZE })
         .then((res) => {
           if (!active) return;
           const latestDate = res.imports?.[0]?.businessDate;

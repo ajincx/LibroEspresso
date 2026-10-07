@@ -62,4 +62,14 @@ describe("API Client Configuration & Interceptors", () => {
     await expect(api.get("/owner-only", { adapter: async () => Promise.reject(forbidden) })).rejects.toBe(forbidden);
     expect(dispatchEvent).not.toHaveBeenCalled();
   });
+
+  it("does not clear authentication for a temporary session-store failure", async () => {
+    const dispatchEvent = vi.fn();
+    vi.stubGlobal("window", { sessionStorage: { setItem: vi.fn() }, dispatchEvent });
+    const unavailable = Object.assign(new Error("unavailable"), {
+      response: { status: 503, data: { error: { code: "AUTH_SESSION_UNAVAILABLE", message: "Authentication service is temporarily unavailable" } } },
+    });
+    await expect(api.get("/protected", { adapter: async () => Promise.reject(unavailable) })).rejects.toBe(unavailable);
+    expect(dispatchEvent).not.toHaveBeenCalled();
+  });
 });

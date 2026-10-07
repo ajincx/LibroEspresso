@@ -4,7 +4,11 @@ import { pool } from "../config/database.js";
 import { env } from "../config/env.js";
 import { getEffectiveBranchId } from "../services/branchScope.js";
 import { writeAudit } from "../services/audit.service.js";
-import { loadInventoryLedger } from "../services/inventoryLedger.service.js";
+import {
+  inventoryLedgerKey,
+  loadInventoryLedger,
+  loadInventoryLedgerBalances,
+} from "../services/inventoryLedger.service.js";
 import { configureBranchReorderPolicy } from "../services/branchInventorySettings.service.js";
 import { baseStockUnitCost, receivedStockQuantity, resolvePurchaseConversion } from "../services/purchaseUom.service.js";
 import { AppError } from "../utils/appError.js";
@@ -58,9 +62,17 @@ async function loadInventoryOverviewItems(branchId?: string, inventoryItemId?: s
       ORDER BY b.name,ii.name`,
     values,
   );
-  const items = await Promise.all(result.rows.map(async (row) => {
-    const ledger = await loadInventoryLedger(pool, row.branchId, row.inventoryItemId, row.unit);
-    const stock = ledger.calculatedBalance;
+  const ledgers = await loadInventoryLedgerBalances(
+    pool,
+    result.rows.map((row) => ({
+      branchId: row.branchId,
+      inventoryItemId: row.inventoryItemId,
+      canonicalUnit: row.unit,
+    })),
+  );
+  const items = result.rows.map((row) => {
+    const ledger = ledgers.get(inventoryLedgerKey(row.branchId, row.inventoryItemId));
+    const stock = ledger?.calculatedBalance ?? 0;
     const reorder = Number(row.reorderLevel);
     const status =
       stock <= 0
@@ -76,7 +88,7 @@ async function loadInventoryOverviewItems(branchId?: string, inventoryItemId?: s
       inventoryValue: Math.max(stock, 0) * Number(row.unitCost),
       status,
     };
-  }));
+  });
   return items;
 }
 

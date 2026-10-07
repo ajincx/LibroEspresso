@@ -122,7 +122,15 @@ export async function findCurrentUser(id: string) {
 }
 
 export async function validateSessionToken(token: string, now = new Date()): Promise<TokenUser> {
-  const payload = jwt.verify(token, env.JWT_SECRET, { ignoreExpiration: true }) as JwtPayload & Partial<TokenUser>;
+  let payload: JwtPayload & Partial<TokenUser>;
+  try {
+    payload = jwt.verify(token, env.JWT_SECRET, { ignoreExpiration: true }) as JwtPayload & Partial<TokenUser>;
+  } catch (error) {
+    if (error instanceof jwt.JsonWebTokenError) {
+      throw new AppError(401, "INVALID_SESSION", "Your session is invalid or expired");
+    }
+    throw error;
+  }
   if (!payload.id || !payload.sessionId) throw new AppError(401, "INVALID_SESSION", "Your session is invalid or expired");
   const sessionHash = hashSessionIdentifier(payload.sessionId);
   const result = await pool.query<SessionRow>(

@@ -5,15 +5,16 @@ import { AppError } from "../utils/appError.js";
 import { validateSessionToken } from "../services/auth.service.js";
 export { getEffectiveBranchId } from "../services/branchScope.js";
 
-export const authenticate: RequestHandler = async (req, _res, next) => {
+export const authenticate: RequestHandler = async (req, res, next) => {
   const token = req.cookies?.[env.COOKIE_NAME];
   if (!token) return next(new AppError(401, "UNAUTHENTICATED", "Authentication is required"));
+  res.setHeader("Cache-Control", "private, no-store");
   try {
     req.user = await validateSessionToken(token);
     next();
   } catch (error) {
     if (error instanceof AppError) return next(error);
-    next(new AppError(401, "INVALID_SESSION", "Your session is invalid or expired"));
+    next(new AppError(503, "AUTH_SESSION_UNAVAILABLE", "Authentication service is temporarily unavailable"));
   }
 };
 
