@@ -198,6 +198,9 @@ export async function createIngredientUsageSnapshots(client: Pick<PoolClient, "q
     [importId],
   );
   const snapshots = result.rows.map((row) => {
+    // --- EXPECTED INGREDIENT USAGE FORMULA ---
+    // Expected Usage = Quantity Sold × Recipe Ingredient Quantity / Recipe Yield
+    // Recipe quantity is converted to the inventory unit before calculation when needed.
     const quantityPerServing = convertQuantity(Number(row.recipeQuantity), row.recipeUnit, row.inventoryUnit) / Number(row.yieldQuantity);
     return { saleItemId: row.saleItemId, inventoryItemId: row.inventoryItemId, quantityConsumed: Number(row.quantitySold) * quantityPerServing, unit: normalizeUnit(row.inventoryUnit), unitCost: Number(row.unitCost), recipeVersionId: row.recipeVersionId };
   });
