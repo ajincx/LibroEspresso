@@ -43,6 +43,8 @@ export interface PosMappingResolution {
   version: string | null;
 }
 
+// --- POS PRODUCT TO MENU VARIANT MAPPING ---
+// Maps imported POS product data to the correct menu variant and recipe.
 export function resolvePosMapping(row: ParsedPosRow, branchId: string, mappings: readonly PosMappingRecord[]): PosMappingResolution {
   const name = normalizePosIdentity(row.sourceProductName ?? row.sourceProduct);
   const explicitName = row.sourceProductName ? normalizePosIdentity(row.sourceProductName) : null;

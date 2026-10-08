@@ -219,6 +219,9 @@ async function readMenuProducts(user: NonNullable<Express.Request["user"]>, id?:
      WHERE v.menu_item_id=ANY($1::uuid[])`, [productIds, branchId]) : { rows: [] };
   const detailsByVariant = new Map(variantDetails.rows.map((detail) => [detail.variantId, detail]));
   return result.rows.map((row) => {
+    // --- STANDARDIZED RECIPE COSTING ---
+    // Ingredient per serving = Recipe Ingredient Quantity / Recipe Yield
+    // Recipe cost is based on ingredient quantity and unit cost.
     const yieldQuantity=Number(row.yieldQuantity??1);
     const ingredients=(row.ingredients as Array<{quantity:number;unit:string;inventoryUnit:string;unitCost:number}>).map((item)=>({
       ...item,

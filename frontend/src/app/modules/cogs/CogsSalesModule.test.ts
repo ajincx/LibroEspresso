@@ -101,8 +101,8 @@ describe("POS Import History controls",()=>{
       title:"Daily Upload Monitoring — History",actionLabel:"Back to Current",
     });
   });
-  it("clearly discloses and labels the CAPSTONE menu-price fallback",()=>{
-    const notice="Supplier file does not contain item-level selling prices. Menu selling prices are used for this CAPSTONE demonstration.";
+  it("clearly discloses and labels the configured menu-price fallback",()=>{
+    const notice="Item-level selling prices were not found in the uploaded file. The system will use the configured menu selling prices.";
     expect(renderToStaticMarkup(React.createElement(PosPricingNotice,{notice}))).toContain(notice);
     expect(renderToStaticMarkup(React.createElement(PosPricingNotice,{notice:null}))).toBe("");
     expect(posSalesAmountLabel({calculatedSalesAmount:380,lineAmount:null})).toBe("₱380.00");

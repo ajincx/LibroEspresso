@@ -71,6 +71,9 @@ export function forecastDailySales(
   return Math.max(0, baseline * weekdayFactor * oneDayTrend);
 }
 
+// --- FORECAST ACCURACY: MAE FORMULA ---
+// MAE = Sum(|Actual - Forecast|) / Number of Observations
+// Lower MAE means the forecast is closer to actual values.
 export function calculateMae(observations: AccuracyObservation[]): number | null {
   return observations.length
     ? observations.reduce((sum, row) => sum + Math.abs(row.actualValue - row.forecastValue), 0) /

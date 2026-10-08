@@ -25,6 +25,12 @@ export interface VarianceResult {
   variancePercentage: number | null;
 }
 
+// --- EXPECTED INVENTORY FORMULA ---
+// Expected Stock = Previous Actual
+//                + Stock Received
+//                - Expected Consumption
+//                + Approved Increase
+//                - Approved Decrease
 export function computeExpectedStock(
   previousActual: number,
   stockReceived: number,
@@ -41,6 +47,11 @@ export function computeExpectedStock(
   );
 }
 
+// --- INVENTORY VARIANCE FORMULA ---
+// Variance Quantity = Actual - Expected
+// Variance Value = Variance Quantity × Unit Cost
+// Variance % = (Variance Quantity / Expected) × 100
+// Negative = Shortage, Positive = Excess, Zero = Matched
 export function computeVariance(
   expectedQuantity: number,
   actualQuantity: number,

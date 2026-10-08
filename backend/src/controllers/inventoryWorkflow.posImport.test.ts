@@ -386,7 +386,7 @@ describe("Excel POS preview and canonical import integration", () => {
     expect(preview.contentHash).toBe(hash);
     expect(preview.rows[0]).toMatchObject({unitPrice:190,lineAmount:null,calculatedSalesAmount:380,pricingSource:"MENU_VARIANT_CAPSTONE_FALLBACK"});
     expect(preview.pricing).toMatchObject({method:"MENU_VARIANT_CAPSTONE_FALLBACK",fallbackRows:1});
-    expect(preview.pricing.notice).toContain("CAPSTONE demonstration");
+    expect(preview.pricing.notice).toBe("Item-level selling prices were not found in the uploaded file. The system will use the configured menu selling prices.");
     expect(preview.rows[0]).toMatchObject({status:"VALID"});
     expect(preview.summary).toMatchObject({canImport:true,validRows:1,warningRows:0,quality:"COMPLETE"});
     expect(preview.simulation).toMatchObject({estimatedSales:380,estimatedCogs:28.8,estimatedGrossProfit:351.2});

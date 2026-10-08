@@ -12,7 +12,7 @@ import {
 
 export const MAX_POS_FILE_BYTES = 4_000_000;
 export const TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE =
-  "Supplier file does not contain item-level selling prices. Menu selling prices are used for this CAPSTONE demonstration.";
+  "Item-level selling prices were not found in the uploaded file. The system will use the configured menu selling prices.";
 
 const REQUIRED_TRANSACTION_HEADERS = [
   "store", "machine id", "or no.", "date", "payment time", "item name(s)",

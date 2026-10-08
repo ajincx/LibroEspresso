@@ -110,6 +110,8 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
   const incomingParams: unknown[] = [];
   const incomingBranchClause = branchId ? `AND po.branch_id=$${incomingParams.push(branchId)}` : "";
 
+  // --- HISTORICAL SALES DATA FOR FORECASTING ---
+  // Uses historical POS sales and recipe-derived ingredient usage per branch.
   const [scope, salesResult, inventoryResult, varianceResult, evaluationSalesResult, ingredientUsageResult, incomingOrderResult] = await Promise.all([
     branchId ? pool.query<{ branchName: string }>(`SELECT name "branchName" FROM branches WHERE id=$1 AND status='ACTIVE'`, [branchId]) : Promise.resolve({ rows: [] }),
     pool.query<SalesRow>(
@@ -144,6 +146,9 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
          LEFT JOIN branch_inventory_settings bis ON bis.branch_id=b.id AND bis.inventory_item_id=ii.id
         WHERE b.status='ACTIVE' AND ii.status='ACTIVE' AND (ii.item_scope='GLOBAL' OR ii.origin_branch_id=b.id) ${inventoryBranchClause}
         ORDER BY b.name,ii.name`, inventoryParams),
+    // --- VERIFIED SHRINKAGE CONTEXT ---
+    // VERIFIED / REVIEWED shrinkage is used only as decision-support context.
+    // It does not change the official sales forecast.
     pool.query<{ verifiedShrinkageCost: number }>(
       `SELECT coalesce(sum(CASE WHEN sr.actual_quantity<sr.expected_quantity THEN abs(sr.variance_value) ELSE 0 END),0)::float8 "verifiedShrinkageCost"
          FROM shrinkage_reports sr
@@ -242,6 +247,9 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
     incomingByItem.set(key, deliveries);
   });
   const observedSalesDays = salesRows.length;
+  // --- SALES FORECAST LOGIC ---
+  // Uses recent sales history, previous sales period,
+  // weekday behavior, trend adjustment, and forecast horizon.
   const recent = salesRows.slice(-28).map((row) => row.sales);
   const prior = salesRows.slice(-56, -28).map((row) => row.sales);
   const baselineDailySales = average(recent);
@@ -269,6 +277,9 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
   }));
   const projectedDemand = groupForecast(futureDaily, forecastDays);
 
+  // --- FORECASTED INVENTORY AND REPLENISHMENT ---
+  // Projected Stock = Current Stock + Incoming Stock - Forecasted Usage
+  // Used to estimate stock-out risk and replenishment needs.
   const inventory = inventoryResult.rows.map((row) => {
     const stock = inventoryLedgers.get(inventoryLedgerKey(row.branchId, row.inventoryItemId))?.calculatedBalance ?? 0;
     const dailyUsage = Math.max(0, Number(row.dailyUsage));

@@ -431,10 +431,15 @@ export const importPosSales: RequestHandler = async (req, res) => {
     );
     const salesInsertMs = performance.now() - salesInsertStartedAt;
     const usageStartedAt = performance.now();
+    // --- EXPECTED INGREDIENT USAGE FORMULA ---
+    // Expected Usage = Quantity Sold × Recipe Ingredient Quantity / Recipe Yield
     await createIngredientUsageSnapshots(client,importId);
     const ingredientUsageMs = performance.now() - usageStartedAt;
     const inventoryDateAssessment = await assessPosImportInventoryDates(client, importId);
     const consumption = await client.query(
+      // --- PRODUCT AND TOTAL COGS FORMULA ---
+      // Ingredient Cost = Quantity Consumed × Unit Cost Snapshot
+      // Total COGS = Sum of all recipe-based ingredient costs
       `SELECT ii.id "inventoryItemId",ii.sku,ii.name,usage.unit,
               sum(usage.quantity_consumed)::float8 "expectedConsumption",
               sum(usage.quantity_consumed*usage.unit_cost_snapshot)::float8 "estimatedCost"
@@ -814,6 +819,9 @@ export const getPosAnalytics: RequestHandler = async (req, res) => {
   );
   const theoreticalCogs = Number(totals.theoreticalCogs ?? 0);
   const sales = Number(totals.sales ?? 0);
+  // --- GROSS PROFIT AND GROSS MARGIN FORMULA ---
+  // Gross Profit = Total Sales - Total COGS
+  // Gross Margin = (Gross Profit / Total Sales) × 100
   const financials = calculateFinancialSummary({
     sales,
     productCogs: theoreticalCogs,
@@ -1045,6 +1053,11 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
       );
       const countItem = inserted.rows[0] as { id: string };
       let shrinkageReportId: string | null = null;
+      // --- SHRINKAGE DETECTION LOGIC ---
+      // Negative variance = shortage.
+      // If the shortage exceeds the configured tolerance,
+      // create a DETECTED shrinkage investigation.
+      // Do not automatically classify it as confirmed shrinkage.
       if (requiresVarianceInvestigation(expected.expectedQuantity, varianceQuantity, varianceTolerance)) {
         const reportNo = await client.query<{ reportNo: string }>(
           `SELECT 'SR-'||to_char(now(),'YYYY')||'-'||lpad(nextval('shrinkage_report_number_seq')::text,5,'0') "reportNo"`,
@@ -1757,6 +1770,8 @@ export const submitShrinkageInvestigation: RequestHandler = async (
   req,
   res,
 ) => {
+  // --- MANAGER SHRINKAGE VERIFICATION ---
+  // Branch Manager reviews evidence and assigns the verified classification.
   const { id } = idParams.parse(req.params);
   const input = shrinkageInvestigationInput.parse(req.body);
   const branchId = requiredBranchId(req.user!);
@@ -1858,6 +1873,9 @@ export const submitShrinkageInvestigation: RequestHandler = async (
 };
 
 export const reviewShrinkageReport: RequestHandler = async (req, res) => {
+  // --- OWNER SHRINKAGE REVIEW ---
+  // Owner performs administrative review after Manager verification.
+  // This does not replace the Manager's classification.
   const { id } = idParams.parse(req.params);
   const client = await pool.connect();
   try {

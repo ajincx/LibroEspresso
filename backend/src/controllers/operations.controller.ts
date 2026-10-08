@@ -237,6 +237,9 @@ export const listIncidentItemOptions: RequestHandler = async (req, res) => {
   });
 };
 
+// --- INCIDENT REPORT SUPPORTING EVIDENCE ---
+// Incident reports support shrinkage investigation.
+// They do not directly change inventory quantities.
 export const createIncidentReport: RequestHandler = async (req, res) => {
   const input = incidentCreateInput.parse(req.body);
   const branchId = requiredBranchId(req.user!);

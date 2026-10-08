@@ -221,6 +221,9 @@ export async function generateGeminiShrinkageAnalysis(findings: unknown): Promis
   });
 }
 
+// --- AI-ASSISTED INTERPRETATION ONLY ---
+// Gemini explains validated system results and provides recommendations.
+// It does NOT calculate official COGS, inventory, variance, MAE, or forecast values.
 export async function generateGeminiInsights(findings: unknown): Promise<DecisionInsight[] | null> {
   const apiKey = env.GEMINI_API_KEY;
   if (!apiKey) {
