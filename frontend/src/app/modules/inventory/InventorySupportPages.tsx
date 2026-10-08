@@ -91,7 +91,7 @@ export function ExpectedInventoryPage({ role, view, scopeBranchId = "ALL" }: { r
 
   const isUsage = view === "usage";
   const cols = isUsage
-    ? ["SKU", "Ingredient", "Previous Actual", "Received", "Expected Usage", "Unit"]
+    ? ["SKU", "Ingredient", "Previous Stock Count", "Received", "Expected Usage", "Unit"]
     : ["SKU", "Ingredient", "Previous Actual", "Received", "Expected Usage", "Adjustments", "Expected Stock", "Unit"];
   const colCount = cols.length;
 
