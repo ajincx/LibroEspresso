@@ -19,6 +19,19 @@ export interface ExpectedInventoryResult {
   baselineSource: "PHYSICAL_COUNT" | "OPENING_BASELINE" | "BALANCE";
 }
 
+export interface UnavailableExpectedInventoryItem {
+  inventoryItemId: string;
+  sku: string;
+  itemName: string;
+  unit: string;
+  availability: "NO_BASELINE";
+}
+
+export interface ExpectedInventoryBatchResult {
+  items: ExpectedInventoryResult[];
+  unavailableItems: UnavailableExpectedInventoryItem[];
+}
+
 export interface VarianceResult {
   varianceQuantity: number;
   varianceValue: number;
@@ -181,4 +194,154 @@ export async function calculateExpectedInventory(
     baselineDate: baseline.baselineDate,
     baselineSource: baseline.baselineSource,
   };
+}
+
+export async function calculateExpectedInventoryBatch(
+  client: Pick<PoolClient, "query">,
+  branchId: string,
+  countDate: string,
+): Promise<ExpectedInventoryBatchResult> {
+  type BatchRow = {
+    inventoryItemId: string;
+    sku: string;
+    itemName: string;
+    unit: string;
+    unitCost: number;
+    actualQuantity: number | null;
+    baselineDate: string | null;
+    baselineSource: ExpectedInventoryResult["baselineSource"] | null;
+    received: number;
+    adjustmentIncreases: number;
+    adjustmentDecreases: number;
+    consumptionUnit: string | null;
+    consumptionQuantity: number | null;
+  };
+  const result = await client.query<BatchRow>(
+    `WITH items AS (
+       SELECT ii.id "inventoryItemId",ii.sku,ii.name "itemName",ii.unit,
+              COALESCE(bis.current_unit_cost,ii.unit_cost)::float8 "unitCost"
+         FROM inventory_items ii
+         LEFT JOIN branch_inventory_settings bis ON bis.inventory_item_id=ii.id AND bis.branch_id=$1
+        WHERE ii.status='ACTIVE' AND (ii.item_scope='GLOBAL' OR ii.origin_branch_id=$1)
+     ), baseline_candidates AS (
+       SELECT ici.inventory_item_id "inventoryItemId",ici.actual_quantity::float8 "actualQuantity",
+              ic.count_date::text "baselineDate",
+              (ic.count_date::timestamp + interval '1 day') AT TIME ZONE 'Asia/Manila' "baselineAt",
+              'PHYSICAL_COUNT'::text "baselineSource",0 "sourcePriority",ic.submitted_at "sourceOrderAt"
+         FROM inventory_count_items ici
+         JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
+         JOIN items item ON item."inventoryItemId"=ici.inventory_item_id
+        WHERE ic.branch_id=$1 AND NOT ic.is_test_data AND ic.count_date <= $2::date
+       UNION ALL
+       SELECT obi.inventory_item_id,obi.quantity::float8,ob.effective_at::date::text,
+              ob.effective_at,'OPENING_BASELINE'::text,1,ob.effective_at
+         FROM inventory_opening_baseline_items obi
+         JOIN inventory_opening_baselines ob ON ob.id=obi.opening_baseline_id
+         JOIN items item ON item."inventoryItemId"=obi.inventory_item_id
+        WHERE ob.branch_id=$1 AND ob.effective_at < ($2::date + interval '1 day')
+       UNION ALL
+       SELECT balance.inventory_item_id,balance.actual_quantity::float8,balance.as_of::date::text,
+              balance.as_of,'BALANCE'::text,2,balance.as_of
+         FROM branch_inventory_balances balance
+         JOIN items item ON item."inventoryItemId"=balance.inventory_item_id
+        WHERE balance.branch_id=$1 AND NOT balance.is_test_data AND balance.as_of::date <= $2::date
+     ), baselines AS (
+       SELECT DISTINCT ON (candidate."inventoryItemId") candidate.*
+         FROM baseline_candidates candidate
+        ORDER BY candidate."inventoryItemId",candidate."baselineAt" DESC,candidate."sourcePriority",candidate."sourceOrderAt" DESC
+     ), movement_totals AS (
+       SELECT baseline."inventoryItemId",
+              COALESCE(sum(movement.quantity) FILTER (WHERE movement.movement_type='RECEIPT'),0)::float8 received,
+              COALESCE(sum(movement.quantity) FILTER (WHERE movement.movement_type='APPROVED_ADJUSTMENT_INCREASE'),0)::float8 "adjustmentIncreases",
+              COALESCE(sum(movement.quantity) FILTER (WHERE movement.movement_type IN ('APPROVED_ADJUSTMENT','APPROVED_ADJUSTMENT_DECREASE')),0)::float8 "adjustmentDecreases"
+         FROM baselines baseline
+         LEFT JOIN inventory_movements movement ON movement.branch_id=$1
+          AND movement.inventory_item_id=baseline."inventoryItemId" AND NOT movement.is_test_data
+          AND ((baseline."baselineSource"='OPENING_BASELINE' AND movement.occurred_at >= baseline."baselineAt")
+            OR (baseline."baselineSource"<>'OPENING_BASELINE' AND movement.occurred_at::date > baseline."baselineDate"::date))
+          AND movement.occurred_at::date <= $2::date
+        GROUP BY baseline."inventoryItemId"
+     ), consumption_totals AS (
+       SELECT baseline."inventoryItemId",usage.unit "consumptionUnit",
+              COALESCE(sum(usage.quantity_consumed),0)::float8 "consumptionQuantity"
+         FROM baselines baseline
+         JOIN pos_imports pi ON pi.branch_id=$1
+          AND ((baseline."baselineSource"='OPENING_BASELINE' AND pi.business_date >= baseline."baselineDate"::date)
+            OR (baseline."baselineSource"<>'OPENING_BASELINE' AND pi.business_date > baseline."baselineDate"::date))
+          AND pi.business_date <= $2::date
+         JOIN pos_sources source ON source.id=pi.pos_source_id AND source.status='ACTIVE'
+         JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
+         JOIN pos_sale_ingredient_usage usage ON usage.pos_sale_item_id=psi.id
+          AND usage.inventory_item_id=baseline."inventoryItemId"
+        GROUP BY baseline."inventoryItemId",usage.unit
+     )
+     SELECT item.*,baseline."actualQuantity",baseline."baselineDate",baseline."baselineSource",
+            COALESCE(movement.received,0)::float8 received,
+            COALESCE(movement."adjustmentIncreases",0)::float8 "adjustmentIncreases",
+            COALESCE(movement."adjustmentDecreases",0)::float8 "adjustmentDecreases",
+            consumption."consumptionUnit",consumption."consumptionQuantity"
+       FROM items item
+       LEFT JOIN baselines baseline ON baseline."inventoryItemId"=item."inventoryItemId"
+       LEFT JOIN movement_totals movement ON movement."inventoryItemId"=item."inventoryItemId"
+       LEFT JOIN consumption_totals consumption ON consumption."inventoryItemId"=item."inventoryItemId"
+      ORDER BY item."itemName",consumption."consumptionUnit"`,
+    [branchId, countDate],
+  );
+
+  const unavailableItems: UnavailableExpectedInventoryItem[] = [];
+  const grouped = new Map<string, { row: BatchRow; consumption: Array<{ unit: string; quantity: number }> }>();
+  for (const row of result.rows) {
+    if (!row.baselineSource || row.actualQuantity === null || !row.baselineDate) {
+      if (!unavailableItems.some((item) => item.inventoryItemId === row.inventoryItemId)) {
+        unavailableItems.push({
+          inventoryItemId: row.inventoryItemId,
+          sku: row.sku,
+          itemName: row.itemName,
+          unit: row.unit,
+          availability: "NO_BASELINE",
+        });
+      }
+      continue;
+    }
+    const item = grouped.get(row.inventoryItemId) ?? { row, consumption: [] };
+    if (row.consumptionUnit && row.consumptionQuantity !== null) {
+      item.consumption.push({ unit: row.consumptionUnit, quantity: Number(row.consumptionQuantity) });
+    }
+    grouped.set(row.inventoryItemId, item);
+  }
+
+  const items = [...grouped.values()].map(({ row, consumption }) => {
+    const stockReceived = Number(row.received ?? 0);
+    const approvedAdjustmentIncreases = Number(row.adjustmentIncreases ?? 0);
+    const approvedAdjustmentDecreases = Number(row.adjustmentDecreases ?? 0);
+    const approvedAdjustments = approvedAdjustmentIncreases - approvedAdjustmentDecreases;
+    const expectedConsumption = consumption.reduce(
+      (sum, usage) => sum + convertQuantity(usage.quantity, usage.unit, row.unit),
+      0,
+    );
+    const previousActualQuantity = Number(row.actualQuantity);
+    return {
+      inventoryItemId: row.inventoryItemId,
+      sku: row.sku,
+      itemName: row.itemName,
+      unit: row.unit,
+      unitCost: Number(row.unitCost),
+      previousActualQuantity,
+      stockReceived,
+      expectedConsumption,
+      approvedAdjustments,
+      approvedAdjustmentIncreases,
+      approvedAdjustmentDecreases,
+      expectedQuantity: computeExpectedStock(
+        previousActualQuantity,
+        stockReceived,
+        expectedConsumption,
+        approvedAdjustmentIncreases,
+        approvedAdjustmentDecreases,
+      ),
+      baselineDate: row.baselineDate!,
+      baselineSource: row.baselineSource!,
+    } satisfies ExpectedInventoryResult;
+  });
+  return { items, unavailableItems };
 }

@@ -1,9 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AppError } from "../utils/appError.js";
 
 const mocks = vi.hoisted(() => ({
   poolQuery: vi.fn(),
-  calculateExpectedInventory: vi.fn(),
+  calculateExpectedInventoryBatch: vi.fn(),
 }));
 
 vi.mock("../config/database.js", () => ({
@@ -11,7 +10,7 @@ vi.mock("../config/database.js", () => ({
 }));
 
 vi.mock("../services/inventoryCalculation.service.js", () => ({
-  calculateExpectedInventory: mocks.calculateExpectedInventory,
+  calculateExpectedInventoryBatch: mocks.calculateExpectedInventoryBatch,
 }));
 
 import { getExpectedInventory } from "./inventoryWorkflow.controller.js";
@@ -34,7 +33,6 @@ describe("expected inventory partial baseline availability", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("returns valid countable items and isolates an item with no baseline", async () => {
-    mocks.poolQuery.mockResolvedValue({ rows: [validItem, noBaselineItem] });
     const expectedItem = {
       inventoryItemId: validItem.id,
       sku: validItem.sku,
@@ -42,13 +40,16 @@ describe("expected inventory partial baseline availability", () => {
       unit: validItem.unit,
       expectedQuantity: 5054,
     };
-    mocks.calculateExpectedInventory
-      .mockResolvedValueOnce(expectedItem)
-      .mockRejectedValueOnce(new AppError(
-        422,
-        "NO_VALID_HISTORICAL_BASELINE",
-        "No inventory baseline exists",
-      ));
+    mocks.calculateExpectedInventoryBatch.mockResolvedValueOnce({
+      items: [expectedItem],
+      unavailableItems: [{
+        inventoryItemId: noBaselineItem.id,
+        sku: noBaselineItem.sku,
+        itemName: noBaselineItem.name,
+        unit: noBaselineItem.unit,
+        availability: "NO_BASELINE",
+      }],
+    });
     const json = vi.fn();
 
     await getExpectedInventory({
@@ -74,9 +75,8 @@ describe("expected inventory partial baseline availability", () => {
   });
 
   it("does not hide unexpected calculation failures", async () => {
-    mocks.poolQuery.mockResolvedValue({ rows: [validItem] });
-    mocks.calculateExpectedInventory.mockRejectedValueOnce(
-      new AppError(500, "INVENTORY_CALCULATION_FAILED", "Calculation failed"),
+    mocks.calculateExpectedInventoryBatch.mockRejectedValueOnce(
+      Object.assign(new Error("Calculation failed"), { code: "INVENTORY_CALCULATION_FAILED" }),
     );
 
     await expect(getExpectedInventory({

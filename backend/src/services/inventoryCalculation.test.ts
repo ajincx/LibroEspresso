@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { calculateExpectedInventory, computeExpectedStock, computeVariance } from "./inventoryCalculation.service.js";
+import { calculateExpectedInventory, calculateExpectedInventoryBatch, computeExpectedStock, computeVariance } from "./inventoryCalculation.service.js";
 
 describe("thesis inventory calculation formulas", () => {
   it("excludes explicitly classified test counts, balances, and movements from authoritative expected stock", async () => {
@@ -91,6 +91,52 @@ describe("thesis inventory calculation formulas", () => {
 
     const result = await calculateExpectedInventory({ query } as never, "branch-1", "item-1", "2026-10-02");
     expect(result).toMatchObject({ previousActualQuantity: 970, expectedQuantity: 970, baselineSource: "PHYSICAL_COUNT" });
+  });
+
+  it("batch-calculates all scoped items in one query without changing the stock formula", async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [
+      {
+        inventoryItemId: "beans", sku: "RM-002", itemName: "Espresso Blend Beans", unit: "g", unitCost: 0.82,
+        actualQuantity: 5750, baselineDate: "2026-09-16", baselineSource: "OPENING_BASELINE",
+        received: 100, adjustmentIncreases: 50, adjustmentDecreases: 25,
+        consumptionUnit: "g", consumptionQuantity: 696,
+      },
+      {
+        inventoryItemId: "beans", sku: "RM-002", itemName: "Espresso Blend Beans", unit: "g", unitCost: 0.82,
+        actualQuantity: 5750, baselineDate: "2026-09-16", baselineSource: "OPENING_BASELINE",
+        received: 100, adjustmentIncreases: 50, adjustmentDecreases: 25,
+        consumptionUnit: "kg", consumptionQuantity: 1,
+      },
+      {
+        inventoryItemId: "test-oat", sku: "ING-00073", itemName: "TEST_Oat Milk", unit: "ml", unitCost: 0.2,
+        actualQuantity: null, baselineDate: null, baselineSource: null,
+        received: 0, adjustmentIncreases: 0, adjustmentDecreases: 0,
+        consumptionUnit: null, consumptionQuantity: null,
+      },
+    ] });
+
+    const result = await calculateExpectedInventoryBatch({ query } as never, "branch-1", "2026-10-08");
+
+    expect(query).toHaveBeenCalledOnce();
+    expect(result.items).toEqual([expect.objectContaining({
+      inventoryItemId: "beans",
+      previousActualQuantity: 5750,
+      stockReceived: 100,
+      expectedConsumption: 1696,
+      approvedAdjustmentIncreases: 50,
+      approvedAdjustmentDecreases: 25,
+      approvedAdjustments: 25,
+      expectedQuantity: 4179,
+      baselineSource: "OPENING_BASELINE",
+    })]);
+    expect(result.unavailableItems).toEqual([{
+      inventoryItemId: "test-oat", sku: "ING-00073", itemName: "TEST_Oat Milk", unit: "ml", availability: "NO_BASELINE",
+    }]);
+    const sql = String(query.mock.calls[0]?.[0]);
+    expect(sql).toContain("source.status='ACTIVE'");
+    expect(sql).toContain("movement.occurred_at::date <= $2::date");
+    expect(sql).toContain("pi.business_date <= $2::date");
+    expect(sql).toContain("balance.as_of::date <= $2::date");
   });
 
   describe("computeExpectedStock", () => {

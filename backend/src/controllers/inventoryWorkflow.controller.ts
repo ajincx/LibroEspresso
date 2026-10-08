@@ -2,7 +2,7 @@ import type { Request, RequestHandler } from "express";
 import type { PoolClient } from "pg";
 import { pool } from "../config/database.js";
 import { env } from "../config/env.js";
-import { calculateExpectedInventory, computeVariance } from "../services/inventoryCalculation.service.js";
+import { calculateExpectedInventory, calculateExpectedInventoryBatch, computeVariance } from "../services/inventoryCalculation.service.js";
 import { calculateFinancialSummary, roundMoney } from "../services/financialMetrics.service.js";
 import { OPERATIONAL_POS_IMPORT_CONDITION, OPERATIONAL_POS_SOURCE_JOIN } from "../services/operationalPosScope.service.js";
 import { classifyUnmatchedPosIdentity, parsePosCsv, POS_SOURCE_FORMATS, PosCsvError, summarizePosRows, type MatchedPosRow, type PosMenuCandidate } from "../services/posCsvImport.service.js";
@@ -922,38 +922,7 @@ export const getExpectedInventory: RequestHandler = async (req, res) => {
       ? req.query.countDate
       : manilaBusinessDate();
   assertInventoryCountDateNotFuture(countDate);
-  const itemIds = await pool.query<{ id: string; sku: string; name: string; unit: string }>(
-    `SELECT id,sku,name,unit FROM inventory_items WHERE status='ACTIVE'
-    AND (item_scope='GLOBAL' OR origin_branch_id=$1) ORDER BY name`,
-    [branchId],
-  );
-  const items = [];
-  const unavailableItems: Array<{
-    inventoryItemId: string;
-    sku: string;
-    itemName: string;
-    unit: string;
-    availability: "NO_BASELINE";
-  }> = [];
-  for (const item of itemIds.rows) {
-    try {
-      items.push(
-        await calculateExpectedInventory(pool, branchId, item.id, countDate),
-      );
-    } catch (error) {
-      if (error instanceof AppError && error.code === "NO_VALID_HISTORICAL_BASELINE") {
-        unavailableItems.push({
-          inventoryItemId: item.id,
-          sku: item.sku,
-          itemName: item.name,
-          unit: item.unit,
-          availability: "NO_BASELINE",
-        });
-        continue;
-      }
-      throw error;
-    }
-  }
+  const { items, unavailableItems } = await calculateExpectedInventoryBatch(pool, branchId, countDate);
   res.json({ success: true, data: { branchId, countDate, items, unavailableItems } });
 };
 
