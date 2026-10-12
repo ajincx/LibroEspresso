@@ -17,6 +17,7 @@ import {
   createPosSource,
   deactivateApprovedPosMapping,
   revisePendingPosMapping,
+  savePosSourceFieldMapping,
   updatePosMapping,
   updatePosSource,
 } from "./posProductVariantMapping.controller.js";
@@ -41,6 +42,79 @@ beforeEach(() => {
 });
 
 describe("POS source review metadata", () => {
+  it("saves a validated custom spreadsheet mapping transactionally with an audit entry", async () => {
+    const mapping = {
+      productName: "Item Name", quantitySold: "Qty", transactionId: "Receipt No",
+      businessDate: "Sale Date", status: "Payment Status", unitPrice: "Price", salesAmount: "Total",
+    };
+    const calls: Array<{ sql: string; values?: unknown[] }> = [];
+    const client = {
+      query: vi.fn(async (statement: unknown, values?: unknown[]) => {
+        const sql = String(statement);
+        calls.push({ sql, values });
+        if (sql.includes("SELECT supported_format")) {
+          return { rows: [{ supportedFormat: "CUSTOM_TABULAR_XLSX" }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 1 };
+      }),
+      release: vi.fn(),
+    };
+    mocks.connect.mockResolvedValue(client);
+    const res = response();
+
+    await savePosSourceFieldMapping({
+      params: { id: sourceId },
+      body: { headers: Object.values(mapping), mapping },
+      user: { id: ownerId, role: "OWNER", branchId: null },
+    } as never, res as never, vi.fn());
+
+    expect(calls[0]?.sql).toBe("BEGIN");
+    expect(calls[1]?.sql).toContain("FOR UPDATE");
+    expect(calls[2]?.sql).toContain("field_mapping=$2::jsonb");
+    expect(calls[2]?.values).toEqual([sourceId, JSON.stringify(mapping), ownerId]);
+    expect(mocks.writeAudit).toHaveBeenCalledWith(
+      expect.anything(), "UPDATE_POS_FIELD_MAPPING", "POS_SOURCE", sourceId,
+      "Configured POS spreadsheet columns", expect.objectContaining({ sourceHeaders: Object.values(mapping) }), client,
+    );
+    expect(calls.at(-1)?.sql).toBe("COMMIT");
+    expect(client.release).toHaveBeenCalledOnce();
+    expect(res.json).toHaveBeenCalledWith({ success: true, data: { id: sourceId, mapping } });
+  });
+
+  it("rolls back when column mapping is attempted for a built-in source format", async () => {
+    const client = {
+      query: vi.fn(async (statement: unknown) => {
+        const sql = String(statement);
+        if (sql.includes("SELECT supported_format")) return { rows: [{ supportedFormat: format }], rowCount: 1 };
+        return { rows: [], rowCount: 0 };
+      }),
+      release: vi.fn(),
+    };
+    mocks.connect.mockResolvedValue(client);
+    await expect(savePosSourceFieldMapping({
+      params: { id: sourceId },
+      body: { headers: ["Item", "Qty", "Receipt", "Date", "Status", "Price"], mapping: {
+        productName: "Item", quantitySold: "Qty", transactionId: "Receipt",
+        businessDate: "Date", status: "Status", unitPrice: "Price",
+      } },
+      user: { id: ownerId, role: "OWNER", branchId: null },
+    } as never, response() as never, vi.fn())).rejects.toMatchObject({ code: "POS_FIELD_MAPPING_NOT_APPLICABLE" });
+    expect(client.query).toHaveBeenCalledWith("ROLLBACK");
+    expect(mocks.writeAudit).not.toHaveBeenCalled();
+  });
+
+  it("requires every canonical field before opening a mapping transaction", async () => {
+    await expect(savePosSourceFieldMapping({
+      params: { id: sourceId },
+      body: { headers: ["Item", "Qty", "Receipt", "Date", "Status"], mapping: {
+        productName: "Item", quantitySold: "Qty", transactionId: "Receipt",
+        businessDate: "Date", status: "Status",
+      } },
+      user: { id: ownerId, role: "OWNER", branchId: null },
+    } as never, response() as never, vi.fn())).rejects.toBeDefined();
+    expect(mocks.connect).not.toHaveBeenCalled();
+  });
+
   it("creates a new source as inactive without review metadata", async () => {
     const created = {
       id: sourceId,

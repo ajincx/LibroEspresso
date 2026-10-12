@@ -3,9 +3,10 @@ import type { PoolClient } from "pg";
 import { z } from "zod";
 import { pool } from "../config/database.js";
 import { writeAudit } from "../services/audit.service.js";
+import { inspectPosExcelHeaders, type PosFieldMapping } from "../services/posExcelImport.service.js";
 import { AppError } from "../utils/appError.js";
 
-const supportedFormat = z.enum(["CANONICAL_CSV", "SUMMARY_ITEMS_SOLD_LEGACY_XLS", "TRANSACTION_SUMMARY_XLSX"]);
+const supportedFormat = z.enum(["CANONICAL_CSV", "SUMMARY_ITEMS_SOLD_LEGACY_XLS", "TRANSACTION_SUMMARY_XLSX", "CUSTOM_TABULAR_XLSX"]);
 const mappingReviewStatus = z.enum(["PENDING", "APPROVED", "REJECTED", "AMBIGUOUS"]);
 const sourceInput = z.object({
   sourceCode: z.string().trim().min(2).max(80).transform((value) => value.toUpperCase()),
@@ -39,6 +40,28 @@ const mappingCopyInput = z.object({
   path: ["targetPosSourceId"],
 });
 const idParam = z.object({ id: z.string().uuid() });
+const fieldMappingSchema = z.object({
+  productName: z.string().trim().min(1).max(240),
+  quantitySold: z.string().trim().min(1).max(240),
+  transactionId: z.string().trim().min(1).max(240),
+  businessDate: z.string().trim().min(1).max(240),
+  status: z.string().trim().min(1).max(240),
+  unitPrice: z.string().trim().min(1).max(240),
+  salesAmount: z.string().trim().min(1).max(240).optional(),
+});
+const fieldMappingInput = z.object({
+  headers: z.array(z.string().trim().min(1).max(240)).min(2).max(200),
+  mapping: fieldMappingSchema,
+}).superRefine((value, context) => {
+  const mapped = Object.values(value.mapping).filter(Boolean);
+  if (new Set(mapped.map((item) => item.toLowerCase())).size !== mapped.length) {
+    context.addIssue({ code: "custom", path: ["mapping"], message: "Each source column can map to only one canonical field." });
+  }
+  const headers = new Set(value.headers.map((header) => header.toLowerCase()));
+  for (const [field, header] of Object.entries(value.mapping)) {
+    if (header && !headers.has(header.toLowerCase())) context.addIssue({ code: "custom", path: ["mapping", field], message: `Mapped column '${header}' is missing from this file.` });
+  }
+});
 const mappingReviewInput = z.object({
   reviewStatus: mappingReviewStatus,
   reviewComment: z.string().trim().max(1000).optional(),
@@ -66,7 +89,7 @@ function databaseConflict(error: unknown): never {
 
 export const listPosSources: RequestHandler = async (req, res) => {
   const result = await pool.query(`SELECT s.id,s.branch_id "branchId",b.name "branchName",s.source_code "sourceCode",s.display_name "displayName",s.supported_format "supportedFormat",s.status,
-      s.format_verified_by "formatVerifiedBy",s.format_verified_at "formatVerifiedAt",
+      s.format_verified_by "formatVerifiedBy",s.format_verified_at "formatVerifiedAt",s.field_mapping "fieldMapping",
       concat(u.first_name,' ',u.last_name) "formatVerifiedByName",
       EXISTS(SELECT 1 FROM pos_imports pi WHERE pi.pos_source_id=s.id) "hasImports",
       EXISTS(SELECT 1 FROM pos_sale_items psi WHERE psi.pos_source_id=s.id) "hasSales",
@@ -94,14 +117,15 @@ export const updatePosSource: RequestHandler = async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
-    const current = await client.query<{ supportedFormat: z.infer<typeof supportedFormat>; status: "ACTIVE" | "INACTIVE"; branchId: string | null }>(
-      `SELECT supported_format "supportedFormat",status,branch_id "branchId" FROM pos_sources WHERE id=$1 FOR UPDATE`, [id],
+    const current = await client.query<{ supportedFormat: z.infer<typeof supportedFormat>; status: "ACTIVE" | "INACTIVE"; branchId: string | null; fieldMapping: PosFieldMapping | null }>(
+      `SELECT supported_format "supportedFormat",status,branch_id "branchId",field_mapping "fieldMapping" FROM pos_sources WHERE id=$1 FOR UPDATE`, [id],
     );
     if (!current.rows[0]) throw new AppError(404, "POS_SOURCE_NOT_FOUND", "POS source not found.");
     const nextFormat = value.supportedFormat ?? current.rows[0].supportedFormat;
     const nextStatus = value.status ?? current.rows[0].status;
     const nextBranchId = value.branchId ?? current.rows[0].branchId;
     if (nextStatus === "ACTIVE" && !nextBranchId) throw new AppError(422, "POS_SOURCE_BRANCH_REQUIRED", "Choose the branch that uses this POS source before activation.");
+    if (nextStatus === "ACTIVE" && nextFormat === "CUSTOM_TABULAR_XLSX" && !current.rows[0].fieldMapping) throw new AppError(422, "POS_FIELD_MAPPING_REQUIRED", "Configure the POS column mapping before activating this source.");
     if (nextStatus === "ACTIVE") {
       const branch = await client.query(`SELECT id FROM branches WHERE id=$1 AND status='ACTIVE' FOR UPDATE`, [nextBranchId]);
       if (!branch.rows[0]) throw new AppError(422, "POS_SOURCE_BRANCH_INVALID", "Choose an active branch for this POS source.");
@@ -131,6 +155,47 @@ export const updatePosSource: RequestHandler = async (req, res) => {
     res.json({ success: true, data: { source: result.rows[0] } });
   } catch (error) { await client.query("ROLLBACK"); databaseConflict(error); }
   finally { client.release(); }
+};
+
+export const inspectPosSourceHeaders: RequestHandler = async (req, res) => {
+  const { id } = idParam.parse(req.params);
+  if (!Buffer.isBuffer(req.body)) throw new AppError(422, "POS_FILE_REQUIRED", "Select an XLS or XLSX file to inspect.");
+  const source = await pool.query<{ fieldMapping: PosFieldMapping | null }>(
+    `SELECT field_mapping "fieldMapping" FROM pos_sources WHERE id=$1`, [id],
+  );
+  if (!source.rows[0]) throw new AppError(404, "POS_SOURCE_NOT_FOUND", "POS source not found.");
+  const encodedFilename = req.headers["x-pos-filename"];
+  const filename = typeof encodedFilename === "string" ? decodeURIComponent(encodedFilename) : "source.xlsx";
+  try {
+    const inspection = inspectPosExcelHeaders(filename, req.body);
+    res.json({ success: true, data: { ...inspection, mapping: source.rows[0].fieldMapping } });
+  } catch (error) {
+    if (error instanceof Error && "code" in error) throw new AppError(422, String(error.code), error.message);
+    throw error;
+  }
+};
+
+export const savePosSourceFieldMapping: RequestHandler = async (req, res) => {
+  const { id } = idParam.parse(req.params);
+  const value = fieldMappingInput.parse(req.body);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const source = await client.query<{ supportedFormat: string }>(
+      `SELECT supported_format "supportedFormat" FROM pos_sources WHERE id=$1 FOR UPDATE`, [id],
+    );
+    if (!source.rows[0]) throw new AppError(404, "POS_SOURCE_NOT_FOUND", "POS source not found.");
+    if (source.rows[0].supportedFormat !== "CUSTOM_TABULAR_XLSX") throw new AppError(409, "POS_FIELD_MAPPING_NOT_APPLICABLE", "Column mapping is available only for Custom Mapped Excel sources.");
+    await client.query(`UPDATE pos_sources SET field_mapping=$2::jsonb,field_mapping_updated_by=$3,field_mapping_updated_at=now(),updated_at=now() WHERE id=$1`, [id, JSON.stringify(value.mapping), req.user!.id]);
+    await writeAudit(req.user!, "UPDATE_POS_FIELD_MAPPING", "POS_SOURCE", id, "Configured POS spreadsheet columns", { canonicalFields: Object.keys(value.mapping), sourceHeaders: value.headers }, client);
+    await client.query("COMMIT");
+    res.json({ success: true, data: { id, mapping: value.mapping } });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 };
 
 export const listPosMappings: RequestHandler = async (req, res) => {

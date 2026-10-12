@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { parse } from "csv-parse/sync";
+import { manilaBusinessDate } from "./businessTime.service.js";
 
 const HEADER_ALIASES = {
   productId: ["product_id", "product_code", "menu_code", "code"],
@@ -13,11 +14,14 @@ const HEADER_ALIASES = {
 } as const;
 
 export const MAX_POS_ROWS = 5_000;
+// A single cafe sales line above this value is almost certainly malformed input.
+export const MAX_POS_SALES_QUANTITY = 10_000;
 
 export const POS_SOURCE_FORMATS = {
   CSV: "CANONICAL_CSV",
   LEGACY_SUMMARY: "SUMMARY_ITEMS_SOLD_LEGACY_XLS",
   TRANSACTION_SUMMARY: "TRANSACTION_SUMMARY_XLSX",
+  CUSTOM_TABULAR: "CUSTOM_TABULAR_XLSX",
 } as const;
 
 export type PosSourceFormat = typeof POS_SOURCE_FORMATS[keyof typeof POS_SOURCE_FORMATS];
@@ -117,6 +121,63 @@ export function validBusinessDate(value: string) {
   return date.getUTCFullYear() === year && date.getUTCMonth() === month! - 1 && date.getUTCDate() === day;
 }
 
+export function businessDateIssue(value: string, currentBusinessDate = manilaBusinessDate()) {
+  if (!value) return "Business date is required.";
+  if (!validBusinessDate(value)) return "Business date is invalid.";
+  if (value > currentBusinessDate) return "Business date cannot be in the future.";
+  return null;
+}
+
+export function quantityIssue(value: string, quantity: number | null) {
+  if (!value) return "Quantity is required.";
+  if (quantity === null) return "Quantity must be a valid number.";
+  if (quantity <= 0) return "Quantity must be greater than zero.";
+  if (quantity > MAX_POS_SALES_QUANTITY) return "Quantity exceeds the maximum allowed value.";
+  return null;
+}
+
+function duplicateIdentity(row: ParsedPosRow) {
+  const transactionIdentity = row.transactionId ?? row.sourceOrNumber ?? row.sourceTransactionNumber;
+  if (!transactionIdentity) return null;
+  const stableLineId = row.sourceFormat === POS_SOURCE_FORMATS.LEGACY_SUMMARY ? null : row.sourceLineId;
+  return JSON.stringify([
+    transactionIdentity,
+    stableLineId,
+    normalizeProduct(row.sourceProductId ?? row.sourceProductName ?? row.sourceProduct),
+    row.quantitySold,
+    row.businessDate,
+    row.unitPrice,
+    row.lineAmount ?? null,
+    row.transactionStatus ?? null,
+  ]);
+}
+
+export function markDuplicatePosRows(rows: ParsedPosRow[]) {
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const identity = duplicateIdentity(row);
+    if (!identity) continue;
+    if (seen.has(identity)) {
+      if (!row.issues.includes("Duplicate transaction row detected.")) row.issues.push("Duplicate transaction row detected.");
+      row.status = "INVALID";
+    } else {
+      seen.add(identity);
+    }
+  }
+  return rows;
+}
+
+export function validationIssueField(issue: string) {
+  if (/quantity/i.test(issue)) return "Quantity";
+  if (/business date|transaction block.*date/i.test(issue)) return "Business Date";
+  if (/product|item name|description/i.test(issue)) return "Product";
+  if (/recipe/i.test(issue)) return "Recipe";
+  if (/amount|price/i.test(issue)) return "Sales Amount";
+  if (/duplicate/i.test(issue)) return "Transaction";
+  if (/status/i.test(issue)) return "Status";
+  return "Row";
+}
+
 export function hashCanonicalPosRows(rows: readonly ParsedPosRow[]) {
   const canonical = rows.map((row) => ({
     sourceProduct: row.sourceProduct,
@@ -185,18 +246,21 @@ export function parsePosCsv(csvText: string): ParsedPosDocument {
     const idValue = productId >= 0 ? clean(record[productId]) : "";
     const nameValue = productName >= 0 ? clean(record[productName]) : "";
     const sourceProduct = nameValue || idValue;
-    if (!sourceProduct) issues.push("Product is required.");
+    if (!sourceProduct) issues.push("Product/item name is required.");
 
     const quantityText = clean(record[quantitySold]);
-    const quantity = Number(quantityText);
-    if (!quantityText || !Number.isFinite(quantity) || quantity <= 0) issues.push("Quantity Sold must be a number greater than zero.");
+    const parsedQuantity = Number(quantityText);
+    const quantity = quantityText && Number.isFinite(parsedQuantity) ? parsedQuantity : null;
+    const invalidQuantity = quantityIssue(quantityText, quantity);
+    if (invalidQuantity) issues.push(invalidQuantity);
 
     const priceText = clean(record[unitPrice]);
     const price = Number(priceText);
     if (!priceText || !Number.isFinite(price) || price < 0) issues.push("Selling Price must be a valid non-negative number.");
 
     const dateValue = clean(record[businessDate]);
-    if (!validBusinessDate(dateValue)) issues.push("Business Date must be a valid YYYY-MM-DD date.");
+    const invalidDate = businessDateIssue(dateValue);
+    if (invalidDate) issues.push(invalidDate);
 
     const timestampValue = transactionTimestamp >= 0 ? clean(record[transactionTimestamp]) : "";
     if (timestampValue && (!/(Z|[+-]\d{2}:\d{2})$/i.test(timestampValue) || !Number.isFinite(Date.parse(timestampValue)))) {
@@ -211,7 +275,7 @@ export function parsePosCsv(csvText: string): ParsedPosDocument {
       sourceProduct,
       sourceProductId: idValue || null,
       sourceProductName: nameValue || null,
-      quantitySold: Number.isFinite(quantity) ? quantity : null,
+      quantitySold: quantity,
       unitPrice: Number.isFinite(price) ? price : null,
       businessDate: validBusinessDate(dateValue) ? dateValue : null,
       transactionId: transactionValue || null,
@@ -222,6 +286,7 @@ export function parsePosCsv(csvText: string): ParsedPosDocument {
     };
   });
 
+  markDuplicatePosRows(rows);
   const singleBusinessDate = enforceSingleBusinessDate(rows);
   return {
     headers,

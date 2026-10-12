@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import * as XLSX from "xlsx";
-import { POS_SOURCE_FORMATS } from "./posCsvImport.service.js";
+import { MAX_POS_SALES_QUANTITY, POS_SOURCE_FORMATS } from "./posCsvImport.service.js";
 import {
   TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE,
   detectPosExcelFormat,
@@ -76,6 +76,12 @@ describe("POS Excel format detection and file validation", () => {
   it("detects the transaction-summary format from its known headers", () => {
     const parsed = parsePosExcel("anything.xlsx", workbookBuffer(transactionRows(), "xlsx"));
     expect(parsed.sourceFormat).toBe(POS_SOURCE_FORMATS.TRANSACTION_SUMMARY);
+  });
+
+  it("identifies a missing Status header in an otherwise recognized transaction export", () => {
+    const rows = transactionRows();
+    rows[0] = transactionHeaders.filter((header) => header !== "Status");
+    expect(() => parsePosExcel("missing-status.xlsx", workbookBuffer(rows, "xlsx"))).toThrow("Missing required column: Status.");
   });
 
   it("rejects unsupported and ambiguous workbook structures", () => {
@@ -154,6 +160,58 @@ describe("Transaction Summary XLSX adapter", () => {
 
   it("reports malformed product tokens, quantity mismatches, and non-paid status", () => {
     const parsed = parsePosExcel("transactions.xlsx", workbookBuffer(transactionRows({ items: "Malformed token", itemQty: 2, status: "Voided" }), "xlsx"));
-    expect(parsed.rows[0]!.issues.join(" ")).toMatch(/malformed product token.*do not match Item Qty.*Voided/s);
+    expect(parsed.rows[0]!.issues.join(" ")).toMatch(/Quantity must be a valid number.*do not match Item Qty.*Voided/s);
+  });
+
+  it("returns precise quantity, product, amount, and date validation issues", () => {
+    const invalidQuantity = transactionRows({ items: "Americanox1", itemQty: 1 });
+    invalidQuantity[1]![6] = "ABC";
+    expect(parsePosExcel("invalid-quantity.xlsx", workbookBuffer(invalidQuantity, "xlsx")).rows[0]!.issues).toContain("Quantity must be a valid number.");
+
+    const blankQuantity = transactionRows({ items: "Americanox1", itemQty: 1 });
+    blankQuantity[1]![6] = null;
+    expect(parsePosExcel("blank-quantity.xlsx", workbookBuffer(blankQuantity, "xlsx")).rows[0]!.issues).toContain("Quantity is required.");
+
+    const zero = transactionRows({ items: "Americanox0", itemQty: 0 });
+    expect(parsePosExcel("zero.xlsx", workbookBuffer(zero, "xlsx")).rows[0]!.issues).toContain("Quantity must be greater than zero.");
+
+    const large = transactionRows({ items: `Americanox${MAX_POS_SALES_QUANTITY + 1}`, itemQty: MAX_POS_SALES_QUANTITY + 1 });
+    expect(parsePosExcel("large.xlsx", workbookBuffer(large, "xlsx")).rows[0]!.issues).toContain("Quantity exceeds the maximum allowed value.");
+
+    const blankProduct = transactionRows({ items: "", itemQty: 1 });
+    expect(parsePosExcel("blank-product.xlsx", workbookBuffer(blankProduct, "xlsx")).rows[0]!.issues).toContain("Product/item name is required.");
+
+    const impossibleDate = transactionRows(); impossibleDate[1]![3] = "2026-02-30";
+    expect(parsePosExcel("invalid-date.xlsx", workbookBuffer(impossibleDate, "xlsx")).rows[0]!.issues).toContain("Business date is invalid.");
+
+    const blankDate = transactionRows(); blankDate[1]![3] = null;
+    expect(parsePosExcel("blank-date.xlsx", workbookBuffer(blankDate, "xlsx")).rows[0]!.issues).toContain("Business date is required.");
+
+    const futureDate = transactionRows(); futureDate[1]![3] = "2099-01-01";
+    expect(parsePosExcel("future-date.xlsx", workbookBuffer(futureDate, "xlsx")).rows[0]!.issues).toContain("Business date cannot be in the future.");
+
+    const negativeAmount = transactionRows(); negativeAmount[1]![7] = -500;
+    expect(parsePosExcel("negative.xlsx", workbookBuffer(negativeAmount, "xlsx")).rows[0]!.issues).toContain("Sales amount cannot be negative.");
+  });
+
+  it("blocks an exact duplicate row while allowing different items under one OR number", () => {
+    const rows = transactionRows({ items: "Americanox1", itemQty: 1 });
+    rows.splice(2, 0, [...rows[1]!]);
+    const duplicate = parsePosExcel("duplicate.xlsx", workbookBuffer(rows, "xlsx"));
+    expect(duplicate.rows[1]!.issues).toContain("Duplicate transaction row detected.");
+    const multiItem = parsePosExcel("multi.xlsx", workbookBuffer(transactionRows(), "xlsx"));
+    expect(multiItem.rows).toHaveLength(2);
+    expect(multiItem.rows.every((item) => !item.issues.includes("Duplicate transaction row detected."))).toBe(true);
+  });
+
+  it("parses and reuses a custom field mapping and reports a missing mapped header", () => {
+    const headers = ["Product", "Quantity Sold", "Receipt No.", "Transaction Date", "Payment Status", "Unit Price", "Total Amount"];
+    const buffer = workbookBuffer([headers, ["Americano", 2, "OR-1", "2026-09-16", "Paid", 100, 200]], "xlsx");
+    const mapping = { productName:"Product",quantitySold:"Quantity Sold",transactionId:"Receipt No.",businessDate:"Transaction Date",status:"Payment Status",unitPrice:"Unit Price",salesAmount:"Total Amount" };
+    const parsed = parsePosExcel("custom.xlsx", buffer, mapping);
+    expect(parsed).toMatchObject({ sourceFormat: POS_SOURCE_FORMATS.CUSTOM_TABULAR, businessDate: "2026-09-16" });
+    expect(parsed.rows[0]).toMatchObject({ sourceProduct: "Americano", quantitySold: 2, unitPrice: 100, lineAmount: 200 });
+    const changed = workbookBuffer([["Product", "Receipt No.", "Transaction Date", "Payment Status", "Unit Price"], ["Americano", "OR-2", "2026-09-16", "Paid", 100]], "xlsx");
+    expect(() => parsePosExcel("changed.xlsx", changed, mapping)).toThrow("Mapped column 'Quantity Sold' is missing from this file.");
   });
 });

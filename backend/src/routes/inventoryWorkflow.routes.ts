@@ -28,7 +28,7 @@ import {
 import { authenticate, authorize } from "../middleware/auth.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { archiveShrinkageReport, deletePosSourceConfiguration, voidVarianceRecord } from "../controllers/controlledDestructive.controller.js";
-import { copyApprovedGlobalPosMappings, createPosMapping, createPosSource, deactivateApprovedPosMapping, listPosMappings, listPosSources, revisePendingPosMapping, updatePosMapping, updatePosSource } from "../controllers/posProductVariantMapping.controller.js";
+import { copyApprovedGlobalPosMappings, createPosMapping, createPosSource, deactivateApprovedPosMapping, inspectPosSourceHeaders, listPosMappings, listPosSources, revisePendingPosMapping, savePosSourceFieldMapping, updatePosMapping, updatePosSource } from "../controllers/posProductVariantMapping.controller.js";
 import { declareClosedPosDay, listDailyPosStatus, runDailyPosReminderCron } from "../controllers/posDailyMonitoring.controller.js";
 import { createOpeningInventoryBaseline, listOpeningInventoryBaselines } from "../controllers/openingInventory.controller.js";
 import { getShrinkageAiAnalysis } from "../controllers/shrinkageAi.controller.js";
@@ -37,12 +37,15 @@ export const deploymentRouter = Router();
 deploymentRouter.get("/cron/pos-reminders", asyncHandler(runDailyPosReminderCron));
 
 export const posSalesRouter = Router();
+const posFileBody = raw({ type: "application/octet-stream", limit: "4mb" });
 posSalesRouter.use(authenticate, authorize("OWNER", "BRANCH_MANAGER"));
 posSalesRouter.get("/analytics", asyncHandler(getPosAnalytics));
 posSalesRouter.get("/daily-status", asyncHandler(listDailyPosStatus));
 posSalesRouter.post("/daily-status/closed", authorize("BRANCH_MANAGER"), asyncHandler(declareClosedPosDay));
 posSalesRouter.get("/sources", asyncHandler(listPosSources));
 posSalesRouter.post("/sources", authorize("OWNER"), asyncHandler(createPosSource));
+posSalesRouter.post("/sources/:id/headers", authorize("OWNER"), posFileBody, asyncHandler(inspectPosSourceHeaders));
+posSalesRouter.put("/sources/:id/field-mapping", authorize("OWNER"), asyncHandler(savePosSourceFieldMapping));
 posSalesRouter.patch("/sources/:id", authorize("OWNER"), asyncHandler(updatePosSource));
 posSalesRouter.delete("/sources/:id", authorize("OWNER"), asyncHandler(deletePosSourceConfiguration));
 posSalesRouter.get("/mappings", asyncHandler(listPosMappings));
@@ -54,7 +57,6 @@ posSalesRouter.post("/mappings/:id/deactivate", authorize("OWNER"), asyncHandler
 posSalesRouter.get("/", asyncHandler(listPosImports));
 posSalesRouter.post("/:id/authorize-cleanup", authorize("OWNER"), asyncHandler(authorizePosImportCleanup));
 posSalesRouter.delete("/:id", authorize("OWNER"), asyncHandler(deletePosImport));
-const posFileBody = raw({ type: "application/octet-stream", limit: "4mb" });
 posSalesRouter.post("/preview", authorize("BRANCH_MANAGER"), posFileBody, asyncHandler(previewPosSales));
 posSalesRouter.post("/import", authorize("BRANCH_MANAGER"), posFileBody, asyncHandler(importPosSales));
 

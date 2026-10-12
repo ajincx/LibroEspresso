@@ -1,5 +1,5 @@
 import type { ApiSuccess } from "../types/auth";
-import type { CountVarianceItem, DailyPosUploadStatus, EvidenceBasis, ExpectedInventoryItem, InventoryCountSummary, OpeningInventoryBaseline, PosAnalytics, PosImportPreview, PosImportReconciliation, PosImportRecord, PosInventoryDateAssessment, PosMapping, PosMappingReviewStatus, PosSource, ShrinkageAiAnalysisResult, ShrinkageClassification, ShrinkageEvidence, ShrinkageReport, UnavailableInventoryCountItem, VarianceRecord, WorkflowNotification } from "../types/inventoryWorkflow";
+import type { CountVarianceItem, DailyPosUploadStatus, EvidenceBasis, ExpectedInventoryItem, InventoryCountSummary, OpeningInventoryBaseline, PosAnalytics, PosFieldMapping, PosHeaderInspection, PosImportPreview, PosImportReconciliation, PosImportRecord, PosInventoryDateAssessment, PosMapping, PosMappingReviewStatus, PosSource, ShrinkageAiAnalysisResult, ShrinkageClassification, ShrinkageEvidence, ShrinkageReport, UnavailableInventoryCountItem, VarianceRecord, WorkflowNotification } from "../types/inventoryWorkflow";
 import { api } from "./api";
 
 type PosPreviewSource =
@@ -83,6 +83,12 @@ export const inventoryWorkflowService = {
   },
   async updatePosSource(id: string, input: Partial<Pick<PosSource,"sourceCode"|"displayName"|"supportedFormat"|"branchId"|"status">> & { confirmedSupportedFormat?: PosSource["supportedFormat"] }) {
     return (await api.patch<ApiSuccess<{ source: PosSource }>>(`/pos-sales/sources/${id}`, input)).data.data.source;
+  },
+  async inspectPosHeaders(id: string, file: File) {
+    return (await api.post<ApiSuccess<PosHeaderInspection>>(`/pos-sales/sources/${id}/headers`, file, { headers: excelHeaders(file.name) })).data.data;
+  },
+  async savePosFieldMapping(id: string, headers: string[], mapping: PosFieldMapping) {
+    return (await api.put<ApiSuccess<{ id: string; mapping: PosFieldMapping }>>(`/pos-sales/sources/${id}/field-mapping`, { headers, mapping })).data.data;
   },
   async deletePosSource(id: string, input: { reason: string; verificationPin: string }) {
     return (await api.delete<ApiSuccess<{ id: string; action: string }>>(`/pos-sales/sources/${id}`, { data: input })).data.data;

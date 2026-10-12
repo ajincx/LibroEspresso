@@ -590,6 +590,10 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
       open={role === "manager" && importOpen}
       branchName={scope}
       onClose={() => setImportOpen(false)}
+      onConfigureMapping={(sourceId) => {
+        setImportOpen(false);
+        navigate(`/sales?configureMapping=${encodeURIComponent(sourceId)}`);
+      }}
       onImported={(importedDate) => {
         if (importedDate) {
           const currentDates = periodDates(range, customStart, customEnd);

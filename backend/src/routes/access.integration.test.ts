@@ -129,6 +129,15 @@ describe("access controls", () => {
     expect(owner.status).toBe(422);
   });
 
+  it("keeps POS source column mapping configuration Owner-only", async () => {
+    const path = "/api/pos-sales/sources/00000000-0000-4000-8000-000000000001/field-mapping";
+    const manager = await request(app)
+      .put(path)
+      .set("Cookie", session({ id: "manager", role: "BRANCH_MANAGER", branchId: "00000000-0000-4000-8000-000000000002" }))
+      .send({});
+    expect(manager.status).toBe(403);
+  });
+
   it("allows an Owner into global product creation validation", async () => {
     const response = await request(app)
       .post("/api/menu-items/with-recipe")

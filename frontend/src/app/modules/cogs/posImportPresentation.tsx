@@ -1,0 +1,41 @@
+import type { PosImportRecord } from "../../types/inventoryWorkflow";
+
+export const UNCONFIGURED_POS_LAYOUT_MESSAGE =
+  "This workbook uses an unconfigured column layout. Configure its spreadsheet columns for this POS source, then preview it again.";
+
+const MAPPING_RECOVERY_ERROR_CODES = new Set([
+  "UNSUPPORTED_POS_FORMAT",
+  "POS_FIELD_MAPPING_REQUIRED",
+  "MAPPED_COLUMN_MISSING",
+]);
+
+export function requiresPosMappingRecovery(error: unknown) {
+  const code = (error as { response?: { data?: { error?: { code?: unknown } } } })
+    ?.response?.data?.error?.code;
+  return typeof code === "string" && MAPPING_RECOVERY_ERROR_CODES.has(code);
+}
+
+export function excludedInvalidRowCount(
+  record: Pick<PosImportRecord, "invalidRows">,
+) {
+  return record.invalidRows;
+}
+
+export function PosMappingRecoveryNotice({
+  onConfigure,
+}: {
+  onConfigure: () => void;
+}) {
+  return (
+    <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+      <p>{UNCONFIGURED_POS_LAYOUT_MESSAGE}</p>
+      <button
+        type="button"
+        className="mt-3 rounded-lg border border-amber-500 bg-white px-3 py-2 font-semibold text-amber-950"
+        onClick={onConfigure}
+      >
+        Configure Mapping
+      </button>
+    </div>
+  );
+}

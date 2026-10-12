@@ -5,8 +5,8 @@ import { env } from "../config/env.js";
 import { calculateExpectedInventory, calculateExpectedInventoryBatch, computeVariance } from "../services/inventoryCalculation.service.js";
 import { calculateFinancialSummary, roundMoney } from "../services/financialMetrics.service.js";
 import { OPERATIONAL_POS_IMPORT_CONDITION, OPERATIONAL_POS_SOURCE_JOIN } from "../services/operationalPosScope.service.js";
-import { classifyUnmatchedPosIdentity, parsePosCsv, POS_SOURCE_FORMATS, PosCsvError, summarizePosRows, type MatchedPosRow, type PosMenuCandidate } from "../services/posCsvImport.service.js";
-import { parsePosExcel, TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE } from "../services/posExcelImport.service.js";
+import { classifyUnmatchedPosIdentity, parsePosCsv, POS_SOURCE_FORMATS, PosCsvError, summarizePosRows, validationIssueField, type MatchedPosRow, type PosMenuCandidate } from "../services/posCsvImport.service.js";
+import { parsePosExcel, TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE, validateExcelFileSignature } from "../services/posExcelImport.service.js";
 import { loadPosMappings, loadPosSource, posResolutionFingerprint, resolvePosMapping } from "../services/posProductVariantMapping.service.js";
 import { getEffectiveBranchId } from "../services/branchScope.js";
 import { writeAudit } from "../services/audit.service.js";
@@ -145,10 +145,30 @@ async function buildPosPreview(
   includeSimulation = true,
 ) {
   const previewStartedAt = performance.now();
+  if (source.fileBuffer) {
+    try {
+      validateExcelFileSignature(source.sourceFilename, source.fileBuffer);
+    } catch (error) {
+      if (error instanceof PosCsvError) throw new AppError(422, error.code, error.message);
+      throw error;
+    }
+  }
+  const selectedSource = await loadPosSource(client, source.posSourceId, null, branchId);
   let parsed: ReturnType<typeof parsePosCsv>;
   const parseStartedAt = performance.now();
   try {
-    parsed = source.fileBuffer ? parsePosExcel(source.sourceFilename, source.fileBuffer) : parsePosCsv(source.csvText);
+    if (selectedSource.supportedFormat === POS_SOURCE_FORMATS.CUSTOM_TABULAR && !source.fileBuffer) {
+      throw new PosCsvError("POS_SOURCE_FORMAT_MISMATCH", "Custom mapped POS sources require an XLS or XLSX workbook.");
+    }
+    if (selectedSource.supportedFormat === POS_SOURCE_FORMATS.CUSTOM_TABULAR && !selectedSource.fieldMapping) {
+      throw new PosCsvError("POS_FIELD_MAPPING_REQUIRED", "Configure the POS column mapping before validating this file.");
+    }
+    parsed = source.fileBuffer
+      ? parsePosExcel(source.sourceFilename, source.fileBuffer, selectedSource.supportedFormat === POS_SOURCE_FORMATS.CUSTOM_TABULAR ? selectedSource.fieldMapping : null)
+      : parsePosCsv(source.csvText);
+    if (selectedSource.supportedFormat !== parsed.sourceFormat) {
+      throw new PosCsvError("POS_SOURCE_FORMAT_MISMATCH", "The selected POS source does not use the detected file format.");
+    }
   } catch (error) {
     if (error instanceof PosCsvError) throw new AppError(422, error.code, error.message);
     throw error;
@@ -186,7 +206,6 @@ async function buildPosPreview(
   );
   const variantById = new Map(variantResult.rows.map((variant)=>[variant.id,variant]));
   const sourceId = source.posSourceId;
-  const selectedSource = await loadPosSource(client, sourceId, parsed.sourceFormat, branchId);
   const mappings = await loadPosMappings(client, selectedSource.id, branchId, parsed.businessDate);
   const preliminaryRows: MatchedPosRow[] = parsed.rows.map((row) => {
         if (classifyUnmatchedPosIdentity(row.sourceProduct) === "OPERATIONAL_ITEM") return {
@@ -233,7 +252,10 @@ async function buildPosPreview(
         recipeVersion:variant.recipeVersion,
       };
     }
-    return { ...row, status: "INVALID", issues: [...row.issues, "Matched variant does not have a valid active recipe with matching ingredient units."] };
+    const recipeIssue = !variant?.recipeVersionId || variant.recipeUnits.length === 0
+      ? "No valid recipe is available for this product on the selected business date."
+      : "The product recipe contains an ingredient unit that is incompatible with inventory configuration.";
+    return { ...row, status: "INVALID", issues: [...row.issues, recipeIssue] };
   });
   const matchAndValidationMs = performance.now() - matchingStartedAt;
   const duplicateStartedAt = performance.now();
@@ -246,7 +268,7 @@ async function buildPosPreview(
     : { rows: [] as { id: string }[] };
   const duplicateCheckMs = performance.now() - duplicateStartedAt;
   const summary = summarizePosRows(rows, existing.rows.length > 0);
-  const importBlockedReason = parsed.importBlockedReason ?? null;
+  const importBlockedReason = existing.rows.length > 0 ? "This file has already been imported." : parsed.importBlockedReason ?? null;
   if (importBlockedReason) {
     summary.canImport = false;
     summary.quality = "REJECTED";
@@ -289,6 +311,9 @@ async function buildPosPreview(
     formatLabel: parsed.formatLabel,
     importBlockedReason,
     rows,
+    validationIssues: rows.flatMap((row) => row.issues
+      .filter((issue) => row.status === "INVALID")
+      .map((issue) => ({ rowNumber: row.rowNumber, field: validationIssueField(issue), issue }))),
     summary,
     pricing,
     simulation: { ...simulation, complete: summary.canImport, validResolvedRows: simulationLines.length },
@@ -408,7 +433,7 @@ export const importPosSales: RequestHandler = async (req, res) => {
     await client.query("BEGIN");
     const preview = await buildPosPreview(branchId, input, client);
     if (preview.contentHash !== input.expectedContentHash) throw new AppError(409, "POS_PREVIEW_CHANGED", "The selected POS file changed after preview. Preview it again before importing.");
-    if (preview.summary.duplicate) throw new AppError(409, "POS_IMPORT_DUPLICATE", "This POS file appears to have already been imported for this branch.");
+    if (preview.summary.duplicate) throw new AppError(409, "POS_IMPORT_DUPLICATE", "This file has already been imported.");
     if (preview.importBlockedReason) throw new AppError(422, "POS_FORMAT_IMPORT_BLOCKED", preview.importBlockedReason);
     if (!preview.summary.canImport || !preview.businessDate) throw new AppError(422, "POS_IMPORT_INVALID", "POS import was not completed because the preview contains invalid or unmatched rows.");
     if (!input.expectedResolutionFingerprint || preview.resolutionFingerprint !== input.expectedResolutionFingerprint) throw new AppError(409, "POS_MAPPING_CHANGED", "POS source or product/variant mapping changed after preview. Preview the file again.");
@@ -549,7 +574,7 @@ export const importPosSales: RequestHandler = async (req, res) => {
     await client.query("ROLLBACK");
     const duplicate = (error as { code?: string }).code === "23505" || (error instanceof AppError && error.code === "POS_IMPORT_DUPLICATE");
     await writeAudit(req.user!, duplicate ? "REJECT_DUPLICATE_POS_IMPORT" : "IMPORT_POS_SALES_FAILED", "USER", req.user!.id, duplicate ? "Rejected duplicate POS import" : "POS import failed", { branchId, sourceFilename: input.sourceFilename, errorCode: (error as { code?: string }).code ?? "UNKNOWN" }).catch(() => undefined);
-    if ((error as { code?: string }).code === "23505") throw new AppError(409, "POS_IMPORT_DUPLICATE", "This POS file or one or more identified source lines have already been imported for this branch.");
+    if ((error as { code?: string }).code === "23505") throw new AppError(409, "POS_IMPORT_DUPLICATE", "This file has already been imported.");
     throw error;
   } finally {
     client.release();
@@ -572,6 +597,7 @@ export const listPosImports: RequestHandler = async (req, res) => {
             pi.created_environment "createdEnvironment",pi.cleanup_authorized_by "cleanupAuthorizedBy",
             pi.cleanup_authorized_at "cleanupAuthorizedAt",pi.cleanup_reason "cleanupReason",
             CASE WHEN pi.content_hash IS NULL THEN NULL ELSE left(pi.content_hash,12) END "fingerprintIndicator",
+             source.display_name "posSourceName",source.source_code "posSourceCode",
             b.id "branchId",b.name "branchName",
             concat(u.first_name,' ',u.last_name) "importedBy",count(*) OVER()::int "__total",
             count(psi.id)::int "productLines",
@@ -592,10 +618,11 @@ export const listPosImports: RequestHandler = async (req, res) => {
        FROM pos_imports pi
        JOIN branches b ON b.id=pi.branch_id
        JOIN users u ON u.id=pi.imported_by
+       LEFT JOIN pos_sources source ON source.id=pi.pos_source_id
        LEFT JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
        LEFT JOIN menu_items mi ON mi.id=psi.menu_item_id
       ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
-      GROUP BY pi.id,b.id,u.id
+       GROUP BY pi.id,b.id,u.id,source.id
       ORDER BY pi.business_date DESC,pi.imported_at DESC
       LIMIT $${values.length-1} OFFSET $${values.length}`,
     values,

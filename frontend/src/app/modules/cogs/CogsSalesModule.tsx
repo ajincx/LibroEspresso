@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useEffect, useState } from "react";
-import { ShoppingCart, Package, TrendingDown, Search, X, Upload, Check, Coffee, CheckCircle, TrendingUp, DollarSign, GitCompare, BarChart2, Hash, Percent, Trash2, Building2, Layers, GitBranch, ArrowRight, Copy, Info, ShieldCheck } from "lucide-react";
+import { ShoppingCart, Package, TrendingDown, Search, X, Upload, Check, Coffee, CheckCircle, TrendingUp, DollarSign, GitCompare, BarChart2, Hash, Percent, Trash2, Building2, Layers, GitBranch, ArrowRight, Copy, Eye, Info, ShieldCheck } from "lucide-react";
 import { Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart } from "recharts";
 import { C, CalendarDateField, DashboardRange, DashboardComparison, dashboardPeriodLabel, formatPeso, isModalBackdropEvent, StatusChip, KPICard, Card, SectionHeader, Btn, SearchInput, Select, DashboardFilters, THead, TR, TD, Pagination, ChartTip, ModuleTabSwitcher, AnimatedTabPanel, TableCard, TableWrapper, TableEmptyRow, TableLoadingRow } from "../../components/ModuleUi";
 import { toast } from "sonner";
@@ -8,11 +8,13 @@ import { inventoryWorkflowService } from "../../services/inventoryWorkflow.servi
 import { masterDataService } from "../../services/masterData.service";
 import { controlledActionService } from "../../services/controlledAction.service";
 import { ControlledActionDialog } from "../../components/ControlledActionDialog";
-import type { DailyPosUploadStatus, PosAnalytics, PosImportPreview, PosImportReconciliation, PosImportRecord, PosMapping, PosMappingReviewStatus, PosSource } from "../../types/inventoryWorkflow";
+import type { DailyPosUploadStatus, PosAnalytics, PosFieldMapping, PosHeaderInspection, PosImportPreview, PosImportReconciliation, PosImportRecord, PosMapping, PosMappingReviewStatus, PosSource } from "../../types/inventoryWorkflow";
 import type { Branch, MenuProduct } from "../../types/masterData";
 import { useAuth } from "../../contexts/AuthContext";
 import { addDateDays, businessDate, periodDates, adjustRangeForAutomaticImport } from "../../utils/businessDate";
 import { formatAppDate } from "../../utils/appPreferences";
+import { useNavigate, useSearchParams } from "react-router";
+import { excludedInvalidRowCount, PosMappingRecoveryNotice, requiresPosMappingRecovery } from "./posImportPresentation";
 
 export const marginValueColor = (margin:number) => margin > 0 ? C.green : margin < 0 ? C.red : "var(--app-text-muted)";
 export function PosPricingNotice({ notice }: { notice: string | null | undefined }) {
@@ -39,20 +41,23 @@ export const canDeletePosSource = (
 export function PosImportActions({
   role,
   record,
+  onView,
   onAuthorize,
   onDelete,
 }: {
   role: Role | string;
   record: Pick<PosImportRecord, "canCleanup" | "canAuthorizeCleanup" | "sourceFilename">;
+  onView?: () => void;
   onAuthorize?: () => void;
   onDelete?: () => void;
 }) {
-  if (!isOwnerRole(role)) return null;
   const canAuthorize = canAuthorizePosImportCleanup(role, record);
   const canDelete = canDeletePosImport(role, record);
-  if (!canAuthorize && !canDelete) return null;
   return (
     <div className="flex justify-center gap-2">
+      <button type="button" aria-label={`View details ${record.sourceFilename}`} onClick={onView} className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] px-2 py-1 text-xs font-semibold">
+        <Eye size={14}/> View Details
+      </button>
       {canAuthorize && (
         <button
           type="button"
@@ -82,7 +87,7 @@ export const hasInvalidCsvEncoding = (csvText:string) => csvText.includes("\uFFF
 export const DAILY_POS_MONITORING_LOCATION="import_history" as const;
 export const DAILY_POS_MONITORING_IS_PAGINATED=false;
 export const OWNER_POS_IMPORT_HISTORY_COLUMNS=["File Name","Branch","Business Date","Uploaded Date / Time","Uploaded By","Processed / Total Rows","Units Sold","Total Sales","Fingerprint","Status","Action"];
-export const MANAGER_POS_IMPORT_HISTORY_COLUMNS=OWNER_POS_IMPORT_HISTORY_COLUMNS.filter((column)=>column!=="Branch"&&column!=="Action");
+export const MANAGER_POS_IMPORT_HISTORY_COLUMNS=OWNER_POS_IMPORT_HISTORY_COLUMNS.filter((column)=>column!=="Branch");
 export const dailyPosStatusLabel = (status:DailyPosUploadStatus["status"]) => ({
   UPLOADED:"Uploaded",DUE_TODAY:"Due Today",MISSING_UPLOAD:"Missing Upload",LATE_UPLOAD:"Late Upload",UPCOMING:"Upcoming",
   NO_SALES_CLOSED:"No Sales / Closed",POS_SOURCE_NOT_CONFIGURED:"POS Source Not Configured",
@@ -184,6 +189,31 @@ export function PosImportCleanupAuthorizationDialog({target,busy,reason,onReason
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-labelledby="authorize-pos-cleanup-title"><div className="w-full max-w-lg rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-6 shadow-2xl"><h3 id="authorize-pos-cleanup-title" className="text-lg font-bold">Authorize UAT cleanup</h3><p className="mt-2 text-sm text-[var(--app-text-muted)]">Authorize cleanup only for <strong>{target.sourceFilename}</strong>. This does not delete the import or change its business meaning.</p><label className="mt-4 block text-sm font-medium">Authorization reason<textarea className="field mt-1.5 min-h-20" value={reason} onChange={(event)=>onReasonChange(event.target.value)} maxLength={500}/></label><div className="mt-6 flex justify-end gap-2"><Btn variant="outline" disabled={busy} onClick={onCancel}>Cancel</Btn><Btn variant="primary" disabled={busy||reason.trim().length<10} onClick={onConfirm}>{busy?"Authorizing…":"Authorize Cleanup"}</Btn></div></div></div>;
 }
 
+export function PosImportDetailsDialog({ record, onClose }: { record: PosImportRecord; onClose: () => void }) {
+  const details = [
+    ["Source filename", record.sourceFilename],
+    ["POS source", record.posSourceName ?? record.posSourceCode ?? "Historical source"],
+    ["Branch", record.branchName],
+    ["Business date", formatAppDate(record.businessDate)],
+    ["Imported date/time", formatAppDate(record.importedAt)],
+    ["Imported by", record.importedBy],
+    ["Processed rows", `${record.validRows + record.warningRows} of ${record.totalRows}`],
+    ["Warnings", String(record.warningRows)],
+    ["Excluded / invalid", String(excludedInvalidRowCount(record))],
+    ["Product lines", String(record.productLines)],
+    ["Units sold", record.unitsSold.toLocaleString("en-PH")],
+    ["Total sales", formatPeso(record.totalSales)],
+    ["Status", record.status.replaceAll("_", " ")],
+  ];
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-labelledby="pos-import-details-title" onMouseDown={(event)=>{if(isModalBackdropEvent(event))onClose();}}>
+    <div className="w-full max-w-2xl rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-6 shadow-2xl">
+      <div className="flex items-start justify-between gap-4"><div><h3 id="pos-import-details-title" className="text-lg font-bold">POS Import Details</h3><p className="mt-1 text-sm text-[var(--app-text-muted)]">Read-only import and reconciliation summary.</p></div><button type="button" aria-label="Close POS import details" onClick={onClose}><X size={18}/></button></div>
+      <dl className="mt-5 grid gap-x-5 gap-y-3 text-sm sm:grid-cols-2">{details.map(([label,value])=><div key={label} className="rounded-xl bg-[var(--app-surface-muted)] p-3"><dt className="text-xs text-[var(--app-text-muted)]">{label}</dt><dd className="mt-1 break-words font-semibold">{value}</dd></div>)}</dl>
+      <div className="mt-6 flex justify-end"><Btn variant="outline" onClick={onClose}>Close</Btn></div>
+    </div>
+  </div>;
+}
+
 function dateRange(range: DashboardRange, customStart: string, customEnd: string) {
   return periodDates(range, customStart, customEnd);
 }
@@ -273,20 +303,21 @@ export const formatPosSourceFormatName = (format: PosSource["supportedFormat"]) 
     case "SUMMARY_ITEMS_SOLD_LEGACY_XLS": return "Summary Items Sold XLS";
     case "TRANSACTION_SUMMARY_XLSX": return "Transaction Summary XLSX";
     case "CANONICAL_CSV": return "Canonical CSV";
+    case "CUSTOM_TABULAR_XLSX": return "Custom Mapped Excel";
     default: return format;
   }
 };
 
-export function PosMappingSetup({ role = "owner" }: { role?: Role | string } = {}) {
+export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role?: Role | string; initialSourceId?: string } = {}) {
   const [deleteSourceTarget, setDeleteSourceTarget] = useState<PosSource | null>(null);
   const [deleteSourceValue, setDeleteSourceValue] = useState({ reason: "", verificationPin: "" });
   const [deletingSource, setDeletingSource] = useState(false);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(Boolean(initialSourceId));
   const [sources, setSources] = useState<PosSource[]>([]);
   const [mappings, setMappings] = useState<PosMapping[]>([]);
   const [products, setProducts] = useState<MenuProduct[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
-  const [sourceId, setSourceId] = useState("");
+  const [sourceId, setSourceId] = useState(initialSourceId);
   const [sourceCode, setSourceCode] = useState("");
   const [sourceName, setSourceName] = useState("");
   const [sourceFormat, setSourceFormat] = useState<PosSource["supportedFormat"]>("SUMMARY_ITEMS_SOLD_LEGACY_XLS");
@@ -304,6 +335,9 @@ export function PosMappingSetup({ role = "owner" }: { role?: Role | string } = {
   const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
   const [editMapping,setEditMapping]=useState<PosMapping|null>(null);
   const [sourceFormatConfirmed, setSourceFormatConfirmed] = useState(false);
+  const [mappingInspection,setMappingInspection]=useState<PosHeaderInspection|null>(null);
+  const [mappingFile,setMappingFile]=useState<File|null>(null);
+  const [fieldMapping,setFieldMapping]=useState<PosFieldMapping>({productName:"",quantitySold:"",transactionId:"",businessDate:"",status:"",unitPrice:"",salesAmount:""});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const refresh = async () => setSources(await inventoryWorkflowService.posSources());
@@ -313,6 +347,11 @@ export function PosMappingSetup({ role = "owner" }: { role?: Role | string } = {
       .then(([nextSources, nextProducts, nextBranches]) => { setSources(nextSources); setProducts(nextProducts); setBranches(nextBranches); })
       .catch(() => setError("Unable to load POS mapping setup."));
   }, [open]);
+  useEffect(() => {
+    if (!initialSourceId) return;
+    setOpen(true);
+    setSourceId(initialSourceId);
+  }, [initialSourceId]);
   useEffect(() => {
     if (!sourceId) { setMappings([]); return; }
     void inventoryWorkflowService.posMappings(sourceId, mappingFilter === "ALL" ? undefined : mappingFilter).then(setMappings).catch(() => setError("Unable to load mappings."));
@@ -336,6 +375,14 @@ export function PosMappingSetup({ role = "owner" }: { role?: Role | string } = {
   const sameFormatSources = selectedSource
     ? sources.filter((s) => s.supportedFormat === selectedSource.supportedFormat)
     : [];
+  const mappingComplete = [fieldMapping.productName,fieldMapping.quantitySold,fieldMapping.transactionId,fieldMapping.businessDate,fieldMapping.status,fieldMapping.unitPrice].every(Boolean);
+  const inspectMappingFile=async()=>{
+    if(!selectedSource||!mappingFile)return;
+    setBusy(true);setError("");
+    try{const inspected=await inventoryWorkflowService.inspectPosHeaders(selectedSource.id,mappingFile);setMappingInspection(inspected);setFieldMapping(inspected.mapping??{productName:"",quantitySold:"",transactionId:"",businessDate:"",status:"",unitPrice:"",salesAmount:""});}
+    catch(reason){setError(reason instanceof Error?reason.message:"Unable to inspect spreadsheet headers.");}
+    finally{setBusy(false);}
+  };
 
   return <div className="rounded-2xl border p-5 shadow-sm" style={{ borderColor: C.border, background: C.mainBg }}>
     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -399,6 +446,7 @@ export function PosMappingSetup({ role = "owner" }: { role?: Role | string } = {
               <option value="SUMMARY_ITEMS_SOLD_LEGACY_XLS">Summary Items Sold XLS</option>
               <option value="TRANSACTION_SUMMARY_XLSX">Transaction Summary XLSX</option>
               <option value="CANONICAL_CSV">Canonical CSV</option>
+              <option value="CUSTOM_TABULAR_XLSX">Custom Mapped Excel</option>
             </select>
           </div>
           <div>
@@ -428,7 +476,7 @@ export function PosMappingSetup({ role = "owner" }: { role?: Role | string } = {
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <label className="text-xs font-semibold text-[var(--app-text-muted)]">Select POS System:</label>
-          <select aria-label="Source to review" value={sourceId} onChange={(event) => { setSourceId(event.target.value); setSourceFormatConfirmed(false); setShowAssignBranch(false); }} className="min-w-[280px] rounded-lg border p-2 font-medium">
+          <select aria-label="Source to review" value={sourceId} onChange={(event) => { setSourceId(event.target.value); setSourceFormatConfirmed(false); setShowAssignBranch(false); setMappingInspection(null); setMappingFile(null); }} className="min-w-[280px] rounded-lg border p-2 font-medium">
             <option value="">Choose POS system to manage…</option>
             {sources.map((source) => (
               <option key={source.id} value={source.id}>
@@ -440,6 +488,9 @@ export function PosMappingSetup({ role = "owner" }: { role?: Role | string } = {
 
         {selectedSource && (
           <div className="mt-4 space-y-4">
+            {selectedSource.supportedFormat==="CUSTOM_TABULAR_XLSX"&&<section aria-label="Custom POS column mapping" className="rounded-xl border p-4" style={{borderColor:C.border}}><h5 className="font-bold">Configure Spreadsheet Columns</h5><p className="mt-1 text-xs text-[var(--app-text-muted)]">Map supplier spreadsheet headers to canonical sales fields. Product-to-menu mapping remains a separate step.</p><div className="mt-3 flex flex-wrap items-center gap-2"><input aria-label="Custom POS mapping workbook" type="file" accept=".xls,.xlsx" onChange={event=>{setMappingFile(event.target.files?.[0]??null);setMappingInspection(null);}}/><Btn size="sm" variant="outline" disabled={busy||!mappingFile} onClick={()=>void inspectMappingFile()}>Read Headers</Btn>{selectedSource.fieldMapping&&<span className="text-xs font-semibold" style={{color:C.green}}>Saved mapping available</span>}</div>{mappingInspection&&<div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{([
+              ["productName","Product Name",true],["quantitySold","Quantity",true],["transactionId","Transaction / OR Number",true],["businessDate","Business Date",true],["status","Status",true],["unitPrice","Unit Price",true],["salesAmount","Sales Amount",false],
+            ] as Array<[keyof PosFieldMapping,string,boolean]>).map(([field,label,required])=><label key={field} className="grid gap-1 text-xs font-semibold">{label}{required?" *":" (optional)"}<select aria-label={`Map ${label}`} value={fieldMapping[field]??""} onChange={event=>setFieldMapping(current=>({...current,[field]:event.target.value}))} className="rounded-lg border p-2 font-normal"><option value="">Select source header</option>{mappingInspection.headers.map(header=><option key={header} value={header}>{header}</option>)}</select></label>)}</div>}{mappingInspection&&<div className="mt-4 flex justify-end"><Btn size="sm" disabled={busy||!mappingComplete} onClick={()=>void run(async()=>{await inventoryWorkflowService.savePosFieldMapping(selectedSource.id,mappingInspection.headers,fieldMapping);setMappingInspection(current=>current?{...current,mapping:fieldMapping}:current);})}>Save Column Mapping</Btn></div>}</section>}
             {/* POS System Verification Section */}
             <section aria-label="POS System Verification" className="rounded-xl border p-4 bg-[var(--app-surface-muted)]" style={{ borderColor: C.border }}>
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -482,7 +533,7 @@ export function PosMappingSetup({ role = "owner" }: { role?: Role | string } = {
                             Delete POS System Configuration
                           </button>
                         )}
-                        <button type="button" disabled={busy || !sourceFormatConfirmed} className="rounded-lg px-3 py-2 text-xs font-semibold text-white disabled:opacity-40" style={{ background: C.maroon }} onClick={() => void run(async () => { await inventoryWorkflowService.updatePosSource(selectedSource.id, { status: "ACTIVE", confirmedSupportedFormat: selectedSource.supportedFormat }); setSourceFormatConfirmed(false); })}>
+                        <button type="button" disabled={busy || !sourceFormatConfirmed || (selectedSource.supportedFormat==="CUSTOM_TABULAR_XLSX"&&!selectedSource.fieldMapping)} className="rounded-lg px-3 py-2 text-xs font-semibold text-white disabled:opacity-40" style={{ background: C.maroon }} onClick={() => void run(async () => { await inventoryWorkflowService.updatePosSource(selectedSource.id, { status: "ACTIVE", confirmedSupportedFormat: selectedSource.supportedFormat }); setSourceFormatConfirmed(false); })}>
                           Activate verified POS system
                         </button>
                       </div>
@@ -775,6 +826,8 @@ export function PosMappingSetup({ role = "owner" }: { role?: Role | string } = {
 // ─── Sales Analysis ────────────────────────────────────────────────────────────
 function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role | string; scopeBranchName?: string }) {
   const { user } = useAuth();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const isOwner = isOwnerRole(role) || user?.role === "OWNER";
   const effectiveRole: Role = isOwner ? "owner" : "manager";
   const localToday = businessDate();
@@ -787,6 +840,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
   const [posSources, setPosSources] = useState<PosSource[]>([]);
   const [selectedPosSourceId, setSelectedPosSourceId] = useState("");
   const [posImportError, setPosImportError] = useState("");
+  const [mappingRecoveryRequired, setMappingRecoveryRequired] = useState(false);
   const [posImporting, setPosImporting] = useState(false);
   const [stagedFile, setStagedFile] = useState<File | null>(null);
   const [posValidating, setPosValidating] = useState(false);
@@ -802,6 +856,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
   const [dailyPosStatuses,setDailyPosStatuses]=useState<DailyPosUploadStatus[]>([]);
   const [dailyPosLoading,setDailyPosLoading]=useState(false);
   const [dailyPosError,setDailyPosError]=useState("");
+  const [viewImportTarget,setViewImportTarget]=useState<PosImportRecord|null>(null);
   const [deleteTarget, setDeleteTarget] = useState<PosImportRecord|null>(null);
   const [deleteReason, setDeleteReason] = useState("");
   const [deletePin, setDeletePin] = useState("");
@@ -927,6 +982,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
   const handleFileChosen = (file: File | undefined) => {
     if (!file) return;
     setPosImportError("");
+    setMappingRecoveryRequired(false);
     if (file.size > 4_000_000) {
       setPosImportError("POS files must be 4 MB or smaller.");
       return;
@@ -969,6 +1025,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
       setPosPreview(null);
       setPosCsvText("");
       setPosExcelFile(null);
+      setMappingRecoveryRequired(requiresPosMappingRecovery(reason));
       setPosImportError(reason instanceof Error ? reason.message : "Unable to read the POS file.");
     } finally {
       setPosValidating(false);
@@ -1059,7 +1116,8 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
           </>
         } />
 
-      {isOwner && <PosMappingSetup role={effectiveRole} />}
+      {isOwner && <PosMappingSetup role={effectiveRole} initialSourceId={searchParams.get("configureMapping") ?? ""} />}
+      {!isOwner && searchParams.get("configureMapping") && <p role="alert" className="rounded-xl border p-3 text-sm" style={{borderColor:C.amber,background:C.amberBg}}>POS column mapping is Owner-only. Ask an Owner to open this mapping request.</p>}
 
       <div className="sales-kpi-grid grid grid-cols-4 gap-4">
         <KPICard label="Total Sales" value={analyticsLoading ? "—" : formatPeso(analytics?.summary.sales ?? 0)} sub={periodLabel} icon={ShoppingCart} color={C.maroon} comparisonLabel={comparisonLabel} />
@@ -1192,9 +1250,9 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
             <THead cols={isOwner ? OWNER_POS_IMPORT_HISTORY_COLUMNS : MANAGER_POS_IMPORT_HISTORY_COLUMNS} />
             <tbody>
               {posHistoryLoading ? (
-                <TableLoadingRow colSpan={isOwner ? 11 : 9} label="Loading import history…" />
+                <TableLoadingRow colSpan={isOwner ? 11 : 10} label="Loading import history…" />
               ) : posImports.length === 0 ? (
-                <TableEmptyRow colSpan={isOwner ? 11 : 9} title="No POS imports found" subtitle="Upload a POS sales CSV to see historical records." />
+                <TableEmptyRow colSpan={isOwner ? 11 : 10} title="No POS imports found" subtitle="Upload a POS sales file to see historical records." />
               ) : posImports.map((row) => (
                 <TR key={row.id}>
                   <TD><span className="font-mono text-xs font-medium" style={{ color: C.primary }}>{row.sourceFilename}</span></TD>
@@ -1224,11 +1282,11 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
                     )}
                     {row.lateHistoricalImport && <div className="mt-1 text-[10px] font-semibold" style={{color:C.amber}}>Late historical · reconcile inventory periods</div>}
                   </TD>
-                  {isOwner && (
-                    <TD center>
+                  <TD center>
                       <PosImportActions
                         role={effectiveRole}
                         record={row}
+                        onView={() => setViewImportTarget(row)}
                         onAuthorize={() => {
                           setAuthorizeTarget(row);
                           setAuthorizeReason("");
@@ -1239,8 +1297,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
                           setDeletePin("");
                         }}
                       />
-                    </TD>
-                  )}
+                  </TD>
                 </TR>
               ))}
             </tbody>
@@ -1249,6 +1306,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
         </TableCard>
       </div>)}
 
+      {viewImportTarget&&<PosImportDetailsDialog record={viewImportTarget} onClose={()=>setViewImportTarget(null)}/>}
       {authorizeTarget&&canAuthorizePosImportCleanup(effectiveRole,authorizeTarget)&&<PosImportCleanupAuthorizationDialog target={authorizeTarget} busy={authorizingImport} reason={authorizeReason} onReasonChange={setAuthorizeReason} onCancel={()=>{setAuthorizeTarget(null);setAuthorizeReason("");}} onConfirm={()=>void authorizeImportCleanup()}/>}
       {deleteTarget&&canDeletePosImport(effectiveRole,deleteTarget)&&(
         <PosImportDeleteDialog target={deleteTarget} deleting={deletingImport} reason={deleteReason} verificationPin={deletePin} onReasonChange={setDeleteReason} onPinChange={setDeletePin} onCancel={()=>{setDeleteTarget(null);setDeleteReason("");setDeletePin("");}} onConfirm={()=>void deleteImport()}/>
@@ -1317,7 +1375,9 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
                   )}
                   <input type="file" accept=".csv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" className="sr-only" onChange={(event) => { handleFileChosen(event.target.files?.[0]); event.target.value = ""; }} />
                 </label>
-                {posImportError && <div className="mb-4 p-3 rounded-xl text-sm" style={{ color: C.red, background: C.redBg }}>{posImportError}</div>}
+                {posPreview?.validationIssues?.length ? <div className="mb-4 rounded-xl border p-3" style={{borderColor:C.red}}><h5 className="text-sm font-bold" style={{color:C.red}}>Validation details</h5><div className="mt-2 overflow-x-auto"><table className="w-full text-left text-xs"><thead><tr><th className="p-2">Row</th><th className="p-2">Field</th><th className="p-2">Issue</th></tr></thead><tbody>{posPreview.validationIssues.map((issue,index)=><tr key={`${issue.rowNumber}-${issue.field}-${index}`} className="border-t" style={{borderColor:C.border}}><td className="p-2">{issue.rowNumber}</td><td className="p-2 font-semibold">{issue.field}</td><td className="p-2">{issue.issue}</td></tr>)}</tbody></table></div></div>:null}
+                {mappingRecoveryRequired && selectedPosSourceId && <div className="mb-4"><PosMappingRecoveryNotice onConfigure={()=>{setUploadStep("idle");navigate(`/sales?configureMapping=${encodeURIComponent(selectedPosSourceId)}`);}} /></div>}
+                {posImportError && !mappingRecoveryRequired && <div className="mb-4 p-3 rounded-xl text-sm" style={{ color: C.red, background: C.redBg }}>{posImportError}</div>}
                 <div className="flex gap-3">
                   <Btn variant="outline" onClick={() => { setUploadStep("idle"); setStagedFile(null); }}>Cancel</Btn>
                   {stagedFile ? (

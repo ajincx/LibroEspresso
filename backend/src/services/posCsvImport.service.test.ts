@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyUnmatchedPosIdentity, MAX_POS_ROWS, matchPosRows, parsePosCsv, summarizePosRows } from "./posCsvImport.service.js";
+import { classifyUnmatchedPosIdentity, MAX_POS_ROWS, MAX_POS_SALES_QUANTITY, matchPosRows, parsePosCsv, summarizePosRows } from "./posCsvImport.service.js";
 
 const header = "product_code,product_name,quantity_sold,selling_price,business_date,transaction_id,line_id";
 const product = { id: "menu-1", code: "LATTE-L", name: "Iced Latte, Large", sellingPrice: 190 };
@@ -43,13 +43,28 @@ describe("POS CSV validation", () => {
   it("marks invalid quantity, price, and date rows invalid", () => {
     const parsed = parsePosCsv(`${header}\nLATTE-L,Latte,NaN,Infinity,2026-02-30,R-1,1`);
     expect(parsed.rows[0]!.status).toBe("INVALID");
-    expect(parsed.rows[0]!.issues.join(" ")).toMatch(/Quantity Sold.*Selling Price.*Business Date/);
+    expect(parsed.rows[0]!.issues).toEqual(expect.arrayContaining(["Quantity must be a valid number.", "Selling Price must be a valid non-negative number.", "Business date is invalid."]));
   });
 
   it("marks a blank product invalid", () => {
     const parsed = parsePosCsv(`${header}\n,,1,190,2026-09-08,R-1,1`);
     expect(parsed.rows[0]).toMatchObject({ status: "INVALID", sourceProduct: "" });
-    expect(parsed.rows[0]!.issues).toContain("Product is required.");
+    expect(parsed.rows[0]!.issues).toContain("Product/item name is required.");
+  });
+
+  it("distinguishes blank, zero, excessive, invalid, and future values", () => {
+    const parsed = parsePosCsv(`${header}\nLATTE-L,Latte,,190,2026-09-08,R-1,1\nLATTE-L,Latte,0,190,2026-09-08,R-2,2\nLATTE-L,Latte,${MAX_POS_SALES_QUANTITY + 1},190,2026-09-08,R-3,3\nLATTE-L,Latte,ABC,190,2099-01-01,R-4,4`);
+    expect(parsed.rows[0]!.issues).toContain("Quantity is required.");
+    expect(parsed.rows[1]!.issues).toContain("Quantity must be greater than zero.");
+    expect(parsed.rows[2]!.issues).toContain("Quantity exceeds the maximum allowed value.");
+    expect(parsed.rows[3]!.issues).toEqual(expect.arrayContaining(["Quantity must be a valid number.", "Business date cannot be in the future."]));
+  });
+
+  it("blocks exact duplicate transaction rows but accepts different products under one receipt", () => {
+    const duplicate = parsePosCsv(`${header}\nLATTE-L,Latte,1,190,2026-09-08,R-1,1\nLATTE-L,Latte,1,190,2026-09-08,R-1,1`);
+    expect(duplicate.rows[1]!.issues).toContain("Duplicate transaction row detected.");
+    const legitimate = parsePosCsv(`${header}\nLATTE-L,Latte,1,190,2026-09-08,R-1,1\nAMER,Americano,1,100,2026-09-08,R-1,2`);
+    expect(legitimate.rows.every((row) => !row.issues.includes("Duplicate transaction row detected."))).toBe(true);
   });
 
   it("rejects ambiguous aliases instead of guessing a column", () => {

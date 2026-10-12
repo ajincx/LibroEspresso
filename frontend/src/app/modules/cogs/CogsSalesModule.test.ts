@@ -8,6 +8,7 @@ import {
   DAILY_POS_MONITORING_COLUMNS,
   OWNER_POS_IMPORT_HISTORY_COLUMNS,
   PosImportActions,
+  PosImportDetailsDialog,
   PosImportCleanupAuthorizationDialog,
   PosImportDeleteDialog,
   PosMappingActions,
@@ -34,8 +35,24 @@ import {
   summarizeDailyPosStatuses,
 } from "./CogsSalesModule";
 import { adjustRangeForImport } from "../../utils/businessDate";
-import type { DailyPosUploadStatus, PosMapping } from "../../types/inventoryWorkflow";
+import type { DailyPosUploadStatus, PosImportRecord, PosMapping } from "../../types/inventoryWorkflow";
 import type { MenuProduct } from "../../types/masterData";
+import { excludedInvalidRowCount, PosMappingRecoveryNotice, requiresPosMappingRecovery, UNCONFIGURED_POS_LAYOUT_MESSAGE } from "./posImportPresentation";
+
+describe("POS import recovery and details presentation", () => {
+  it("offers column mapping recovery only for layout and mapping errors", () => {
+    expect(requiresPosMappingRecovery({ response: { data: { error: { code: "UNSUPPORTED_POS_FORMAT" } } } })).toBe(true);
+    expect(requiresPosMappingRecovery({ response: { data: { error: { code: "POS_SOURCE_FORMAT_MISMATCH" } } } })).toBe(false);
+    expect(requiresPosMappingRecovery({ response: { data: { error: { code: "POS_IMPORT_DUPLICATE" } } } })).toBe(false);
+    const markup = renderToStaticMarkup(React.createElement(PosMappingRecoveryNotice, { onConfigure: () => undefined }));
+    expect(markup).toContain(UNCONFIGURED_POS_LAYOUT_MESSAGE);
+    expect(markup).toContain("Configure Mapping");
+  });
+
+  it("uses invalidRows as the authoritative excluded/invalid total", () => {
+    expect(excludedInvalidRowCount({ invalidRows: 4 })).toBe(4);
+  });
+});
 
 describe("profitability presentation",()=>{
   it("uses success for positive margin, danger for negative margin, and neutral for zero",()=>{
@@ -157,18 +174,21 @@ describe("POS Import History controls",()=>{
     const prodMarkup = renderToStaticMarkup(
       React.createElement(PosImportActions, { role: "owner", record: prodImport })
     );
-    expect(prodMarkup).toBe("");
+    expect(prodMarkup).toContain("View details POS.09.16.2026.xlsx");
+    expect(prodMarkup).not.toContain("lucide-trash-2");
 
     // Scenario 3: Branch Manager never sees Delete button even if canCleanup flag were true
     const managerMarkup = renderToStaticMarkup(
       React.createElement(PosImportActions, { role: "manager", record: devImport })
     );
-    expect(managerMarkup).toBe("");
+    expect(managerMarkup).toContain("View details POS.09.16.2026.xlsx");
+    expect(managerMarkup).not.toContain("lucide-trash-2");
 
     const managerUpperMarkup = renderToStaticMarkup(
       React.createElement(PosImportActions, { role: "BRANCH_MANAGER", record: devImport })
     );
-    expect(managerUpperMarkup).toBe("");
+    expect(managerUpperMarkup).toContain("View details POS.09.16.2026.xlsx");
+    expect(managerUpperMarkup).not.toContain("lucide-trash-2");
 
     // Scenario 4: Owner user, UAT environment, canAuthorizeCleanup: true
     const uatImport = {
@@ -181,6 +201,25 @@ describe("POS Import History controls",()=>{
     );
     expect(uatMarkup).toContain("Authorize cleanup POS.09.16.2026.xlsx");
     expect(uatMarkup).not.toContain("lucide-trash-2");
+  });
+
+  it("shows a read-only import detail summary for history records", () => {
+    const record = {
+      id: "import-1", businessDate: "2026-09-16", sourceFilename: "sales.xlsx",
+      posSourceName: "Main POS", posSourceCode: "MAIN_POS", importedAt: "2026-09-16T10:00:00Z",
+      branchId: "branch-1", branchName: "Gulod / Main Branch", importedBy: "Owner",
+      productLines: 50, unitsSold: 89, totalSales: 15443, status: "COMPLETE",
+      totalRows: 96, validRows: 85, warningRows: 0, invalidRows: 0, unmatchedRows: 0,
+      fingerprintIndicator: "abcdef", createdEnvironment: "PRODUCTION", cleanupPolicy: "PRODUCTION",
+      cleanupAuthorizedBy: null, cleanupAuthorizedAt: null, cleanupReason: null,
+      canAuthorizeCleanup: false, canCleanup: false,
+    } as PosImportRecord;
+    const markup = renderToStaticMarkup(React.createElement(PosImportDetailsDialog, { record, onClose: () => undefined }));
+    expect(markup).toContain("POS Import Details");
+    expect(markup).toContain("Main POS");
+    expect(markup).toContain("Gulod / Main Branch");
+    expect(markup).toContain("85 of 96");
+    expect(markup).toContain("89");
   });
 
   it("requires a descriptive confirmation before deleting an entire import batch",()=>{

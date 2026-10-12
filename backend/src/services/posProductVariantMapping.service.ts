@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
 import { AppError } from "../utils/appError.js";
 import type { ParsedPosRow, PosSourceFormat } from "./posCsvImport.service.js";
+import type { PosFieldMapping } from "./posExcelImport.service.js";
 
 export const normalizePosIdentity = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
 
@@ -11,6 +12,7 @@ export interface PosSourceRecord {
   sourceCode: string;
   displayName: string;
   supportedFormat: PosSourceFormat;
+  fieldMapping: PosFieldMapping | null;
 }
 
 export interface PosMappingRecord {
@@ -82,14 +84,14 @@ export function posResolutionFingerprint(sourceId: string | null, rows: readonly
   return createHash("sha256").update(JSON.stringify({ sourceId, rows: rows.map((row) => [row.itemClassification ?? null, row.menuItemId, row.menuItemVariantId ?? null, row.mappingId ?? null, row.mappingVersion ?? null, row.recipeVersionId ?? null]) })).digest("hex");
 }
 
-export async function loadPosSource(client: Pick<PoolClient, "query">, id: string, format: PosSourceFormat, branchId: string): Promise<PosSourceRecord> {
+export async function loadPosSource(client: Pick<PoolClient, "query">, id: string, format: PosSourceFormat | null, branchId: string): Promise<PosSourceRecord> {
   const result = await client.query<PosSourceRecord>(
-    `SELECT id,branch_id "branchId",source_code "sourceCode",display_name "displayName",supported_format "supportedFormat"
+    `SELECT id,branch_id "branchId",source_code "sourceCode",display_name "displayName",supported_format "supportedFormat",field_mapping "fieldMapping"
        FROM pos_sources WHERE id=$1 AND branch_id=$2 AND status='ACTIVE' FOR SHARE`, [id, branchId],
   );
   const source = result.rows[0];
   if (!source) throw new AppError(422, "POS_SOURCE_UNAVAILABLE", "Select an active POS source configured for your assigned branch.");
-  if (source.supportedFormat !== format) throw new AppError(422, "POS_SOURCE_FORMAT_MISMATCH", "The selected POS source does not use the detected file format.");
+  if (format && source.supportedFormat !== format) throw new AppError(422, "POS_SOURCE_FORMAT_MISMATCH", "The selected POS source does not use the detected file format.");
   return source;
 }
 

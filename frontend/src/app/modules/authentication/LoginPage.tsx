@@ -84,7 +84,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
             </div>
           </div>
           <div className="login-visual__content">
-            <h1>AN AI-DRIVEN WEB-BASED COST OF GOODS ANALYSIS SYSTEM FOR MONITORING OF INVENTORY SHRINKAGE</h1>
+            <h1>AI-ASSISTED WEB-BASED COST OF GOODS ANALYSIS AND INVENTORY SHRINKAGE MONITORING SYSTEM FOR LIBRO ESPRESSO CAFE</h1>
             <p>“Smarter Costing Better Control”</p>
           </div>
         </div>

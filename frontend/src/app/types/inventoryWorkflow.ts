@@ -38,6 +38,8 @@ export interface PosImportRecord {
   id: string;
   businessDate: string;
   sourceFilename: string;
+  posSourceName?: string | null;
+  posSourceCode?: string | null;
   importedAt: string;
   branchId: string;
   branchName: string;
@@ -82,7 +84,7 @@ export interface PosImportPreviewRow {
   transactionId: string | null;
   sourceLineId: string | null;
   transactionTimestamp: string | null;
-  sourceFormat?: "CANONICAL_CSV" | "SUMMARY_ITEMS_SOLD_LEGACY_XLS" | "TRANSACTION_SUMMARY_XLSX";
+  sourceFormat?: "CANONICAL_CSV" | "SUMMARY_ITEMS_SOLD_LEGACY_XLS" | "TRANSACTION_SUMMARY_XLSX" | "CUSTOM_TABULAR_XLSX";
   sourceWorksheet?: string | null;
   sourceRow?: number | null;
   lineAmount?: number | null;
@@ -106,10 +108,11 @@ export interface PosImportPreview {
   posSourceId: string | null;
   posSourceName: string | null;
   fingerprintIndicator: string;
-  sourceFormat: "CANONICAL_CSV" | "SUMMARY_ITEMS_SOLD_LEGACY_XLS" | "TRANSACTION_SUMMARY_XLSX";
+  sourceFormat: "CANONICAL_CSV" | "SUMMARY_ITEMS_SOLD_LEGACY_XLS" | "TRANSACTION_SUMMARY_XLSX" | "CUSTOM_TABULAR_XLSX";
   formatLabel: string;
   importBlockedReason: string | null;
   rows: PosImportPreviewRow[];
+  validationIssues: Array<{ rowNumber: number; field: string; issue: string }>;
   pricing: {
     method: "SUPPLIER_ITEM_PRICE" | "MENU_VARIANT_CAPSTONE_FALLBACK";
     notice: string | null;
@@ -177,7 +180,8 @@ export interface PosSource {
   branchName: string;
   sourceCode: string;
   displayName: string;
-  supportedFormat: "CANONICAL_CSV" | "SUMMARY_ITEMS_SOLD_LEGACY_XLS" | "TRANSACTION_SUMMARY_XLSX";
+  supportedFormat: "CANONICAL_CSV" | "SUMMARY_ITEMS_SOLD_LEGACY_XLS" | "TRANSACTION_SUMMARY_XLSX" | "CUSTOM_TABULAR_XLSX";
+  fieldMapping: PosFieldMapping | null;
   status: "ACTIVE" | "INACTIVE";
   formatVerifiedBy: string | null;
   formatVerifiedByName?: string | null;
@@ -185,6 +189,23 @@ export interface PosSource {
   hasImports?: boolean;
   hasSales?: boolean;
   hasActiveMappings?: boolean;
+}
+
+export interface PosFieldMapping {
+  productName: string;
+  quantitySold: string;
+  transactionId: string;
+  businessDate: string;
+  status: string;
+  unitPrice: string;
+  salesAmount?: string;
+}
+
+export interface PosHeaderInspection {
+  worksheet: string;
+  headerRow: number;
+  headers: string[];
+  mapping: PosFieldMapping | null;
 }
 
 export type PosMappingReviewStatus = "PENDING" | "APPROVED" | "REJECTED" | "AMBIGUOUS";
