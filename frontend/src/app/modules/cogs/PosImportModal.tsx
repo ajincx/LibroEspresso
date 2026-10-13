@@ -7,7 +7,10 @@ import { deduplicatePosValidationIssues, PosMappingRecoveryNotice, requiresPosMa
 
 type Step = "select" | "preview" | "done";
 
-const supportedFilename = (filename: string) => /\.(csv|xls|xlsx)$/i.test(filename.trim());
+export const isSupportedPosFilename = (filename: string) => /\.(csv|xls|xlsx)$/i.test(filename.trim());
+export const hasInvalidCsvEncoding = (csvText: string) => csvText.includes("\uFFFD");
+export const MANAGER_POS_FORMAT_REQUEST_MESSAGE = "New POS file format detected. This format needs to be configured by the Owner before the sales can be imported.";
+export const POS_FORMAT_REQUEST_SENT_MESSAGE = "Format setup request sent to the Owner. The sales file will continue processing after the format is configured.";
 
 export function activePosSourcesForBranch(sources: PosSource[], branchId: string | null | undefined) {
   if (!branchId) return [];
@@ -46,13 +49,12 @@ export function PosSourceField({ sources, sourceId, loading, onChange }: {
   </div>;
 }
 
-export function PosImportModal({ open, branchId, branchName, onClose, onImported, onConfigureMapping: _onConfigureMapping }: {
+export function PosImportModal({ open, branchId, branchName, onClose, onImported }: {
   open: boolean;
   branchId: string | null | undefined;
   branchName: string;
   onClose: () => void;
   onImported: (businessDate: string) => void;
-  onConfigureMapping: (sourceId: string) => void;
 }) {
   const [step, setStep] = useState<Step>("select");
   const [sources, setSources] = useState<PosSource[]>([]);
@@ -89,9 +91,9 @@ export function PosImportModal({ open, branchId, branchName, onClose, onImported
 
   const choose = (selected?: File) => {
     if (!selected) return;
-    setError("");
+    setError(""); setMappingRecoveryRequired(false); setFormatRequestSent(false);
     if (selected.size > 4_000_000) return setError("POS files must be 4 MB or smaller.");
-    if (!supportedFilename(selected.name)) return setError("Select a CSV, XLS, or XLSX POS file.");
+    if (!isSupportedPosFilename(selected.name)) return setError("Select a CSV, XLS, or XLSX POS file.");
     setFile(selected);
   };
 
@@ -102,7 +104,7 @@ export function PosImportModal({ open, branchId, branchName, onClose, onImported
     setBusy(true); setError(""); setMappingRecoveryRequired(false);
     try {
       const nextCsv = extension === "csv" ? await file.text() : "";
-      if (nextCsv.includes("\uFFFD")) throw new Error("The CSV contains invalid text encoding. Export it as UTF-8 and try again.");
+      if (hasInvalidCsvEncoding(nextCsv)) throw new Error("The CSV contains invalid text encoding. Export it as UTF-8 and try again.");
       const nextPreview = extension === "csv"
         ? await inventoryWorkflowService.previewPosSales({ sourceFilename: file.name, csvText: nextCsv, posSourceId: sourceId })
         : await inventoryWorkflowService.previewPosSales({ sourceFilename: file.name, file, posSourceId: sourceId });
@@ -141,19 +143,19 @@ export function PosImportModal({ open, branchId, branchName, onClose, onImported
 
   const close = () => { if (!busy) onClose(); };
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={(event)=>{if(isModalBackdropEvent(event))close();}}>
-    <div role="dialog" aria-modal="true" aria-labelledby="dashboard-pos-import-title" className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-2xl border bg-[var(--app-surface)] p-6 shadow-2xl" style={{ borderColor: C.border }}>
-      <div className="flex items-start justify-between gap-4"><div><h2 id="dashboard-pos-import-title" className="text-lg font-bold">Import POS Sales</h2><p className="mt-1 text-xs text-[var(--app-text-muted)]">{branchName} · Validate, preview, and import daily sales without leaving the Dashboard.</p></div><button type="button" aria-label="Close POS import" onClick={close} className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--app-surface-muted)]"><X size={16}/></button></div>
+    <div role="dialog" aria-modal="true" aria-labelledby="pos-import-title" className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-2xl border bg-[var(--app-surface)] p-6 shadow-2xl" style={{ borderColor: C.border }}>
+      <div className="flex items-start justify-between gap-4"><div><h2 id="pos-import-title" className="text-lg font-bold">Import POS Sales</h2><p className="mt-1 text-xs text-[var(--app-text-muted)]">{branchName} · Validate, preview, and import daily sales.</p></div><button type="button" aria-label="Close POS import" onClick={close} className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--app-surface-muted)]"><X size={16}/></button></div>
       <div className="my-6 flex items-center gap-2">{["Select File","Validate","Import"].map((label,index)=>{const current=step==="select"?0:step==="preview"?1:2;return <div key={label} className="contents"><div className="flex items-center gap-1.5"><span className="flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold text-white" style={{background:index<=current?C.maroon:C.muted}}>{index<current?<Check size={12}/>:index+1}</span><span className="text-xs font-semibold">{label}</span></div>{index<2&&<span className="h-px flex-1 bg-[var(--app-border)]"/>}</div>;})}</div>
-      {step==="select"&&<div className="space-y-4"><PosSourceField sources={activeSources} sourceId={sourceId} loading={sourcesLoading} onChange={setSourceId}/><label className="block cursor-pointer rounded-2xl border-2 border-dashed p-8 text-center" style={{borderColor:file?C.maroon:C.border}}><Upload className="mx-auto"/><span className="mt-3 block text-sm font-semibold">{file?.name??"Choose CSV, XLS, or XLSX file"}</span><input className="sr-only" type="file" accept=".csv,.xls,.xlsx" onChange={event=>{choose(event.target.files?.[0]);event.target.value="";}}/></label><div className="flex justify-end gap-2"><Btn variant="outline" onClick={close}>Cancel</Btn><Btn disabled={!canValidatePosImport(Boolean(file),busy,sourceId,activeSources)} onClick={()=>void validate()}>{busy?"Validating…":"Validate File"}</Btn></div></div>}
+      {step==="select"&&<div className="space-y-4"><PosSourceField sources={activeSources} sourceId={sourceId} loading={sourcesLoading} onChange={(nextSourceId)=>{setSourceId(nextSourceId);setMappingRecoveryRequired(false);setFormatRequestSent(false);setError("");}}/><label className="block cursor-pointer rounded-2xl border-2 border-dashed p-8 text-center" style={{borderColor:file?C.maroon:C.border}}><Upload className="mx-auto"/><span className="mt-3 block text-sm font-semibold">{file?.name??"Choose CSV, XLS, or XLSX file"}</span><input className="sr-only" type="file" accept=".csv,.xls,.xlsx" onChange={event=>{choose(event.target.files?.[0]);event.target.value="";}}/></label><div className="flex justify-end gap-2"><Btn variant="outline" onClick={close}>Cancel</Btn><Btn disabled={!canValidatePosImport(Boolean(file),busy,sourceId,activeSources)} onClick={()=>void validate()}>{busy?"Validating…":"Validate File"}</Btn></div></div>}
       {step==="preview"&&preview&&<div className="space-y-4"><div className="grid grid-cols-2 gap-3 md:grid-cols-4">{[["Processed Rows",`${preview.summary.validRows+preview.summary.warningRows} / ${preview.summary.totalSourceRows}`],["Operational Excluded",preview.summary.operationalRows],["Estimated Sales",formatPeso(preview.simulation.estimatedSales)],["Estimated COGS",formatPeso(preview.simulation.estimatedCogs)],["Gross Profit",formatPeso(preview.simulation.estimatedGrossProfit)],["Gross Margin",`${preview.simulation.estimatedGrossMargin.toFixed(2)}%`],["Blocking Rows",preview.summary.invalidRows+preview.summary.unknownReviewRows],["Recipe-resolved Rows",preview.simulation.validResolvedRows]].map(([label,value])=><div key={String(label)} className="rounded-xl border p-3 text-center"><span className="block text-xs text-[var(--app-text-muted)]">{label}</span><strong className="mt-1 block">{value}</strong></div>)}</div>{preview.pricing.notice&&<p className="rounded-xl border p-3 text-sm" style={{borderColor:C.amber,background:C.amberBg}}>{preview.pricing.notice}</p>}{validationIssues.length>0&&<div className="rounded-xl border p-3"><h3 className="text-sm font-bold">Validation details</h3><div className="mt-2 overflow-x-auto"><table className="w-full text-left text-xs"><thead><tr><th className="p-2">Row</th><th className="p-2">Field</th><th className="p-2">Issue</th></tr></thead><tbody>{validationIssues.map((issue)=><tr key={`${issue.rowNumber}-${issue.field}-${issue.issue}`} className="border-t"><td className="p-2">{issue.rowNumber}</td><td className="p-2 font-semibold">{issue.field}</td><td className="p-2">{issue.issue}</td></tr>)}</tbody></table></div></div>}<p className="rounded-xl p-3 text-sm" style={{background:preview.summary.canImport?C.greenBg:C.redBg,color:preview.summary.canImport?C.green:C.red}}>{preview.summary.canImport?"Validation complete. Review the totals before importing.":preview.importBlockedReason??"Correct blocking validation issues before importing."}</p><div className="flex justify-end gap-2"><Btn variant="outline" onClick={()=>setStep("select")}>Back</Btn><Btn disabled={busy||!preview.summary.canImport} onClick={()=>void importSales()}>{busy?"Importing…":"Import Sales"}</Btn></div></div>}
-      {step==="done"&&result&&<div className="py-8 text-center"><CheckCircle size={44} className="mx-auto text-[var(--app-success)]"/><h3 className="mt-3 text-lg font-bold">Import Completed</h3><p className="mt-1 text-sm text-[var(--app-text-muted)]">{result.rowsImported} sales rows imported for {result.businessDate} · {formatPeso(result.totalSales)}</p><Btn className="mt-5" onClick={close}>Return to Dashboard</Btn></div>}
+      {step==="done"&&result&&<div className="py-8 text-center"><CheckCircle size={44} className="mx-auto text-[var(--app-success)]"/><h3 className="mt-3 text-lg font-bold">Import Completed</h3><p className="mt-1 text-sm text-[var(--app-text-muted)]">{result.rowsImported} sales rows imported for {result.businessDate} · {formatPeso(result.totalSales)}</p><Btn className="mt-5" onClick={close}>Done</Btn></div>}
       {mappingRecoveryRequired&&sourceId&&<div className="mt-4">{formatRequestSent
-        ? <p role="status" className="rounded-xl border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-950">Format setup request sent to the Owner. The sales file will continue processing after the format is configured.</p>
+        ? <p role="status" className="rounded-xl border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-950">{POS_FORMAT_REQUEST_SENT_MESSAGE}</p>
         : <PosMappingRecoveryNotice
-            message="New POS file format detected. This format needs to be configured by the Owner before the sales can be imported."
+            message={MANAGER_POS_FORMAT_REQUEST_MESSAGE}
             actionLabel={busy?"Sending Request…":"Request POS Format Setup"}
             onConfigure={()=>void requestFormatSetup()}
-          />}</div>}
+          />}{error&&<p role="alert" className="mt-2 rounded-xl bg-[var(--app-danger-bg)] p-3 text-sm text-[var(--app-danger)]">{error}</p>}</div>}
       {error&&!mappingRecoveryRequired&&<p role="alert" className="mt-4 rounded-xl bg-[var(--app-danger-bg)] p-3 text-sm text-[var(--app-danger)]">{error}</p>}
     </div>
   </div>;

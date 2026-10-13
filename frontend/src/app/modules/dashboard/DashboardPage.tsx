@@ -16,6 +16,7 @@ import { formatAppCurrency as money, formatAppDate, readAppPreferences } from ".
 import { officialFinancialMetrics } from "../../utils/financialMetrics";
 import { PosImportModal } from "../cogs/PosImportModal";
 
+export const DashboardPosImportModal = PosImportModal;
 const ALERT_PRIORITY: Record<InventoryOverviewItem["status"], number> = { OUT_OF_STOCK: 4, CRITICAL: 3, LOW_STOCK: 2, HEALTHY: 1 };
 export const DASHBOARD_INVENTORY_TARGET:Page="inventory";
 export const DASHBOARD_SHOWS_DAILY_POS_MONITORING=false;
@@ -591,15 +592,11 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
       </Card>
     </>}
     <ForecastReplenishmentPanel forecast={forecast} forecastError={forecastError} role={role} onReview={() => onNavigate("predictive")} onCreateOrder={createOrder}/>
-    <PosImportModal
+    <DashboardPosImportModal
       open={role === "manager" && importOpen}
       branchId={branchId}
       branchName={scope}
       onClose={() => setImportOpen(false)}
-      onConfigureMapping={(sourceId) => {
-        setImportOpen(false);
-        navigate(`/sales?configureMapping=${encodeURIComponent(sourceId)}`);
-      }}
       onImported={(importedDate) => {
         if (importedDate) {
           const currentDates = periodDates(range, customStart, customEnd);

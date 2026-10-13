@@ -645,9 +645,12 @@ describe("pending POS format setup requests",()=>{
     mocks.connect.mockResolvedValue(client);
     const res=response();
     await requestPosFormatSetup(excelRequest(file,"unknown.xlsx",undefined,undefined,sourceId),res as never,vi.fn());
-    expect(queries.some(({sql})=>sql.includes("INSERT INTO pos_format_setup_requests"))).toBe(true);
+    const requestInsert=queries.find(({sql})=>sql.includes("INSERT INTO pos_format_setup_requests"));
+    expect(requestInsert?.sql).toContain("ON CONFLICT (branch_id,pos_source_id,content_hash)");
+    expect(requestInsert?.sql).toContain("status IN ('PENDING','CONFIGURED','BLOCKED')");
     expect(queries.some(({sql})=>sql.includes("INSERT INTO pos_imports"))).toBe(false);
     expect(queries.some(({sql})=>sql.includes("INSERT INTO pos_sale_items"))).toBe(false);
+    expect(queries.find(({sql})=>sql.includes("INSERT INTO notifications"))?.sql).toContain("NOT EXISTS");
     expect(mocks.writeAudit).toHaveBeenCalledWith(expect.anything(),"REQUEST_POS_FORMAT_SETUP","POS_FORMAT_SETUP_REQUEST",expect.any(String),expect.any(String),expect.objectContaining({branchId,posSourceId:sourceId,detectedColumnCount:7}),client);
     expect(res.status).toHaveBeenCalledWith(201);
     expect(queries.at(-1)?.sql).toBe("COMMIT");

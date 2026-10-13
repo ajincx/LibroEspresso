@@ -14,7 +14,7 @@ import {
   PosMappingActions,
   PosMappingEditDialog,
   PosMappingSetup,
-  PosPricingNotice,
+  SalesPosImportModal,
   STORAGE_KEY_COGS_USER_RANGE,
   canApprovePosMapping,
   canAuthorizePosImportCleanup,
@@ -26,10 +26,7 @@ import {
   dailyPosStatusLabel,
   formatPosSourceFormatName,
   getInitialCogsDateRange,
-  hasInvalidCsvEncoding,
-  isSupportedPosFilename,
   marginValueColor,
-  posSalesAmountLabel,
   readCogsUserRange,
   saveCogsUserRange,
   POS_IMPORT_FIELD_OPTIONS,
@@ -38,6 +35,7 @@ import {
   suggestedPosFieldMapping,
   summarizeDailyPosStatuses,
 } from "./CogsSalesModule";
+import { PosImportModal } from "./PosImportModal";
 import { adjustRangeForImport } from "../../utils/businessDate";
 import type { DailyPosUploadStatus, PosImportRecord, PosMapping } from "../../types/inventoryWorkflow";
 import type { MenuProduct } from "../../types/masterData";
@@ -53,14 +51,8 @@ describe("POS import recovery and details presentation", () => {
     expect(markup).toContain("Configure Mapping");
   });
 
-  it("presents the Manager recovery action using the pending-request wording", () => {
-    const markup = renderToStaticMarkup(React.createElement(PosMappingRecoveryNotice, {
-      onConfigure: () => undefined,
-      message: "New POS file format detected. This format needs to be configured by the Owner before the sales can be imported.",
-      actionLabel: "Request POS Format Setup",
-    }));
-    expect(markup).toContain("New POS file format detected");
-    expect(markup).toContain("Request POS Format Setup");
+  it("uses the shared Dashboard POS importer instead of a separate Sales importer", () => {
+    expect(SalesPosImportModal).toBe(PosImportModal);
   });
 
   it("suggests only deterministic importer-supported field aliases", () => {
@@ -161,23 +153,6 @@ describe("POS Import History controls",()=>{
       title:"Daily Upload Monitoring — History",actionLabel:"Back to Current",
     });
   });
-  it("clearly discloses and labels the configured menu-price fallback",()=>{
-    const notice="Item-level selling prices were not found in the uploaded file. The system will use the configured menu selling prices.";
-    expect(renderToStaticMarkup(React.createElement(PosPricingNotice,{notice}))).toContain(notice);
-    expect(renderToStaticMarkup(React.createElement(PosPricingNotice,{notice:null}))).toBe("");
-    expect(posSalesAmountLabel({calculatedSalesAmount:380,lineAmount:null})).toBe("₱380.00");
-  });
-
-  it("accepts only the supported POS upload extensions",()=>{
-    expect(["sales.csv","summary.XLS","transactions.xlsx"].every(isSupportedPosFilename)).toBe(true);
-    expect(isSupportedPosFilename("sales.pdf")).toBe(false);
-  });
-
-  it("accepts normal CSV text and rejects only decoded replacement characters",()=>{
-    expect(hasInvalidCsvEncoding("product,quantity\nAmericano,2")).toBe(false);
-    expect(hasInvalidCsvEncoding("product,quantity\nAmericano,\uFFFD")).toBe(true);
-  });
-
   it("uses backend lifecycle permissions for Owner cleanup controls",()=>{
     expect(canDeletePosImport("owner",{canCleanup:true})).toBe(true);
     expect(canDeletePosImport("OWNER",{canCleanup:true})).toBe(true);
