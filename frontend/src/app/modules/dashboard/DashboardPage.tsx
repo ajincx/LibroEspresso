@@ -588,6 +588,7 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
     <ForecastReplenishmentPanel forecast={forecast} forecastError={forecastError} role={role} onReview={() => onNavigate("predictive")} onCreateOrder={createOrder}/>
     <PosImportModal
       open={role === "manager" && importOpen}
+      branchId={branchId}
       branchName={scope}
       onClose={() => setImportOpen(false)}
       onConfigureMapping={(sourceId) => {
