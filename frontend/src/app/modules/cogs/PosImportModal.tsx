@@ -29,15 +29,20 @@ export function PosSourceField({ sources, sourceId, loading, onChange }: {
   loading: boolean;
   onChange: (sourceId: string) => void;
 }) {
+  if (!loading && sources.length === 1) {
+    return <p className="text-sm font-normal" aria-label="POS Source">
+      <span>POS Source: </span>
+      <strong style={{ color: C.maroon }}>{sources[0]!.displayName}</strong>
+    </p>;
+  }
   return <div className="text-sm font-semibold">
     <span className="block">POS Source</span>
     {loading ? <div role="status" className="field mt-2 text-[var(--app-text-muted)]">Loading POS sources…</div>
       : sources.length === 0 ? <p role="alert" className="mt-2 rounded-xl bg-[var(--app-warning-bg)] p-3 text-sm text-[var(--app-warning)]">No active POS source is configured for this branch.</p>
-        : sources.length === 1 ? <div className="field mt-2" aria-label="POS Source">{sources[0]!.displayName}</div>
-          : <select aria-label="POS Source" value={sourceId} onChange={(event) => onChange(event.target.value)} className="field mt-2">
-            <option value="">Select active POS source</option>
-            {sources.map((source) => <option key={source.id} value={source.id}>{source.displayName} · {source.supportedFormat.replaceAll("_", " ")}</option>)}
-          </select>}
+        : <select aria-label="POS Source" value={sourceId} onChange={(event) => onChange(event.target.value)} className="field mt-2">
+          <option value="">Select active POS source</option>
+          {sources.map((source) => <option key={source.id} value={source.id}>{source.displayName} · {source.supportedFormat.replaceAll("_", " ")}</option>)}
+        </select>}
   </div>;
 }
 

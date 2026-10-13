@@ -22,7 +22,8 @@ describe("Import POS Sales source selection", () => {
     const sources = activePosSourcesForBranch([source("gulod-source", "gulod", "Libro POS Transaction Summary XLSX")], "gulod");
     const markup = renderToStaticMarkup(<PosSourceField sources={sources} sourceId={resolvedPosSourceId(sources, "")} loading={false} onChange={vi.fn()} />);
 
-    expect(markup).toContain("Libro POS Transaction Summary XLSX");
+    expect(markup).toContain("<span>POS Source: </span>");
+    expect(markup).toContain("<strong style=\"color:var(--app-primary)\">Libro POS Transaction Summary XLSX</strong>");
     expect(markup).not.toContain("<select");
     expect(resolvedPosSourceId(sources, "")).toBe("gulod-source");
     expect(canValidatePosImport(true, false, "gulod-source", sources)).toBe(true);
