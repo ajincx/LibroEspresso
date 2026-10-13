@@ -125,6 +125,26 @@ describe("POS preview and confirmation API workflow", () => {
 });
 
 describe("POS first-run review API workflow", () => {
+  it("retains the original workbook and exposes pending format requests for Owner setup",async()=>{
+    const file=new File([new Uint8Array([0x50,0x4b,0x03,0x04])],"new-layout.xlsx");
+    const request={id:"request-1",status:"PENDING",headers:["Product","Qty"]};
+    const post=vi.spyOn(api,"post").mockResolvedValue({data:{success:true,data:{request}}});
+    const get=vi.spyOn(api,"get").mockResolvedValue({data:{success:true,data:{requests:[request]}}});
+    await expect(inventoryWorkflowService.requestPosFormatSetup(file.name,file,"source-1")).resolves.toBe(request);
+    expect(post).toHaveBeenCalledWith("/pos-sales/format-requests",file,{headers:expect.objectContaining({"X-POS-Filename":"new-layout.xlsx","X-POS-Source-Id":"source-1"})});
+    await expect(inventoryWorkflowService.posFormatSetupRequests()).resolves.toEqual([request]);
+    expect(get).toHaveBeenCalledWith("/pos-sales/format-requests");
+  });
+
+  it("submits the Owner-confirmed mapping to continue the retained import",async()=>{
+    const headers=["Product","Qty","Receipt","Date","Status","Price"];
+    const mapping={productName:"Product",quantitySold:"Qty",transactionId:"Receipt",businessDate:"Date",status:"Status",unitPrice:"Price"};
+    const result={requestId:"request-1",status:"COMPLETED",imported:true};
+    const put=vi.spyOn(api,"put").mockResolvedValue({data:{success:true,data:result}});
+    await expect(inventoryWorkflowService.configurePosFormatRequest("request-1",headers,mapping)).resolves.toBe(result);
+    expect(put).toHaveBeenCalledWith("/pos-sales/format-requests/request-1/configure",{headers,mapping});
+  });
+
   it("copies mappings into a different source as pending review", async () => {
     const result={copied:54,skipped:0,eligible:54};
     const post=vi.spyOn(api,"post").mockResolvedValue({data:{success:true,data:result}});

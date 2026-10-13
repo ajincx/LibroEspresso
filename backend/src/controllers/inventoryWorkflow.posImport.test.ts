@@ -18,7 +18,7 @@ vi.mock("../config/database.js", () => ({
 vi.mock("../services/audit.service.js", () => ({ writeAudit: mocks.writeAudit }));
 vi.mock("../config/env.js",()=>({env:mocks.env}));
 
-import { authorizePosImportCleanup, deletePosImport, importPosSales, listPosImportApprovals, listPosImports, previewPosSales, requestPosImportApproval, reviewPosImportApproval } from "./inventoryWorkflow.controller.js";
+import { authorizePosImportCleanup, configurePosFormatRequest, deletePosImport, importPosSales, listPosFormatSetupRequests, listPosImportApprovals, listPosImports, previewPosSales, requestPosFormatSetup, requestPosImportApproval, reviewPosImportApproval } from "./inventoryWorkflow.controller.js";
 
 const branchId = "00000000-0000-4000-8000-000000000002";
 const importId = "00000000-0000-4000-8000-000000000010";
@@ -86,6 +86,15 @@ function invalidTransactionSummaryBuffer() {
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), "Worksheet");
   return Buffer.from(XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }));
+}
+
+function customWorkbookBuffer() {
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+    ["Receipt No.","Product","Quantity Sold","Transaction Date","Payment Status","Unit Price","Cashier"],
+    ["OR-1","Iced Latte, Large",2,"2026-09-08","Paid",190,"Ana"],
+  ]), "Sales");
+  return Buffer.from(XLSX.write(workbook,{type:"buffer",bookType:"xlsx"}));
 }
 
 function excelRequest(fileBuffer: Buffer, filename: string, expectedContentHash?: string, expectedResolutionFingerprint?: string, posSourceId?: string) {
@@ -619,6 +628,75 @@ describe("transactional POS import persistence", () => {
     expect(failure).toMatchObject({ status: 409, code: "POS_IMPORT_DUPLICATE" });
     expect(queries.some(({ sql }) => sql === "ROLLBACK")).toBe(true);
     expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_sale_items"))).toBe(false);
+  });
+});
+
+describe("pending POS format setup requests",()=>{
+  it("retains an unknown Manager workbook without inserting official POS sales",async()=>{
+    const file=customWorkbookBuffer();
+    mocks.poolQuery.mockResolvedValue({rows:[{id:sourceId}],rowCount:1});
+    const queries:Array<{sql:string;values?:unknown[]}>=[];
+    const client={query:vi.fn(async(statement:unknown,values?:unknown[])=>{
+      const sql=String(statement);queries.push({sql,values});
+      if(sql.includes("INSERT INTO pos_format_setup_requests"))return{rows:[{id:"00000000-0000-4000-8000-000000000099"}],rowCount:1};
+      if(sql.includes("FROM pos_format_setup_requests request"))return{rows:[{id:"00000000-0000-4000-8000-000000000099",status:"PENDING",headers:["Receipt No.","Product","Quantity Sold","Transaction Date","Payment Status","Unit Price","Cashier"]}],rowCount:1};
+      return{rows:[],rowCount:1};
+    }),release:vi.fn()};
+    mocks.connect.mockResolvedValue(client);
+    const res=response();
+    await requestPosFormatSetup(excelRequest(file,"unknown.xlsx",undefined,undefined,sourceId),res as never,vi.fn());
+    expect(queries.some(({sql})=>sql.includes("INSERT INTO pos_format_setup_requests"))).toBe(true);
+    expect(queries.some(({sql})=>sql.includes("INSERT INTO pos_imports"))).toBe(false);
+    expect(queries.some(({sql})=>sql.includes("INSERT INTO pos_sale_items"))).toBe(false);
+    expect(mocks.writeAudit).toHaveBeenCalledWith(expect.anything(),"REQUEST_POS_FORMAT_SETUP","POS_FORMAT_SETUP_REQUEST",expect.any(String),expect.any(String),expect.objectContaining({branchId,posSourceId:sourceId,detectedColumnCount:7}),client);
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(queries.at(-1)?.sql).toBe("COMMIT");
+  });
+
+  it("keeps a Manager request list scoped to the assigned branch and requester",async()=>{
+    mocks.poolQuery.mockResolvedValue({rows:[]});
+    await listPosFormatSetupRequests({user:{id:"manager-1",role:"BRANCH_MANAGER",branchId}} as never,response() as never,vi.fn());
+    expect(mocks.poolQuery).toHaveBeenCalledWith(expect.stringContaining("request.branch_id=$1"),[branchId,false,"manager-1"]);
+  });
+
+  it("rejects an incomplete Owner mapping before opening a transaction",async()=>{
+    await expect(configurePosFormatRequest({params:{id:"00000000-0000-4000-8000-000000000099"},body:{headers:["Product","Quantity"],mapping:{productName:"Product",quantitySold:"Quantity"}},user:{id:"owner-1",role:"OWNER",branchId:null}} as never,response() as never,vi.fn())).rejects.toBeDefined();
+    expect(mocks.connect).not.toHaveBeenCalled();
+  });
+
+  it("rejects duplicate source-header assignments before opening a transaction",async()=>{
+    const headers=["Product","Quantity","Receipt","Date","Status","Price"];
+    await expect(configurePosFormatRequest({params:{id:"00000000-0000-4000-8000-000000000099"},body:{headers,mapping:{productName:"Product",quantitySold:"Product",transactionId:"Receipt",businessDate:"Date",status:"Status",unitPrice:"Price"}},user:{id:"owner-1",role:"OWNER",branchId:null}} as never,response() as never,vi.fn())).rejects.toBeDefined();
+    expect(mocks.connect).not.toHaveBeenCalled();
+  });
+
+  it("saves an Owner mapping and reprocesses the retained workbook through the normal importer",async()=>{
+    const requestId="00000000-0000-4000-8000-000000000099";
+    const headers=["Receipt No.","Product","Quantity Sold","Transaction Date","Payment Status","Unit Price","Cashier"];
+    const mapping={productName:"Product",quantitySold:"Quantity Sold",transactionId:"Receipt No.",businessDate:"Transaction Date",status:"Payment Status",unitPrice:"Unit Price"};
+    const base=createClient(undefined,undefined,undefined,"CUSTOM_TABULAR_XLSX");
+    const originalQuery=base.client.query;
+    base.client.query=vi.fn(async(statement:unknown,values?:unknown[])=>{
+      const sql=String(statement);
+      if(sql.includes("FROM pos_format_setup_requests request JOIN users requester")){
+        base.queries.push({sql,values});
+        return{rows:[{branchId,posSourceId:sourceId,sourceFilename:"unknown.xlsx",workbookContent:customWorkbookBuffer(),detectedHeaders:headers,requestedBy:"manager-1",requesterRole:"BRANCH_MANAGER",requesterBranchId:branchId,status:"PENDING"}],rowCount:1};
+      }
+      if(sql.includes("FROM pos_sources WHERE id=$1")){
+        base.queries.push({sql,values});
+        return{rows:[{id:sourceId,sourceCode:"CUSTOM",displayName:"Custom POS",supportedFormat:"CUSTOM_TABULAR_XLSX",fieldMapping:mapping}],rowCount:1};
+      }
+      return originalQuery(statement,values);
+    }) as typeof originalQuery;
+    mocks.connect.mockResolvedValue(base.client);
+    const res=response();
+    await configurePosFormatRequest({params:{id:requestId},body:{headers,mapping},user:{id:"owner-1",role:"OWNER",branchId:null}} as never,res as never,vi.fn());
+    expect(base.queries.some(({sql})=>sql.includes("UPDATE pos_sources SET supported_format='CUSTOM_TABULAR_XLSX'"))).toBe(true);
+    expect(base.queries.some(({sql})=>sql.includes("INSERT INTO pos_imports"))).toBe(true);
+    expect(base.queries.some(({sql})=>sql.includes("INSERT INTO pos_sale_items"))).toBe(true);
+    expect(base.queries.some(({sql})=>sql.includes("status='COMPLETED'"))).toBe(true);
+    expect(base.queries.at(-1)?.sql).toBe("COMMIT");
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({success:true,data:expect.objectContaining({status:"COMPLETED",imported:true})}));
   });
 });
 

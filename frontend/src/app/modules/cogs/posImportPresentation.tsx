@@ -6,7 +6,6 @@ export const UNCONFIGURED_POS_LAYOUT_MESSAGE =
 const MAPPING_RECOVERY_ERROR_CODES = new Set([
   "UNSUPPORTED_POS_FORMAT",
   "POS_FIELD_MAPPING_REQUIRED",
-  "MAPPED_COLUMN_MISSING",
 ]);
 
 export function requiresPosMappingRecovery(error: unknown) {
@@ -35,18 +34,22 @@ export function deduplicatePosValidationIssues(
 
 export function PosMappingRecoveryNotice({
   onConfigure,
+  message = UNCONFIGURED_POS_LAYOUT_MESSAGE,
+  actionLabel = "Configure Mapping",
 }: {
   onConfigure: () => void;
+  message?: string;
+  actionLabel?: string;
 }) {
   return (
     <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
-      <p>{UNCONFIGURED_POS_LAYOUT_MESSAGE}</p>
+      <p>{message}</p>
       <button
         type="button"
         className="mt-3 rounded-lg border border-amber-500 bg-white px-3 py-2 font-semibold text-amber-950"
         onClick={onConfigure}
       >
-        Configure Mapping
+        {actionLabel}
       </button>
     </div>
   );

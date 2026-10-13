@@ -1,12 +1,14 @@
 import type { Request, RequestHandler } from "express";
+import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
+import { z } from "zod";
 import { pool } from "../config/database.js";
 import { env } from "../config/env.js";
 import { calculateExpectedInventory, calculateExpectedInventoryBatch, computeVariance } from "../services/inventoryCalculation.service.js";
 import { calculateFinancialSummary, roundMoney } from "../services/financialMetrics.service.js";
 import { OPERATIONAL_POS_IMPORT_CONDITION, OPERATIONAL_POS_SOURCE_JOIN } from "../services/operationalPosScope.service.js";
 import { classifyUnmatchedPosIdentity, parsePosCsv, POS_SOURCE_FORMATS, PosCsvError, summarizePosRows, validationIssueField, type MatchedPosRow, type PosMenuCandidate } from "../services/posCsvImport.service.js";
-import { parsePosExcel, TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE, validateExcelFileSignature } from "../services/posExcelImport.service.js";
+import { inspectPosExcelHeaders, parsePosExcel, TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE, validateExcelFileSignature, type PosFieldMapping } from "../services/posExcelImport.service.js";
 import { loadPosMappings, loadPosSource, posResolutionFingerprint, resolvePosMapping } from "../services/posProductVariantMapping.service.js";
 import { getEffectiveBranchId } from "../services/branchScope.js";
 import { writeAudit } from "../services/audit.service.js";
@@ -108,6 +110,10 @@ type PosPreviewVariantRow = {
 type PosImportSource =
   | { sourceFilename: string; csvText: string; fileBuffer?: never; posSourceId: string }
   | { sourceFilename: string; fileBuffer: Buffer; csvText?: never; posSourceId: string };
+type ConfirmedPosImportSource = PosImportSource & {
+  expectedContentHash: string;
+  expectedResolutionFingerprint?: string;
+};
 
 function decodedPosFilename(value: string | string[] | undefined) {
   if (typeof value !== "string") throw new AppError(422, "POS_FILENAME_REQUIRED", "The POS filename is required.");
@@ -440,13 +446,13 @@ export const reviewPosImportApproval: RequestHandler = async (req,res) => {
   }
 };
 
-export const importPosSales: RequestHandler = async (req, res) => {
+async function executePosImport(
+  client: PoolClient,
+  actor: NonNullable<Express.Request["user"]>,
+  branchId: string,
+  input: ConfirmedPosImportSource,
+) {
   const importStartedAt = performance.now();
-  const input = posRequestSource(req, true);
-  const branchId = requiredBranchId(req.user!);
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
     const preview = await buildPosPreview(branchId, input, client);
     if (preview.contentHash !== input.expectedContentHash) throw new AppError(409, "POS_PREVIEW_CHANGED", "The selected POS file changed after preview. Preview it again before importing.");
     if (preview.summary.duplicate) throw new AppError(409, "POS_IMPORT_DUPLICATE", "This file has already been imported.");
@@ -459,7 +465,7 @@ export const importPosSales: RequestHandler = async (req, res) => {
     const imported = await client.query<{ id: string }>(
       `INSERT INTO pos_imports (branch_id,business_date,source_filename,imported_by,content_hash,total_source_rows,valid_rows,warning_rows,invalid_rows,unmatched_rows,import_status,completed_at,pos_source_id,created_environment)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,0,0,$9,now(),$10,$11) RETURNING id`,
-      [branchId, preview.businessDate, input.sourceFilename, req.user!.id, preview.contentHash, preview.summary.totalSourceRows, preview.summary.validRows, preview.summary.warningRows, preview.summary.quality,preview.posSourceId,env.DATA_LIFECYCLE_ENV],
+      [branchId, preview.businessDate, input.sourceFilename, actor.id, preview.contentHash, preview.summary.totalSourceRows, preview.summary.validRows, preview.summary.warningRows, preview.summary.quality,preview.posSourceId,env.DATA_LIFECYCLE_ENV],
     );
     const importId = imported.rows[0]!.id;
     const salesInsertStartedAt = performance.now();
@@ -555,7 +561,7 @@ export const importPosSales: RequestHandler = async (req, res) => {
       }
     }
     await writeAudit(
-      req.user!,
+      actor,
       "IMPORT_POS_SALES",
       "POS_IMPORT",
       importId,
@@ -563,12 +569,7 @@ export const importPosSales: RequestHandler = async (req, res) => {
       { branchId, businessDate: preview.businessDate, rowCount: importRows.length, totalQuantity: meta?.unitsSold ?? 0, totalSales: meta?.totalSales ?? 0, fingerprintIndicator: preview.fingerprintIndicator, pricingMethod: preview.pricing.method, pricingNotice: preview.pricing.notice, fallbackPricingRows: preview.pricing.fallbackRows, createdEnvironment:env.DATA_LIFECYCLE_ENV, inventoryDateAssessment },
       client,
     );
-    await client.query("COMMIT");
-    res
-      .status(201)
-      .json({
-        success: true,
-        data: {
+    return {
           importId,
           branchId,
           businessDate: preview.businessDate,
@@ -584,8 +585,18 @@ export const importPosSales: RequestHandler = async (req, res) => {
           reconciliation,
           inventoryDateAssessment,
           ...(env.BENCHMARK_MODE ? { benchmark: { ...preview.benchmark, salesInsertMs, ingredientUsageMs, databaseTransactionMs: performance.now() - importStartedAt } } : {}),
-        },
-      });
+    };
+}
+
+export const importPosSales: RequestHandler = async (req, res) => {
+  const input = posRequestSource(req, true);
+  const branchId = requiredBranchId(req.user!);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await executePosImport(client, req.user!, branchId, input);
+    await client.query("COMMIT");
+    res.status(201).json({ success: true, data: result });
   } catch (error) {
     await client.query("ROLLBACK");
     const duplicate = (error as { code?: string }).code === "23505" || (error instanceof AppError && error.code === "POS_IMPORT_DUPLICATE");
@@ -595,6 +606,152 @@ export const importPosSales: RequestHandler = async (req, res) => {
   } finally {
     client.release();
   }
+};
+
+const posFormatRequestMappingInput = z.object({
+  headers: z.array(z.string().trim().min(1).max(240)).min(2).max(200),
+  mapping: z.object({
+    productName: z.string().trim().min(1).max(240),
+    quantitySold: z.string().trim().min(1).max(240),
+    transactionId: z.string().trim().min(1).max(240),
+    businessDate: z.string().trim().min(1).max(240),
+    status: z.string().trim().min(1).max(240),
+    unitPrice: z.string().trim().min(1).max(240),
+    salesAmount: z.string().trim().min(1).max(240).optional(),
+  }),
+}).superRefine((value, context) => {
+  const mappedHeaders = Object.values(value.mapping).filter(Boolean);
+  if (new Set(mappedHeaders.map((header) => header.toLowerCase())).size !== mappedHeaders.length) {
+    context.addIssue({ code: "custom", path: ["mapping"], message: "Each spreadsheet column can be assigned to only one Libro field." });
+  }
+  const headers = new Set(value.headers.map((header) => header.toLowerCase()));
+  for (const [field, header] of Object.entries(value.mapping)) {
+    if (header && !headers.has(header.toLowerCase())) {
+      context.addIssue({ code: "custom", path: ["mapping", field], message: `Mapped column '${header}' is missing from this file.` });
+    }
+  }
+});
+
+const posFormatRequestSelect = `SELECT request.id,request.branch_id "branchId",branch.name "branchName",
+  request.pos_source_id "posSourceId",source.display_name "posSourceName",request.source_filename "sourceFilename",
+  request.worksheet_name "worksheet",request.header_row "headerRow",request.detected_headers "headers",
+  request.status,request.validation_issues "validationIssues",request.requested_by "requestedBy",
+  concat(requester.first_name,' ',requester.last_name) "requestedByName",request.requested_at "requestedAt",
+  request.configured_by "configuredBy",request.configured_at "configuredAt",request.completed_at "completedAt",
+  request.pos_import_id "posImportId"
+  FROM pos_format_setup_requests request
+  JOIN branches branch ON branch.id=request.branch_id
+  JOIN pos_sources source ON source.id=request.pos_source_id
+  JOIN users requester ON requester.id=request.requested_by`;
+
+export const requestPosFormatSetup: RequestHandler = async (req, res) => {
+  if (!Buffer.isBuffer(req.body)) throw new AppError(422, "POS_FILE_REQUIRED", "Select an XLS or XLSX file to request format setup.");
+  const branchId = requiredBranchId(req.user!);
+  const sourceFilename = decodedPosFilename(req.headers["x-pos-filename"]);
+  const posSourceId = req.headers["x-pos-source-id"];
+  if (typeof posSourceId !== "string" || !z.string().uuid().safeParse(posSourceId).success) {
+    throw new AppError(422, "POS_SOURCE_INVALID", "Select a valid POS source.");
+  }
+  const source = await pool.query(`SELECT id FROM pos_sources WHERE id=$1 AND branch_id=$2 AND status='ACTIVE'`, [posSourceId, branchId]);
+  if (!source.rows[0]) throw new AppError(403, "POS_SOURCE_BRANCH_INVALID", "The selected active POS source is not assigned to your branch.");
+  let inspection: ReturnType<typeof inspectPosExcelHeaders>;
+  try {
+    validateExcelFileSignature(sourceFilename, req.body);
+    inspection = inspectPosExcelHeaders(sourceFilename, req.body);
+  } catch (error) {
+    if (error instanceof Error && "code" in error) throw new AppError(422, String(error.code), error.message);
+    throw error;
+  }
+  const contentHash = createHash("sha256").update(req.body).digest("hex");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const inserted = await client.query<{ id: string }>(`INSERT INTO pos_format_setup_requests
+      (branch_id,pos_source_id,source_filename,workbook_content,content_hash,worksheet_name,header_row,detected_headers,requested_by)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)
+      ON CONFLICT (branch_id,pos_source_id,content_hash) WHERE status IN ('PENDING','CONFIGURED','BLOCKED')
+      DO UPDATE SET updated_at=now() RETURNING id`,
+      [branchId,posSourceId,sourceFilename,req.body,contentHash,inspection.worksheet,inspection.headerRow,JSON.stringify(inspection.headers),req.user!.id]);
+    const requestId = inserted.rows[0]!.id;
+    await client.query(`INSERT INTO notifications (recipient_user_id,branch_id,type,title,message,entity_type,entity_id)
+      SELECT owner_user.id,$1,'POS_FORMAT_SETUP_REQUESTED','POS Format Setup Requested',$2,'POS_FORMAT_SETUP_REQUEST',$3
+      FROM users owner_user WHERE owner_user.role='OWNER' AND owner_user.status='ACTIVE'
+        AND NOT EXISTS (SELECT 1 FROM notifications existing WHERE existing.recipient_user_id=owner_user.id
+          AND existing.type='POS_FORMAT_SETUP_REQUESTED' AND existing.entity_type='POS_FORMAT_SETUP_REQUEST' AND existing.entity_id=$3)`,
+      [branchId,`${sourceFilename} needs column setup before ${inspection.headers.length} detected columns can be imported.`,requestId]);
+    await writeAudit(req.user!,"REQUEST_POS_FORMAT_SETUP","POS_FORMAT_SETUP_REQUEST",requestId,"Requested Owner setup for a new POS workbook format",{branchId,posSourceId,sourceFilename,detectedColumnCount:inspection.headers.length},client);
+    const result = await client.query(`${posFormatRequestSelect} WHERE request.id=$1`,[requestId]);
+    await client.query("COMMIT");
+    res.status(201).json({success:true,data:{request:result.rows[0]}});
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally { client.release(); }
+};
+
+export const listPosFormatSetupRequests: RequestHandler = async (req, res) => {
+  const branchId = req.user!.role === "OWNER" ? null : requiredBranchId(req.user!);
+  const result = await pool.query(`${posFormatRequestSelect}
+    WHERE ($1::uuid IS NULL OR request.branch_id=$1) AND ($2::boolean OR request.requested_by=$3)
+    ORDER BY CASE request.status WHEN 'PENDING' THEN 0 WHEN 'BLOCKED' THEN 1 ELSE 2 END,request.requested_at DESC`,
+    [branchId,req.user!.role === "OWNER",req.user!.id]);
+  res.json({success:true,data:{requests:result.rows}});
+};
+
+export const configurePosFormatRequest: RequestHandler = async (req, res) => {
+  const id = idParams.parse(req.params).id;
+  const value = posFormatRequestMappingInput.parse(req.body);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const locked = await client.query<{
+      branchId:string;posSourceId:string;sourceFilename:string;workbookContent:Buffer;detectedHeaders:string[];requestedBy:string;requesterRole:"BRANCH_MANAGER";requesterBranchId:string|null;status:string;
+    }>(`SELECT request.branch_id "branchId",request.pos_source_id "posSourceId",request.source_filename "sourceFilename",
+        request.workbook_content "workbookContent",request.detected_headers "detectedHeaders",request.requested_by "requestedBy",request.status,
+        requester.role "requesterRole",requester.branch_id "requesterBranchId"
+      FROM pos_format_setup_requests request JOIN users requester ON requester.id=request.requested_by
+      WHERE request.id=$1 FOR UPDATE OF request`,[id]);
+    const pending = locked.rows[0];
+    if (!pending) throw new AppError(404,"POS_FORMAT_REQUEST_NOT_FOUND","POS format setup request not found.");
+    if (!['PENDING','BLOCKED'].includes(pending.status)) throw new AppError(409,"POS_FORMAT_REQUEST_CLOSED","This POS format setup request has already been completed.");
+    if (pending.requesterRole !== "BRANCH_MANAGER" || pending.requesterBranchId !== pending.branchId) {
+      throw new AppError(409,"POS_FORMAT_REQUEST_SCOPE_CHANGED","The requesting Manager is no longer assigned to this branch.");
+    }
+    const submittedHeaders=new Set(value.headers.map(header=>header.toLowerCase()));
+    if(value.headers.length!==pending.detectedHeaders.length||pending.detectedHeaders.some(header=>!submittedHeaders.has(header.toLowerCase()))) {
+      throw new AppError(409,"POS_FORMAT_HEADERS_CHANGED","Reload this format request before saving its column mapping.");
+    }
+    const sourceLock=await client.query(`SELECT id FROM pos_sources WHERE id=$1 AND branch_id=$2 FOR UPDATE`,[pending.posSourceId,pending.branchId]);
+    if(!sourceLock.rows[0]) throw new AppError(409,"POS_FORMAT_SOURCE_CHANGED","The POS source is no longer assigned to this branch.");
+    await client.query(`UPDATE pos_sources SET supported_format='CUSTOM_TABULAR_XLSX',field_mapping=$2::jsonb,
+      field_mapping_updated_by=$3,field_mapping_updated_at=now(),format_verified_by=$3,format_verified_at=now(),updated_at=now()
+      WHERE id=$1`,[pending.posSourceId,JSON.stringify(value.mapping satisfies PosFieldMapping),req.user!.id]);
+    await client.query(`UPDATE pos_format_setup_requests SET status='CONFIGURED',configured_by=$2,configured_at=now(),validation_issues=NULL,updated_at=now() WHERE id=$1`,[id,req.user!.id]);
+    const source: PosImportSource = {sourceFilename:pending.sourceFilename,fileBuffer:pending.workbookContent,posSourceId:pending.posSourceId};
+    const preview = await buildPosPreview(pending.branchId,source,client);
+    if (!preview.summary.canImport || !preview.businessDate) {
+      const issues = preview.validationIssues.length ? preview.validationIssues : [{rowNumber:0,field:"File",issue:preview.importBlockedReason ?? "The sales file still has blocking validation issues."}];
+      await client.query(`UPDATE pos_format_setup_requests SET status='BLOCKED',validation_issues=$2::jsonb,updated_at=now() WHERE id=$1`,[id,JSON.stringify(issues)]);
+      await client.query(`INSERT INTO notifications(recipient_user_id,branch_id,type,title,message,entity_type,entity_id)
+        VALUES($1,$2,'POS_FORMAT_CONFIGURED_BLOCKED','POS Format Configured',$3,'POS_FORMAT_SETUP_REQUEST',$4)`,
+        [pending.requestedBy,pending.branchId,`${pending.sourceFilename} is configured, but its remaining validation issues must be resolved before import.`,id]);
+      await writeAudit(req.user!,"CONFIGURE_POS_FORMAT","POS_FORMAT_SETUP_REQUEST",id,"Configured POS columns; pending file remains blocked",{branchId:pending.branchId,posSourceId:pending.posSourceId,validationIssueCount:issues.length},client);
+      await client.query("COMMIT");
+      return res.json({success:true,data:{requestId:id,status:"BLOCKED",imported:false,validationIssues:issues,preview}});
+    }
+    const importer = {id:pending.requestedBy,role:pending.requesterRole,branchId:pending.requesterBranchId};
+    const imported = await executePosImport(client,importer,pending.branchId,{...source,expectedContentHash:preview.contentHash,expectedResolutionFingerprint:preview.resolutionFingerprint});
+    await client.query(`UPDATE pos_format_setup_requests SET status='COMPLETED',pos_import_id=$2,completed_at=now(),validation_issues=NULL,updated_at=now() WHERE id=$1`,[id,imported.importId]);
+    await client.query(`INSERT INTO notifications(recipient_user_id,branch_id,type,title,message,entity_type,entity_id)
+      VALUES($1,$2,'POS_FORMAT_SETUP_COMPLETED','POS Format Setup Completed',$3,'POS_FORMAT_SETUP_REQUEST',$4)`,
+      [pending.requestedBy,pending.branchId,`${pending.sourceFilename} was configured and imported successfully.`,id]);
+    await writeAudit(req.user!,"COMPLETE_POS_FORMAT_SETUP","POS_FORMAT_SETUP_REQUEST",id,"Configured POS format and continued the original pending import",{branchId:pending.branchId,posSourceId:pending.posSourceId,posImportId:imported.importId},client);
+    await client.query("COMMIT");
+    res.json({success:true,data:{requestId:id,status:"COMPLETED",imported:true,import:imported}});
+  } catch(error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally { client.release(); }
 };
 
 export const listPosImports: RequestHandler = async (req, res) => {

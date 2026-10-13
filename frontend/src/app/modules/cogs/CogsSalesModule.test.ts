@@ -32,6 +32,10 @@ import {
   posSalesAmountLabel,
   readCogsUserRange,
   saveCogsUserRange,
+  POS_IMPORT_FIELD_OPTIONS,
+  assignPosHeader,
+  suggestPosField,
+  suggestedPosFieldMapping,
   summarizeDailyPosStatuses,
 } from "./CogsSalesModule";
 import { adjustRangeForImport } from "../../utils/businessDate";
@@ -47,6 +51,39 @@ describe("POS import recovery and details presentation", () => {
     const markup = renderToStaticMarkup(React.createElement(PosMappingRecoveryNotice, { onConfigure: () => undefined }));
     expect(markup).toContain(UNCONFIGURED_POS_LAYOUT_MESSAGE);
     expect(markup).toContain("Configure Mapping");
+  });
+
+  it("presents the Manager recovery action using the pending-request wording", () => {
+    const markup = renderToStaticMarkup(React.createElement(PosMappingRecoveryNotice, {
+      onConfigure: () => undefined,
+      message: "New POS file format detected. This format needs to be configured by the Owner before the sales can be imported.",
+      actionLabel: "Request POS Format Setup",
+    }));
+    expect(markup).toContain("New POS file format detected");
+    expect(markup).toContain("Request POS Format Setup");
+  });
+
+  it("suggests only deterministic importer-supported field aliases", () => {
+    expect(suggestPosField("Receipt No.")).toBe("transactionId");
+    expect(suggestPosField("Quantity Sold")).toBe("quantitySold");
+    expect(suggestPosField("Transaction Date")).toBe("businessDate");
+    expect(suggestPosField("Product")).toBe("productName");
+    expect(suggestPosField("Payment Status")).toBe("status");
+    expect(suggestPosField("Cashier")).toBe("");
+    expect(POS_IMPORT_FIELD_OPTIONS.map(option=>option.value)).toEqual(["productName","quantitySold","transactionId","businessDate","status","unitPrice","salesAmount"]);
+  });
+
+  it("leaves unknown columns ignored while preparing unsaved suggestions", () => {
+    const mapping=suggestedPosFieldMapping(["Receipt No.","Product","Quantity Sold","Transaction Date","Payment Status","Unit Price","Cashier"]);
+    expect(mapping).toMatchObject({transactionId:"Receipt No.",productName:"Product",quantitySold:"Quantity Sold",businessDate:"Transaction Date",status:"Payment Status",unitPrice:"Unit Price"});
+    expect(Object.values(mapping)).not.toContain("Cashier");
+  });
+
+  it("prevents a source header from remaining assigned to two Libro fields", () => {
+    const initial=suggestedPosFieldMapping(["Product","Quantity"]);
+    const reassigned=assignPosHeader(initial,"Product","quantitySold");
+    expect(reassigned.productName).toBe("");
+    expect(reassigned.quantitySold).toBe("Product");
   });
 
   it("uses invalidRows as the authoritative excluded/invalid total", () => {

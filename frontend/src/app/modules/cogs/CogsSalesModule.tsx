@@ -8,7 +8,7 @@ import { inventoryWorkflowService } from "../../services/inventoryWorkflow.servi
 import { masterDataService } from "../../services/masterData.service";
 import { controlledActionService } from "../../services/controlledAction.service";
 import { ControlledActionDialog } from "../../components/ControlledActionDialog";
-import type { DailyPosUploadStatus, PosAnalytics, PosFieldMapping, PosHeaderInspection, PosImportPreview, PosImportReconciliation, PosImportRecord, PosMapping, PosMappingReviewStatus, PosSource } from "../../types/inventoryWorkflow";
+import type { DailyPosUploadStatus, PosAnalytics, PosFieldMapping, PosFormatSetupRequest, PosHeaderInspection, PosImportPreview, PosImportReconciliation, PosImportRecord, PosMapping, PosMappingReviewStatus, PosSource } from "../../types/inventoryWorkflow";
 import type { Branch, MenuProduct } from "../../types/masterData";
 import { useAuth } from "../../contexts/AuthContext";
 import { addDateDays, businessDate, periodDates, adjustRangeForAutomaticImport } from "../../utils/businessDate";
@@ -308,6 +308,42 @@ export const formatPosSourceFormatName = (format: PosSource["supportedFormat"]) 
   }
 };
 
+const EMPTY_POS_FIELD_MAPPING: PosFieldMapping = {productName:"",quantitySold:"",transactionId:"",businessDate:"",status:"",unitPrice:"",salesAmount:""};
+export const POS_IMPORT_FIELD_OPTIONS: Array<{value:keyof PosFieldMapping;label:string;required:boolean}> = [
+  {value:"productName",label:"Product Name",required:true},
+  {value:"quantitySold",label:"Quantity",required:true},
+  {value:"transactionId",label:"Transaction / OR Number",required:true},
+  {value:"businessDate",label:"Business Date",required:true},
+  {value:"status",label:"Status",required:true},
+  {value:"unitPrice",label:"Unit Price",required:true},
+  {value:"salesAmount",label:"Sales Amount",required:false},
+];
+
+export function suggestPosField(header:string):keyof PosFieldMapping|"" {
+  const normalized=header.toLowerCase().replace(/[^a-z0-9]+/g," ").trim();
+  if(/^(product|product name|item|item name|description)$/.test(normalized))return "productName";
+  if(/^(quantity|quantity sold|qty|qty sold)$/.test(normalized))return "quantitySold";
+  if(/^(receipt no|receipt number|transaction id|transaction no|transaction number|or no|or number|txn ref)$/.test(normalized))return "transactionId";
+  if(/^(business date|transaction date|date|sales date)$/.test(normalized))return "businessDate";
+  if(/^(status|payment status|transaction status)$/.test(normalized))return "status";
+  if(/^(unit price|selling price|price)$/.test(normalized))return "unitPrice";
+  if(/^(sales amount|total amount|line total|net due|amount)$/.test(normalized))return "salesAmount";
+  return "";
+}
+
+export function suggestedPosFieldMapping(headers:string[]):PosFieldMapping {
+  const mapping={...EMPTY_POS_FIELD_MAPPING};
+  for(const header of headers){const field=suggestPosField(header);if(field&&!mapping[field])mapping[field]=header;}
+  return mapping;
+}
+
+export function assignPosHeader(mapping:PosFieldMapping,header:string,field:keyof PosFieldMapping|""):PosFieldMapping {
+  const next={...mapping};
+  for(const key of Object.keys(next) as Array<keyof PosFieldMapping>)if(next[key]===header)next[key]="";
+  if(field)next[field]=header;
+  return next;
+}
+
 export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role?: Role | string; initialSourceId?: string } = {}) {
   const [deleteSourceTarget, setDeleteSourceTarget] = useState<PosSource | null>(null);
   const [deleteSourceValue, setDeleteSourceValue] = useState({ reason: "", verificationPin: "" });
@@ -317,14 +353,15 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
   const [mappings, setMappings] = useState<PosMapping[]>([]);
   const [products, setProducts] = useState<MenuProduct[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
+  const [formatRequests,setFormatRequests]=useState<PosFormatSetupRequest[]>([]);
+  const [selectedFormatRequest,setSelectedFormatRequest]=useState<PosFormatSetupRequest|null>(null);
+  const [formatSetupResult,setFormatSetupResult]=useState("");
   const [sourceId, setSourceId] = useState(initialSourceId);
-  const [sourceCode, setSourceCode] = useState("");
   const [sourceName, setSourceName] = useState("");
   const [sourceFormat, setSourceFormat] = useState<PosSource["supportedFormat"]>("SUMMARY_ITEMS_SOLD_LEGACY_XLS");
   const [sourceBranchId, setSourceBranchId] = useState("");
   const [showAssignBranch, setShowAssignBranch] = useState(false);
   const [assignBranchId, setAssignBranchId] = useState("");
-  const [assignSourceCode, setAssignSourceCode] = useState("");
   const [posName, setPosName] = useState("");
   const [posCode, setPosCode] = useState("");
   const [variantId, setVariantId] = useState("");
@@ -340,11 +377,14 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
   const [fieldMapping,setFieldMapping]=useState<PosFieldMapping>({productName:"",quantitySold:"",transactionId:"",businessDate:"",status:"",unitPrice:"",salesAmount:""});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const refresh = async () => setSources(await inventoryWorkflowService.posSources());
+  const refresh = async () => {
+    const [nextSources,nextRequests]=await Promise.all([inventoryWorkflowService.posSources(),inventoryWorkflowService.posFormatSetupRequests()]);
+    setSources(nextSources);setFormatRequests(nextRequests);
+  };
   useEffect(() => {
     if (!open) return;
-    void Promise.all([inventoryWorkflowService.posSources(), masterDataService.menuProducts(), masterDataService.branches()])
-      .then(([nextSources, nextProducts, nextBranches]) => { setSources(nextSources); setProducts(nextProducts); setBranches(nextBranches); })
+    void Promise.all([inventoryWorkflowService.posSources(), masterDataService.menuProducts(), masterDataService.branches(),inventoryWorkflowService.posFormatSetupRequests()])
+      .then(([nextSources, nextProducts, nextBranches,nextRequests]) => { setSources(nextSources); setProducts(nextProducts); setBranches(nextBranches); setFormatRequests(nextRequests); })
       .catch(() => setError("Unable to load POS mapping setup."));
   }, [open]);
   useEffect(() => {
@@ -376,6 +416,13 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
     ? sources.filter((s) => s.supportedFormat === selectedSource.supportedFormat)
     : [];
   const mappingComplete = [fieldMapping.productName,fieldMapping.quantitySold,fieldMapping.transactionId,fieldMapping.businessDate,fieldMapping.status,fieldMapping.unitPrice].every(Boolean);
+  const pendingFormatRequests=formatRequests.filter(request=>request.status==="PENDING"||request.status==="BLOCKED");
+  const openFormatRequest=(request:PosFormatSetupRequest)=>{
+    setSelectedFormatRequest(request);setSourceId(request.posSourceId);setFormatSetupResult("");
+    setMappingInspection({worksheet:request.worksheet,headerRow:request.headerRow,headers:request.headers,mapping:null});
+    const saved=sources.find(source=>source.id===request.posSourceId)?.fieldMapping;
+    setFieldMapping(saved??suggestedPosFieldMapping(request.headers));
+  };
   const inspectMappingFile=async()=>{
     if(!selectedSource||!mappingFile)return;
     setBusy(true);setError("");
@@ -388,7 +435,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div>
         <h3 className="text-base font-bold text-[var(--app-text)]">POS System & Mapping Setup</h3>
-        <p className="mt-0.5 text-xs text-[var(--app-text-muted)]">Configure POS register formats, assign systems to branches, and manage recipe mappings.</p>
+        <p className="mt-0.5 text-xs text-[var(--app-text-muted)]">Connect sales files from your branch POS systems and tell Libro how to read them.</p>
       </div>
       <button type="button" className="rounded-lg border px-3 py-1.5 text-sm font-semibold transition-colors hover:bg-[var(--app-surface-muted)]" style={{ borderColor: C.border, color: C.maroon }} onClick={() => setOpen((value) => !value)}>
         {open ? "Hide POS Setup" : "Open POS Setup"}
@@ -396,28 +443,20 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
     </div>
 
     {open && <div className="mt-5 space-y-6 text-sm">
-      {/* Architecture Explainer Banner */}
       <div className="rounded-xl border border-blue-200 bg-blue-50/70 p-4 text-[var(--app-text)] dark:border-blue-900 dark:bg-blue-950/30">
         <div className="flex items-start gap-3">
           <Info className="mt-0.5 shrink-0 text-blue-600 dark:text-blue-400" size={18} />
           <div className="space-y-2">
-            <p className="font-semibold text-blue-950 dark:text-blue-100">
-              POS System defines the file format and import structure. Branch assignment determines where sales data belongs. Product mapping determines how POS items connect to Libro menu variants.
-            </p>
-            <div className="flex flex-wrap gap-2 text-xs">
-              <span className="inline-flex items-center gap-1 rounded-md bg-white/80 px-2.5 py-1 font-medium text-blue-800 shadow-sm border border-blue-200 dark:bg-blue-900/60 dark:text-blue-200 dark:border-blue-800">
-                <strong>Scenario A:</strong> Same POS format across multiple branches
-              </span>
-              <span className="inline-flex items-center gap-1 rounded-md bg-white/80 px-2.5 py-1 font-medium text-purple-800 shadow-sm border border-purple-200 dark:bg-purple-900/60 dark:text-purple-200 dark:border-purple-800">
-                <strong>Scenario B:</strong> Historical inactive sources retained per branch
-              </span>
-              <span className="inline-flex items-center gap-1 rounded-md bg-white/80 px-2.5 py-1 font-medium text-amber-800 shadow-sm border border-amber-200 dark:bg-amber-900/60 dark:text-amber-200 dark:border-amber-800">
-                <strong>Scenario C:</strong> Branch-specific mapping overrides
-              </span>
-            </div>
+            <p className="font-semibold text-blue-950 dark:text-blue-100">Use the guided sections below to choose a branch POS, set up spreadsheet columns, and match POS products to Libro menu items.</p>
           </div>
         </div>
       </div>
+
+      <section aria-label="Pending Format Requests" className="rounded-xl border bg-[var(--app-surface)] p-5" style={{borderColor:C.border}}>
+        <h4 className="font-bold">Pending Format Requests ({pendingFormatRequests.length})</h4>
+        <p className="mt-1 text-xs text-[var(--app-text-muted)]">Sales files waiting for the Owner to confirm how Libro should read their columns.</p>
+        {pendingFormatRequests.length===0?<p className="mt-3 rounded-lg bg-[var(--app-surface-muted)] p-3 text-xs text-[var(--app-text-muted)]">No sales files are waiting for format setup.</p>:<div className="mt-3 grid gap-3 md:grid-cols-2">{pendingFormatRequests.map(request=><article key={request.id} className="rounded-xl border p-4" style={{borderColor:selectedFormatRequest?.id===request.id?C.maroon:C.border}}><div className="flex items-start justify-between gap-3"><div><strong>New sales format detected</strong><dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 text-xs"><dt className="text-[var(--app-text-muted)]">Branch:</dt><dd>{request.branchName}</dd><dt className="text-[var(--app-text-muted)]">Requested by:</dt><dd>{request.requestedByName}</dd><dt className="text-[var(--app-text-muted)]">File:</dt><dd>{request.sourceFilename}</dd><dt className="text-[var(--app-text-muted)]">Status:</dt><dd>{request.status==="BLOCKED"?"Configured · Needs attention":"Pending Setup"}</dd><dt className="text-[var(--app-text-muted)]">Detected:</dt><dd>{request.headers.length} columns</dd></dl></div><Btn size="sm" onClick={()=>openFormatRequest(request)}>Configure Format</Btn></div></article>)}</div>}
+      </section>
 
       {error && <p role="alert" className="rounded-xl bg-[var(--app-danger-bg)] p-3 text-sm font-semibold" style={{ color: C.red }}>{error}</p>}
 
@@ -425,28 +464,24 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
       <div className="rounded-xl border bg-[var(--app-surface)] p-5" style={{ borderColor: C.border }}>
         <div className="flex items-center gap-2">
           <span className="flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold text-white" style={{ background: C.maroon }}>1</span>
-          <h4 className="font-bold text-[var(--app-text)]">Step 1: Register POS Format / System</h4>
+          <h4 className="font-bold text-[var(--app-text)]">1. POS System Details</h4>
         </div>
         <p className="mt-1 text-xs text-[var(--app-text-muted)]">
-          Define the register name, system code, file export format, and the primary branch where this POS register operates.
+          Which POS system does each branch use?
         </p>
 
-        <div className="mt-4 grid gap-3 md:grid-cols-5">
+        <div className="mt-4 grid gap-3 md:grid-cols-4">
           <div>
             <label className="mb-1 block text-xs font-semibold text-[var(--app-text-muted)]">POS System Name</label>
             <input aria-label="POS System Name" placeholder="e.g. Libro POS Summary Items" value={sourceName} onChange={(event) => setSourceName(event.target.value)} className="w-full rounded-lg border p-2" />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-semibold text-[var(--app-text-muted)]">POS System Code</label>
-            <input aria-label="POS System Code" placeholder="e.g. LIBRO_LEGACY_XLS_001" value={sourceCode} onChange={(event) => setSourceCode(event.target.value)} className="w-full rounded-lg border p-2" />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-semibold text-[var(--app-text-muted)]">Supported Format</label>
+            <label className="mb-1 block text-xs font-semibold text-[var(--app-text-muted)]">File Format</label>
             <select aria-label="Supported POS format" value={sourceFormat} onChange={(event) => setSourceFormat(event.target.value as PosSource["supportedFormat"])} className="w-full rounded-lg border p-2">
-              <option value="SUMMARY_ITEMS_SOLD_LEGACY_XLS">Summary Items Sold XLS</option>
-              <option value="TRANSACTION_SUMMARY_XLSX">Transaction Summary XLSX</option>
-              <option value="CANONICAL_CSV">Canonical CSV</option>
-              <option value="CUSTOM_TABULAR_XLSX">Custom Mapped Excel</option>
+              <option value="SUMMARY_ITEMS_SOLD_LEGACY_XLS">Existing Libro summary format</option>
+              <option value="TRANSACTION_SUMMARY_XLSX">Existing Libro transaction format</option>
+              <option value="CANONICAL_CSV">Existing Libro CSV format</option>
+              <option value="CUSTOM_TABULAR_XLSX">Custom Excel format</option>
             </select>
           </div>
           <div>
@@ -457,8 +492,8 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
             </select>
           </div>
           <div className="flex items-end">
-            <button type="button" disabled={busy || !sourceCode.trim() || !sourceName.trim() || !sourceBranchId} className="w-full rounded-lg px-3 py-2 text-sm font-semibold text-white transition-opacity disabled:opacity-40" style={{ background: C.maroon }} onClick={() => void run(async () => { await inventoryWorkflowService.createPosSource({ sourceCode, displayName: sourceName, supportedFormat: sourceFormat, branchId: sourceBranchId }); setSourceCode(""); setSourceName(""); setSourceBranchId(""); })}>
-              Add POS System (inactive)
+            <button type="button" disabled={busy || !sourceName.trim() || !sourceBranchId} className="w-full rounded-lg px-3 py-2 text-sm font-semibold text-white transition-opacity disabled:opacity-40" style={{ background: C.maroon }} onClick={() => void run(async () => { const generatedCode=`POS_${sourceBranchId.replaceAll("-","").slice(0,8)}_${Date.now().toString(36).toUpperCase()}`;await inventoryWorkflowService.createPosSource({ sourceCode:generatedCode, displayName: sourceName, supportedFormat: sourceFormat, branchId: sourceBranchId }); setSourceName(""); setSourceBranchId(""); })}>
+              Continue
             </button>
           </div>
         </div>
@@ -468,19 +503,19 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
       <div className="rounded-xl border bg-[var(--app-surface)] p-5" style={{ borderColor: C.border }}>
         <div className="flex items-center gap-2">
           <span className="flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold text-white" style={{ background: C.maroon }}>2</span>
-          <h4 className="font-bold text-[var(--app-text)]">Step 2: Assign POS System to Branches & System Verification</h4>
+          <h4 className="font-bold text-[var(--app-text)]">2. Format Setup</h4>
         </div>
         <p className="mt-1 text-xs text-[var(--app-text-muted)]">
-          Select a configured POS system to verify format compatibility, review its assigned branch, or deploy this format to another branch. Deactivate the current source before activating its replacement.
+          Tell Libro how to read the columns from this POS.
         </p>
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <label className="text-xs font-semibold text-[var(--app-text-muted)]">Select POS System:</label>
-          <select aria-label="Source to review" value={sourceId} onChange={(event) => { setSourceId(event.target.value); setSourceFormatConfirmed(false); setShowAssignBranch(false); setMappingInspection(null); setMappingFile(null); }} className="min-w-[280px] rounded-lg border p-2 font-medium">
+          <select aria-label="Source to review" value={sourceId} onChange={(event) => { setSourceId(event.target.value); setSelectedFormatRequest(null); setFormatSetupResult(""); setSourceFormatConfirmed(false); setShowAssignBranch(false); setMappingInspection(null); setMappingFile(null); }} className="min-w-[280px] rounded-lg border p-2 font-medium">
             <option value="">Choose POS system to manage…</option>
             {sources.map((source) => (
               <option key={source.id} value={source.id}>
-                {source.displayName} · {source.branchName} · {source.status}
+                {source.displayName} · {source.branchName} · {source.status==="ACTIVE"?"Ready":"Not active"}
               </option>
             ))}
           </select>
@@ -488,6 +523,15 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
 
         {selectedSource && (
           <div className="mt-4 space-y-4">
+            {selectedFormatRequest&&mappingInspection&&<section aria-label="Requested POS format mapping" className="rounded-xl border p-4" style={{borderColor:C.maroon}}>
+              <div className="flex flex-wrap items-start justify-between gap-3"><div><h5 className="font-bold">Uploaded Format Request</h5><p className="mt-1 text-xs text-[var(--app-text-muted)]">{selectedFormatRequest.branchName} · Requested by {selectedFormatRequest.requestedByName} · {selectedFormatRequest.sourceFilename}</p></div><StatusChip status={selectedFormatRequest.status}/></div>
+              <div className="mt-4"><h6 className="font-semibold">Column Mapping</h6><p className="mt-1 text-xs text-[var(--app-text-muted)]">Confirm what each detected spreadsheet column means. Choose Ignore for columns Libro does not need.</p></div>
+              <div className="mt-3 overflow-x-auto rounded-xl border" style={{borderColor:C.border}}><table className="w-full min-w-[560px] text-left text-xs"><thead className="bg-[var(--app-surface-muted)]"><tr><th className="p-3">New POS Field</th><th className="p-3">Matched Libro Field</th></tr></thead><tbody>{mappingInspection.headers.map(header=>{const assigned=(Object.keys(fieldMapping) as Array<keyof PosFieldMapping>).find(field=>fieldMapping[field]===header)??"";return <tr key={header} className="border-t" style={{borderColor:C.border}}><td className="p-3 font-semibold">{header}</td><td className="p-3"><select aria-label={`Map source column ${header}`} value={assigned} onChange={event=>setFieldMapping(current=>assignPosHeader(current,header,event.target.value as keyof PosFieldMapping|""))} className="field py-2 text-xs"><option value="">Ignore</option>{POS_IMPORT_FIELD_OPTIONS.map(option=><option key={option.value} value={option.value}>{option.label}{option.required?" *":""}</option>)}</select></td></tr>;})}</tbody></table></div>
+              {!mappingComplete&&<div role="alert" className="mt-3 rounded-xl bg-[var(--app-warning-bg)] p-3 text-xs text-[var(--app-warning)]">{POS_IMPORT_FIELD_OPTIONS.filter(option=>option.required&&!fieldMapping[option.value]).map(option=><p key={option.value}>{option.label} has not been mapped.</p>)}</div>}
+              {selectedFormatRequest.status==="BLOCKED"&&selectedFormatRequest.validationIssues?.length?<div className="mt-3 rounded-xl bg-[var(--app-danger-bg)] p-3 text-xs text-[var(--app-danger)]"><strong>Remaining validation issues</strong>{selectedFormatRequest.validationIssues.map(issue=><p key={`${issue.rowNumber}-${issue.field}-${issue.issue}`}>Row {issue.rowNumber || "—"} · {issue.field}: {issue.issue}</p>)}</div>:null}
+              <div className="mt-4 flex justify-end"><Btn disabled={busy||!mappingComplete} onClick={()=>void run(async()=>{const result=await inventoryWorkflowService.configurePosFormatRequest(selectedFormatRequest.id,mappingInspection.headers,fieldMapping);setFormatSetupResult(result.imported?"POS format configured and sales import completed successfully.":"POS format was configured successfully, but the sales file still has blocking validation issues.");if(result.imported)setSelectedFormatRequest(null);else setSelectedFormatRequest(current=>current?{...current,status:"BLOCKED",validationIssues:result.validationIssues??null}:current);await refresh();})}>{busy?"Saving…":"Save Format & Continue Import"}</Btn></div>
+            </section>}
+            {formatSetupResult&&<p role="status" className="rounded-xl bg-[var(--app-success-bg)] p-3 text-sm font-semibold text-[var(--app-success)]">{formatSetupResult}</p>}
             {selectedSource.supportedFormat==="CUSTOM_TABULAR_XLSX"&&<section aria-label="Custom POS column mapping" className="rounded-xl border p-4" style={{borderColor:C.border}}><h5 className="font-bold">Configure Spreadsheet Columns</h5><p className="mt-1 text-xs text-[var(--app-text-muted)]">Map supplier spreadsheet headers to canonical sales fields. Product-to-menu mapping remains a separate step.</p><div className="mt-3 flex flex-wrap items-center gap-2"><input aria-label="Custom POS mapping workbook" type="file" accept=".xls,.xlsx" onChange={event=>{setMappingFile(event.target.files?.[0]??null);setMappingInspection(null);}}/><Btn size="sm" variant="outline" disabled={busy||!mappingFile} onClick={()=>void inspectMappingFile()}>Read Headers</Btn>{selectedSource.fieldMapping&&<span className="text-xs font-semibold" style={{color:C.green}}>Saved mapping available</span>}</div>{mappingInspection&&<div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{([
               ["productName","Product Name",true],["quantitySold","Quantity",true],["transactionId","Transaction / OR Number",true],["businessDate","Business Date",true],["status","Status",true],["unitPrice","Unit Price",true],["salesAmount","Sales Amount",false],
             ] as Array<[keyof PosFieldMapping,string,boolean]>).map(([field,label,required])=><label key={field} className="grid gap-1 text-xs font-semibold">{label}{required?" *":" (optional)"}<select aria-label={`Map ${label}`} value={fieldMapping[field]??""} onChange={event=>setFieldMapping(current=>({...current,[field]:event.target.value}))} className="rounded-lg border p-2 font-normal"><option value="">Select source header</option>{mappingInspection.headers.map(header=><option key={header} value={header}>{header}</option>)}</select></label>)}</div>}{mappingInspection&&<div className="mt-4 flex justify-end"><Btn size="sm" disabled={busy||!mappingComplete} onClick={()=>void run(async()=>{await inventoryWorkflowService.savePosFieldMapping(selectedSource.id,mappingInspection.headers,fieldMapping);setMappingInspection(current=>current?{...current,mapping:fieldMapping}:current);})}>Save Column Mapping</Btn></div>}</section>}
@@ -497,11 +541,10 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
                 <div>
                   <h5 className="font-bold text-[var(--app-text)] flex items-center gap-2">
                     <ShieldCheck size={16} className="text-emerald-600" />
-                    POS System Verification
+                    POS System Status
                   </h5>
                   <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-xs sm:grid-cols-4">
                     <div><span className="text-[var(--app-text-muted)]">POS System Name:</span> <strong className="block text-[var(--app-text)]">{selectedSource.displayName}</strong></div>
-                    <div><span className="text-[var(--app-text-muted)]">POS System Code:</span> <strong className="block text-[var(--app-text)]">{selectedSource.sourceCode}</strong></div>
                     <div><span className="text-[var(--app-text-muted)]">Format:</span> <strong className="block text-[var(--app-text)]">{formatPosSourceFormatName(selectedSource.supportedFormat)}</strong></div>
                     <div><span className="text-[var(--app-text-muted)]">Assigned Branch:</span> <strong className="block text-[var(--app-text)]">{selectedSource.branchName}</strong></div>
                   </div>
@@ -564,7 +607,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
                 <div>
                   <h5 className="font-semibold text-xs text-[var(--app-text)] flex items-center gap-1.5">
                     <Building2 size={14} className="text-blue-600" />
-                    Multi-Branch Deployment (Scenario A)
+                    Other Branches Using This File Format
                   </h5>
                   <p className="text-xs text-[var(--app-text-muted)]">
                     Branches using the {formatPosSourceFormatName(selectedSource.supportedFormat)} format:
@@ -582,7 +625,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
                 {sameFormatSources.map((s) => (
                   <span key={s.id} className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium bg-[var(--app-surface-muted)]" style={{ borderColor: C.border }}>
                     <CheckCircle size={12} className={s.status === "ACTIVE" ? "text-emerald-600" : "text-amber-500"} />
-                    <strong>{s.branchName}</strong>: {s.displayName} ({s.sourceCode})
+                    <strong>{s.branchName}</strong>: {s.displayName}
                   </span>
                 ))}
               </div>
@@ -592,25 +635,23 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
                   <p className="text-xs font-semibold text-blue-900 dark:text-blue-200">
                     Deploy <strong>{formatPosSourceFormatName(selectedSource.supportedFormat)}</strong> to another branch:
                   </p>
-                  <div className="mt-2 grid gap-2 sm:grid-cols-3">
-                    <select aria-label="Target Branch to Assign" value={assignBranchId} onChange={(event) => { setAssignBranchId(event.target.value); const b = branches.find(br => br.id === event.target.value); if (b && !assignSourceCode) setAssignSourceCode(`LIBRO_${b.name.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase()}_${selectedSource.supportedFormat.split("_")[0]}`); }} className="rounded-lg border p-1.5 text-xs">
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                    <select aria-label="Target Branch to Assign" value={assignBranchId} onChange={(event) => setAssignBranchId(event.target.value)} className="rounded-lg border p-1.5 text-xs">
                       <option value="">Select target branch…</option>
                       {branches.filter((b) => b.id !== selectedSource.branchId).map((b) => (
                         <option key={b.id} value={b.id}>{b.name}</option>
                       ))}
                     </select>
-                    <input aria-label="New Branch POS Code" placeholder="New System Code (e.g. LIBRO_LIPA_XLS)" value={assignSourceCode} onChange={(event) => setAssignSourceCode(event.target.value)} className="rounded-lg border p-1.5 text-xs" />
                     <div className="flex gap-2">
-                      <button type="button" disabled={busy || !assignBranchId || !assignSourceCode.trim()} className="rounded-lg px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40" style={{ background: C.maroon }} onClick={() => void run(async () => {
+                      <button type="button" disabled={busy || !assignBranchId} className="rounded-lg px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40" style={{ background: C.maroon }} onClick={() => void run(async () => {
                         const created = await inventoryWorkflowService.createPosSource({
-                          sourceCode: assignSourceCode.trim().toUpperCase(),
+                          sourceCode: `POS_${assignBranchId.replaceAll("-","").slice(0,8)}_${Date.now().toString(36).toUpperCase()}`,
                           displayName: `${selectedSource.displayName} (${branches.find(b => b.id === assignBranchId)?.name ?? "Branch"})`,
                           supportedFormat: selectedSource.supportedFormat,
                           branchId: assignBranchId,
                         });
                         setShowAssignBranch(false);
                         setAssignBranchId("");
-                        setAssignSourceCode("");
                         setSourceId(created.id);
                       })}>
                         Create & Assign
@@ -629,10 +670,10 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
       {sourceId && <div className="rounded-xl border bg-[var(--app-surface)] p-5" style={{ borderColor: C.border }}>
         <div className="flex items-center gap-2">
           <span className="flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold text-white" style={{ background: C.maroon }}>3</span>
-          <h4 className="font-bold text-[var(--app-text)]">Step 3: Manage Product Mapping per Branch</h4>
+          <h4 className="font-bold text-[var(--app-text)]">3. Product Mapping</h4>
         </div>
         <p className="mt-1 text-xs text-[var(--app-text-muted)]">
-          Connect POS items to approved Libro recipes and menu variants. Mappings can apply to <strong>All Branches (global)</strong> or be overridden for a <strong>specific branch (Scenario C)</strong>.
+          Match POS product names and codes to approved Libro menu items and recipes. A mapping may apply to all branches or one specific branch.
         </p>
 
         {/* Copy Mappings Utility */}
@@ -711,7 +752,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
                   <th className="p-3 font-semibold">Target Product</th>
                   <th className="p-3 font-semibold">Target Variant</th>
                   <th className="p-3 font-semibold">Recipe</th>
-                  <th className="p-3 font-semibold">Branch Scope (Scenario C)</th>
+                  <th className="p-3 font-semibold">Branch</th>
                   <th className="p-3 font-semibold">Status</th>
                   <th className="p-3 font-semibold">Review Actions</th>
                 </tr>

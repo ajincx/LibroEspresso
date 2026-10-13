@@ -208,6 +208,27 @@ export interface PosHeaderInspection {
   mapping: PosFieldMapping | null;
 }
 
+export interface PosFormatSetupRequest {
+  id: string;
+  branchId: string;
+  branchName: string;
+  posSourceId: string;
+  posSourceName: string;
+  sourceFilename: string;
+  worksheet: string;
+  headerRow: number;
+  headers: string[];
+  status: "PENDING" | "CONFIGURED" | "BLOCKED" | "COMPLETED";
+  validationIssues: Array<{ rowNumber: number; field: string; issue: string }> | null;
+  requestedBy: string;
+  requestedByName: string;
+  requestedAt: string;
+  configuredBy: string | null;
+  configuredAt: string | null;
+  completedAt: string | null;
+  posImportId: string | null;
+}
+
 export type PosMappingReviewStatus = "PENDING" | "APPROVED" | "REJECTED" | "AMBIGUOUS";
 export interface PosMapping {
   id: string;
