@@ -361,7 +361,7 @@ function parseTransactionSummary(rows: SheetRows, worksheet: string, headerRowNu
         sourceFormat: POS_SOURCE_FORMATS.TRANSACTION_SUMMARY, sourceWorksheet: worksheet, sourceRow,
         lineAmount: null, sourceOrNumber: transactionId, sourceTransactionNumber: null,
         transactionStatus: status, transactionTimestampRaw: timestampRaw,
-        status: issues.length ? "INVALID" : "VALID", issues,
+        status: issues.length ? "INVALID" : "VALID", issues: [...new Set(issues)],
       });
     });
   });

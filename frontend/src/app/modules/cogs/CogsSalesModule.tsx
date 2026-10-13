@@ -14,7 +14,7 @@ import { useAuth } from "../../contexts/AuthContext";
 import { addDateDays, businessDate, periodDates, adjustRangeForAutomaticImport } from "../../utils/businessDate";
 import { formatAppDate } from "../../utils/appPreferences";
 import { useNavigate, useSearchParams } from "react-router";
-import { excludedInvalidRowCount, PosMappingRecoveryNotice, requiresPosMappingRecovery } from "./posImportPresentation";
+import { deduplicatePosValidationIssues, excludedInvalidRowCount, PosMappingRecoveryNotice, requiresPosMappingRecovery } from "./posImportPresentation";
 
 export const marginValueColor = (margin:number) => margin > 0 ? C.green : margin < 0 ? C.red : "var(--app-text-muted)";
 export function PosPricingNotice({ notice }: { notice: string | null | undefined }) {
@@ -978,6 +978,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
     const query = productSearch.trim().toLowerCase();
     return matchesCategory && (!query || product.name.toLowerCase().includes(query));
   });
+  const posValidationIssues = deduplicatePosValidationIssues(posPreview?.validationIssues);
 
   const handleFileChosen = (file: File | undefined) => {
     if (!file) return;
@@ -1375,7 +1376,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
                   )}
                   <input type="file" accept=".csv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" className="sr-only" onChange={(event) => { handleFileChosen(event.target.files?.[0]); event.target.value = ""; }} />
                 </label>
-                {posPreview?.validationIssues?.length ? <div className="mb-4 rounded-xl border p-3" style={{borderColor:C.red}}><h5 className="text-sm font-bold" style={{color:C.red}}>Validation details</h5><div className="mt-2 overflow-x-auto"><table className="w-full text-left text-xs"><thead><tr><th className="p-2">Row</th><th className="p-2">Field</th><th className="p-2">Issue</th></tr></thead><tbody>{posPreview.validationIssues.map((issue,index)=><tr key={`${issue.rowNumber}-${issue.field}-${index}`} className="border-t" style={{borderColor:C.border}}><td className="p-2">{issue.rowNumber}</td><td className="p-2 font-semibold">{issue.field}</td><td className="p-2">{issue.issue}</td></tr>)}</tbody></table></div></div>:null}
+                {posValidationIssues.length ? <div className="mb-4 rounded-xl border p-3" style={{borderColor:C.red}}><h5 className="text-sm font-bold" style={{color:C.red}}>Validation details</h5><div className="mt-2 overflow-x-auto"><table className="w-full text-left text-xs"><thead><tr><th className="p-2">Row</th><th className="p-2">Field</th><th className="p-2">Issue</th></tr></thead><tbody>{posValidationIssues.map((issue)=><tr key={`${issue.rowNumber}-${issue.field}-${issue.issue}`} className="border-t" style={{borderColor:C.border}}><td className="p-2">{issue.rowNumber}</td><td className="p-2 font-semibold">{issue.field}</td><td className="p-2">{issue.issue}</td></tr>)}</tbody></table></div></div>:null}
                 {mappingRecoveryRequired && selectedPosSourceId && <div className="mb-4"><PosMappingRecoveryNotice onConfigure={()=>{setUploadStep("idle");navigate(`/sales?configureMapping=${encodeURIComponent(selectedPosSourceId)}`);}} /></div>}
                 {posImportError && !mappingRecoveryRequired && <div className="mb-4 p-3 rounded-xl text-sm" style={{ color: C.red, background: C.redBg }}>{posImportError}</div>}
                 <div className="flex gap-3">

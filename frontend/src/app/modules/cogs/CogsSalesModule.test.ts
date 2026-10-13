@@ -37,7 +37,7 @@ import {
 import { adjustRangeForImport } from "../../utils/businessDate";
 import type { DailyPosUploadStatus, PosImportRecord, PosMapping } from "../../types/inventoryWorkflow";
 import type { MenuProduct } from "../../types/masterData";
-import { excludedInvalidRowCount, PosMappingRecoveryNotice, requiresPosMappingRecovery, UNCONFIGURED_POS_LAYOUT_MESSAGE } from "./posImportPresentation";
+import { deduplicatePosValidationIssues, excludedInvalidRowCount, PosMappingRecoveryNotice, requiresPosMappingRecovery, UNCONFIGURED_POS_LAYOUT_MESSAGE } from "./posImportPresentation";
 
 describe("POS import recovery and details presentation", () => {
   it("offers column mapping recovery only for layout and mapping errors", () => {
@@ -51,6 +51,12 @@ describe("POS import recovery and details presentation", () => {
 
   it("uses invalidRows as the authoritative excluded/invalid total", () => {
     expect(excludedInvalidRowCount({ invalidRows: 4 })).toBe(4);
+  });
+
+  it("renders identical validation issues once while preserving different issues on the same row", () => {
+    const quantity = { rowNumber: 2, field: "Quantity", issue: "Quantity must be a valid number." };
+    const product = { rowNumber: 2, field: "Product", issue: "Product/item name is required." };
+    expect(deduplicatePosValidationIssues([quantity, quantity, product])).toEqual([quantity, product]);
   });
 });
 

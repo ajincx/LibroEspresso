@@ -163,6 +163,13 @@ describe("Transaction Summary XLSX adapter", () => {
     expect(parsed.rows[0]!.issues.join(" ")).toMatch(/Quantity must be a valid number.*do not match Item Qty.*Voided/s);
   });
 
+  it("deduplicates identical quantity issues from the item token and source quantity", () => {
+    const rows = transactionRows({ items: "Malformed token", itemQty: 2 });
+    rows[1]![6] = "ABC";
+    const issues = parsePosExcel("invalid-quantity.xlsx", workbookBuffer(rows, "xlsx")).rows[0]!.issues;
+    expect(issues.filter((issue) => issue === "Quantity must be a valid number.")).toHaveLength(1);
+  });
+
   it("returns precise quantity, product, amount, and date validation issues", () => {
     const invalidQuantity = transactionRows({ items: "Americanox1", itemQty: 1 });
     invalidQuantity[1]![6] = "ABC";

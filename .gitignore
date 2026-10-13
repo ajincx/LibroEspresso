@@ -47,3 +47,6 @@ Thumbs.db
 database-backups/
 *.backup
 *.dump
+
+.vercel
+.env*

@@ -1,4 +1,4 @@
-import type { PosImportRecord } from "../../types/inventoryWorkflow";
+import type { PosImportPreview, PosImportRecord } from "../../types/inventoryWorkflow";
 
 export const UNCONFIGURED_POS_LAYOUT_MESSAGE =
   "This workbook uses an unconfigured column layout. Configure its spreadsheet columns for this POS source, then preview it again.";
@@ -19,6 +19,18 @@ export function excludedInvalidRowCount(
   record: Pick<PosImportRecord, "invalidRows">,
 ) {
   return record.invalidRows;
+}
+
+export function deduplicatePosValidationIssues(
+  issues: PosImportPreview["validationIssues"] | null | undefined,
+) {
+  const seen = new Set<string>();
+  return (issues ?? []).filter((issue) => {
+    const key = JSON.stringify([issue.rowNumber, issue.field, issue.issue]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export function PosMappingRecoveryNotice({

@@ -77,6 +77,17 @@ function transactionSummaryBuffer() {
   return Buffer.from(XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }));
 }
 
+function invalidTransactionSummaryBuffer() {
+  const rows = [
+    ["Store", "Machine ID", "OR No.", "Date", "Payment Time", "Item Name(s)", "Item Qty.", "Due Amt.", "Gross Amt.", "Status", "Voided by"],
+    ["LIBRO ESPRESSO", "M-1", "OR-1", "2026-09-08 09:00:00", "2026-09-08 09:01:00", "Malformed token", "ABC", 380, 380, "Paid", "--"],
+    ["Total", null, null, null, null, null, 2, 380, 380],
+  ];
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), "Worksheet");
+  return Buffer.from(XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }));
+}
+
 function excelRequest(fileBuffer: Buffer, filename: string, expectedContentHash?: string, expectedResolutionFingerprint?: string, posSourceId?: string) {
   return ({
     body: fileBuffer,
@@ -399,6 +410,31 @@ describe("Excel POS preview and canonical import integration", () => {
     expect(sale?.values).toEqual(["import-1",branchId,sourceId,"2026-09-08",["menu-1"],[2],[190],["Iced Latte, Large"],["OR-1"],[null],[null],[variantId]]);
     expect(mocks.writeAudit).toHaveBeenCalledWith(expect.anything(),"IMPORT_POS_SALES","POS_IMPORT","import-1",expect.any(String),expect.objectContaining({pricingMethod:"MENU_VARIANT_CAPSTONE_FALLBACK",fallbackPricingRows:1}),client);
     expect(queries.at(-1)?.sql).toBe("COMMIT");
+  });
+
+  it("reports FT-05 once and skips dependent product mapping for a structurally invalid row", async () => {
+    mocks.poolQuery.mockImplementation(async (statement: unknown) => {
+      const sql = String(statement);
+      if (sql.includes("SELECT name \"branchName\" FROM branches")) return { rows: [{ branchName: "Lipa" }] };
+      if (sql.includes("FROM menu_items mi")) return { rows: [{ id: "menu-1", code: "LATTE-L", name: "Iced Latte, Large", sellingPrice: 190 }] };
+      if (sql.includes("FROM menu_item_variants v")) return { rows: [] };
+      if (sql.includes("FROM pos_sources WHERE")) return { rows: [{ id: sourceId, sourceCode: "TRANSACTION", displayName: "Transaction POS", supportedFormat: "TRANSACTION_SUMMARY_XLSX" }] };
+      if (sql.includes("FROM pos_product_variant_mappings pm")) return { rows: [] };
+      return { rows: [] };
+    });
+    const res = response();
+
+    await previewPosSales(excelRequest(invalidTransactionSummaryBuffer(), "transactions.xlsx", undefined, undefined, sourceId), res as never, vi.fn());
+
+    const preview = (res.json.mock.calls[0]?.[0] as { data: { preview: {
+      validationIssues: Array<{ rowNumber: number; field: string; issue: string }>;
+      rows: Array<{ status: string; issues: string[]; mappingStatus?: string }>;
+      summary: { canImport: boolean };
+    } } }).data.preview;
+    expect(preview.validationIssues).toEqual([{ rowNumber: 2, field: "Quantity", issue: "Quantity must be a valid number." }]);
+    expect(preview.rows[0]).toMatchObject({ status: "INVALID", issues: ["Quantity must be a valid number."] });
+    expect(preview.rows[0]?.mappingStatus).toBeUndefined();
+    expect(preview.summary.canImport).toBe(false);
   });
 });
 

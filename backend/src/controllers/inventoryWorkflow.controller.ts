@@ -208,6 +208,16 @@ async function buildPosPreview(
   const sourceId = source.posSourceId;
   const mappings = await loadPosMappings(client, selectedSource.id, branchId, parsed.businessDate);
   const preliminaryRows: MatchedPosRow[] = parsed.rows.map((row) => {
+        if (row.status === "INVALID") return {
+          ...row,
+          menuItemId: null,
+          matchedMenuProduct: null,
+          menuItemVariantId: null,
+          matchedVariant: null,
+          mappingId: null,
+          mappingScope: null,
+          issues: [...new Set(row.issues)],
+        };
         if (classifyUnmatchedPosIdentity(row.sourceProduct) === "OPERATIONAL_ITEM") return {
           ...row,
           menuItemId: null,
@@ -297,6 +307,14 @@ async function buildPosPreview(
     notice: fallbackPricingRows > 0 ? TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE : null,
     fallbackRows: fallbackPricingRows,
   };
+  const validationIssueKeys = new Set<string>();
+  const validationIssues = rows.flatMap((row) => row.status !== "INVALID" ? [] : row.issues.flatMap((issue) => {
+    const field = validationIssueField(issue);
+    const key = JSON.stringify([row.rowNumber, field, issue]);
+    if (validationIssueKeys.has(key)) return [];
+    validationIssueKeys.add(key);
+    return [{ rowNumber: row.rowNumber, field, issue }];
+  }));
   return {
     sourceFilename: source.sourceFilename,
     branchId,
@@ -311,9 +329,7 @@ async function buildPosPreview(
     formatLabel: parsed.formatLabel,
     importBlockedReason,
     rows,
-    validationIssues: rows.flatMap((row) => row.issues
-      .filter((issue) => row.status === "INVALID")
-      .map((issue) => ({ rowNumber: row.rowNumber, field: validationIssueField(issue), issue }))),
+    validationIssues,
     summary,
     pricing,
     simulation: { ...simulation, complete: summary.canImport, validResolvedRows: simulationLines.length },
