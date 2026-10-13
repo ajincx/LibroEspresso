@@ -66,10 +66,10 @@ function legacyExcelBuffer(productName = "Iced Latte, Large") {
   return Buffer.from(XLSX.write(workbook, { type: "buffer", bookType: "xls" }));
 }
 
-function transactionSummaryBuffer() {
+function transactionSummaryBuffer(businessDate = "2026-09-08 09:00:00") {
   const rows = [
     ["Store", "Machine ID", "OR No.", "Date", "Payment Time", "Item Name(s)", "Item Qty.", "Due Amt.", "Gross Amt.", "Status", "Voided by"],
-    ["LIBRO ESPRESSO", "M-1", "OR-1", "2026-09-08 09:00:00", "2026-09-08 09:01:00", "Iced Latte, Largex2.0000", 2, 380, 380, "Paid", "--"],
+    ["LIBRO ESPRESSO", "M-1", "OR-1", businessDate, "2026-09-08 09:01:00", "Iced Latte, Largex2.0000", 2, 380, 380, "Paid", "--"],
     ["Total", null, null, null, null, null, 2, 380, 380],
   ];
   const workbook = XLSX.utils.book_new();
@@ -435,6 +435,33 @@ describe("Excel POS preview and canonical import integration", () => {
     expect(preview.rows[0]).toMatchObject({ status: "INVALID", issues: ["Quantity must be a valid number."] });
     expect(preview.rows[0]?.mappingStatus).toBeUndefined();
     expect(preview.summary.canImport).toBe(false);
+  });
+
+  it("reports FT-06 without passing an impossible calendar date to database queries", async () => {
+    const queryValues: unknown[] = [];
+    mocks.poolQuery.mockImplementation(async (statement: unknown, values?: unknown[]) => {
+      queryValues.push(...(values ?? []));
+      const sql = String(statement);
+      if (sql.includes("SELECT name \"branchName\" FROM branches")) return { rows: [{ branchName: "Lipa" }] };
+      if (sql.includes("FROM menu_items mi")) return { rows: [{ id: "menu-1", code: "LATTE-L", name: "Iced Latte, Large", sellingPrice: 190 }] };
+      if (sql.includes("FROM menu_item_variants v")) return { rows: [] };
+      if (sql.includes("FROM pos_sources WHERE")) return { rows: [{ id: sourceId, sourceCode: "TRANSACTION", displayName: "Transaction POS", supportedFormat: "TRANSACTION_SUMMARY_XLSX" }] };
+      if (sql.includes("FROM pos_product_variant_mappings pm")) return { rows: [] };
+      return { rows: [] };
+    });
+    const res = response();
+
+    await previewPosSales(excelRequest(transactionSummaryBuffer("2026-02-30"), "transactions.xlsx", undefined, undefined, sourceId), res as never, vi.fn());
+
+    const preview = (res.json.mock.calls[0]?.[0] as { data: { preview: {
+      validationIssues: Array<{ rowNumber: number; field: string; issue: string }>;
+      rows: Array<{ businessDate: string | null; status: string; issues: string[] }>;
+      summary: { canImport: boolean };
+    } } }).data.preview;
+    expect(preview.validationIssues).toEqual([{ rowNumber: 2, field: "Business Date", issue: "Business date is invalid." }]);
+    expect(preview.rows[0]).toMatchObject({ businessDate: null, status: "INVALID", issues: ["Business date is invalid."] });
+    expect(preview.summary.canImport).toBe(false);
+    expect(queryValues).not.toContain("2026-02-30");
   });
 });
 

@@ -189,13 +189,19 @@ describe("Transaction Summary XLSX adapter", () => {
     expect(parsePosExcel("blank-product.xlsx", workbookBuffer(blankProduct, "xlsx")).rows[0]!.issues).toContain("Product/item name is required.");
 
     const impossibleDate = transactionRows(); impossibleDate[1]![3] = "2026-02-30";
-    expect(parsePosExcel("invalid-date.xlsx", workbookBuffer(impossibleDate, "xlsx")).rows[0]!.issues).toContain("Business date is invalid.");
+    const impossibleDateResult = parsePosExcel("invalid-date.xlsx", workbookBuffer(impossibleDate, "xlsx"));
+    expect(impossibleDateResult.rows[0]).toMatchObject({ businessDate: null, status: "INVALID" });
+    expect(impossibleDateResult.rows[0]!.issues).toContain("Business date is invalid.");
 
     const blankDate = transactionRows(); blankDate[1]![3] = null;
-    expect(parsePosExcel("blank-date.xlsx", workbookBuffer(blankDate, "xlsx")).rows[0]!.issues).toContain("Business date is required.");
+    const blankDateResult = parsePosExcel("blank-date.xlsx", workbookBuffer(blankDate, "xlsx"));
+    expect(blankDateResult.rows[0]).toMatchObject({ businessDate: null, status: "INVALID" });
+    expect(blankDateResult.rows[0]!.issues).toContain("Business date is required.");
 
     const futureDate = transactionRows(); futureDate[1]![3] = "2099-01-01";
-    expect(parsePosExcel("future-date.xlsx", workbookBuffer(futureDate, "xlsx")).rows[0]!.issues).toContain("Business date cannot be in the future.");
+    const futureDateResult = parsePosExcel("future-date.xlsx", workbookBuffer(futureDate, "xlsx"));
+    expect(futureDateResult.rows[0]).toMatchObject({ businessDate: null, status: "INVALID" });
+    expect(futureDateResult.rows[0]!.issues).toContain("Business date cannot be in the future.");
 
     const negativeAmount = transactionRows(); negativeAmount[1]![7] = -500;
     expect(parsePosExcel("negative.xlsx", workbookBuffer(negativeAmount, "xlsx")).rows[0]!.issues).toContain("Sales amount cannot be negative.");

@@ -206,6 +206,12 @@ function businessDate(value: unknown) {
   return null;
 }
 
+function normalizedBusinessDate(value: unknown) {
+  const normalizedDate = businessDate(value);
+  const issue = businessDateIssue(normalizedDate ?? text(value));
+  return { normalizedDate: issue ? null : normalizedDate, issue };
+}
+
 function applyIssue(row: ParsedPosRow, issue: string, invalid = true) {
   if (!row.issues.includes(issue)) row.issues.push(issue);
   if (invalid) row.status = "INVALID";
@@ -246,7 +252,8 @@ function parseLegacySummary(rows: SheetRows, worksheet: string): ParsedPosDocume
     const dateIndex = rowCells.indexOf("date");
     if (dateIndex >= 0) {
       const rawDate = followingValue(row, dateIndex);
-      finishTransaction(); currentDate = businessDate(rawDate); currentDateIssue = businessDateIssue(currentDate ?? text(rawDate)); currentOr = null; currentTransaction = null; return;
+      const normalizedDate = normalizedBusinessDate(rawDate);
+      finishTransaction(); currentDate = normalizedDate.normalizedDate; currentDateIssue = normalizedDate.issue; currentOr = null; currentTransaction = null; return;
     }
     const orIndex = rowCells.indexOf("o.r.#");
     if (orIndex >= 0) { currentOr = text(followingValue(row, orIndex)) || null; return; }
@@ -330,7 +337,8 @@ function parseTransactionSummary(rows: SheetRows, worksheet: string, headerRowNu
     if (firstValue === "total" || firstValue === "success transaction") return;
     const transactionId = text(at(row, "or no.")) || null;
     const rawDate = at(row, "date");
-    const date = businessDate(rawDate);
+    const normalizedDate = normalizedBusinessDate(rawDate);
+    const date = normalizedDate.normalizedDate;
     const timestampRaw = text(at(row, "payment time")) || text(at(row, "date")) || null;
     const status = text(at(row, "status")) || null;
     const rawExpectedQuantity = at(row, "item qty.");
@@ -347,7 +355,7 @@ function parseTransactionSummary(rows: SheetRows, worksheet: string, headerRowNu
       const invalidSourceQuantity = quantityIssue(text(rawExpectedQuantity), expectedQuantity);
       if (invalidSourceQuantity) issues.push(invalidSourceQuantity);
       if (quantityMismatch) issues.push("Parsed product quantities do not match Item Qty.");
-      const invalidDate = businessDateIssue(date ?? text(rawDate));
+      const invalidDate = normalizedDate.issue;
       if (invalidDate) issues.push(invalidDate);
       if (!transactionId) issues.push("The transaction has no O.R. number.");
       if (status && normalized(status) !== "paid") issues.push(`Transaction status is ${status}; it is not eligible for import.`);
@@ -398,7 +406,8 @@ function parseCustomTabular(workbook: XLSX.WorkBook, inspection: PosHeaderInspec
     const quantityText = text(at(row, "quantitySold"));
     const quantity = numberValue(at(row, "quantitySold"));
     const dateRaw = at(row, "businessDate");
-    const date = businessDate(dateRaw);
+    const normalizedDate = normalizedBusinessDate(dateRaw);
+    const date = normalizedDate.normalizedDate;
     const transactionId = text(at(row, "transactionId")) || null;
     const status = text(at(row, "status"));
     const unitPriceText = text(at(row, "unitPrice"));
@@ -409,7 +418,7 @@ function parseCustomTabular(workbook: XLSX.WorkBook, inspection: PosHeaderInspec
     if (!productName) issues.push("Product/item name is required.");
     const invalidQuantity = quantityIssue(quantityText, quantity);
     if (invalidQuantity) issues.push(invalidQuantity);
-    const invalidDate = businessDateIssue(date ?? text(dateRaw));
+    const invalidDate = normalizedDate.issue;
     if (invalidDate) issues.push(invalidDate);
     if (!transactionId) issues.push("Transaction / OR number is required.");
     if (!status) issues.push("Status is required.");
