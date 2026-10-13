@@ -632,17 +632,24 @@ const posFormatRequestMappingInput = z.object({
   }
 });
 
+const posFormatRequestRejectionInput = z.object({
+  reason: z.string().trim().min(10, "Provide a rejection reason of at least 10 characters.").max(500),
+});
+
 const posFormatRequestSelect = `SELECT request.id,request.branch_id "branchId",branch.name "branchName",
   request.pos_source_id "posSourceId",source.display_name "posSourceName",request.source_filename "sourceFilename",
   request.worksheet_name "worksheet",request.header_row "headerRow",request.detected_headers "headers",
   request.status,request.validation_issues "validationIssues",request.requested_by "requestedBy",
   concat(requester.first_name,' ',requester.last_name) "requestedByName",request.requested_at "requestedAt",
   request.configured_by "configuredBy",request.configured_at "configuredAt",request.completed_at "completedAt",
+  request.rejection_reason "rejectionReason",request.rejected_by "rejectedBy",
+  concat(rejector.first_name,' ',rejector.last_name) "rejectedByName",request.rejected_at "rejectedAt",
   request.pos_import_id "posImportId"
   FROM pos_format_setup_requests request
   JOIN branches branch ON branch.id=request.branch_id
   JOIN pos_sources source ON source.id=request.pos_source_id
-  JOIN users requester ON requester.id=request.requested_by`;
+  JOIN users requester ON requester.id=request.requested_by
+  LEFT JOIN users rejector ON rejector.id=request.rejected_by`;
 
 export const requestPosFormatSetup: RequestHandler = async (req, res) => {
   if (!Buffer.isBuffer(req.body)) throw new AppError(422, "POS_FILE_REQUIRED", "Select an XLS or XLSX file to request format setup.");
@@ -696,6 +703,47 @@ export const listPosFormatSetupRequests: RequestHandler = async (req, res) => {
     ORDER BY CASE request.status WHEN 'PENDING' THEN 0 WHEN 'BLOCKED' THEN 1 ELSE 2 END,request.requested_at DESC`,
     [branchId,req.user!.role === "OWNER",req.user!.id]);
   res.json({success:true,data:{requests:result.rows}});
+};
+
+export const rejectPosFormatRequest: RequestHandler = async (req, res) => {
+  if (req.user!.role !== "OWNER") throw new AppError(403,"FORBIDDEN","Only the Owner can reject POS format setup requests.");
+  const id = idParams.parse(req.params).id;
+  const value = posFormatRequestRejectionInput.parse(req.body);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const locked = await client.query<{branchId:string;sourceFilename:string;requestedBy:string;status:string}>(
+      `SELECT branch_id "branchId",source_filename "sourceFilename",requested_by "requestedBy",status
+       FROM pos_format_setup_requests WHERE id=$1 FOR UPDATE`,
+      [id],
+    );
+    const request = locked.rows[0];
+    if (!request) throw new AppError(404,"POS_FORMAT_REQUEST_NOT_FOUND","POS format setup request not found.");
+    if (request.status !== "PENDING") {
+      throw new AppError(409,"POS_FORMAT_REQUEST_NOT_PENDING","Only a pending POS format setup request can be rejected.");
+    }
+    const updated = await client.query(
+      `UPDATE pos_format_setup_requests
+       SET status='REJECTED',rejection_reason=$2,rejected_by=$3,rejected_at=now(),updated_at=now()
+       WHERE id=$1 AND status='PENDING'
+       RETURNING id`,
+      [id,value.reason,req.user!.id],
+    );
+    if (!updated.rows[0]) throw new AppError(409,"POS_FORMAT_REQUEST_NOT_PENDING","Only a pending POS format setup request can be rejected.");
+    await client.query(
+      `INSERT INTO notifications(recipient_user_id,branch_id,type,title,message,entity_type,entity_id)
+       VALUES($1,$2,'POS_FORMAT_SETUP_REJECTED','POS Format Setup Request Rejected',$3,'POS_FORMAT_SETUP_REQUEST',$4)`,
+      [request.requestedBy,request.branchId,`${request.sourceFilename} was rejected by the Owner. Reason: ${value.reason}`,id],
+    );
+    await writeAudit(req.user!,"REJECT_POS_FORMAT_SETUP","POS_FORMAT_SETUP_REQUEST",id,"Rejected a pending POS format setup request",{
+      branchId:request.branchId,sourceFilename:request.sourceFilename,reason:value.reason,previousStatus:"PENDING",newStatus:"REJECTED",
+    },client);
+    await client.query("COMMIT");
+    res.json({success:true,data:{requestId:id,status:"REJECTED"}});
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally { client.release(); }
 };
 
 export const configurePosFormatRequest: RequestHandler = async (req, res) => {

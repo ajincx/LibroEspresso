@@ -99,6 +99,9 @@ export const inventoryWorkflowService = {
   async configurePosFormatRequest(id: string, headers: string[], mapping: PosFieldMapping) {
     return (await api.put<ApiSuccess<{ requestId:string;status:"BLOCKED"|"COMPLETED";imported:boolean;validationIssues?:PosFormatSetupRequest["validationIssues"] }>>(`/pos-sales/format-requests/${id}/configure`, { headers, mapping })).data.data;
   },
+  async rejectPosFormatRequest(id: string, reason: string) {
+    return (await api.post<ApiSuccess<{ requestId:string;status:"REJECTED" }>>(`/pos-sales/format-requests/${id}/reject`, { reason })).data.data;
+  },
   async deletePosSource(id: string, input: { reason: string; verificationPin: string }) {
     return (await api.delete<ApiSuccess<{ id: string; action: string }>>(`/pos-sales/sources/${id}`, { data: input })).data.data;
   },

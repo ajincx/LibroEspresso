@@ -145,6 +145,13 @@ describe("POS first-run review API workflow", () => {
     expect(put).toHaveBeenCalledWith("/pos-sales/format-requests/request-1/configure",{headers,mapping});
   });
 
+  it("submits the Owner rejection reason without configuring or importing the retained file",async()=>{
+    const result={requestId:"request-1",status:"REJECTED"};
+    const post=vi.spyOn(api,"post").mockResolvedValue({data:{success:true,data:result}});
+    await expect(inventoryWorkflowService.rejectPosFormatRequest("request-1","The workbook is not an approved branch sales export.")).resolves.toBe(result);
+    expect(post).toHaveBeenCalledWith("/pos-sales/format-requests/request-1/reject",{reason:"The workbook is not an approved branch sales export."});
+  });
+
   it("copies mappings into a different source as pending review", async () => {
     const result={copied:54,skipped:0,eligible:54};
     const post=vi.spyOn(api,"post").mockResolvedValue({data:{success:true,data:result}});

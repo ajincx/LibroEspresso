@@ -206,6 +206,20 @@ export function PosImportDetailsDialog({ record, onClose }: { record: PosImportR
   </div>;
 }
 
+export function PosFormatRequestRejectDialog({target,busy,reason,onReasonChange,onCancel,onConfirm}:{
+  target:PosFormatSetupRequest;busy:boolean;reason:string;onReasonChange:(value:string)=>void;onCancel:()=>void;onConfirm:()=>void;
+}) {
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-labelledby="reject-pos-format-request-title" onMouseDown={(event)=>{if(isModalBackdropEvent(event)&&!busy)onCancel();}}>
+    <div className="w-full max-w-lg rounded-2xl border bg-[var(--app-surface)] p-6 shadow-2xl" style={{borderColor:C.border}}>
+      <h3 id="reject-pos-format-request-title" className="text-lg font-bold">Reject POS Format Setup Request?</h3>
+      <p className="mt-2 text-sm text-[var(--app-text-muted)]">Reject <strong>{target.sourceFilename}</strong> for {target.branchName}. The retained workbook will not be imported or configured.</p>
+      <label className="mt-4 block text-sm font-medium">Rejection reason<textarea autoFocus className="field mt-1.5 min-h-24" value={reason} onChange={(event)=>onReasonChange(event.target.value)} maxLength={500} placeholder="Explain why this format request cannot be accepted"/></label>
+      <p className="mt-1 text-xs text-[var(--app-text-muted)]">At least 10 characters are required. The requesting Manager will receive this reason.</p>
+      <div className="mt-6 flex justify-end gap-2"><Btn variant="outline" disabled={busy} onClick={onCancel}>Cancel</Btn><Btn variant="danger" disabled={busy||reason.trim().length<10} onClick={onConfirm}>{busy?"Rejecting…":"Reject Request"}</Btn></div>
+    </div>
+  </div>;
+}
+
 function dateRange(range: DashboardRange, customStart: string, customEnd: string) {
   return periodDates(range, customStart, customEnd);
 }
@@ -336,6 +350,8 @@ export function assignPosHeader(mapping:PosFieldMapping,header:string,field:keyo
   return next;
 }
 
+export const pendingPosFormatRequests=(requests:PosFormatSetupRequest[])=>requests.filter(request=>request.status==="PENDING"||request.status==="BLOCKED");
+
 export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role?: Role | string; initialSourceId?: string } = {}) {
   const [deleteSourceTarget, setDeleteSourceTarget] = useState<PosSource | null>(null);
   const [deleteSourceValue, setDeleteSourceValue] = useState({ reason: "", verificationPin: "" });
@@ -347,6 +363,8 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
   const [branches, setBranches] = useState<Branch[]>([]);
   const [formatRequests,setFormatRequests]=useState<PosFormatSetupRequest[]>([]);
   const [selectedFormatRequest,setSelectedFormatRequest]=useState<PosFormatSetupRequest|null>(null);
+  const [rejectFormatRequestTarget,setRejectFormatRequestTarget]=useState<PosFormatSetupRequest|null>(null);
+  const [formatRequestRejectionReason,setFormatRequestRejectionReason]=useState("");
   const [formatSetupResult,setFormatSetupResult]=useState("");
   const [sourceId, setSourceId] = useState(initialSourceId);
   const [sourceName, setSourceName] = useState("");
@@ -408,7 +426,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
     ? sources.filter((s) => s.supportedFormat === selectedSource.supportedFormat)
     : [];
   const mappingComplete = [fieldMapping.productName,fieldMapping.quantitySold,fieldMapping.transactionId,fieldMapping.businessDate,fieldMapping.status,fieldMapping.unitPrice].every(Boolean);
-  const pendingFormatRequests=formatRequests.filter(request=>request.status==="PENDING"||request.status==="BLOCKED");
+  const pendingFormatRequests=pendingPosFormatRequests(formatRequests);
   const openFormatRequest=(request:PosFormatSetupRequest)=>{
     setSelectedFormatRequest(request);setSourceId(request.posSourceId);setFormatSetupResult("");
     setMappingInspection({worksheet:request.worksheet,headerRow:request.headerRow,headers:request.headers,mapping:null});
@@ -447,7 +465,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
       <section aria-label="Pending Format Requests" className="rounded-xl border bg-[var(--app-surface)] p-5" style={{borderColor:C.border}}>
         <h4 className="font-bold">Pending Format Requests ({pendingFormatRequests.length})</h4>
         <p className="mt-1 text-xs text-[var(--app-text-muted)]">Sales files waiting for the Owner to confirm how Libro should read their columns.</p>
-        {pendingFormatRequests.length===0?<p className="mt-3 rounded-lg bg-[var(--app-surface-muted)] p-3 text-xs text-[var(--app-text-muted)]">No sales files are waiting for format setup.</p>:<div className="mt-3 grid gap-3 md:grid-cols-2">{pendingFormatRequests.map(request=><article key={request.id} className="rounded-xl border p-4" style={{borderColor:selectedFormatRequest?.id===request.id?C.maroon:C.border}}><div className="flex items-start justify-between gap-3"><div><strong>New sales format detected</strong><dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 text-xs"><dt className="text-[var(--app-text-muted)]">Branch:</dt><dd>{request.branchName}</dd><dt className="text-[var(--app-text-muted)]">Requested by:</dt><dd>{request.requestedByName}</dd><dt className="text-[var(--app-text-muted)]">File:</dt><dd>{request.sourceFilename}</dd><dt className="text-[var(--app-text-muted)]">Status:</dt><dd>{request.status==="BLOCKED"?"Configured · Needs attention":"Pending Setup"}</dd><dt className="text-[var(--app-text-muted)]">Detected:</dt><dd>{request.headers.length} columns</dd></dl></div><Btn size="sm" onClick={()=>openFormatRequest(request)}>Configure Format</Btn></div></article>)}</div>}
+        {pendingFormatRequests.length===0?<p className="mt-3 rounded-lg bg-[var(--app-surface-muted)] p-3 text-xs text-[var(--app-text-muted)]">No sales files are waiting for format setup.</p>:<div className="mt-3 grid gap-3 md:grid-cols-2">{pendingFormatRequests.map(request=><article key={request.id} className="rounded-xl border p-4" style={{borderColor:selectedFormatRequest?.id===request.id?C.maroon:C.border}}><div className="flex items-start justify-between gap-3"><div><strong>New sales format detected</strong><dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 text-xs"><dt className="text-[var(--app-text-muted)]">Branch:</dt><dd>{request.branchName}</dd><dt className="text-[var(--app-text-muted)]">Requested by:</dt><dd>{request.requestedByName}</dd><dt className="text-[var(--app-text-muted)]">File:</dt><dd>{request.sourceFilename}</dd><dt className="text-[var(--app-text-muted)]">Status:</dt><dd>{request.status==="BLOCKED"?"Configured · Needs attention":"Pending Setup"}</dd><dt className="text-[var(--app-text-muted)]">Detected:</dt><dd>{request.headers.length} columns</dd></dl></div><div className="flex flex-wrap justify-end gap-2"><Btn size="sm" onClick={()=>openFormatRequest(request)}>Configure Format</Btn>{request.status==="PENDING"&&<Btn size="sm" variant="outline" onClick={()=>{setRejectFormatRequestTarget(request);setFormatRequestRejectionReason("");}}>Reject Request</Btn>}</div></div></article>)}</div>}
       </section>
 
       {error && <p role="alert" className="rounded-xl bg-[var(--app-danger-bg)] p-3 text-sm font-semibold" style={{ color: C.red }}>{error}</p>}
@@ -853,6 +871,17 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
         }}
       />
     )}
+    {rejectFormatRequestTarget&&<PosFormatRequestRejectDialog
+      target={rejectFormatRequestTarget}
+      busy={busy}
+      reason={formatRequestRejectionReason}
+      onReasonChange={setFormatRequestRejectionReason}
+      onCancel={()=>{if(!busy){setRejectFormatRequestTarget(null);setFormatRequestRejectionReason("");}}}
+      onConfirm={()=>void (async()=>{
+        const rejected=await run(()=>inventoryWorkflowService.rejectPosFormatRequest(rejectFormatRequestTarget.id,formatRequestRejectionReason.trim()));
+        if(rejected){if(selectedFormatRequest?.id===rejectFormatRequestTarget.id)setSelectedFormatRequest(null);setRejectFormatRequestTarget(null);setFormatRequestRejectionReason("");toast.success("POS format setup request rejected");}
+      })()}
+    />}
   </div>;
 }
 

@@ -18,7 +18,7 @@ vi.mock("../config/database.js", () => ({
 vi.mock("../services/audit.service.js", () => ({ writeAudit: mocks.writeAudit }));
 vi.mock("../config/env.js",()=>({env:mocks.env}));
 
-import { authorizePosImportCleanup, configurePosFormatRequest, deletePosImport, importPosSales, listPosFormatSetupRequests, listPosImportApprovals, listPosImports, previewPosSales, requestPosFormatSetup, requestPosImportApproval, reviewPosImportApproval } from "./inventoryWorkflow.controller.js";
+import { authorizePosImportCleanup, configurePosFormatRequest, deletePosImport, importPosSales, listPosFormatSetupRequests, listPosImportApprovals, listPosImports, previewPosSales, rejectPosFormatRequest, requestPosFormatSetup, requestPosImportApproval, reviewPosImportApproval } from "./inventoryWorkflow.controller.js";
 
 const branchId = "00000000-0000-4000-8000-000000000002";
 const importId = "00000000-0000-4000-8000-000000000010";
@@ -660,6 +660,58 @@ describe("pending POS format setup requests",()=>{
     mocks.poolQuery.mockResolvedValue({rows:[]});
     await listPosFormatSetupRequests({user:{id:"manager-1",role:"BRANCH_MANAGER",branchId}} as never,response() as never,vi.fn());
     expect(mocks.poolQuery).toHaveBeenCalledWith(expect.stringContaining("request.branch_id=$1"),[branchId,false,"manager-1"]);
+  });
+
+  it("lets the Owner reject one pending request transactionally and notifies only its requesting Manager",async()=>{
+    const requestId="00000000-0000-4000-8000-000000000099";
+    const reason="The uploaded columns do not represent an approved sales export.";
+    const queries:Array<{sql:string;values?:unknown[]}>=[];
+    const client={query:vi.fn(async(statement:unknown,values?:unknown[])=>{
+      const sql=String(statement);queries.push({sql,values});
+      if(sql.includes('FROM pos_format_setup_requests WHERE id=$1 FOR UPDATE'))return{rows:[{branchId,sourceFilename:"unknown.xlsx",requestedBy:"manager-1",status:"PENDING"}],rowCount:1};
+      if(sql.includes("UPDATE pos_format_setup_requests"))return{rows:[{id:requestId}],rowCount:1};
+      return{rows:[],rowCount:1};
+    }),release:vi.fn()};
+    mocks.connect.mockResolvedValue(client);
+    const res=response();
+
+    await rejectPosFormatRequest({params:{id:requestId},body:{reason},user:{id:"owner-1",role:"OWNER",branchId:null}} as never,res as never,vi.fn());
+
+    expect(queries[0]?.sql).toBe("BEGIN");
+    expect(queries.find(({sql})=>sql.includes("FROM pos_format_setup_requests"))?.sql).toContain("FOR UPDATE");
+    const update=queries.find(({sql})=>sql.includes("SET status='REJECTED'"));
+    expect(update?.sql).toContain("WHERE id=$1 AND status='PENDING'");
+    expect(update?.values).toEqual([requestId,reason,"owner-1"]);
+    const notification=queries.find(({sql})=>sql.includes("INSERT INTO notifications"));
+    expect(notification?.values).toEqual(["manager-1",branchId,`unknown.xlsx was rejected by the Owner. Reason: ${reason}`,requestId]);
+    expect(queries.some(({sql})=>sql.includes("INSERT INTO pos_imports")||sql.includes("UPDATE pos_sources")||sql.includes("pos_product_variant_mappings"))).toBe(false);
+    expect(mocks.writeAudit).toHaveBeenCalledWith(expect.objectContaining({role:"OWNER"}),"REJECT_POS_FORMAT_SETUP","POS_FORMAT_SETUP_REQUEST",requestId,"Rejected a pending POS format setup request",expect.objectContaining({branchId,reason,previousStatus:"PENDING",newStatus:"REJECTED"}),client);
+    expect(queries.at(-1)?.sql).toBe("COMMIT");
+    expect(res.json).toHaveBeenCalledWith({success:true,data:{requestId,status:"REJECTED"}});
+  });
+
+  it("requires a meaningful rejection reason before opening a transaction",async()=>{
+    await expect(rejectPosFormatRequest({params:{id:"00000000-0000-4000-8000-000000000099"},body:{reason:"short"},user:{id:"owner-1",role:"OWNER",branchId:null}} as never,response() as never,vi.fn())).rejects.toBeDefined();
+    expect(mocks.connect).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-Owner attempts before opening a transaction",async()=>{
+    await expect(rejectPosFormatRequest({params:{id:"00000000-0000-4000-8000-000000000099"},body:{reason:"This request should not be accepted."},user:{id:"manager-1",role:"BRANCH_MANAGER",branchId}} as never,response() as never,vi.fn())).rejects.toMatchObject({status:403,code:"FORBIDDEN"});
+    expect(mocks.connect).not.toHaveBeenCalled();
+  });
+
+  it.each(["REJECTED","COMPLETED","CONFIGURED","BLOCKED"])("does not reject a request already in %s status",async(status)=>{
+    const queries:string[]=[];
+    const client={query:vi.fn(async(statement:unknown)=>{
+      const sql=String(statement);queries.push(sql);
+      if(sql.includes('FROM pos_format_setup_requests WHERE id=$1 FOR UPDATE'))return{rows:[{branchId,sourceFilename:"unknown.xlsx",requestedBy:"manager-1",status}],rowCount:1};
+      return{rows:[],rowCount:1};
+    }),release:vi.fn()};
+    mocks.connect.mockResolvedValue(client);
+
+    await expect(rejectPosFormatRequest({params:{id:"00000000-0000-4000-8000-000000000099"},body:{reason:"This request should not be accepted."},user:{id:"owner-1",role:"OWNER",branchId:null}} as never,response() as never,vi.fn())).rejects.toMatchObject({status:409,code:"POS_FORMAT_REQUEST_NOT_PENDING"});
+    expect(queries).toContain("ROLLBACK");
+    expect(queries.some(sql=>sql.includes("INSERT INTO notifications")||sql.includes("SET status='REJECTED'"))).toBe(false);
   });
 
   it("rejects an incomplete Owner mapping before opening a transaction",async()=>{

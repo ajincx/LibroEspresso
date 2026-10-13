@@ -218,7 +218,7 @@ export interface PosFormatSetupRequest {
   worksheet: string;
   headerRow: number;
   headers: string[];
-  status: "PENDING" | "CONFIGURED" | "BLOCKED" | "COMPLETED";
+  status: "PENDING" | "CONFIGURED" | "BLOCKED" | "COMPLETED" | "REJECTED";
   validationIssues: Array<{ rowNumber: number; field: string; issue: string }> | null;
   requestedBy: string;
   requestedByName: string;
@@ -226,6 +226,10 @@ export interface PosFormatSetupRequest {
   configuredBy: string | null;
   configuredAt: string | null;
   completedAt: string | null;
+  rejectionReason: string | null;
+  rejectedBy: string | null;
+  rejectedByName: string | null;
+  rejectedAt: string | null;
   posImportId: string | null;
 }
 

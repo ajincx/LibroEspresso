@@ -11,6 +11,7 @@ import {
   PosImportDetailsDialog,
   PosImportCleanupAuthorizationDialog,
   PosImportDeleteDialog,
+  PosFormatRequestRejectDialog,
   PosMappingActions,
   PosMappingEditDialog,
   PosMappingSetup,
@@ -27,6 +28,7 @@ import {
   formatPosSourceFormatName,
   getInitialCogsDateRange,
   marginValueColor,
+  pendingPosFormatRequests,
   readCogsUserRange,
   saveCogsUserRange,
   POS_IMPORT_FIELD_OPTIONS,
@@ -37,11 +39,15 @@ import {
 } from "./CogsSalesModule";
 import { PosImportModal } from "./PosImportModal";
 import { adjustRangeForImport } from "../../utils/businessDate";
-import type { DailyPosUploadStatus, PosImportRecord, PosMapping } from "../../types/inventoryWorkflow";
+import type { DailyPosUploadStatus, PosFormatSetupRequest, PosImportRecord, PosMapping } from "../../types/inventoryWorkflow";
 import type { MenuProduct } from "../../types/masterData";
 import { deduplicatePosValidationIssues, excludedInvalidRowCount, PosMappingRecoveryNotice, requiresPosMappingRecovery, UNCONFIGURED_POS_LAYOUT_MESSAGE } from "./posImportPresentation";
 
 describe("POS import recovery and details presentation", () => {
+  const formatRequest=(status:PosFormatSetupRequest["status"]):PosFormatSetupRequest=>({
+    id:`request-${status}`,branchId:"branch-1",branchName:"Gulod / Main Branch",posSourceId:"source-1",posSourceName:"Libro POS",sourceFilename:"unknown.xlsx",worksheet:"Sales",headerRow:1,headers:["Product","Quantity"],status,validationIssues:null,requestedBy:"manager-1",requestedByName:"Maria Manager",requestedAt:"2026-10-14T00:00:00Z",configuredBy:null,configuredAt:null,completedAt:status==="COMPLETED"?"2026-10-14T01:00:00Z":null,rejectionReason:status==="REJECTED"?"Not an approved sales export.":null,rejectedBy:status==="REJECTED"?"owner-1":null,rejectedByName:status==="REJECTED"?"Olivia Owner":null,rejectedAt:status==="REJECTED"?"2026-10-14T01:00:00Z":null,posImportId:null,
+  });
+
   it("offers column mapping recovery only for layout and mapping errors", () => {
     expect(requiresPosMappingRecovery({ response: { data: { error: { code: "UNSUPPORTED_POS_FORMAT" } } } })).toBe(true);
     expect(requiresPosMappingRecovery({ response: { data: { error: { code: "POS_SOURCE_FORMAT_MISMATCH" } } } })).toBe(false);
@@ -53,6 +59,18 @@ describe("POS import recovery and details presentation", () => {
 
   it("uses the shared Dashboard POS importer instead of a separate Sales importer", () => {
     expect(SalesPosImportModal).toBe(PosImportModal);
+  });
+
+  it("requires a reason in the Owner rejection dialog and excludes rejected requests from pending",()=>{
+    const target=formatRequest("PENDING");
+    const emptyMarkup=renderToStaticMarkup(React.createElement(PosFormatRequestRejectDialog,{target,busy:false,reason:"",onReasonChange:()=>undefined,onCancel:()=>undefined,onConfirm:()=>undefined}));
+    const validMarkup=renderToStaticMarkup(React.createElement(PosFormatRequestRejectDialog,{target,busy:false,reason:"The workbook is not an approved export.",onReasonChange:()=>undefined,onCancel:()=>undefined,onConfirm:()=>undefined}));
+    expect(emptyMarkup).toContain("Reject POS Format Setup Request?");
+    expect(emptyMarkup).toContain("disabled");
+    expect(validMarkup).toContain("unknown.xlsx");
+    expect(validMarkup).toContain("Reject Request");
+    const requests=[formatRequest("PENDING"),formatRequest("BLOCKED"),formatRequest("COMPLETED"),formatRequest("REJECTED")];
+    expect(pendingPosFormatRequests(requests).map(request=>request.status)).toEqual(["PENDING","BLOCKED"]);
   });
 
   it("suggests only deterministic importer-supported field aliases", () => {

@@ -27,6 +27,7 @@ import {
   configurePosFormatRequest,
   listPosFormatSetupRequests,
   requestPosFormatSetup,
+  rejectPosFormatRequest,
 } from "../controllers/inventoryWorkflow.controller.js";
 import { authenticate, authorize } from "../middleware/auth.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
@@ -54,6 +55,7 @@ posSalesRouter.delete("/sources/:id", authorize("OWNER"), asyncHandler(deletePos
 posSalesRouter.get("/format-requests", asyncHandler(listPosFormatSetupRequests));
 posSalesRouter.post("/format-requests", authorize("BRANCH_MANAGER"), posFileBody, asyncHandler(requestPosFormatSetup));
 posSalesRouter.put("/format-requests/:id/configure", authorize("OWNER"), asyncHandler(configurePosFormatRequest));
+posSalesRouter.post("/format-requests/:id/reject", authorize("OWNER"), asyncHandler(rejectPosFormatRequest));
 posSalesRouter.get("/mappings", asyncHandler(listPosMappings));
 posSalesRouter.post("/mappings", authorize("OWNER"), asyncHandler(createPosMapping));
 posSalesRouter.post("/mappings/copy", authorize("OWNER"), asyncHandler(copyApprovedGlobalPosMappings));
