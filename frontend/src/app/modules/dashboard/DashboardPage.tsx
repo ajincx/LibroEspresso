@@ -25,6 +25,11 @@ export const dashboardGreeting = (hour:number,firstName?:string) => `${hour < 12
 export const prioritizeInventoryAlerts = (items:InventoryOverviewItem[]) => [...items].filter(item=>item.status!=="HEALTHY").sort((a,b)=>ALERT_PRIORITY[b.status]-ALERT_PRIORITY[a.status] || (b.reorderLevel-b.systemStock)-(a.reorderLevel-a.systemStock) || a.name.localeCompare(b.name));
 export const stockStatusChip=(status:InventoryOverviewItem["status"])=>status==="OUT_OF_STOCK"?"out_neutral":status==="LOW_STOCK"?"low":status.toLowerCase();
 export const inventoryValueColor=(value:number)=>value<0?C.red:"var(--app-text)";
+export function recordStockCountUrl(branchId: string | undefined, countDate = businessDate()) {
+  const params = new URLSearchParams({ tab: "counts", countIntent: "record", countDate });
+  if (branchId && branchId !== "ALL") params.set("branchId", branchId);
+  return `/inventory?${params.toString()}`;
+}
 export const DEFAULT_DASHBOARD_RANGE: DashboardRange = "mtd";
 export const STORAGE_KEY_DASHBOARD_USER_RANGE = "libro.dashboard.userRange";
 
@@ -310,7 +315,7 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
       <div className="flex gap-2"><Btn variant="outline" icon={RefreshCw} onClick={() => setRefresh(v => v+1)}>Refresh</Btn></div>
     </div>
     <DashboardToolbar
-      actions={role === "manager" ? <><Btn icon={Pencil} onClick={() => onNavigate("physical-count")}>Record Stock Count</Btn><Btn icon={Upload} variant="outline" onClick={() => setImportOpen(true)}>Import Sales</Btn><Btn icon={Plus} variant="outline" onClick={() => createOrder()}>Create Purchase Request</Btn></> : undefined}
+      actions={role === "manager" ? <><Btn icon={Pencil} onClick={() => navigate(recordStockCountUrl(branchId, today))}>Record Stock Count</Btn><Btn icon={Upload} variant="outline" onClick={() => setImportOpen(true)}>Import Sales</Btn><Btn icon={Plus} variant="outline" onClick={() => createOrder()}>Create Purchase Request</Btn></> : undefined}
       filters={<DashboardFilters
         range={range}
         comparison={comparison}

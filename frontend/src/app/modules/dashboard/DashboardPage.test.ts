@@ -22,6 +22,7 @@ import {
   inventoryValueColor,
   prioritizeInventoryAlerts,
   readDashboardUserRange,
+  recordStockCountUrl,
   saveDashboardUserRange,
   stockStatusChip,
 } from "./DashboardPage";
@@ -74,6 +75,9 @@ describe("dashboard presentation helpers",()=>{
     expect(markup).toContain("flex-col");
     expect(markup).toContain("Record Stock Count");
     expect(markup).toContain("Today");
+  });
+  it("routes Record Stock Count into Inventory Management with the current branch and date",()=>{
+    expect(recordStockCountUrl("branch-2","2026-10-13")).toBe("/inventory?tab=counts&countIntent=record&countDate=2026-10-13&branchId=branch-2");
   });
   it("uses distinct existing status colors for forecast urgency",()=>{
     expect(new Set([forecastUrgencyAccent("LOW"),forecastUrgencyAccent("MEDIUM"),forecastUrgencyAccent("HIGH")]).size).toBe(3);

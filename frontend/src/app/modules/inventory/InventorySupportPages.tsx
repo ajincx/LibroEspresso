@@ -170,7 +170,7 @@ export function ExpectedInventoryPage({ role, view, scopeBranchId = "ALL" }: { r
   );
 }
 
-export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCount, onRecordCount }: { role: AppRole; scopeBranchId?: string; onEditCount?: (countId: string) => void; onRecordCount?: () => void }) {
+export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCount, onRecordCount, onOperationalCountsLoaded }: { role: AppRole; scopeBranchId?: string; onEditCount?: (countId: string) => void; onRecordCount?: () => void; onOperationalCountsLoaded?: (counts: InventoryCountSummary[]) => void }) {
   const owner = role === "owner";
   const navigate = useNavigate();
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -203,6 +203,7 @@ export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCo
         const result = await inventoryWorkflowService.counts(owner ? branchId || undefined : undefined);
         setCounts(result.counts);
         setUatControlsEnabled(result.uatTestControlsEnabled);
+        onOperationalCountsLoaded?.(result.counts);
       }
     } catch (reason) {
       setCounts([]);

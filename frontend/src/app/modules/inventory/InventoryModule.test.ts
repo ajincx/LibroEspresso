@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { canConfigureBranchReorderPolicy, InventoryOverview, inventoryOverviewColumns, inventoryTabs, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, subscribeToInventoryDataChanges } from "./InventoryModule";
+import { canConfigureBranchReorderPolicy, InventoryOverview, inventoryOverviewColumns, inventoryTabs, recordCountShortcutDestination, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, subscribeToInventoryDataChanges } from "./InventoryModule";
+import type { InventoryCountSummary } from "../../types/inventoryWorkflow";
 
 afterEach(() => vi.useRealTimers());
 
@@ -65,6 +66,11 @@ describe("Inventory Overview data-change refresh", () => {
 });
 
 describe("Inventory Counts default flow", () => {
+  const count = (branchId: string, countDate: string): InventoryCountSummary => ({
+    id: `${branchId}-${countDate}`, countNo: "IC-1", countDate, submittedAt: `${countDate}T10:00:00Z`, branchId,
+    branchName: branchId, submittedBy: "Manager", itemCount: 76, varianceCount: 0, canEdit: false,
+  });
+
   it("opens the summary history by default", () => {
     expect(shouldShowInventoryCountHistory("history", null)).toBe(true);
   });
@@ -83,5 +89,19 @@ describe("Inventory Counts default flow", () => {
 
   it("opens the existing item-level entry flow when recording from history", () => {
     expect(shouldShowInventoryCountHistory("record", null)).toBe(false);
+  });
+
+  it("opens the existing Physical Inventory Count when today's branch count does not exist", () => {
+    expect(recordCountShortcutDestination([count("branch-1", "2026-10-12")], "2026-10-13", "branch-1")).toBe("record");
+  });
+
+  it("keeps the existing Physical Count History when today's branch count exists", () => {
+    expect(recordCountShortcutDestination([count("branch-1", "2026-10-13")], "2026-10-13", "branch-1")).toBe("history");
+  });
+
+  it("does not reuse a previous branch's count after branch switching", () => {
+    const counts = [count("branch-1", "2026-10-13")];
+    expect(recordCountShortcutDestination(counts, "2026-10-13", "branch-1")).toBe("history");
+    expect(recordCountShortcutDestination(counts, "2026-10-13", "branch-2")).toBe("record");
   });
 });

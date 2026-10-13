@@ -5,6 +5,7 @@ import { AnimatedTabPanel, Btn, C, KPICard, ModuleLoadingFallback, ModuleTabSwit
 import { masterDataService } from "../../services/masterData.service";
 import { operationsService } from "../../services/operations.service";
 import type { Branch } from "../../types/masterData";
+import type { InventoryCountSummary } from "../../types/inventoryWorkflow";
 import type { InventoryHealthStatus, InventoryOverviewItem, InventoryStockLedger, InventoryLedgerActivityType } from "../../types/operations";
 import type { Page, Role } from "../../types/navigation";
 import { formatAppCurrency } from "../../utils/appPreferences";
@@ -184,6 +185,9 @@ function BranchInventorySettingsModal({ item, onClose, onSaved }: { item: Invent
 
 export const inventoryTabs = [{ id: "overview", label: "Inventory Overview" }, { id: "counts", label: "Inventory Counts" }, { id: "opening", label: "Starting Stock" }] as const;
 export type PhysicalCountInitialView = "record" | "expected" | "history";
+export function recordCountShortcutDestination(counts: InventoryCountSummary[], countDate: string, branchId?: string | null) {
+  return counts.some((count) => count.countDate === countDate && (!branchId || count.branchId === branchId)) ? "history" : "record";
+}
 export function shouldShowInventoryCountHistory(initialView: PhysicalCountInitialView, editCountId: string | null) {
   return initialView === "history" && !editCountId;
 }
@@ -195,15 +199,21 @@ export function resolveInventoryCountHistoryVisibility(current: boolean, initial
 export function PhysicalCountsModule({ role, initialTab = "history", scopeBranchId = "ALL" }: { role: Role; initialTab?: PhysicalCountInitialView; scopeBranchId?: string }) {
   const [searchParams] = useSearchParams();
   const editCountId = searchParams.get("editCount");
+  const shortcutDate = searchParams.get("countIntent") === "record" ? searchParams.get("countDate") : null;
+  const shortcutBranchId = searchParams.get("branchId");
   const [showHistory, setShowHistory] = useState(shouldShowInventoryCountHistory(initialTab, editCountId));
   useEffect(() => {
     setShowHistory((current) => resolveInventoryCountHistoryVisibility(current, initialTab, searchParams.get("editCount")));
   }, [initialTab, role, searchParams]);
+  const resolveShortcut = useCallback((counts: InventoryCountSummary[]) => {
+    if (!shortcutDate) return;
+    setShowHistory(recordCountShortcutDestination(counts, shortcutDate, shortcutBranchId) === "history");
+  }, [shortcutDate, shortcutBranchId]);
   return <div>
     <AnimatedTabPanel panelKey={showHistory ? "history" : "current"}>
       <Suspense fallback={<ModuleLoadingFallback/>}>
         {showHistory
-          ? <PhysicalCountHistoryPage role={role} scopeBranchId={scopeBranchId} onEditCount={() => setShowHistory(false)} onRecordCount={() => setShowHistory(false)}/>
+          ? <PhysicalCountHistoryPage role={role} scopeBranchId={scopeBranchId} onOperationalCountsLoaded={resolveShortcut} onEditCount={() => setShowHistory(false)} onRecordCount={() => setShowHistory(false)}/>
           : role === "manager"
             ? <InventoryCountPage onSubmitted={() => setShowHistory(true)} onBackToHistory={() => setShowHistory(true)}/>
             : <ExpectedInventoryPage role={role} view="expected" scopeBranchId={scopeBranchId}/>}
@@ -212,7 +222,9 @@ export function PhysicalCountsModule({ role, initialTab = "history", scopeBranch
   </div>;
 }
 export function InventoryManagementModule({ role, initialTab = "overview", scopeBranchId = "ALL" }: { role: Role; onNavigate: (page: Page) => void; initialTab?: "overview" | "counts" | "opening"; scopeBranchId?: string }) {
-  const [activeTab, setActiveTab] = useState<"overview" | "counts" | "opening">(initialTab);
-  useEffect(() => setActiveTab(initialTab), [initialTab]);
+  const [searchParams] = useSearchParams();
+  const requestedTab = searchParams.get("tab") === "counts" ? "counts" : initialTab;
+  const [activeTab, setActiveTab] = useState<"overview" | "counts" | "opening">(requestedTab);
+  useEffect(() => setActiveTab(requestedTab), [requestedTab]);
   return <div><ModuleTabSwitcher tabs={inventoryTabs} active={activeTab} onChange={setActiveTab}/><AnimatedTabPanel panelKey={activeTab}>{activeTab === "overview" ? <InventoryOverview role={role} scopeBranchId={scopeBranchId}/> : activeTab === "counts" ? <PhysicalCountsModule role={role} initialTab="history" scopeBranchId={scopeBranchId}/> : <Suspense fallback={<ModuleLoadingFallback/>}><OpeningInventoryBaselinePage role={role} scopeBranchId={scopeBranchId}/></Suspense>}</AnimatedTabPanel></div>;
 }
