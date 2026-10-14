@@ -523,7 +523,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <label className="text-xs font-semibold text-[var(--app-text-muted)]">Select POS System:</label>
-          <Select aria-label="Source to review" className="min-w-[280px]" value={sourceId} onChange={value => { setSourceId(value); setSelectedFormatRequest(null); setFormatSetupResult(""); setSourceFormatConfirmed(false); setShowAssignBranch(false); setMappingInspection(null); setMappingFile(null); }} options={[{value:"",label:"Select POS system to configure"},...sources.map(source=>({value:source.id,label:formatPosSourceOptionLabel(source)}))]} searchable searchPlaceholder="Select POS system to configure"/>
+          <Select aria-label="Source to review" className="w-full min-w-0 sm:w-auto sm:min-w-[280px]" value={sourceId} onChange={value => { setSourceId(value); setSelectedFormatRequest(null); setFormatSetupResult(""); setSourceFormatConfirmed(false); setShowAssignBranch(false); setMappingInspection(null); setMappingFile(null); }} options={[{value:"",label:"Select POS system to configure"},...sources.map(source=>({value:source.id,label:formatPosSourceOptionLabel(source)}))]} searchable searchPlaceholder="Select POS system to configure"/>
         </div>
 
         {selectedSource && (
@@ -680,7 +680,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
         <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border p-3 bg-[var(--app-surface-muted)]" style={{borderColor:C.border}}>
           <Copy size={15} className="text-[var(--app-text-muted)] shrink-0" />
           <span className="text-xs font-semibold text-[var(--app-text-muted)]">Quick Copy:</span>
-          <Select small className="min-w-[280px]" aria-label="Copy mappings from source" value={copyFromSourceId} onChange={value=>{setCopyFromSourceId(value);setCopyResult(null);}} options={[{value:"",label:"Copy approved mappings from another POS system"},...sources.filter(source=>source.id!==sourceId).map(source=>({value:source.id,label:formatPosSourceOptionLabel(source)}))]} searchable searchPlaceholder="Search POS systems…"/>
+          <Select small className="w-full min-w-0 sm:w-auto sm:min-w-[280px]" aria-label="Copy mappings from source" value={copyFromSourceId} onChange={value=>{setCopyFromSourceId(value);setCopyResult(null);}} options={[{value:"",label:"Copy approved mappings from another POS system"},...sources.filter(source=>source.id!==sourceId).map(source=>({value:source.id,label:formatPosSourceOptionLabel(source)}))]} searchable searchPlaceholder="Search POS systems…"/>
           <button type="button" disabled={busy||!copyFromSourceId} className="rounded-lg border px-2.5 py-1.5 text-xs font-semibold disabled:opacity-50 hover:bg-[var(--app-surface)]" onClick={()=>void run(async()=>{const result=await inventoryWorkflowService.copyPosMappings(copyFromSourceId,sourceId);setCopyResult(result);})}>
             Copy as pending
           </button>
@@ -1030,7 +1030,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
   };
 
   return (
-    <div className="p-4 md:p-6 space-y-5">
+    <div className="sales-analysis-page min-w-0 p-4 md:p-6 space-y-5">
       <SectionHeader title="Sales Analysis"
         sub={`${branchLabel} · ${periodLabel}`}
         actions={
@@ -1064,17 +1064,17 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
       {isOwner && <PosMappingSetup role={effectiveRole} initialSourceId={searchParams.get("configureMapping") ?? ""} />}
       {!isOwner && searchParams.get("configureMapping") && <p role="alert" className="rounded-xl border p-3 text-sm" style={{borderColor:C.amber,background:C.amberBg}}>POS column mapping is Owner-only. Ask an Owner to open this mapping request.</p>}
 
-      <div className="sales-kpi-grid grid grid-cols-4 gap-4">
+      <div className="sales-kpi-grid grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <KPICard label="Total Sales" value={analyticsLoading ? "—" : formatPeso(analytics?.summary.sales ?? 0)} sub={periodLabel} icon={ShoppingCart} color={C.maroon} comparisonLabel={comparisonLabel} />
         <KPICard label="Recipe COGS" value={analyticsLoading ? "—" : formatPeso(analytics?.summary.theoreticalCogs ?? 0)} sub="Based on saved ingredient costs" icon={Package} color={C.amber} comparisonLabel={comparisonLabel} />
         <KPICard label="Gross Profit" value={analyticsLoading ? "—" : formatPeso(analytics?.summary.grossProfit ?? 0)} sub={`${(analytics?.summary.grossMargin ?? 0).toFixed(1)}% margin`} icon={TrendingUp} color={C.green} comparisonLabel={comparisonLabel} />
         <KPICard label="Units Sold" value={analyticsLoading ? "—" : (analytics?.summary.unitsSold ?? 0).toLocaleString()} sub={`${analytics?.summary.importCount ?? 0} POS import(s)`} icon={Hash} color={C.blue} comparisonLabel={comparisonLabel} />
       </div>
 
-      <div className="flex gap-1 border-b overflow-x-auto" style={{ borderColor: C.border }}>
+      <div className="sales-section-tabs flex max-w-full gap-1 overflow-x-auto border-b" style={{ borderColor: C.border }}>
         {["overview", "products", "import_history"].map(t => (
           <button key={t} onClick={() => setTab(t)}
-            className="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors capitalize"
+            className="shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 transition-colors capitalize"
             style={{ borderColor: tab === t ? C.maroon : "transparent", color: tab === t ? C.maroon : C.secondary }}>
             {t === "import_history" ? "Import History" : t === "products" ? "Product Sales" : t}
           </button>
@@ -1083,7 +1083,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
 
       {tab === "overview" && (
         <div className="sales-analysis-grid grid grid-cols-3 gap-5">
-          <Card className="col-span-2" padding={false}>
+          <Card className="col-span-2 min-w-0" padding={false}>
             <div className="px-5 pt-5 pb-0">
               <h3 className="font-semibold mb-4" style={{ color: C.primary }}>Sales vs COGS Trend</h3>
             </div>

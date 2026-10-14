@@ -1,12 +1,18 @@
 .navigation-container { display: flex; flex-shrink: 0; }
 .mobile-nav-trigger,.mobile-nav-backdrop { display: none; }
-.app-main { min-width: 0; }
-@media (max-width: 767px) {
+.app-main { min-width: 0; overflow-x: hidden; }
+.route-page-transition { min-width: 0; max-width: 100%; }
+
+/* At narrow effective widths (including desktop browser zoom), keep navigation
+   accessible without allowing the permanent sidebar to compress page content. */
+@media (max-width: 1023px) {
   .app-shell > .navigation-container { position: fixed; inset: 0 auto 0 0; z-index: 70; transform: translateX(-100%); transition: transform .25s cubic-bezier(0.4, 0, 0.2, 1); box-shadow: 4px 0 24px rgba(0,0,0,.25); }
   .app-shell > .navigation-container[data-open="true"] { transform: translateX(0); }
   .navigation-container .app-sidebar { width: min(280px,85vw) !important; }
   .mobile-nav-backdrop { display: block; position: fixed; inset: 0; background: #180a0e80; z-index: 60; backdrop-filter: blur(2px); }
   .mobile-nav-trigger { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; width: 36px; height: 36px; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-surface); margin-right: 6px; cursor: pointer; }
+}
+@media (max-width: 767px) {
   .app-shell .app-header { height: auto !important; min-height: 56px; padding: 8px 10px; flex-wrap: nowrap; gap: 4px; }
   .app-shell .header-page-title { flex: 1; min-width: 0; }
   .app-shell .header-page-title > div:first-child { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -21,8 +27,18 @@
   .po-item-grid { grid-template-columns: 1fr 1fr !important; }
   .po-item-grid > :first-child { grid-column: 1 / -1; }
   .cogs-table-filters { flex-direction: column; align-items: stretch; width: 100%; }
+  .cogs-table-filters > *,
+  .cogs-table-filters input { width: 100% !important; min-width: 0; }
 }
 
 @media (max-width: 560px) {
   .dashboard-kpis { grid-template-columns: 1fr !important; }
+  .sales-analysis-page .dashboard-filters > *,
+  .dashboard-page .dashboard-filters > * { width: 100%; min-width: 0; }
+  .sales-analysis-page .dashboard-filters .custom-select-trigger,
+  .dashboard-page .dashboard-filters .custom-select-trigger,
+  .sales-analysis-page .calendar-date-trigger,
+  .dashboard-page .calendar-date-trigger { min-width: 0; width: 100%; }
+  .custom-range-controls > * { flex: 1 1 100%; }
+  .custom-range-controls > span { display: none; }
 }

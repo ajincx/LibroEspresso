@@ -73,10 +73,12 @@ describe("dashboard presentation helpers",()=>{
     expect(inventoryValueColor(0)).toBe("var(--app-text)");
     expect(inventoryValueColor(-414)).not.toBe("var(--app-text)");
   });
-  it("keeps actions and filters in one wrapping desktop toolbar",()=>{
+  it("keeps actions and filters wrapping until a wide desktop layout is available",()=>{
     const markup=renderToStaticMarkup(React.createElement(DashboardToolbar,{actions:React.createElement("button",null,"Record Stock Count"),filters:React.createElement("span",null,"Today")}));
     expect(markup).toContain("data-dashboard-toolbar");
-    expect(markup).toContain("lg:flex-row");
+    expect(markup).toContain("xl:flex-row");
+    expect(markup).not.toContain("lg:flex-row");
+    expect(markup).toContain("min-w-0");
     expect(markup).toContain("flex-col");
     expect(markup).toContain("Record Stock Count");
     expect(markup).toContain("Today");

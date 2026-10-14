@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Btn, clampTablePage, filterSelectOptions, isModalBackdropEvent, isTableDataValue, moveSelectActiveIndex, normalizeSelectOptions, paginationPageNumbers, selectFilteredOption, sharedSelectMenuStyle, sharedSelectPopoverProps, TableWrapper, tableRowsSignature, THead, TR, TD, tableHeaderAlignment } from "./ModuleUi";
+import { Btn, Card, clampTablePage, filterSelectOptions, isModalBackdropEvent, isTableDataValue, ModuleTabSwitcher, moveSelectActiveIndex, normalizeSelectOptions, paginationPageNumbers, selectFilteredOption, sharedSelectMenuStyle, sharedSelectPopoverProps, TableWrapper, tableRowsSignature, THead, TR, TD, tableHeaderAlignment } from "./ModuleUi";
 
 describe("shared table alignment",()=>{
   it("centers numeric headers and values",()=>{
@@ -24,6 +24,21 @@ describe("shared button accessibility",()=>{
     const markup=renderToStaticMarkup(React.createElement(Btn,null,"Save"));
     expect(markup).toContain("focus-visible:ring-2");
     expect(markup).toContain("focus-visible:ring-[var(--app-primary)]");
+  });
+});
+
+describe("shared responsive layout primitives",()=>{
+  it("allows cards to shrink inside responsive grids without forcing page overflow",()=>{
+    const markup=renderToStaticMarkup(React.createElement(Card,null,"Content"));
+    expect(markup).toContain("min-w-0");
+  });
+
+  it("keeps module tabs readable in a viewport-local horizontal scroller",()=>{
+    const markup=renderToStaticMarkup(React.createElement(ModuleTabSwitcher,{tabs:[{id:"sales",label:"POS Sales Data"},{id:"cogs",label:"COGS Analysis"}],active:"sales",onChange:()=>undefined}));
+    expect(markup).toContain("module-tabs-scroll");
+    expect(markup).toContain("overflow-x-auto");
+    expect(markup).toContain("min-w-max");
+    expect(markup).toContain("whitespace-nowrap");
   });
 });
 

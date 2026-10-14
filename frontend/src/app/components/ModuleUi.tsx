@@ -258,7 +258,7 @@ export function KPICard({ label, value, change, changeDir, sub, color = C.maroon
 // ─── Card & Layout Primitives ──────────────────────────────────────────────────
 export function Card({ children, className = "", padding = true, style = {} }: { children: React.ReactNode; className?: string; padding?: boolean; style?: React.CSSProperties }) {
   return (
-    <div className={cn("app-card bg-white rounded-2xl border", padding ? "p-5" : "", className)}
+    <div className={cn("app-card min-w-0 bg-white rounded-2xl border", padding ? "p-5" : "", className)}
       style={{ borderColor: C.border, ...style }}>
       {children}
     </div>
@@ -272,7 +272,7 @@ export function SectionHeader({ title, sub, actions }: { title: string; sub?: st
         <h1 className="text-xl font-bold" style={{ color: C.primary }}>{title}</h1>
         {sub && <p className="text-sm mt-0.5" style={{ color: C.secondary }}>{sub}</p>}
       </div>
-      {actions && <div className="section-header__actions flex items-center gap-2 flex-wrap sm:justify-end">{actions}</div>}
+      {actions && <div className="section-header__actions flex min-w-0 items-center gap-2 flex-wrap sm:justify-end">{actions}</div>}
     </div>
   );
 }
@@ -513,7 +513,7 @@ export function DashboardFilters({ range, comparison, customStart, customEnd, on
   useEffect(() => { setDraftStart(customStart); setDraftEnd(customEnd); }, [customStart, customEnd]);
 
   return (
-    <div className="dashboard-filters flex items-center gap-2 flex-wrap justify-end">
+    <div className="dashboard-filters flex min-w-0 max-w-full items-center gap-2 flex-wrap justify-end">
       <div className="filter-control"><Select options={(Object.entries(dashboardRangeLabels) as [DashboardRange,string][]).map(([option,label])=>({value:option,label}))} value={range} onChange={(value)=>onRangeChange(value as DashboardRange)} icon={Calendar} small ariaLabel="Dashboard date range"/></div>
       {range !== "custom" && <div className="filter-control"><Select options={[{value:"previous",label:"vs Previous Period"},{value:"lastMonth",label:"vs Last Month"}]} value={comparison} onChange={(value)=>onComparisonChange(value as DashboardComparison)} icon={GitCompare} small ariaLabel="Dashboard comparison period"/></div>}
       {range === "custom" && (
@@ -948,14 +948,14 @@ export function ModuleTabSwitcher<T extends string>({ tabs, active, onChange }: 
   onChange: (tab: T) => void;
 }) {
   return (
-    <div className="px-6 pt-6">
-      <div className="inline-flex flex-wrap items-center gap-1 rounded-xl border p-1"
+    <div className="module-tabs-scroll max-w-full overflow-x-auto px-4 pt-6 sm:px-6">
+      <div className="module-tabs-list inline-flex min-w-max flex-nowrap items-center gap-1 rounded-xl border p-1 sm:min-w-0 sm:flex-wrap"
         style={{ background: C.surface, borderColor: C.border }}>
         {tabs.map((tab) => {
           const selected = tab.id === active;
           return (
             <button key={tab.id} type="button" onClick={() => onChange(tab.id)}
-              className="rounded-lg px-4 py-2 text-sm font-semibold transition-all"
+              className="shrink-0 whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold transition-all"
               style={{
                 background: selected ? `linear-gradient(135deg, ${C.maroon}, ${C.deepMaroon})` : "transparent",
                 color: selected ? "#ffffff" : C.secondary,

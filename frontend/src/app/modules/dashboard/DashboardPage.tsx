@@ -87,9 +87,9 @@ export { adjustRangeForImport };
 export const forecastUrgencyAccent=(urgency:PredictiveForecast["insights"][number]["urgency"])=>({HIGH:C.red,MEDIUM:C.amber,LOW:C.green}[urgency]);
 
 export function DashboardToolbar({ actions, filters }:{ actions?:ReactNode;filters:ReactNode }) {
-  return <div data-dashboard-toolbar className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+  return <div data-dashboard-toolbar className="flex min-w-0 flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
     <div className="flex min-h-10 flex-wrap items-center gap-2">{actions}</div>
-    <div className="min-w-0 lg:ml-auto">{filters}</div>
+    <div className="min-w-0 xl:ml-auto">{filters}</div>
   </div>;
 }
 
@@ -310,7 +310,7 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
     navigate(`/purchase-orders?${params.toString()}`);
   };
   const salesUrl = "/sales?startDate=" + startDate + "&endDate=" + endDate;
-  return <div className="p-4 md:p-6 space-y-5">
+  return <div className="dashboard-page min-w-0 p-4 md:p-6 space-y-5">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div><h1 className="text-xl font-bold">{greeting}</h1><p className="text-sm text-[var(--app-text-muted)]">{scope} · {formatAppDate(startDate)} – {formatAppDate(endDate)}</p></div>
       <div className="flex gap-2"><Btn variant="outline" icon={RefreshCw} onClick={() => setRefresh(v => v+1)}>Refresh</Btn></div>
@@ -344,7 +344,7 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
         }}
       />} />
     {error ? <Card><p role="alert" className="text-red-700">{error}</p><Btn onClick={() => setRefresh(v => v+1)}>Retry</Btn></Card> : !totals || !data ? <Card>Loading branch records…</Card> : <>
-      <div className="dashboard-kpis grid grid-cols-2 xl:grid-cols-6 gap-4">
+      <div className="dashboard-kpis grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
         <KPICard label={role === "owner" ? "Total Sales" : "Branch Sales"} value={money(financials!.sales)} sub={totals.unitsSold + " units sold"} icon={ShoppingCart} change={changed(financials!.sales,data.previous.summary.sales)} onClick={() => navigate(salesUrl)}/>
         <KPICard label={role === "owner" ? "Total COGS" : "Branch COGS"} value={money(financials!.totalCogs)} sub="Recipe-based cost of products sold" icon={Package} change={changed(financials!.totalCogs,data.previous.summary.totalCogs)} onClick={() => navigate("/cogs?startDate="+startDate+"&endDate="+endDate)}/>
         <KPICard label="Gross Profit" value={money(financials!.grossProfit)} sub="Sales minus official Total COGS" icon={BadgeDollarSign} change={changed(financials!.grossProfit,data.previous.summary.grossProfit)} onInfo={() => setMarginOpen(true)} infoLabel="Explain Gross Profit"/>
@@ -354,7 +354,7 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
       </div>
       {totals.importCount === 0 && <p className="text-sm text-[var(--app-text-muted)]">No POS sales were imported for this branch and period. No sales values are shown.</p>}
       <div className="grid xl:grid-cols-2 gap-5">
-        <Card className="xl:col-span-2"><h2 className="font-semibold mb-3">Sales & Recipe COGS</h2>{data.current.trends.length ? <div className="h-64"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data.current.trends}><CartesianGrid strokeDasharray="3 3" vertical={false}/><XAxis dataKey="date" tick={{fontSize:10}}/><YAxis tick={{fontSize:10}}/><Tooltip formatter={v=>money(Number(v))} contentStyle={{borderRadius:12, borderColor:"var(--app-border)"}}/><Area type="monotone" dataKey="sales" name="Sales" stroke={C.maroon} strokeWidth={2.5} fill={C.softMaroonBg}/><Area type="monotone" dataKey="cogs" name="Recipe COGS" stroke={C.amber} strokeWidth={2.5} fill={C.amberBg}/></AreaChart></ResponsiveContainer></div> : <p className="py-12 text-sm">No sales records for this period.</p>}</Card>
+        <Card className="min-w-0 xl:col-span-2"><h2 className="font-semibold mb-3">Sales & Recipe COGS</h2>{data.current.trends.length ? <div className="h-64 min-w-0"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data.current.trends}><CartesianGrid strokeDasharray="3 3" vertical={false}/><XAxis dataKey="date" tick={{fontSize:10}}/><YAxis tick={{fontSize:10}}/><Tooltip formatter={v=>money(Number(v))} contentStyle={{borderRadius:12, borderColor:"var(--app-border)"}}/><Area type="monotone" dataKey="sales" name="Sales" stroke={C.maroon} strokeWidth={2.5} fill={C.softMaroonBg}/><Area type="monotone" dataKey="cogs" name="Recipe COGS" stroke={C.amber} strokeWidth={2.5} fill={C.amberBg}/></AreaChart></ResponsiveContainer></div> : <p className="py-12 text-sm">No sales records for this period.</p>}</Card>
         <Card><h2 className="font-semibold">Inventory Health Distribution</h2><p className="text-xs mb-2 text-[var(--app-text-muted)]">Live item counts from the selected branch scope.</p>{inventoryHealth.length ? <div className="h-64"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={inventoryHealth} dataKey="value" nameKey="name" innerRadius={52} outerRadius={82} paddingAngle={3} cornerRadius={7} stroke="var(--app-surface)" strokeWidth={3}>{inventoryHealth.map((item) => <Cell key={item.key} fill={item.color}/>)}</Pie><Tooltip formatter={(value,name)=>[`${Number(value)} item${Number(value) === 1 ? "" : "s"}`,name]} contentStyle={{borderRadius:12, borderColor:"var(--app-border)"}}/><Legend iconType="circle" iconSize={8}/></PieChart></ResponsiveContainer></div> : <p className="py-12 text-sm">No inventory records are available for this branch scope.</p>}</Card>
         <Card><h2 className="font-semibold mb-1">Verified Shrinkage Causes</h2><p className="text-xs mb-3 text-[var(--app-text-muted)]">Reviewed legitimate shrinkage cost by final classification.</p>{classifications.length ? <div className="h-64"><ResponsiveContainer width="100%" height="100%"><BarChart data={classifications}><CartesianGrid strokeDasharray="3 3" vertical={false}/><XAxis dataKey="name" tick={{fontSize:10}}/><YAxis tick={{fontSize:10}}/><Tooltip formatter={v=>money(Number(v))} contentStyle={{borderRadius:12, borderColor:"var(--app-border)"}}/><Bar dataKey="value" name="Verified shrinkage cost" fill={C.maroon} radius={[8,8,2,2]} maxBarSize={64}/></BarChart></ResponsiveContainer></div> : <p className="py-12 text-sm">No verified shrinkage causes for this period.</p>}</Card>
       </div>
