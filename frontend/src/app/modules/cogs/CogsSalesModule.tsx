@@ -144,9 +144,9 @@ export function PosMappingEditDialog({mapping,products,branches,busy,onCancel,on
       <div className="mt-5 grid gap-4">
         <label className="grid gap-1 text-sm font-semibold">POS Name<input aria-label="POS Name" readOnly value={mapping.sourceProductName} className="rounded-lg border bg-[var(--app-surface-muted)] p-2 font-normal"/></label>
         <label className="grid gap-1 text-sm font-semibold">POS Code<input aria-label="Edit POS code" value={posCode} onChange={event=>setPosCode(event.target.value)} className="rounded-lg border p-2 font-normal" placeholder="Optional POS code"/></label>
-        <label className="grid gap-1 text-sm font-semibold">Branch Scope<select aria-label="Edit mapping branch" value={branchId} onChange={event=>setBranchId(event.target.value)} className="rounded-lg border p-2 font-normal"><option value="">All branches</option>{branches.map(branch=><option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
-        <label className="grid gap-1 text-sm font-semibold">Target Product<select aria-label="Edit target product" value={productId} onChange={event=>{setProductId(event.target.value);setVariantId("");}} className="rounded-lg border p-2 font-normal"><option value="">Select product</option>{eligibleProducts.map(product=><option key={product.id} value={product.id}>{product.category} / {product.name}</option>)}</select></label>
-        <label className="grid gap-1 text-sm font-semibold">Target Variant<select aria-label="Edit target variant" value={variantId} onChange={event=>setVariantId(event.target.value)} className="rounded-lg border p-2 font-normal"><option value="">Select variant</option>{variants.map(variant=><option key={variant.id} value={variant.id}>{variant.name} — {variant.recipeId?`Recipe v${variant.recipeVersion??1}`:"No recipe"}</option>)}</select></label>
+        <label className="grid gap-1 text-sm font-semibold">Branch Scope<Select aria-label="Edit mapping branch" value={branchId} onChange={setBranchId} options={[{value:"",label:"All branches"},...branches.map(branch=>({value:branch.id,label:branch.name}))]}/></label>
+        <label className="grid gap-1 text-sm font-semibold">Target Product<Select aria-label="Edit target product" value={productId} onChange={value=>{setProductId(value);setVariantId("");}} options={[{value:"",label:"Select product"},...eligibleProducts.map(product=>({value:product.id,label:`${product.category} / ${product.name}`}))]} searchable searchPlaceholder="Search products…"/></label>
+        <label className="grid gap-1 text-sm font-semibold">Target Variant<Select aria-label="Edit target variant" value={variantId} onChange={setVariantId} options={[{value:"",label:"Select variant"},...variants.map(variant=>({value:variant.id,label:`${variant.name} — ${variant.recipeId?`Recipe v${variant.recipeVersion??1}`:"No recipe"}`}))]}/></label>
         <label className="grid gap-1 text-sm font-semibold">Revision Note <span className="font-normal" style={{color:C.secondary}}>(optional)</span><textarea aria-label="Mapping revision note" value={revisionReason} onChange={event=>setRevisionReason(event.target.value)} className="min-h-20 rounded-lg border p-2 font-normal" placeholder="Why is this target being corrected?"/></label>
       </div>
       <div className="mt-6 flex justify-end gap-2"><Btn variant="outline" disabled={busy} onClick={onCancel}>Cancel</Btn><button disabled={busy||!productId||!variantId} type="submit" className="rounded-xl px-3.5 py-2 text-sm font-semibold text-white disabled:opacity-40" style={{background:C.maroon}}>Save Changes</button></div>
@@ -304,14 +304,24 @@ export function getInitialCogsDateRange(): {
   };
 }
 
-export const formatPosSourceFormatName = (format: PosSource["supportedFormat"]) => {
-  switch (format) {
-    case "SUMMARY_ITEMS_SOLD_LEGACY_XLS": return "Summary Items Sold XLS";
-    case "TRANSACTION_SUMMARY_XLSX": return "Transaction Summary XLSX";
-    case "CANONICAL_CSV": return "Canonical CSV";
-    case "CUSTOM_TABULAR_XLSX": return "Custom Mapped Excel";
-    default: return format;
-  }
+export const POS_SOURCE_FORMAT_OPTIONS: Array<{value:PosSource["supportedFormat"];label:string}> = [
+  {value:"SUMMARY_ITEMS_SOLD_LEGACY_XLS",label:"Libro Espresso - XLS"},
+  {value:"TRANSACTION_SUMMARY_XLSX",label:"Libro Espresso - XLSX"},
+  {value:"CANONICAL_CSV",label:"Libro Espresso - CSV"},
+  {value:"CUSTOM_TABULAR_XLSX",label:"Custom mapped spreadsheet"},
+];
+
+export const formatPosSourceFormatName = (format: PosSource["supportedFormat"]) =>
+  POS_SOURCE_FORMAT_OPTIONS.find(option=>option.value===format)?.label??format;
+
+const formatPosSourceOptionFormatName=(format:PosSource["supportedFormat"])=>
+  formatPosSourceFormatName(format).replace("Libro Espresso - ","Libro Espresso ");
+
+export const formatPosSourceOptionLabel=(source:Pick<PosSource,"displayName"|"branchName"|"supportedFormat"|"status">)=>{
+  const cleanedName=source.displayName.replace(/\s*(?:[-·|]\s*)?(?:transaction summary xlsx|summary items sold(?: xls)?|canonical csv|summary items|transaction summary|xlsx|xls|csv)$/i,"").trim()||source.displayName;
+  const branchPosName=`${source.branchName.replace(/\s*\/\s*/g," ").replace(/\s+Branch$/i,"").trim()} POS`;
+  const posName=/^Libro POS$/i.test(cleanedName)?branchPosName:cleanedName;
+  return `${posName} - ${formatPosSourceOptionFormatName(source.supportedFormat)} - ${source.status==="ACTIVE"?"Ready":"Not Active"}`;
 };
 
 const EMPTY_POS_FIELD_MAPPING: PosFieldMapping = {productName:"",quantitySold:"",transactionId:"",businessDate:"",status:"",unitPrice:"",salesAmount:""};
@@ -487,19 +497,11 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
           </div>
           <div>
             <label className="mb-1 block text-xs font-semibold text-[var(--app-text-muted)]">File Format</label>
-            <select aria-label="Supported POS format" value={sourceFormat} onChange={(event) => setSourceFormat(event.target.value as PosSource["supportedFormat"])} className="w-full rounded-lg border p-2">
-              <option value="SUMMARY_ITEMS_SOLD_LEGACY_XLS">Existing Libro summary format</option>
-              <option value="TRANSACTION_SUMMARY_XLSX">Existing Libro transaction format</option>
-              <option value="CANONICAL_CSV">Existing Libro CSV format</option>
-              <option value="CUSTOM_TABULAR_XLSX">Custom Excel format</option>
-            </select>
+            <Select aria-label="Supported POS format" value={sourceFormat} onChange={value=>setSourceFormat(value as PosSource["supportedFormat"])} options={POS_SOURCE_FORMAT_OPTIONS}/>
           </div>
           <div>
             <label className="mb-1 block text-xs font-semibold text-[var(--app-text-muted)]">Assigned Branch</label>
-            <select aria-label="POS source branch" value={sourceBranchId} onChange={(event)=>setSourceBranchId(event.target.value)} className="w-full rounded-lg border p-2">
-              <option value="">Select branch</option>
-              {branches.map((branch)=><option key={branch.id} value={branch.id}>{branch.name}</option>)}
-            </select>
+            <Select aria-label="POS source branch" value={sourceBranchId} onChange={setSourceBranchId} options={[{value:"",label:"Select branch"},...branches.map(branch=>({value:branch.id,label:branch.name}))]}/>
           </div>
           <div className="flex items-end">
             <button type="button" disabled={busy || !sourceName.trim() || !sourceBranchId} className="w-full rounded-lg px-3 py-2 text-sm font-semibold text-white transition-opacity disabled:opacity-40" style={{ background: C.maroon }} onClick={() => void run(async () => { const generatedCode=`POS_${sourceBranchId.replaceAll("-","").slice(0,8)}_${Date.now().toString(36).toUpperCase()}`;await inventoryWorkflowService.createPosSource({ sourceCode:generatedCode, displayName: sourceName, supportedFormat: sourceFormat, branchId: sourceBranchId }); setSourceName(""); setSourceBranchId(""); })}>
@@ -521,14 +523,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <label className="text-xs font-semibold text-[var(--app-text-muted)]">Select POS System:</label>
-          <select aria-label="Source to review" value={sourceId} onChange={(event) => { setSourceId(event.target.value); setSelectedFormatRequest(null); setFormatSetupResult(""); setSourceFormatConfirmed(false); setShowAssignBranch(false); setMappingInspection(null); setMappingFile(null); }} className="min-w-[280px] rounded-lg border p-2 font-medium">
-            <option value="">Choose POS system to manage…</option>
-            {sources.map((source) => (
-              <option key={source.id} value={source.id}>
-                {source.displayName} · {source.branchName} · {source.status==="ACTIVE"?"Ready":"Not active"}
-              </option>
-            ))}
-          </select>
+          <Select aria-label="Source to review" className="min-w-[280px]" value={sourceId} onChange={value => { setSourceId(value); setSelectedFormatRequest(null); setFormatSetupResult(""); setSourceFormatConfirmed(false); setShowAssignBranch(false); setMappingInspection(null); setMappingFile(null); }} options={[{value:"",label:"Select POS system to configure"},...sources.map(source=>({value:source.id,label:formatPosSourceOptionLabel(source)}))]} searchable searchPlaceholder="Select POS system to configure"/>
         </div>
 
         {selectedSource && (
@@ -536,7 +531,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
             {selectedFormatRequest&&mappingInspection&&<section aria-label="Requested POS format mapping" className="rounded-xl border p-4" style={{borderColor:C.maroon}}>
               <div className="flex flex-wrap items-start justify-between gap-3"><div><h5 className="font-bold">Uploaded Format Request</h5><p className="mt-1 text-xs text-[var(--app-text-muted)]">{selectedFormatRequest.branchName} · Requested by {selectedFormatRequest.requestedByName} · {selectedFormatRequest.sourceFilename}</p></div><StatusChip status={selectedFormatRequest.status}/></div>
               <div className="mt-4"><h6 className="font-semibold">Column Mapping</h6><p className="mt-1 text-xs text-[var(--app-text-muted)]">Confirm what each detected spreadsheet column means. Choose Ignore for columns Libro does not need.</p></div>
-              <div className="mt-3 overflow-x-auto rounded-xl border" style={{borderColor:C.border}}><table className="w-full min-w-[560px] text-left text-xs"><thead className="bg-[var(--app-surface-muted)]"><tr><th className="p-3">New POS Field</th><th className="p-3">Matched Libro Field</th></tr></thead><tbody>{mappingInspection.headers.map(header=>{const assigned=(Object.keys(fieldMapping) as Array<keyof PosFieldMapping>).find(field=>fieldMapping[field]===header)??"";return <tr key={header} className="border-t" style={{borderColor:C.border}}><td className="p-3 font-semibold">{header}</td><td className="p-3"><select aria-label={`Map source column ${header}`} value={assigned} onChange={event=>setFieldMapping(current=>assignPosHeader(current,header,event.target.value as keyof PosFieldMapping|""))} className="field py-2 text-xs"><option value="">Ignore</option>{POS_IMPORT_FIELD_OPTIONS.map(option=><option key={option.value} value={option.value}>{option.label}{option.required?" *":""}</option>)}</select></td></tr>;})}</tbody></table></div>
+              <div className="mt-3 overflow-x-auto rounded-xl border" style={{borderColor:C.border}}><table className="w-full min-w-[560px] text-left text-xs"><thead className="bg-[var(--app-surface-muted)]"><tr><th className="p-3">New POS Field</th><th className="p-3">Matched Libro Field</th></tr></thead><tbody>{mappingInspection.headers.map(header=>{const assigned=(Object.keys(fieldMapping) as Array<keyof PosFieldMapping>).find(field=>fieldMapping[field]===header)??"";return <tr key={header} className="border-t" style={{borderColor:C.border}}><td className="p-3 font-semibold">{header}</td><td className="p-3"><Select small aria-label={`Map source column ${header}`} value={assigned} onChange={value=>setFieldMapping(current=>assignPosHeader(current,header,value as keyof PosFieldMapping|""))} options={[{value:"",label:"Ignore"},...POS_IMPORT_FIELD_OPTIONS.map(option=>({value:option.value,label:`${option.label}${option.required?" *":""}`}))]}/></td></tr>;})}</tbody></table></div>
               {!mappingComplete&&<div role="alert" className="mt-3 rounded-xl bg-[var(--app-warning-bg)] p-3 text-xs text-[var(--app-warning)]">{POS_IMPORT_FIELD_OPTIONS.filter(option=>option.required&&!fieldMapping[option.value]).map(option=><p key={option.value}>{option.label} has not been mapped.</p>)}</div>}
               {selectedFormatRequest.status==="BLOCKED"&&selectedFormatRequest.validationIssues?.length?<div className="mt-3 rounded-xl bg-[var(--app-danger-bg)] p-3 text-xs text-[var(--app-danger)]"><strong>Remaining validation issues</strong>{selectedFormatRequest.validationIssues.map(issue=><p key={`${issue.rowNumber}-${issue.field}-${issue.issue}`}>Row {issue.rowNumber || "—"} · {issue.field}: {issue.issue}</p>)}</div>:null}
               <div className="mt-4 flex justify-end"><Btn disabled={busy||!mappingComplete} onClick={()=>void run(async()=>{const result=await inventoryWorkflowService.configurePosFormatRequest(selectedFormatRequest.id,mappingInspection.headers,fieldMapping);setFormatSetupResult(result.imported?"POS format configured and sales import completed successfully.":"POS format was configured successfully, but the sales file still has blocking validation issues.");if(result.imported)setSelectedFormatRequest(null);else setSelectedFormatRequest(current=>current?{...current,status:"BLOCKED",validationIssues:result.validationIssues??null}:current);await refresh();})}>{busy?"Saving…":"Save Format & Continue Import"}</Btn></div>
@@ -544,7 +539,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
             {formatSetupResult&&<p role="status" className="rounded-xl bg-[var(--app-success-bg)] p-3 text-sm font-semibold text-[var(--app-success)]">{formatSetupResult}</p>}
             {selectedSource.supportedFormat==="CUSTOM_TABULAR_XLSX"&&<section aria-label="Custom POS column mapping" className="rounded-xl border p-4" style={{borderColor:C.border}}><h5 className="font-bold">Configure Spreadsheet Columns</h5><p className="mt-1 text-xs text-[var(--app-text-muted)]">Map supplier spreadsheet headers to canonical sales fields. Product-to-menu mapping remains a separate step.</p><div className="mt-3 flex flex-wrap items-center gap-2"><input aria-label="Custom POS mapping workbook" type="file" accept=".xls,.xlsx" onChange={event=>{setMappingFile(event.target.files?.[0]??null);setMappingInspection(null);}}/><Btn size="sm" variant="outline" disabled={busy||!mappingFile} onClick={()=>void inspectMappingFile()}>Read Headers</Btn>{selectedSource.fieldMapping&&<span className="text-xs font-semibold" style={{color:C.green}}>Saved mapping available</span>}</div>{mappingInspection&&<div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{([
               ["productName","Product Name",true],["quantitySold","Quantity",true],["transactionId","Transaction / OR Number",true],["businessDate","Business Date",true],["status","Status",true],["unitPrice","Unit Price",true],["salesAmount","Sales Amount",false],
-            ] as Array<[keyof PosFieldMapping,string,boolean]>).map(([field,label,required])=><label key={field} className="grid gap-1 text-xs font-semibold">{label}{required?" *":" (optional)"}<select aria-label={`Map ${label}`} value={fieldMapping[field]??""} onChange={event=>setFieldMapping(current=>({...current,[field]:event.target.value}))} className="rounded-lg border p-2 font-normal"><option value="">Select source header</option>{mappingInspection.headers.map(header=><option key={header} value={header}>{header}</option>)}</select></label>)}</div>}{mappingInspection&&<div className="mt-4 flex justify-end"><Btn size="sm" disabled={busy||!mappingComplete} onClick={()=>void run(async()=>{await inventoryWorkflowService.savePosFieldMapping(selectedSource.id,mappingInspection.headers,fieldMapping);setMappingInspection(current=>current?{...current,mapping:fieldMapping}:current);})}>Save Column Mapping</Btn></div>}</section>}
+            ] as Array<[keyof PosFieldMapping,string,boolean]>).map(([field,label,required])=><label key={field} className="grid gap-1 text-xs font-semibold">{label}{required?" *":" (optional)"}<Select small aria-label={`Map ${label}`} value={fieldMapping[field]??""} onChange={value=>setFieldMapping(current=>({...current,[field]:value}))} options={[{value:"",label:"Select source header"},...mappingInspection.headers.map(header=>({value:header,label:header}))]}/></label>)}</div>}{mappingInspection&&<div className="mt-4 flex justify-end"><Btn size="sm" disabled={busy||!mappingComplete} onClick={()=>void run(async()=>{await inventoryWorkflowService.savePosFieldMapping(selectedSource.id,mappingInspection.headers,fieldMapping);setMappingInspection(current=>current?{...current,mapping:fieldMapping}:current);})}>Save Column Mapping</Btn></div>}</section>}
             {/* POS System Verification Section */}
             <section aria-label="POS System Verification" className="rounded-xl border p-4 bg-[var(--app-surface-muted)]" style={{ borderColor: C.border }}>
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -646,12 +641,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
                     Deploy <strong>{formatPosSourceFormatName(selectedSource.supportedFormat)}</strong> to another branch:
                   </p>
                   <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                    <select aria-label="Target Branch to Assign" value={assignBranchId} onChange={(event) => setAssignBranchId(event.target.value)} className="rounded-lg border p-1.5 text-xs">
-                      <option value="">Select target branch…</option>
-                      {branches.filter((b) => b.id !== selectedSource.branchId).map((b) => (
-                        <option key={b.id} value={b.id}>{b.name}</option>
-                      ))}
-                    </select>
+                    <Select small aria-label="Target Branch to Assign" value={assignBranchId} onChange={setAssignBranchId} options={[{value:"",label:"Select target branch…"},...branches.filter(branch=>branch.id!==selectedSource.branchId).map(branch=>({value:branch.id,label:branch.name}))]}/>
                     <div className="flex gap-2">
                       <button type="button" disabled={busy || !assignBranchId} className="rounded-lg px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40" style={{ background: C.maroon }} onClick={() => void run(async () => {
                         const created = await inventoryWorkflowService.createPosSource({
@@ -690,10 +680,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
         <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border p-3 bg-[var(--app-surface-muted)]" style={{borderColor:C.border}}>
           <Copy size={15} className="text-[var(--app-text-muted)] shrink-0" />
           <span className="text-xs font-semibold text-[var(--app-text-muted)]">Quick Copy:</span>
-          <select aria-label="Copy mappings from source" value={copyFromSourceId} onChange={(event)=>{setCopyFromSourceId(event.target.value);setCopyResult(null);}} className="rounded-lg border p-1.5 text-xs">
-            <option value="">Copy approved global mappings from another system…</option>
-            {sources.filter((source)=>source.id!==sourceId).map((source)=><option key={source.id} value={source.id}>{source.displayName} ({source.branchName}) · {formatPosSourceFormatName(source.supportedFormat)}</option>)}
-          </select>
+          <Select small className="min-w-[280px]" aria-label="Copy mappings from source" value={copyFromSourceId} onChange={value=>{setCopyFromSourceId(value);setCopyResult(null);}} options={[{value:"",label:"Copy approved mappings from another POS system"},...sources.filter(source=>source.id!==sourceId).map(source=>({value:source.id,label:formatPosSourceOptionLabel(source)}))]} searchable searchPlaceholder="Search POS systems…"/>
           <button type="button" disabled={busy||!copyFromSourceId} className="rounded-lg border px-2.5 py-1.5 text-xs font-semibold disabled:opacity-50 hover:bg-[var(--app-surface)]" onClick={()=>void run(async()=>{const result=await inventoryWorkflowService.copyPosMappings(copyFromSourceId,sourceId);setCopyResult(result);})}>
             Copy as pending
           </button>
@@ -715,17 +702,11 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
             </div>
             <div>
               <label className="mb-1 block text-xs font-semibold text-[var(--app-text-muted)]">Branch Scope</label>
-              <select aria-label="Mapping branch" value={branchId} onChange={(event) => setBranchId(event.target.value)} className="w-full rounded-lg border p-2 text-xs font-medium">
-                <option value="">All branches (global)</option>
-                {branches.map((branch) => <option key={branch.id} value={branch.id}>Branch: {branch.name} (Override)</option>)}
-              </select>
+              <Select small aria-label="Mapping branch" value={branchId} onChange={setBranchId} options={[{value:"",label:"All branches (global)"},...branches.map(branch=>({value:branch.id,label:`Branch: ${branch.name} (Override)`}))]}/>
             </div>
             <div>
               <label className="mb-1 block text-xs font-semibold text-[var(--app-text-muted)]">Target Product / Variant</label>
-              <select aria-label="Target product variant" value={variantId} onChange={(event) => setVariantId(event.target.value)} className="w-full rounded-lg border p-2 text-xs">
-                <option value="">Select product / variant</option>
-                {products.filter((product) => product.status === "ACTIVE" && product.approvalStatus === "APPROVED").flatMap((product) => product.variants.filter((variant) => variant.status === "ACTIVE").map((variant) => <option key={variant.id} value={variant.id}>{product.category} / {product.name} / {variant.name} — {variant.recipeId ? `Recipe v${variant.recipeVersion ?? 1}` : "No recipe"}</option>))}
-              </select>
+              <Select small aria-label="Target product variant" value={variantId} onChange={setVariantId} options={[{value:"",label:"Select product / variant"},...products.filter(product=>product.status==="ACTIVE"&&product.approvalStatus==="APPROVED").flatMap(product=>product.variants.filter(variant=>variant.status==="ACTIVE").map(variant=>({value:variant.id,label:`${product.category} / ${product.name} / ${variant.name} — ${variant.recipeId?`Recipe v${variant.recipeVersion??1}`:"No recipe"}`})))]} searchable searchPlaceholder="Search products and variants…"/>
             </div>
             <div className="flex items-end">
               <button type="button" disabled={busy || !posName.trim() || !variantId} className="w-full rounded-lg px-3 py-2 text-xs font-semibold text-white disabled:opacity-50" style={{ background: C.maroon }} onClick={() => void run(async () => { await inventoryWorkflowService.createPosMapping({ posSourceId: sourceId, branchId: branchId || null, sourceProductName: posName, sourceProductCode: posCode.trim() || null, menuItemVariantId: variantId }); setPosName(""); setPosCode(""); setVariantId(""); })}>

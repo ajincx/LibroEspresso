@@ -26,9 +26,11 @@ import {
   dailyPosMonitoringView,
   dailyPosStatusLabel,
   formatPosSourceFormatName,
+  formatPosSourceOptionLabel,
   getInitialCogsDateRange,
   marginValueColor,
   pendingPosFormatRequests,
+  POS_SOURCE_FORMAT_OPTIONS,
   readCogsUserRange,
   saveCogsUserRange,
   POS_IMPORT_FIELD_OPTIONS,
@@ -324,9 +326,27 @@ describe("POS mapping revision presentation",()=>{
 
 describe("POS System and Mapping Setup UX workflow", () => {
   it("formats POS source format names for user readability", () => {
-    expect(formatPosSourceFormatName("SUMMARY_ITEMS_SOLD_LEGACY_XLS")).toBe("Summary Items Sold XLS");
-    expect(formatPosSourceFormatName("TRANSACTION_SUMMARY_XLSX")).toBe("Transaction Summary XLSX");
-    expect(formatPosSourceFormatName("CANONICAL_CSV")).toBe("Canonical CSV");
+    expect(formatPosSourceFormatName("SUMMARY_ITEMS_SOLD_LEGACY_XLS")).toBe("Libro Espresso - XLS");
+    expect(formatPosSourceFormatName("TRANSACTION_SUMMARY_XLSX")).toBe("Libro Espresso - XLSX");
+    expect(formatPosSourceFormatName("CANONICAL_CSV")).toBe("Libro Espresso - CSV");
+    expect(POS_SOURCE_FORMAT_OPTIONS.slice(0,3).map(option=>option.label)).toEqual([
+      "Libro Espresso - XLS",
+      "Libro Espresso - XLSX",
+      "Libro Espresso - CSV",
+    ]);
+  });
+
+  it("formats POS system choices with a concise format and readable status",()=>{
+    expect(formatPosSourceOptionLabel({displayName:"Evo POS Transaction Summary XLSX",branchName:"Evo",supportedFormat:"TRANSACTION_SUMMARY_XLSX",status:"ACTIVE"})).toBe("Evo POS - Libro Espresso XLSX - Ready");
+    expect(formatPosSourceOptionLabel({displayName:"Libro POS Summary Items Sold",branchName:"Gulod / Main Branch",supportedFormat:"SUMMARY_ITEMS_SOLD_LEGACY_XLS",status:"INACTIVE"})).toBe("Gulod Main POS - Libro Espresso XLS - Not Active");
+  });
+
+  it("uses the shared modern Select controls throughout the expanded setup workflow",()=>{
+    const markup=renderToStaticMarkup(React.createElement(PosMappingSetup as React.ComponentType<{initialSourceId?:string}>,{initialSourceId:"source-1"}));
+    expect(markup).toContain("custom-select-trigger");
+    expect(markup).toContain("Libro Espresso - XLS");
+    expect(markup).toContain("Select POS system to configure");
+    expect(markup).not.toContain("<select");
   });
 
   it("renders the POS System & Mapping Setup button and collapsed state cleanly", () => {
