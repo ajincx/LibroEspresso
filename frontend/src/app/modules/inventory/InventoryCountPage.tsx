@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
 import type { CountVarianceItem, ExpectedInventoryItem, UnavailableInventoryCountItem } from "../../types/inventoryWorkflow";
-import { CalendarDateField, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, Btn, SearchInput } from "../../components/ModuleUi";
+import { CalendarDateField, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, Btn, SearchInput, Select } from "../../components/ModuleUi";
 
 import { businessDate } from "../../utils/businessDate";
 
@@ -19,11 +19,23 @@ export const initialPhysicalCountDate = (requestedDate: string | null, currentBu
     ? requestedDate
     : currentBusinessDate;
 
-export const filterPhysicalCountItems = (items: ExpectedInventoryItem[], search: string) => {
+export type PhysicalCountCompletionFilter = "ALL" | "COUNTED" | "NOT_COUNTED";
+
+export const filterPhysicalCountItems = (
+  items: ExpectedInventoryItem[],
+  search: string,
+  completionFilter: PhysicalCountCompletionFilter = "ALL",
+  entries: Record<string, PhysicalCountEntry> = {},
+) => {
   const query = search.trim().toLocaleLowerCase();
-  return query
+  const searched = query
     ? items.filter((item) => item.itemName.toLocaleLowerCase().includes(query) || item.sku.toLocaleLowerCase().includes(query))
     : items;
+  if (completionFilter === "ALL") return searched;
+  return searched.filter((item) => {
+    const counted = normalizePhysicalCountPreview(entries[item.inventoryItemId] ?? blankPhysicalCountEntry(item.unit), item.unit) !== null;
+    return completionFilter === "COUNTED" ? counted : !counted;
+  });
 };
 
 export type PhysicalCountUnit = "g" | "kg" | "ml" | "L" | "pc";
@@ -34,6 +46,11 @@ export const allowedPhysicalCountUnits = (canonicalUnit: string): PhysicalCountU
   if (canonicalUnit === "ml") return ["ml", "L"];
   return ["pc"];
 };
+
+export const blankPhysicalCountEntry = (canonicalUnit: string): PhysicalCountEntry => ({
+  quantity: "",
+  enteredUnit: allowedPhysicalCountUnits(canonicalUnit)[0]!,
+});
 
 export const normalizePhysicalCountPreview = (
   entry: PhysicalCountEntry,
@@ -64,6 +81,28 @@ export const physicalCountEntryFromCanonical = (
   };
 };
 
+export const changePhysicalCountEntryUnit = (
+  entry: PhysicalCountEntry,
+  canonicalUnit: string,
+  nextUnit: PhysicalCountUnit,
+): PhysicalCountEntry => {
+  if (!allowedPhysicalCountUnits(canonicalUnit).includes(nextUnit)) return entry;
+  const normalized = normalizePhysicalCountPreview(entry, canonicalUnit);
+  if (normalized === null) return { ...entry, enteredUnit: nextUnit };
+  const divisor = nextUnit === "kg" || nextUnit === "L" ? 1000 : 1;
+  return { quantity: String(normalized / divisor), enteredUnit: nextUnit };
+};
+
+export const physicalCountCompletion = (
+  items: ExpectedInventoryItem[],
+  entries: Record<string, PhysicalCountEntry>,
+) => {
+  const remainingItems = items.filter((item) =>
+    normalizePhysicalCountPreview(entries[item.inventoryItemId] ?? blankPhysicalCountEntry(item.unit), item.unit) === null
+  );
+  return { counted: items.length - remainingItems.length, remaining: remainingItems.length, remainingItems };
+};
+
 export const buildPhysicalCountItems = (
   items: ExpectedInventoryItem[],
   entries: Record<string, PhysicalCountEntry>,
@@ -79,7 +118,7 @@ export const buildPhysicalCountItems = (
 export const validPhysicalCountEntries = (
   items: ExpectedInventoryItem[],
   entries: Record<string, PhysicalCountEntry>,
-) => items.every((item) => normalizePhysicalCountPreview(entries[item.inventoryItemId]!, item.unit) !== null);
+) => items.every((item) => normalizePhysicalCountPreview(entries[item.inventoryItemId] ?? blankPhysicalCountEntry(item.unit), item.unit) !== null);
 
 export const canLeavePhysicalCountEntry = (
   hasUnsavedChanges: boolean,
@@ -105,8 +144,13 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory }: { onSubmitt
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
+  const [completionFilter, setCompletionFilter] = useState<PhysicalCountCompletionFilter>("ALL");
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
-  const visibleItems = useMemo(() => filterPhysicalCountItems(expected, search), [expected, search]);
+  const completion = useMemo(() => physicalCountCompletion(expected, entries), [entries, expected]);
+  const visibleItems = useMemo(
+    () => filterPhysicalCountItems(expected, search, completionFilter, entries),
+    [completionFilter, entries, expected, search],
+  );
 
   const loadExpected = async () => {
     setLoading(true); setError(""); setSubmitted(null); setEditingCountId(null); setUnavailable([]);
@@ -123,7 +167,8 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory }: { onSubmitt
       const data = await inventoryWorkflowService.expected(countDate);
       setExpected(data.items);
       setUnavailable(data.unavailableItems ?? []);
-      setEntries(Object.fromEntries(data.items.map((item) => [item.inventoryItemId, physicalCountEntryFromCanonical(Math.max(0, Number(item.expectedQuantity.toFixed(4))), item.unit)])));
+      setEntries(Object.fromEntries(data.items.map((item) => [item.inventoryItemId, blankPhysicalCountEntry(item.unit)])));
+      setCompletionFilter("ALL");
       setHasUnsavedChanges(false);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to calculate expected inventory"); }
     finally { setLoading(false); }
@@ -246,13 +291,24 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory }: { onSubmitt
         }
         toolbar={<>
           <SearchInput placeholder="Search ingredient or SKU…" width={260} value={search} onChange={setSearch}/>
+          <Select small value={completionFilter} onChange={(value) => setCompletionFilter(value as PhysicalCountCompletionFilter)} options={[{ value: "ALL", label: "All" }, { value: "COUNTED", label: "Counted" }, { value: "NOT_COUNTED", label: "Not Counted" }]}/>
           <span className="text-xs font-medium text-[var(--app-text-muted)]">Showing {visibleItems.length} of {expected.length} items</span>
           {search && <Btn variant="outline" size="sm" onClick={() => setSearch("")}>Clear search</Btn>}
-          <Btn icon={Send} disabled={saving || expected.length === 0} onClick={() => void submit()}>
+          <Btn icon={Send} disabled={saving || expected.length === 0 || completion.remaining > 0} onClick={() => void submit()}>
             {saving ? "Saving…" : editingCountId ? "Save Corrections" : "Submit Count"}
           </Btn>
         </>}
       >
+        <div className="border-b p-4" style={{ borderColor: "var(--app-border)" }}>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+            <strong>{completion.counted} of {expected.length} ingredients counted</strong>
+            <span className={completion.remaining ? "text-[var(--app-warning)]" : "text-[var(--app-success)]"}>{completion.remaining} remaining</span>
+          </div>
+          <div className="mt-2 h-2 overflow-hidden rounded-full bg-[var(--app-surface-muted)]" aria-label={`${completion.counted} of ${expected.length} ingredients counted`}>
+            <div className="h-full rounded-full bg-[var(--app-primary)] transition-[width]" style={{ width: expected.length ? `${(completion.counted / expected.length) * 100}%` : "0%" }}/>
+          </div>
+          {completion.remaining > 0 && <p className="mt-2 text-xs text-[var(--app-text-muted)]">Complete the remaining physical quantities before submitting. Still needed: {completion.remainingItems.slice(0, 5).map((item) => item.itemName).join(", ")}{completion.remaining > 5 ? ` and ${completion.remaining - 5} more` : ""}.</p>}
+        </div>
         <TableWrapper minWidth={900}>
           <THead cols={["SKU", "Ingredient", "Previous Actual", "Received", "Recipe Consumption", "Expected Stock", "Physical Count", "Preview Variance"]} />
           <tbody>
@@ -262,7 +318,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory }: { onSubmitt
               <TableEmptyRow colSpan={8} title="No ingredients found" subtitle="Try a different ingredient name or SKU." />
             ) : (
               visibleItems.map((item) => {
-                const entry = entries[item.inventoryItemId] ?? physicalCountEntryFromCanonical(0, item.unit);
+                const entry = entries[item.inventoryItemId] ?? blankPhysicalCountEntry(item.unit);
                 const normalizedActual = normalizePhysicalCountPreview(entry, item.unit);
                 const variance = normalizedActual === null ? null : physicalCountPreviewVariance(item.expectedQuantity, normalizedActual);
                 return (
@@ -282,21 +338,24 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory }: { onSubmitt
                             step="any"
                             value={entry.quantity}
                             onChange={(event) => { setHasUnsavedChanges(true); setEntries((current) => ({ ...current, [item.inventoryItemId]: { ...entry, quantity: event.target.value } })); }}
-                            className="w-24 px-2.5 py-1.5 rounded-xl border text-right font-semibold text-sm outline-none transition-colors border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] focus:border-[var(--app-primary)] focus:ring-2 focus:ring-[var(--app-primary-faint)]"
+                            placeholder="Not counted"
+                            className="min-h-9 w-28 px-2.5 py-1.5 rounded-xl border text-right font-semibold text-sm outline-none transition-colors border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] focus:border-[var(--app-primary)] focus:ring-2 focus:ring-[var(--app-primary-faint)]"
                             aria-label={`${item.itemName} physical quantity`}
                           />
-                          <select
+                          <Select
+                            small
                             value={entry.enteredUnit}
-                            onChange={(event) => { setHasUnsavedChanges(true); setEntries((current) => ({ ...current, [item.inventoryItemId]: { ...entry, enteredUnit: event.target.value as PhysicalCountUnit } })); }}
-                            className="w-16 px-2 py-1.5 rounded-xl border text-sm font-semibold outline-none border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] focus:border-[var(--app-primary)]"
-                            aria-label={`${item.itemName} physical count unit`}
-                          >
-                            {allowedPhysicalCountUnits(item.unit).map((unit) => <option key={unit} value={unit}>{unit}</option>)}
-                          </select>
+                            onChange={(value) => { setHasUnsavedChanges(true); setEntries((current) => ({ ...current, [item.inventoryItemId]: changePhysicalCountEntryUnit(entry, item.unit, value as PhysicalCountUnit) })); }}
+                            className="w-20 [&_.custom-select-trigger]:!min-w-0"
+                            ariaLabel={`${item.itemName} physical count unit`}
+                            options={allowedPhysicalCountUnits(item.unit).map((unit) => ({ value: unit, label: unit }))}
+                          />
                         </div>
                         <span className="text-[10px] whitespace-nowrap text-[var(--app-text-muted)]">
-                          {normalizedActual === null
-                            ? "Enter a valid quantity"
+                          {entry.quantity.trim() === ""
+                            ? "Not yet counted"
+                            : normalizedActual === null
+                              ? "Enter a valid non-negative quantity"
                             : `Converted to system unit: ${normalizedActual.toLocaleString("en-US", { maximumFractionDigits: 4 })} ${item.unit}`}
                         </span>
                       </div>

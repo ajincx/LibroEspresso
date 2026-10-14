@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { canConfigureBranchReorderPolicy, InventoryOverview, inventoryOverviewColumns, inventoryTabs, projectedAdjustmentStock, recordCountShortcutDestination, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, subscribeToInventoryDataChanges } from "./InventoryModule";
+import { canConfigureBranchReorderPolicy, inventoryAdjustmentValidationError, InventoryOverview, inventoryOverviewColumns, inventoryTabs, projectedAdjustmentStock, recordCountShortcutDestination, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, subscribeToInventoryDataChanges } from "./InventoryModule";
 import type { InventoryCountSummary } from "../../types/inventoryWorkflow";
 
 afterEach(() => vi.useRealTimers());
@@ -72,6 +72,16 @@ describe("controlled stock adjustment preview", () => {
 
   it("shows the resulting stock for an approved decrease", () => {
     expect(projectedAdjustmentStock(100, "APPROVED_ADJUSTMENT_DECREASE", 25)).toBe(75);
+  });
+
+  it("requires a positive quantity and an understandable reason", () => {
+    expect(inventoryAdjustmentValidationError(100, "APPROVED_ADJUSTMENT_INCREASE", "", "Valid operational reason")).toContain("greater than zero");
+    expect(inventoryAdjustmentValidationError(100, "APPROVED_ADJUSTMENT_INCREASE", "5", "short")).toContain("at least 10 characters");
+  });
+
+  it("blocks a decrease that would make stock negative", () => {
+    expect(inventoryAdjustmentValidationError(100, "APPROVED_ADJUSTMENT_DECREASE", "101", "Verified damaged stock correction")).toContain("below zero");
+    expect(inventoryAdjustmentValidationError(100, "APPROVED_ADJUSTMENT_DECREASE", "100", "Verified damaged stock correction")).toBeNull();
   });
 });
 

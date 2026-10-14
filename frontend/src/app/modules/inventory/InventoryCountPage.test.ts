@@ -2,7 +2,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { ExpectedInventoryItem } from "../../types/inventoryWorkflow";
-import { allowedPhysicalCountUnits, buildPhysicalCountItems, canLeavePhysicalCountEntry, filterPhysicalCountItems, initialPhysicalCountDate, isFutureInventoryCountDate, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, physicalCountEntryFromCanonical, physicalCountPreviewVariance, validPhysicalCountEntries } from "./InventoryCountPage";
+import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, filterPhysicalCountItems, initialPhysicalCountDate, isFutureInventoryCountDate, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, physicalCountCompletion, physicalCountEntryFromCanonical, physicalCountPreviewVariance, validPhysicalCountEntries } from "./InventoryCountPage";
 
 const item = (inventoryItemId: string, sku: string, itemName: string): ExpectedInventoryItem => ({
   inventoryItemId, sku, itemName, unit: "pc", unitCost: 1, previousActualQuantity: 10,
@@ -109,9 +109,27 @@ describe("Inventory physical-count ingredient search", () => {
       enteredUnit: "ml",
     });
   });
+
+  it("filters counted and not-counted items without changing full-set progress", () => {
+    const entries = {
+      ice: { quantity: "0", enteredUnit: "pc" as const },
+      milk: { quantity: "", enteredUnit: "pc" as const },
+      sugar: { quantity: "8", enteredUnit: "pc" as const },
+    };
+    expect(filterPhysicalCountItems(ingredients, "", "COUNTED", entries).map((entry) => entry.inventoryItemId)).toEqual(["ice", "sugar"]);
+    expect(filterPhysicalCountItems(ingredients, "", "NOT_COUNTED", entries).map((entry) => entry.inventoryItemId)).toEqual(["milk"]);
+    expect(physicalCountCompletion(ingredients, entries)).toMatchObject({ counted: 2, remaining: 1 });
+    expect(filterPhysicalCountItems(ingredients, "Ice", "ALL", entries)).toHaveLength(1);
+    expect(physicalCountCompletion(ingredients, entries)).toMatchObject({ counted: 2, remaining: 1 });
+  });
 });
 
 describe("Inventory physical-count unit entry", () => {
+  it("starts a new physical count blank in the canonical unit", () => {
+    expect(blankPhysicalCountEntry("g")).toEqual({ quantity: "", enteredUnit: "g" });
+    expect(normalizePhysicalCountPreview(blankPhysicalCountEntry("g"), "g")).toBeNull();
+  });
+
   it("offers the correct units for canonical g, ml, and pc", () => {
     expect(allowedPhysicalCountUnits("g")).toEqual(["g", "kg"]);
     expect(allowedPhysicalCountUnits("ml")).toEqual(["ml", "L"]);
@@ -127,6 +145,13 @@ describe("Inventory physical-count unit entry", () => {
   it("previews L to ml and preserves canonical input", () => {
     expect(normalizePhysicalCountPreview({ quantity: "2.5", enteredUnit: "L" }, "ml")).toBe(2500);
     expect(normalizePhysicalCountPreview({ quantity: "3864", enteredUnit: "g" }, "g")).toBe(3864);
+  });
+
+  it("preserves the canonical quantity when the Manager changes display units", () => {
+    const kilograms = changePhysicalCountEntryUnit({ quantity: "3260", enteredUnit: "g" }, "g", "kg");
+    expect(kilograms).toEqual({ quantity: "3.26", enteredUnit: "kg" });
+    expect(normalizePhysicalCountPreview(kilograms, "g")).toBe(3260);
+    expect(changePhysicalCountEntryUnit(kilograms, "g", "g")).toEqual({ quantity: "3260", enteredUnit: "g" });
   });
 
   it("accepts zero and decimals but rejects empty, negative, and incompatible entries", () => {

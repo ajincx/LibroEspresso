@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PurchaseOrder } from "../../types/operations";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { canAuthorizePurchaseOrderTest, canDeletePurchaseOrderTest, isCompletePurchaseOrderItem, isPhysicalCountRequiredError, PhysicalCountRequiredNotice, purchaseOrderFormValidationError, receiptDateError, standardPurchaseConversionFactor } from "./PurchaseOrdersPage";
+import { canAuthorizePurchaseOrderTest, canDeletePurchaseOrderTest, convertedPurchaseQuantity, isCompletePurchaseOrderItem, isPhysicalCountRequiredError, PhysicalCountRequiredNotice, PURCHASE_ORDER_STOCK_TIMING_GUIDANCE, purchaseOrderFormValidationError, receiptDateError, standardPurchaseConversionFactor } from "./PurchaseOrdersPage";
 
 const order=(patch:Partial<PurchaseOrder>={}):PurchaseOrder=>({
   id:"po-1",poNo:"PO-TEST",branchId:"branch-1",branchName:"Gulod",createdByUserId:"manager-1",createdByName:"Manager",
@@ -54,6 +54,15 @@ describe("standard purchase-unit conversion",()=>{
     expect(standardPurchaseConversionFactor("pc","pc")).toBe(1);
   });
   it("does not invent an incompatible factor",()=>expect(standardPurchaseConversionFactor("L","g")).toBeNull());
+  it("previews the canonical inventory quantity without changing purchasing logic",()=>{
+    expect(convertedPurchaseQuantity("2.5","kg","g")).toBe(2500);
+    expect(convertedPurchaseQuantity("","kg","g")).toBeNull();
+    expect(convertedPurchaseQuantity("2","L","g")).toBeNull();
+  });
+  it("explains that only confirmed receipt changes inventory",()=>{
+    expect(PURCHASE_ORDER_STOCK_TIMING_GUIDANCE).toContain("does not increase inventory");
+    expect(PURCHASE_ORDER_STOCK_TIMING_GUIDANCE).toContain("after received quantities are confirmed");
+  });
 });
 
 describe("purchase-order creation validation",()=>{
