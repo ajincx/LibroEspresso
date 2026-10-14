@@ -398,14 +398,14 @@ const helpSections: HelpSection[] = [
       {
         id: "manager-investigation",
         title: "Investigate a discrepancy",
-        summary: "Review evidence and submit a supported classification for Owner review.",
+        summary: "Review evidence and submit a supported classification for final verification.",
         page: "shrinkage",
         roles: ["BRANCH_MANAGER"],
         steps: [
           "Open the detected case for your assigned branch.",
           "Review the count difference and available staff incident evidence.",
           "Record findings and choose the classification supported by the evidence.",
-          "Submit the findings for Owner review.",
+          "Submit the findings for final verification.",
         ],
         tips: ["An unexplained shortage is not automatically classified as theft or pilferage."],
         related: ["review-variance", "review-incident-evidence"],
@@ -415,7 +415,7 @@ const helpSections: HelpSection[] = [
   {
     id: "classification-review",
     title: "Classification Review",
-    description: "Complete the manager investigation and Owner review process.",
+    description: "Complete the Manager investigation and final-verification process.",
     topics: [
       {
         id: "manager-classification",
@@ -438,7 +438,7 @@ const helpSections: HelpSection[] = [
         page: "shrinkage",
         roles: ["OWNER"],
         steps: [
-          "Open a case awaiting Owner review.",
+          "Open a case awaiting final verification.",
           "Review the variance, manager findings, classification, and linked evidence.",
           "Mark the findings as reviewed when they are complete, or return them with a clear reason.",
           "Confirm the final status and reviewer details.",

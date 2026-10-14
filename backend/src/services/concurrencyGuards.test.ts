@@ -23,4 +23,20 @@ describe("database concurrency guards", () => {
     expect(source("../../migrations/027_recipe_unit_costing_integrity.sql")).toContain("recipes_one_open_version_uq");
     expect(source("./auth.service.ts")).toContain("FOR UPDATE OF u");
   });
+
+  it("uses one transaction-scoped branch lock for competing stock operations", () => {
+    const inventoryWorkflow = source("../controllers/inventoryWorkflow.controller.ts");
+    const operations = source("../controllers/operations.controller.ts");
+    const lockService = source("./inventoryOperationLock.service.ts");
+    expect(lockService).toContain("pg_advisory_xact_lock");
+    expect(lockService).toContain("hashtextextended('libro:inventory:'");
+    expect(inventoryWorkflow.match(/lockBranchInventoryOperation\(client, branchId\)/g)?.length).toBeGreaterThanOrEqual(4);
+    expect(operations).toMatch(/receivePurchaseOrder[\s\S]*lockBranchInventoryOperation\(client, branchId\)/);
+  });
+
+  it("backs adjustment idempotency with a branch-scoped unique database index", () => {
+    const migration = source("../../migrations/053_inventory_adjustment_integrity.sql");
+    expect(migration).toContain("inventory_movements_adjustment_request_uidx");
+    expect(migration).toContain("(branch_id, adjustment_request_id)");
+  });
 });

@@ -39,18 +39,15 @@ export const posAnalyticsFilters = z.object({
 });
 
 export const inventoryMovementInput = z.object({
-  branchId: z.string().uuid().optional(),
   inventoryItemId: z.string().uuid(),
   movementType: z.enum([
-    "RECEIPT",
-    "APPROVED_ADJUSTMENT",
     "APPROVED_ADJUSTMENT_INCREASE",
     "APPROVED_ADJUSTMENT_DECREASE",
   ]),
-  quantity: z.coerce.number().positive(),
-  occurredAt: z.iso.datetime().optional(),
-  referenceNo: z.string().trim().max(80).optional(),
-  notes: z.string().trim().max(1000).optional(),
+  quantity: z.coerce.number().finite().positive(),
+  unit: z.enum(["g", "kg", "ml", "L", "pc"]),
+  reason: z.string().trim().min(10).max(1000),
+  requestId: z.string().uuid(),
 });
 
 export const inventoryCountInput = z.object({

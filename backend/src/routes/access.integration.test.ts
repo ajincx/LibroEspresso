@@ -107,7 +107,7 @@ describe("access controls", () => {
     expect(response.status).toBe(422);
   });
 
-  it("keeps branch reorder settings writable by the Owner and read-only for Managers", async () => {
+  it("keeps branch reorder settings writable by Managers and read-only for the Owner", async () => {
     const path =
       "/api/inventory-overview/00000000-0000-0000-0000-000000000001/settings";
     const manager = await request(app)
@@ -125,8 +125,8 @@ describe("access controls", () => {
       .patch(path)
       .set("Cookie", session({ id: "owner", role: "OWNER", branchId: null }))
       .send({});
-    expect(manager.status).toBe(403);
-    expect(owner.status).toBe(422);
+    expect(manager.status).toBe(422);
+    expect(owner.status).toBe(403);
   });
 
   it("keeps POS source column mapping configuration Owner-only", async () => {
@@ -384,7 +384,7 @@ describe("access controls", () => {
     expect(response.status).toBe(403);
   });
 
-  it("blocks a Manager from reviewing a shrinkage report", async () => {
+  it("allows a Manager into final shrinkage verification validation", async () => {
     const response = await request(app)
       .post(
         "/api/shrinkage-reports/00000000-0000-0000-0000-000000000001/review",
@@ -398,7 +398,17 @@ describe("access controls", () => {
         }),
       )
       .send({});
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(422);
+  });
+
+  it("keeps final shrinkage verification and incident archival read-only for the Owner", async () => {
+    const id = "00000000-0000-0000-0000-000000000001";
+    const cookie = session({ id: "owner", role: "OWNER", branchId: null });
+    const [verification, incidentLifecycle] = await Promise.all([
+      request(app).post(`/api/shrinkage-reports/${id}/review`).set("Cookie", cookie).send({}),
+      request(app).post(`/api/incidents/${id}/lifecycle`).set("Cookie", cookie).send({}),
+    ]);
+    expect([verification.status, incidentLifecycle.status]).toEqual([403, 403]);
   });
 
   it("keeps Purchase Orders read-only for the Owner", async () => {

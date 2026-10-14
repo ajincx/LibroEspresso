@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { configureBranchReorderPolicy } from "./branchInventorySettings.service.js";
 
-const owner = { id: "owner", role: "OWNER" as const, branchId: null };
+const manager = { id: "manager", role: "BRANCH_MANAGER" as const, branchId: "branch" };
 const input = { branchId: "branch", inventoryItemId: "item", category: "FAST" as const, reorderLevel: 1500, reorderDays: 5, reason: "Approved manual initial configuration" };
 
 describe("configureBranchReorderPolicy", () => {
@@ -11,7 +11,7 @@ describe("configureBranchReorderPolicy", () => {
       .mockResolvedValueOnce({ rows: [{ category: "MEDIUM", reorderLevel: 25000, reorderDays: 7 }] })
       .mockResolvedValueOnce({ rows: [{ inventoryItemId: "item", category: "FAST", reorderLevel: 1500, reorderDays: 5 }] })
       .mockResolvedValueOnce({ rows: [] });
-    await expect(configureBranchReorderPolicy({ query } as never, owner, input)).resolves.toMatchObject({ category: "FAST", reorderLevel: 1500 });
+    await expect(configureBranchReorderPolicy({ query } as never, manager, input)).resolves.toMatchObject({ category: "FAST", reorderLevel: 1500 });
     expect(String(query.mock.calls[1]?.[0])).toContain("FOR UPDATE");
     expect(query.mock.calls[3]?.[1]?.[6]).toMatchObject({
       configurationType: "MANUAL_INITIAL_CONFIGURATION",
@@ -25,14 +25,24 @@ describe("configureBranchReorderPolicy", () => {
     });
   });
 
-  it("rejects non-Owners before querying", async () => {
+  it("rejects non-Managers before querying", async () => {
     const query = vi.fn();
-    await expect(configureBranchReorderPolicy({ query } as never, { id: "manager", role: "BRANCH_MANAGER", branchId: "branch" }, input)).rejects.toMatchObject({ status: 403 });
+    await expect(configureBranchReorderPolicy({ query } as never, { id: "owner", role: "OWNER", branchId: null }, input)).rejects.toMatchObject({ status: 403 });
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it("rejects a Manager attempting to configure another branch", async () => {
+    const query = vi.fn();
+    await expect(configureBranchReorderPolicy(
+      { query } as never,
+      { ...manager, branchId: "other-branch" },
+      input,
+    )).rejects.toMatchObject({ status: 403, code: "BRANCH_SCOPE_FORBIDDEN" });
     expect(query).not.toHaveBeenCalled();
   });
 
   it("rejects excluded or invalid branch-item targets", async () => {
     const query = vi.fn().mockResolvedValueOnce({ rows: [] });
-    await expect(configureBranchReorderPolicy({ query } as never, owner, input)).rejects.toMatchObject({ code: "REORDER_CONFIGURATION_TARGET_INVALID" });
+    await expect(configureBranchReorderPolicy({ query } as never, manager, input)).rejects.toMatchObject({ code: "REORDER_CONFIGURATION_TARGET_INVALID" });
   });
 });

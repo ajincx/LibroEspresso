@@ -5,6 +5,7 @@ import { writeAudit } from "../services/audit.service.js";
 import { AppError } from "../utils/appError.js";
 import { idParams } from "../validators/masterData.js";
 import { destructiveActionInput, incidentLifecycleInput, purchaseOrderLifecycleInput, testDataProductRetirementInput } from "../validators/destructiveAction.js";
+import { lockBranchInventoryOperation } from "../services/inventoryOperationLock.service.js";
 
 type AppRole = "OWNER" | "BRANCH_MANAGER" | "STAFF";
 function requireRole(user: NonNullable<Express.Request["user"]>, roles: AppRole[]) {
@@ -164,7 +165,7 @@ export const retireTestDataProductChain: RequestHandler = async (req, res) => {
 };
 
 export const removeInventoryItem: RequestHandler = async (req, res) => {
-  requireRole(req.user!, ["OWNER", "BRANCH_MANAGER"]);
+  requireRole(req.user!, ["BRANCH_MANAGER"]);
   const { id } = idParams.parse(req.params); const input = destructiveActionInput.parse(req.body);
   await verifyDestructiveAction(req.user!, input.verificationPin, { module: "INVENTORY_ITEM", action: "REMOVE", recordId: id, reason: input.reason });
   const client = await pool.connect();
@@ -190,7 +191,7 @@ export const removeInventoryItem: RequestHandler = async (req, res) => {
 };
 
 export const voidVarianceRecord: RequestHandler = async (req, res) => {
-  requireRole(req.user!, ["OWNER", "BRANCH_MANAGER"]);
+  requireRole(req.user!, ["BRANCH_MANAGER"]);
   const { id } = idParams.parse(req.params); const input = destructiveActionInput.parse(req.body);
   await verifyDestructiveAction(req.user!, input.verificationPin, { module: "INVENTORY_VARIANCE", action: "VOID", recordId: id, reason: input.reason });
   const client = await pool.connect();
@@ -206,7 +207,7 @@ export const voidVarianceRecord: RequestHandler = async (req, res) => {
 };
 
 export const archiveShrinkageReport: RequestHandler = async (req, res) => {
-  requireRole(req.user!, ["OWNER", "BRANCH_MANAGER"]);
+  requireRole(req.user!, ["BRANCH_MANAGER"]);
   const { id } = idParams.parse(req.params); const input = destructiveActionInput.parse(req.body);
   await verifyDestructiveAction(req.user!, input.verificationPin, { module: "SHRINKAGE_REPORT", action: "ARCHIVE", recordId: id, reason: input.reason });
   const client = await pool.connect();
@@ -221,7 +222,7 @@ export const archiveShrinkageReport: RequestHandler = async (req, res) => {
 };
 
 export const archiveIncidentReport: RequestHandler = async (req, res) => {
-  requireRole(req.user!, ["OWNER", "BRANCH_MANAGER", "STAFF"]);
+  requireRole(req.user!, ["BRANCH_MANAGER", "STAFF"]);
   const { id } = idParams.parse(req.params); const input = incidentLifecycleInput.parse(req.body);
   await verifyDestructiveAction(req.user!, input.verificationPin, { module: "INCIDENT_REPORT", action: input.action, recordId: id, reason: input.reason });
   const client = await pool.connect();
@@ -237,12 +238,19 @@ export const archiveIncidentReport: RequestHandler = async (req, res) => {
 };
 
 export const applyPurchaseOrderLifecycle: RequestHandler = async (req, res) => {
-  requireRole(req.user!, ["OWNER", "BRANCH_MANAGER"]);
+  requireRole(req.user!, ["BRANCH_MANAGER"]);
   const { id } = idParams.parse(req.params); const input = purchaseOrderLifecycleInput.parse(req.body);
   await verifyDestructiveAction(req.user!, input.verificationPin, { module: "PURCHASE_ORDER", action: input.action, recordId: id, reason: input.reason });
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    const scope = await client.query<{ branchId: string }>(
+      `SELECT branch_id "branchId" FROM purchase_orders WHERE id=$1`,
+      [id],
+    );
+    if (!scope.rows[0]) throw new AppError(404, "PURCHASE_ORDER_NOT_FOUND", "Purchase order not found");
+    assertBranchAccess(req.user!, scope.rows[0].branchId);
+    await lockBranchInventoryOperation(client, scope.rows[0].branchId);
     const found = await client.query<{ poNo: string; branchId: string; status: string; isTestData: boolean; reversedAt: string | null }>(`SELECT po_no "poNo",branch_id "branchId",status,is_test_data "isTestData",reversed_at::text "reversedAt" FROM purchase_orders WHERE id=$1 FOR UPDATE`, [id]);
     const order = found.rows[0]; if (!order) throw new AppError(404, "PURCHASE_ORDER_NOT_FOUND", "Purchase order not found"); assertBranchAccess(req.user!, order.branchId);
     if (input.action === "DELETE") {

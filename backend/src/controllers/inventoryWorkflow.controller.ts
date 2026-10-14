@@ -4,7 +4,7 @@ import type { PoolClient } from "pg";
 import { z } from "zod";
 import { pool } from "../config/database.js";
 import { env } from "../config/env.js";
-import { calculateExpectedInventory, calculateExpectedInventoryBatch, computeVariance } from "../services/inventoryCalculation.service.js";
+import { calculateExpectedInventory, calculateExpectedInventoryBatch, computeVariance, type ExpectedInventoryBatchResult } from "../services/inventoryCalculation.service.js";
 import { calculateFinancialSummary, roundMoney } from "../services/financialMetrics.service.js";
 import { OPERATIONAL_POS_IMPORT_CONDITION, OPERATIONAL_POS_SOURCE_JOIN } from "../services/operationalPosScope.service.js";
 import { classifyUnmatchedPosIdentity, parsePosCsv, POS_SOURCE_FORMATS, PosCsvError, summarizePosRows, validationIssueField, type MatchedPosRow, type PosMenuCandidate } from "../services/posCsvImport.service.js";
@@ -17,9 +17,11 @@ import { createIngredientUsageSnapshots } from "../services/recipeVersion.servic
 import { assessPosImportInventoryDates } from "../services/posInventoryDate.service.js";
 import { calculatePosImportSimulation, type PosSimulationRecipeItem } from "../services/posImportSimulation.service.js";
 import { manilaBusinessDate } from "../services/businessTime.service.js";
-import { areUnitsCompatible } from "../services/unitConversion.service.js";
+import { areUnitsCompatible, normalizeUnit } from "../services/unitConversion.service.js";
 import { normalizePhysicalCountQuantity } from "../services/physicalCountUnit.service.js";
 import { requiresVarianceInvestigation } from "../services/varianceMateriality.service.js";
+import { lockBranchInventoryOperation } from "../services/inventoryOperationLock.service.js";
+import { loadInventoryLedger } from "../services/inventoryLedger.service.js";
 import { AppError } from "../utils/appError.js";
 import { idParams } from "../validators/masterData.js";
 import { destructiveActionInput } from "../validators/destructiveAction.js";
@@ -460,6 +462,14 @@ async function executePosImport(
     if (preview.importBlockedReason) throw new AppError(422, "POS_FORMAT_IMPORT_BLOCKED", preview.importBlockedReason);
     if (!preview.summary.canImport || !preview.businessDate) throw new AppError(422, "POS_IMPORT_INVALID", "POS import was not completed because the preview contains invalid or unmatched rows.");
     if (!input.expectedResolutionFingerprint || preview.resolutionFingerprint !== input.expectedResolutionFingerprint) throw new AppError(409, "POS_MAPPING_CHANGED", "POS source or product/variant mapping changed after preview. Preview the file again.");
+    await lockBranchInventoryOperation(client, branchId);
+    const duplicateAfterLock = await client.query(
+      `SELECT 1 FROM pos_imports WHERE branch_id=$1 AND content_hash=$2 LIMIT 1`,
+      [branchId, preview.contentHash],
+    );
+    if (duplicateAfterLock.rows[0]) {
+      throw new AppError(409, "POS_IMPORT_DUPLICATE", "This file has already been imported.");
+    }
     const importRows = preview.rows.filter((row): row is MatchedPosRow & { menuItemId: string; quantitySold: number; unitPrice: number; businessDate: string } => Boolean(row.menuItemId) && row.quantitySold !== null && row.unitPrice !== null && row.businessDate !== null && row.status !== "INVALID");
     const sourceSalesTotal=importRows.reduce((total,row)=>total+(typeof row.lineAmount==="number"?row.lineAmount:Number(row.quantitySold)*Number(row.unitPrice)),0);
     const sourceQuantity=importRows.reduce((total,row)=>total+Number(row.quantitySold),0);
@@ -1112,53 +1122,125 @@ export const getPosAnalytics: RequestHandler = async (req, res) => {
 
 export const createInventoryMovement: RequestHandler = async (req, res) => {
   const input = inventoryMovementInput.parse(req.body);
-  const branchId = requiredBranchId(req.user!, input.branchId);
-  if (
-    req.user!.role === "BRANCH_MANAGER" &&
-    input.movementType.startsWith("APPROVED_ADJUSTMENT")
-  ) {
-    throw new AppError(
-      403,
-      "OWNER_APPROVAL_REQUIRED",
-      "Only the Owner can record an approved adjustment",
+  const branchId = requiredBranchId(req.user!);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await lockBranchInventoryOperation(client, branchId);
+    const prior = await client.query<{
+      id: string;
+      inventoryItemId: string;
+      movementType: string;
+      quantity: number;
+      enteredQuantity: number;
+      enteredUnit: string;
+      adjustmentReason: string;
+      occurredAt: string;
+    }>(
+      `SELECT id,inventory_item_id "inventoryItemId",movement_type "movementType",quantity::float8,
+              entered_quantity::float8 "enteredQuantity",entered_unit "enteredUnit",
+              adjustment_reason "adjustmentReason",occurred_at "occurredAt"
+         FROM inventory_movements
+        WHERE branch_id=$1 AND adjustment_request_id=$2::uuid`,
+      [branchId, input.requestId],
     );
+    if (prior.rows[0]) {
+      const movement = prior.rows[0];
+      const exactReplay = movement.inventoryItemId === input.inventoryItemId
+        && movement.movementType === input.movementType
+        && Number(movement.enteredQuantity).toFixed(4) === Number(input.quantity).toFixed(4)
+        && movement.enteredUnit === normalizeUnit(input.unit)
+        && movement.adjustmentReason === input.reason;
+      if (!exactReplay) {
+        throw new AppError(
+          409,
+          "IDEMPOTENCY_CONFLICT",
+          "This adjustment request ID was already used with different details",
+        );
+      }
+      await client.query("COMMIT");
+      res.json({ success: true, data: { movement, replayed: true } });
+      return;
+    }
+    const available = await client.query<{ unit: string }>(
+      `SELECT unit FROM inventory_items WHERE id=$1 AND status='ACTIVE'
+       AND (item_scope='GLOBAL' OR origin_branch_id=$2) FOR SHARE`,
+      [input.inventoryItemId, branchId],
+    );
+    const item = available.rows[0];
+    if (!item)
+      throw new AppError(
+        422,
+        "INVENTORY_ITEM_SCOPE_INVALID",
+        "The inventory item is not available to this branch",
+      );
+    if (normalizeUnit(input.unit) !== normalizeUnit(item.unit)) {
+      throw new AppError(
+        422,
+        "INVENTORY_ADJUSTMENT_UNIT_INVALID",
+        `Adjustments must be entered in the canonical inventory unit (${item.unit})`,
+      );
+    }
+    if (input.movementType === "APPROVED_ADJUSTMENT_DECREASE") {
+      const ledger = await loadInventoryLedger(
+        client,
+        branchId,
+        input.inventoryItemId,
+        item.unit,
+      );
+      if (ledger.calculatedBalance - input.quantity < 0) {
+        throw new AppError(
+          422,
+          "INVENTORY_ADJUSTMENT_NEGATIVE_STOCK",
+          "The adjustment would reduce authoritative stock below zero",
+        );
+      }
+    }
+    const result = await client.query(
+      `INSERT INTO inventory_movements
+        (branch_id,inventory_item_id,movement_type,quantity,occurred_at,reference_no,notes,
+         approved_by,created_by,adjustment_request_id,entered_quantity,entered_unit,adjustment_reason)
+       VALUES ($1,$2,$3,$4,now(),$5,$6,$7,$7,$8::uuid,$4,$9,$6)
+       RETURNING id,branch_id "branchId",inventory_item_id "inventoryItemId",movement_type "movementType",
+                 quantity::float8,occurred_at "occurredAt"`,
+      [
+        branchId,
+        input.inventoryItemId,
+        input.movementType,
+        input.quantity,
+        `ADJ-${input.requestId}`,
+        input.reason,
+        req.user!.id,
+        input.requestId,
+        normalizeUnit(input.unit),
+      ],
+    );
+    await writeAudit(
+      req.user!,
+      "CREATE_INVENTORY_MOVEMENT",
+      "INVENTORY_MOVEMENT",
+      result.rows[0].id,
+      `Recorded ${input.movementType.toLowerCase()}`,
+      {
+        branchId,
+        quantity: input.quantity,
+        unit: normalizeUnit(input.unit),
+        reason: input.reason,
+        requestId: input.requestId,
+      },
+      client,
+    );
+    await client.query("COMMIT");
+    res.status(201).json({ success: true, data: { movement: result.rows[0], replayed: false } });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    if ((error as { code?: string }).code === "23505") {
+      throw new AppError(409, "IDEMPOTENCY_CONFLICT", "This adjustment request is already being processed");
+    }
+    throw error;
+  } finally {
+    client.release();
   }
-  const available = await pool.query(
-    `SELECT 1 FROM inventory_items WHERE id=$1 AND status='ACTIVE'
-    AND (item_scope='GLOBAL' OR origin_branch_id=$2)`,
-    [input.inventoryItemId, branchId],
-  );
-  if (!available.rows[0])
-    throw new AppError(
-      422,
-      "INVENTORY_ITEM_SCOPE_INVALID",
-      "The inventory item is not available to this branch",
-    );
-  const result = await pool.query(
-    `INSERT INTO inventory_movements (branch_id,inventory_item_id,movement_type,quantity,occurred_at,reference_no,notes,approved_by,created_by)
-     VALUES ($1,$2,$3,$4,COALESCE($5::timestamptz,now()),$6,$7,$8,$9)
-     RETURNING id,branch_id "branchId",inventory_item_id "inventoryItemId",movement_type "movementType",quantity::float8,occurred_at "occurredAt"`,
-    [
-      branchId,
-      input.inventoryItemId,
-      input.movementType,
-      input.quantity,
-      input.occurredAt ?? null,
-      input.referenceNo ?? null,
-      input.notes ?? null,
-      input.movementType.startsWith("APPROVED_ADJUSTMENT") ? req.user!.id : null,
-      req.user!.id,
-    ],
-  );
-  await writeAudit(
-    req.user!,
-    "CREATE_INVENTORY_MOVEMENT",
-    "INVENTORY_MOVEMENT",
-    result.rows[0].id,
-    `Recorded ${input.movementType.toLowerCase()}`,
-    { branchId, quantity: input.quantity },
-  );
-  res.status(201).json({ success: true, data: { movement: result.rows[0] } });
 };
 
 export const getExpectedInventory: RequestHandler = async (req, res) => {
@@ -1175,6 +1257,45 @@ export const getExpectedInventory: RequestHandler = async (req, res) => {
   res.json({ success: true, data: { branchId, countDate, items, unavailableItems } });
 };
 
+export function validateCompleteInventoryCountItemSet(
+  expected: ExpectedInventoryBatchResult,
+  submittedItemIds: string[],
+) {
+  const submitted = new Set(submittedItemIds);
+  const required = new Set(expected.items.map((item) => item.inventoryItemId));
+  const unavailable = new Set(expected.unavailableItems.map((item) => item.inventoryItemId));
+  const hasDuplicates = submitted.size !== submittedItemIds.length;
+  const missing = expected.items.filter((item) => !submitted.has(item.inventoryItemId));
+  const invalid = submittedItemIds.filter((id) => !required.has(id));
+  const submittedWithoutBaseline = expected.unavailableItems.filter((item) => submitted.has(item.inventoryItemId));
+  if (hasDuplicates || missing.length || invalid.length || submittedWithoutBaseline.length) {
+    throw new AppError(
+      422,
+      "INVENTORY_COUNT_INCOMPLETE",
+      [
+        hasDuplicates ? "The count includes duplicate inventory items" : "",
+        missing.length ? `Missing countable items: ${missing.map((item) => `${item.sku} (${item.itemName})`).join(", ")}` : "",
+        submittedWithoutBaseline.length
+          ? `No Baseline: ${submittedWithoutBaseline.map((item) => `${item.sku} (${item.itemName})`).join(", ")}`
+          : "",
+        invalid.some((id) => !unavailable.has(id)) ? "The count includes inactive, unavailable, or foreign-branch items" : "",
+      ].filter(Boolean).join(". "),
+    );
+  }
+}
+
+async function assertCompleteInventoryCount(
+  client: Pick<PoolClient, "query">,
+  branchId: string,
+  countDate: string,
+  submittedItemIds: string[],
+) {
+  validateCompleteInventoryCountItemSet(
+    await calculateExpectedInventoryBatch(client, branchId, countDate),
+    submittedItemIds,
+  );
+}
+
 export const submitInventoryCount: RequestHandler = async (req, res) => {
   const input = inventoryCountInput.parse(req.body);
   assertInventoryCountDateNotFuture(input.countDate);
@@ -1182,6 +1303,7 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await lockBranchInventoryOperation(client, branchId);
     const rulesResult = await client.query<{ absoluteTolerance: number; relativeTolerance: number }>(
       `SELECT variance_tolerance_quantity::float8 "absoluteTolerance",
               variance_tolerance_percent::float8 "relativeTolerance"
@@ -1202,6 +1324,12 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
         `Physical count ${existingCount.rows[0]!.countNo} was already submitted for ${input.countDate}`,
       );
     }
+    await assertCompleteInventoryCount(
+      client,
+      branchId,
+      input.countDate,
+      input.items.map((item) => item.inventoryItemId),
+    );
     const countNoResult = await client.query<{ countNo: string }>(
       `SELECT 'IC-'||to_char($1::date,'YYYY')||'-'||lpad(nextval('inventory_count_number_seq')::text,5,'0') "countNo"`,
       [input.countDate],
@@ -1365,6 +1493,7 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await lockBranchInventoryOperation(client, branchId);
     const count = await client.query<{ countNo: string; countDate: string; isTestData: boolean }>(
       `SELECT count_no "countNo",count_date::text "countDate",is_test_data "isTestData" FROM inventory_counts
         WHERE id=$1 AND branch_id=$2 AND submitted_by=$3 FOR UPDATE`,
@@ -1432,7 +1561,9 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
        WHERE ici.inventory_count_id=$1`,
       [id, branchId],
     );
+    const submittedItemIds = input.items.map((item) => item.inventoryItemId);
     if (
+      new Set(submittedItemIds).size !== submittedItemIds.length ||
       input.items.length !== existing.rows.length ||
       input.items.some(
         (item) =>
@@ -1444,7 +1575,7 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
       throw new AppError(
         422,
         "COUNT_ITEMS_MISMATCH",
-        "All original count items must be included",
+        "All original count items must be included exactly once",
       );
     }
     const returned = [];
@@ -2091,10 +2222,10 @@ export const submitShrinkageInvestigation: RequestHandler = async (
 };
 
 export const reviewShrinkageReport: RequestHandler = async (req, res) => {
-  // --- OWNER SHRINKAGE REVIEW ---
-  // Owner performs administrative review after Manager verification.
-  // This does not replace the Manager's classification.
+  // --- MANAGER SHRINKAGE FINAL VERIFICATION ---
+  // The assigned Branch Manager performs the final operational verification.
   const { id } = idParams.parse(req.params);
+  const branchId = requiredBranchId(req.user!);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -2104,15 +2235,15 @@ export const reviewShrinkageReport: RequestHandler = async (req, res) => {
       branchId: string;
     }>(
       `UPDATE shrinkage_reports SET status='REVIEWED',reviewed_by=$2,reviewed_at=now(),updated_at=now()
-        WHERE id=$1 AND status IN ('VERIFIED', 'PENDING_REVIEW')
+        WHERE id=$1 AND branch_id=$3 AND status IN ('VERIFIED', 'PENDING_REVIEW')
         RETURNING report_no "reportNo",submitted_by "submittedBy",branch_id "branchId"`,
-      [id, req.user!.id],
+      [id, req.user!.id, branchId],
     );
     const row = reviewed.rows[0];
     if (!row) {
       const exists = await client.query(
-        `SELECT 1 FROM shrinkage_reports WHERE id=$1`,
-        [id],
+        `SELECT 1 FROM shrinkage_reports WHERE id=$1 AND branch_id=$2`,
+        [id, branchId],
       );
       if (!exists.rows[0])
         throw new AppError(
@@ -2136,17 +2267,17 @@ export const reviewShrinkageReport: RequestHandler = async (req, res) => {
       [
         row.submittedBy,
         row.branchId,
-        `Your shrinkage report ${row.reportNo} has been reviewed by the Owner.`,
+        `Shrinkage report ${row.reportNo} received final verification from the Branch Manager.`,
         id,
       ],
     );
     await writeAudit(
       req.user!,
-      "REVIEW_SHRINKAGE_REPORT",
+      "FINALIZE_SHRINKAGE_VERIFICATION",
       "SHRINKAGE_REPORT",
       id,
-      `Marked shrinkage report ${row.reportNo} as reviewed`,
-      { branchId: row.branchId },
+      `Finalized shrinkage verification for ${row.reportNo}`,
+      { branchId: row.branchId, outcome: "REVIEWED" },
       client,
     );
     await client.query("COMMIT");

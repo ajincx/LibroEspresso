@@ -19,7 +19,10 @@ export async function configureBranchReorderPolicy(
   user: TokenUser,
   input: BranchReorderConfigurationInput,
 ) {
-  if (user.role !== "OWNER") throw new AppError(403, "FORBIDDEN", "Only the Owner can configure reorder policies");
+  if (user.role !== "BRANCH_MANAGER") throw new AppError(403, "FORBIDDEN", "Only the Branch Manager can configure reorder policies");
+  if (!user.branchId || user.branchId !== input.branchId) {
+    throw new AppError(403, "BRANCH_SCOPE_FORBIDDEN", "Reorder policies can be configured only for your assigned branch");
+  }
   const target = await client.query<{ inventoryItemId: string; sku: string; branchName: string }>(
     `SELECT ii.id "inventoryItemId",ii.sku,b.name "branchName"
        FROM inventory_items ii CROSS JOIN branches b

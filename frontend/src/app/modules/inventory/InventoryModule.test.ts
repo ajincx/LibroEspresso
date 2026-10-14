@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { canConfigureBranchReorderPolicy, InventoryOverview, inventoryOverviewColumns, inventoryTabs, recordCountShortcutDestination, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, subscribeToInventoryDataChanges } from "./InventoryModule";
+import { canConfigureBranchReorderPolicy, InventoryOverview, inventoryOverviewColumns, inventoryTabs, projectedAdjustmentStock, recordCountShortcutDestination, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, subscribeToInventoryDataChanges } from "./InventoryModule";
 import type { InventoryCountSummary } from "../../types/inventoryWorkflow";
 
 afterEach(() => vi.useRealTimers());
@@ -20,9 +20,9 @@ describe("Inventory Management terminology", () => {
     expect(inventoryOverviewColumns("manager").at(-1)).toBe("Actions");
   });
 
-  it("allows only the Owner to configure branch reorder policies", () => {
-    expect(canConfigureBranchReorderPolicy("owner")).toBe(true);
-    expect(canConfigureBranchReorderPolicy("manager")).toBe(false);
+  it("allows only the Branch Manager to configure branch reorder policies", () => {
+    expect(canConfigureBranchReorderPolicy("owner")).toBe(false);
+    expect(canConfigureBranchReorderPolicy("manager")).toBe(true);
   });
 
   it("does not render a duplicate Record Stock Count action in Inventory Overview", () => {
@@ -62,6 +62,16 @@ describe("Inventory Overview data-change refresh", () => {
     vi.runAllTimers();
 
     expect(refresh).not.toHaveBeenCalled();
+  });
+});
+
+describe("controlled stock adjustment preview", () => {
+  it("shows the resulting stock for an approved increase", () => {
+    expect(projectedAdjustmentStock(100, "APPROVED_ADJUSTMENT_INCREASE", 25)).toBe(125);
+  });
+
+  it("shows the resulting stock for an approved decrease", () => {
+    expect(projectedAdjustmentStock(100, "APPROVED_ADJUSTMENT_DECREASE", 25)).toBe(75);
   });
 });
 

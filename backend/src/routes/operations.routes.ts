@@ -34,7 +34,7 @@ inventoryOverviewRouter.get(
 );
 inventoryOverviewRouter.patch(
   "/:inventoryItemId/settings",
-  authorize("OWNER"),
+  authorize("BRANCH_MANAGER"),
   asyncHandler(updateBranchInventorySettings),
 );
 
@@ -56,7 +56,11 @@ incidentRouter.patch(
   authorize("BRANCH_MANAGER"),
   asyncHandler(linkIncidentToInvestigation),
 );
-incidentRouter.post("/:id/lifecycle", asyncHandler(archiveIncidentReport));
+incidentRouter.post(
+  "/:id/lifecycle",
+  authorize("STAFF", "BRANCH_MANAGER"),
+  asyncHandler(archiveIncidentReport),
+);
 incidentRouter.patch(
   "/:id/review",
   authorize("BRANCH_MANAGER"),
@@ -77,7 +81,7 @@ purchaseOrderRouter.post(
 );
 purchaseOrderRouter.post(
   "/:id/lifecycle",
-  authorize("OWNER", "BRANCH_MANAGER"),
+  authorize("BRANCH_MANAGER"),
   asyncHandler(applyPurchaseOrderLifecycle),
 );
 purchaseOrderRouter.get(

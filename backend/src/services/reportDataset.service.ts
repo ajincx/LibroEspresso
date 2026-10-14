@@ -584,7 +584,7 @@ export async function buildReportDataset(
             label: "Branch Manager Verification",
             type: "text",
           },
-          { key: "ownerReviewState", label: "Owner Review", type: "text" },
+          { key: "ownerReviewState", label: "Final Verification", type: "text" },
         ],
         result.rows,
         request,

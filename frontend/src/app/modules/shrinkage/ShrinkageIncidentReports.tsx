@@ -91,7 +91,7 @@ export function ShrinkageIncidentReports({ owner, branchId }: { owner: boolean; 
                   >
                     <Eye size={15} />
                   </button>
-                  <button type="button" onClick={()=>{setArchiveTarget(report);setControlledValue({reason:"",verificationPin:""});}} className="p-2 rounded-lg border border-[var(--app-border)] text-[var(--app-danger)]" title="Archive incident" aria-label="Archive incident"><Archive size={15}/></button>
+                  {!owner&&<button type="button" onClick={()=>{setArchiveTarget(report);setControlledValue({reason:"",verificationPin:""});}} className="p-2 rounded-lg border border-[var(--app-border)] text-[var(--app-danger)]" title="Archive incident" aria-label="Archive incident"><Archive size={15}/></button>}
                   </div>
                 </TD>
               </TR>
@@ -100,7 +100,7 @@ export function ShrinkageIncidentReports({ owner, branchId }: { owner: boolean; 
         </tbody>
       </TableWrapper>
     </TableCard>
-    {archiveTarget&&<ControlledActionDialog title="Archive incident report?" description="The report remains available in audit history and no inventory quantity is changed." confirmLabel="Archive Report" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setArchiveTarget(null)} onConfirm={()=>void archive()}/>}
+    {!owner&&archiveTarget&&<ControlledActionDialog title="Archive incident report?" description="The report remains available in audit history and no inventory quantity is changed." confirmLabel="Archive Report" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setArchiveTarget(null)} onConfirm={()=>void archive()}/>}
     {selected && <IncidentReportDetailsModal report={selected} canReview={!owner} reviewing={reviewing} onClose={() => setSelected(null)} onReview={review}/>}
   </>;
 }

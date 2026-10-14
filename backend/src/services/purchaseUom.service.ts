@@ -1,5 +1,5 @@
 import { AppError } from "../utils/appError.js";
-import { areUnitsCompatible, normalizeUnit } from "./unitConversion.service.js";
+import { areUnitsCompatible, convertQuantity, normalizeUnit } from "./unitConversion.service.js";
 
 export function resolvePurchaseConversion(
   stockUnit: string,
@@ -25,14 +25,25 @@ export function resolvePurchaseConversion(
     }
     return { purchaseUom: normalizedPurchaseUom, conversionFactor: 1 };
   }
-  if (!conversionFactor || conversionFactor <= 0) {
+  const authoritativeFactor = convertQuantity(
+    1,
+    normalizedPurchaseUom,
+    normalizedStockUnit,
+  );
+  if (
+    conversionFactor !== undefined &&
+    Math.abs(conversionFactor - authoritativeFactor) > 0.000000001
+  ) {
     throw new AppError(
       422,
-      "PO_CONVERSION_REQUIRED",
-      "Enter how many base stock units are contained in one purchase unit",
+      "PO_CONVERSION_INVALID",
+      "The conversion factor does not match the selected standard units",
     );
   }
-  return { purchaseUom: normalizedPurchaseUom, conversionFactor };
+  return {
+    purchaseUom: normalizedPurchaseUom,
+    conversionFactor: authoritativeFactor,
+  };
 }
 
 export function receivedStockQuantity(

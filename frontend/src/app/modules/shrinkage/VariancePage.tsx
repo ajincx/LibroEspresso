@@ -123,7 +123,7 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
               { value: "EXCESS_WITHIN_TOLERANCE", label: "Excess" },
               { value: "DETECTED", label: "Needs Investigation" },
               { value: "VERIFIED", label: "Verified Shrinkage" },
-              { value: "PENDING_REVIEW", label: "Pending Owner Review" },
+              { value: "PENDING_REVIEW", label: "Pending Final Verification" },
               { value: "REVIEWED", label: "Reviewed" },
             ]}
           />
@@ -219,7 +219,7 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
                     </button>
                   ) : (
                     <span className="text-xs text-[var(--app-text-faint)]">—</span>
-                  )}<button type="button" title="Void variance" aria-label={`Void variance ${record.countNo} ${record.itemName}`} onClick={()=>{setVoidTarget(record);setControlledValue({reason:"",verificationPin:""});}} className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--app-border)] text-[var(--app-danger)]"><Ban size={14}/></button></div>
+                  )}{!owner&&<button type="button" title="Void variance" aria-label={`Void variance ${record.countNo} ${record.itemName}`} onClick={()=>{setVoidTarget(record);setControlledValue({reason:"",verificationPin:""});}} className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--app-border)] text-[var(--app-danger)]"><Ban size={14}/></button>}</div>
                 </TD>
               </TR>
             ))
@@ -227,7 +227,7 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
         </tbody>
       </TableWrapper>
     </TableCard>
-    {voidTarget&&<ControlledActionDialog title={`Void ${voidTarget.itemName} variance?`} description="The variance and linked anomaly are retained for audit but removed from active discrepancy and shrinkage views. This does not alter the submitted physical count values." confirmLabel="Void Variance" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setVoidTarget(null)} onConfirm={()=>void voidRecord()}/>}
+    {!owner&&voidTarget&&<ControlledActionDialog title={`Void ${voidTarget.itemName} variance?`} description="The variance and linked anomaly are retained for audit but removed from active discrepancy and shrinkage views. This does not alter the submitted physical count values." confirmLabel="Void Variance" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setVoidTarget(null)} onConfirm={()=>void voidRecord()}/>}
   </div>;
 }
 
@@ -240,7 +240,7 @@ function VarianceStatus({ status }: { status: DisplayStatus }) {
     EXCESS_WITHIN_TOLERANCE: { label: "Excess (Tol.)", color: "var(--app-info)", background: "var(--app-info-bg)" },
     DETECTED: { label: "Needs Investigation", color: "var(--app-danger)", background: "var(--app-danger-bg)" },
     VERIFIED: { label: "Verified Shrinkage", color: "var(--app-primary)", background: "var(--app-primary-subtle)" },
-    PENDING_REVIEW: { label: "Pending Owner Review", color: "var(--app-warning)", background: "var(--app-warning-bg)" },
+    PENDING_REVIEW: { label: "Pending Final Verification", color: "var(--app-warning)", background: "var(--app-warning-bg)" },
     REVIEWED: { label: "Reviewed", color: "var(--app-success)", background: "var(--app-success-bg)" },
   };
   const visual = map[status] ?? { label: status, color: "var(--app-text-muted)", background: "var(--app-surface-muted)" };

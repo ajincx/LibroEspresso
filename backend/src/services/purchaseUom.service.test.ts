@@ -17,8 +17,15 @@ describe("purchase order unit conversion", () => {
     expect(baseStockUnitCost(500, resolved.conversionFactor)).toBe(0.5);
   });
 
-  it("blocks a differing purchase unit without an explicit conversion", () => {
-    expect(() => resolvePurchaseConversion("g", "kg")).toThrow(AppError);
+  it("derives standard conversion without trusting the client", () => {
+    expect(resolvePurchaseConversion("g", "kg")).toEqual({ purchaseUom: "kg", conversionFactor: 1000 });
+    expect(resolvePurchaseConversion("kg", "g")).toEqual({ purchaseUom: "g", conversionFactor: 0.001 });
+    expect(resolvePurchaseConversion("ml", "L")).toEqual({ purchaseUom: "L", conversionFactor: 1000 });
+    expect(resolvePurchaseConversion("L", "ml")).toEqual({ purchaseUom: "ml", conversionFactor: 0.001 });
+  });
+
+  it("rejects a forged standard conversion factor", () => {
+    expect(() => resolvePurchaseConversion("g", "kg", 500)).toThrow(AppError);
   });
 
   it("blocks incompatible dimensions", () => {

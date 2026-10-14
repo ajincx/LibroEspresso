@@ -115,36 +115,28 @@ describe("Inventory Workflow Input Validation (QA Suite)", () => {
   });
 
   describe("inventoryMovementInput", () => {
-    it("validates receipt movements and approved adjustments", () => {
-      const receipt = {
-        inventoryItemId: sampleUuid1,
-        movementType: "RECEIPT",
-        quantity: 50,
-        referenceNo: "PO-2026-0089",
-      };
-      const adjustment = {
-        inventoryItemId: sampleUuid2,
-        movementType: "APPROVED_ADJUSTMENT",
-        quantity: 3,
-        notes: "Approved after count reconciliation",
-      };
+    it("accepts only controlled Manager adjustments with provenance", () => {
       const increase = {
         inventoryItemId: sampleUuid1,
         movementType: "APPROVED_ADJUSTMENT_INCREASE",
         quantity: 5,
-        notes: "Stock found during audit",
+        unit: "g",
+        reason: "Stock found during audit",
+        requestId: sampleUuid2,
       };
       const decrease = {
         inventoryItemId: sampleUuid2,
         movementType: "APPROVED_ADJUSTMENT_DECREASE",
         quantity: 2,
-        notes: "Expired items written off",
+        unit: "pc",
+        reason: "Expired items written off",
+        requestId: sampleUuid1,
       };
 
-      expect(inventoryMovementInput.parse(receipt).movementType).toBe("RECEIPT");
-      expect(inventoryMovementInput.parse(adjustment).movementType).toBe("APPROVED_ADJUSTMENT");
       expect(inventoryMovementInput.parse(increase).movementType).toBe("APPROVED_ADJUSTMENT_INCREASE");
       expect(inventoryMovementInput.parse(decrease).movementType).toBe("APPROVED_ADJUSTMENT_DECREASE");
+      expect(() => inventoryMovementInput.parse({ ...increase, movementType: "RECEIPT" })).toThrow();
+      expect(() => inventoryMovementInput.parse({ ...increase, reason: "short" })).toThrow();
     });
   });
 });

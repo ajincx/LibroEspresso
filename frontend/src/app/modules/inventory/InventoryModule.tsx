@@ -1,9 +1,10 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
-import { AlertCircle, AlertTriangle, DollarSign, Eye, Hash, RefreshCw, SlidersHorizontal, X, XCircle } from "lucide-react";
+import { AlertCircle, AlertTriangle, DollarSign, Eye, Hash, RefreshCw, SlidersHorizontal, X, XCircle, Scale } from "lucide-react";
 import { AnimatedTabPanel, Btn, C, KPICard, ModuleLoadingFallback, ModuleTabSwitcher, SearchInput, SectionHeader, Select, StatusChip, TableCard, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
 import { masterDataService } from "../../services/masterData.service";
 import { operationsService } from "../../services/operations.service";
+import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
 import type { Branch } from "../../types/masterData";
 import type { InventoryCountSummary } from "../../types/inventoryWorkflow";
 import type { InventoryHealthStatus, InventoryOverviewItem, InventoryStockLedger, InventoryLedgerActivityType } from "../../types/operations";
@@ -37,7 +38,7 @@ export function inventoryOverviewColumns(role: Role) {
     : ["SKU", "Ingredient", "Category", "System Stock", "Unit", "Unit Cost", "Value", "Reorder Level", "Coverage", "Status", "Last Count", "Actions"];
 }
 
-export const canConfigureBranchReorderPolicy = (role: Role) => role === "owner";
+export const canConfigureBranchReorderPolicy = (role: Role) => role === "manager";
 
 export function subscribeToInventoryDataChanges(
   refresh: () => void,
@@ -70,6 +71,7 @@ export function InventoryOverview({ role, scopeBranchId = "ALL" }: { role: Role;
   const [branchId, setBranchId] = useState(scopeBranchId);
   const [settingsItem, setSettingsItem] = useState<InventoryOverviewItem | null>(null);
   const [detailsItem, setDetailsItem] = useState<InventoryOverviewItem | null>(null);
+  const [adjustmentItem, setAdjustmentItem] = useState<InventoryOverviewItem | null>(null);
   const [dataRefreshVersion, setDataRefreshVersion] = useState(0);
   const load = useCallback(async () => {
     setLoading(true); setError("");
@@ -125,14 +127,47 @@ export function InventoryOverview({ role, scopeBranchId = "ALL" }: { role: Role;
           {!loading && filtered.length === 0 && <TableEmptyRow colSpan={inventoryOverviewColumns(role).length} title="No inventory records found" subtitle="Try changing the filters or record a physical count." />}
           {!loading && filtered.map((item) => <TR key={`${item.branchId}-${item.inventoryItemId}`}>
             <TD mono muted>{item.sku}</TD><TD><span className="font-medium">{item.name}</span></TD><TD muted>{(item.reorderCategory ?? "MEDIUM")[0]}{(item.reorderCategory ?? "MEDIUM").slice(1).toLowerCase()}</TD>{role === "owner" && <TD muted>{item.branchName}</TD>}
-            <TD right>{item.systemStock.toLocaleString("en-PH")}</TD><TD muted>{item.unit}</TD><TD right muted>{peso(item.unitCost)}</TD><TD right>{peso(item.inventoryValue)}</TD><TD right muted>{item.reorderLevel.toLocaleString("en-PH")}</TD><TD muted>{item.reorderDays} days</TD><TD><StatusChip status={chips[item.status]}/></TD><TD muted>{item.lastCountAt ? new Date(item.lastCountAt).toLocaleString("en-PH") : "No count yet"}</TD><TD><div className="flex items-center gap-2 whitespace-nowrap"><Btn variant="outline" size="sm" icon={Eye} onClick={() => setDetailsItem(item)}>View Details</Btn>{canConfigureBranchReorderPolicy(role) && <Btn variant="outline" size="sm" icon={SlidersHorizontal} onClick={() => setSettingsItem(item)}>Settings</Btn>}</div></TD>
+            <TD right>{item.systemStock.toLocaleString("en-PH")}</TD><TD muted>{item.unit}</TD><TD right muted>{peso(item.unitCost)}</TD><TD right>{peso(item.inventoryValue)}</TD><TD right muted>{item.reorderLevel.toLocaleString("en-PH")}</TD><TD muted>{item.reorderDays} days</TD><TD><StatusChip status={chips[item.status]}/></TD><TD muted>{item.lastCountAt ? new Date(item.lastCountAt).toLocaleString("en-PH") : "No count yet"}</TD><TD><div className="flex items-center gap-2 whitespace-nowrap"><Btn variant="outline" size="sm" icon={Eye} onClick={() => setDetailsItem(item)}>View Details</Btn>{role==="manager"&&<Btn variant="outline" size="sm" icon={Scale} onClick={() => setAdjustmentItem(item)}>Adjust</Btn>}{canConfigureBranchReorderPolicy(role) && <Btn variant="outline" size="sm" icon={SlidersHorizontal} onClick={() => setSettingsItem(item)}>Settings</Btn>}</div></TD>
           </TR>)}
         </tbody>
       </TableWrapper>
     </TableCard>
     {detailsItem && <StockLedgerModal item={detailsItem} refreshVersion={dataRefreshVersion} onClose={() => setDetailsItem(null)}/>}
+    {role==="manager"&&adjustmentItem&&<InventoryAdjustmentModal item={adjustmentItem} onClose={()=>setAdjustmentItem(null)} onSaved={()=>{setAdjustmentItem(null);window.dispatchEvent(new Event("libro-data-changed"));}}/>}
     {settingsItem && <BranchInventorySettingsModal item={settingsItem} onClose={() => setSettingsItem(null)} onSaved={() => { setSettingsItem(null); void load(); }}/>}
   </div>;
+}
+
+export function projectedAdjustmentStock(
+  currentStock: number,
+  movementType: "APPROVED_ADJUSTMENT_INCREASE" | "APPROVED_ADJUSTMENT_DECREASE",
+  quantity: number,
+) {
+  return movementType === "APPROVED_ADJUSTMENT_INCREASE"
+    ? currentStock + quantity
+    : currentStock - quantity;
+}
+
+function InventoryAdjustmentModal({item,onClose,onSaved}:{item:InventoryOverviewItem;onClose:()=>void;onSaved:()=>void}) {
+  const [movementType,setMovementType]=useState<"APPROVED_ADJUSTMENT_INCREASE"|"APPROVED_ADJUSTMENT_DECREASE">("APPROVED_ADJUSTMENT_DECREASE");
+  const [quantity,setQuantity]=useState("");
+  const [reason,setReason]=useState("");
+  const [requestId]=useState(()=>crypto.randomUUID());
+  const [saving,setSaving]=useState(false);
+  const [error,setError]=useState("");
+  const numericQuantity=Number(quantity);
+  const hasValidQuantity=Number.isFinite(numericQuantity)&&numericQuantity>0;
+  const resultingStock=hasValidQuantity?projectedAdjustmentStock(item.systemStock,movementType,numericQuantity):item.systemStock;
+  const save=async()=>{
+    if(!hasValidQuantity){setError("Enter an adjustment quantity greater than zero.");return;}
+    if(movementType==="APPROVED_ADJUSTMENT_DECREASE"&&resultingStock<0){setError("This decrease would reduce stock below zero. Enter a smaller quantity.");return;}
+    if(reason.trim().length<10){setError("Explain the adjustment using at least 10 characters.");return;}
+    setSaving(true);setError("");
+    try {await inventoryWorkflowService.createAdjustment({inventoryItemId:item.inventoryItemId,movementType,quantity:numericQuantity,unit:item.unit as "g"|"kg"|"ml"|"L"|"pc",reason:reason.trim(),requestId});onSaved();}
+    catch(cause){setError(cause instanceof Error?cause.message:"Unable to record the adjustment.");}
+    finally{setSaving(false);}
+  };
+  return <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{background:"rgba(0,0,0,.52)"}} onMouseDown={(event)=>{if(event.target===event.currentTarget)onClose();}}><div role="dialog" aria-modal="true" aria-labelledby="inventory-adjustment-title" className="w-full max-w-lg rounded-2xl border p-6" style={{background:C.surface,borderColor:C.border}}><div className="flex items-start justify-between gap-3"><div><h2 id="inventory-adjustment-title" className="text-lg font-bold">Record Stock Adjustment</h2><p className="mt-1 text-xs" style={{color:C.muted}}>{item.name} · {item.branchName} · canonical unit {item.unit}</p></div><button aria-label="Close adjustment" onClick={onClose}><X size={18}/></button></div><div className="mt-5 space-y-4"><div className="grid grid-cols-2 gap-3 rounded-xl border p-3" style={{borderColor:C.border,background:C.grayBg}}><div><p className="text-xs" style={{color:C.muted}}>Current stock</p><p className="mt-1 font-semibold">{item.systemStock.toLocaleString(undefined,{maximumFractionDigits:4})} {item.unit}</p></div><div><p className="text-xs" style={{color:C.muted}}>Result after adjustment</p><p className="mt-1 font-semibold" style={{color:resultingStock<0?C.red:C.primary}}>{resultingStock.toLocaleString(undefined,{maximumFractionDigits:4})} {item.unit}</p></div></div><label className="block text-sm font-medium">Adjustment type<Select className="mt-1.5 w-full" value={movementType} onChange={(value)=>setMovementType(value as typeof movementType)} options={[{value:"APPROVED_ADJUSTMENT_INCREASE",label:"Increase stock"},{value:"APPROVED_ADJUSTMENT_DECREASE",label:"Decrease stock"}]}/></label><label className="block text-sm font-medium">Quantity ({item.unit})<input className="field mt-1.5 w-full" type="number" min="0.0001" step="any" value={quantity} onChange={(event)=>setQuantity(event.target.value)}/></label>{resultingStock<0&&<p className="text-sm" style={{color:C.red}}>This would reduce stock below zero and will not be saved.</p>}<label className="block text-sm font-medium">Reason<textarea className="field mt-1.5 w-full" rows={3} value={reason} onChange={(event)=>setReason(event.target.value)} placeholder="Explain why this stock adjustment is required"/></label>{error&&<p className="text-sm" style={{color:C.red}}>{error}</p>}</div><div className="mt-6 flex justify-end gap-2"><Btn variant="outline" onClick={onClose}>Cancel</Btn><Btn disabled={saving} onClick={()=>void save()}>{saving?"Saving…":"Record Adjustment"}</Btn></div></div></div>;
 }
 
 function StockLedgerModal({ item, refreshVersion, onClose }: { item: InventoryOverviewItem; refreshVersion: number; onClose: () => void }) {

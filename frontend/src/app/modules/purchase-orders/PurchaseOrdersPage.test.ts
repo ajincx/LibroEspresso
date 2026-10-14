@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PurchaseOrder } from "../../types/operations";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { canAuthorizePurchaseOrderTest, canDeletePurchaseOrderTest, isCompletePurchaseOrderItem, isPhysicalCountRequiredError, PhysicalCountRequiredNotice, purchaseOrderFormValidationError, receiptDateError } from "./PurchaseOrdersPage";
+import { canAuthorizePurchaseOrderTest, canDeletePurchaseOrderTest, isCompletePurchaseOrderItem, isPhysicalCountRequiredError, PhysicalCountRequiredNotice, purchaseOrderFormValidationError, receiptDateError, standardPurchaseConversionFactor } from "./PurchaseOrdersPage";
 
 const order=(patch:Partial<PurchaseOrder>={}):PurchaseOrder=>({
   id:"po-1",poNo:"PO-TEST",branchId:"branch-1",branchName:"Gulod",createdByUserId:"manager-1",createdByName:"Manager",
@@ -43,6 +43,17 @@ describe("purchase-order receipt date validation",()=>{
     expect(receiptDateError(order(),"2026-09-27")).toBe("Received date cannot be before the order date.");
     expect(receiptDateError(order(),"2026-10-01")).toBeNull();
   });
+});
+
+describe("standard purchase-unit conversion",()=>{
+  it("uses authoritative standard factors",()=>{
+    expect(standardPurchaseConversionFactor("kg","g")).toBe(1000);
+    expect(standardPurchaseConversionFactor("g","kg")).toBe(0.001);
+    expect(standardPurchaseConversionFactor("L","ml")).toBe(1000);
+    expect(standardPurchaseConversionFactor("ml","L")).toBe(0.001);
+    expect(standardPurchaseConversionFactor("pc","pc")).toBe(1);
+  });
+  it("does not invent an incompatible factor",()=>expect(standardPurchaseConversionFactor("L","g")).toBeNull());
 });
 
 describe("purchase-order creation validation",()=>{

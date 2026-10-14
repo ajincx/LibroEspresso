@@ -11,6 +11,7 @@ import {
 } from "../services/inventoryLedger.service.js";
 import { configureBranchReorderPolicy } from "../services/branchInventorySettings.service.js";
 import { baseStockUnitCost, receivedStockQuantity, resolvePurchaseConversion } from "../services/purchaseUom.service.js";
+import { lockBranchInventoryOperation } from "../services/inventoryOperationLock.service.js";
 import { AppError } from "../utils/appError.js";
 import { idParams } from "../validators/masterData.js";
 import { paginatedRows, paginationQuery } from "../validators/pagination.js";
@@ -684,6 +685,7 @@ export const receivePurchaseOrder: RequestHandler = async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await lockBranchInventoryOperation(client, branchId);
     const order = await client.query<{ poNo: string; orderDate: string; isTestData: boolean; status: string }>(
       `SELECT po_no "poNo",order_date::text "orderDate",is_test_data "isTestData",status
          FROM purchase_orders WHERE id=$1 AND branch_id=$2 FOR UPDATE`,

@@ -27,6 +27,16 @@ export const inventoryWorkflowService = {
   async updateCount(id: string, countDate: string, items: { inventoryItemId: string; quantity: number; enteredUnit: "g" | "kg" | "ml" | "L" | "pc" }[]) {
     return (await api.patch<ApiSuccess<{ count: { id: string; countNo: string; branchId: string; countDate: string; items: CountVarianceItem[] } }>>(`/inventory-counts/${id}`, { countDate, items })).data.data.count;
   },
+  async createAdjustment(input: {
+    inventoryItemId: string;
+    movementType: "APPROVED_ADJUSTMENT_INCREASE" | "APPROVED_ADJUSTMENT_DECREASE";
+    quantity: number;
+    unit: "g" | "kg" | "ml" | "L" | "pc";
+    reason: string;
+    requestId: string;
+  }) {
+    return (await api.post<ApiSuccess<{ movement: { id: string }; replayed: boolean }>>("/inventory-movements", input)).data.data;
+  },
   async counts(branchId?: string) {
     return (await api.get<ApiSuccess<{ counts: InventoryCountSummary[]; uatTestControlsEnabled: boolean }>>("/inventory-counts", { params: { branchId } })).data.data;
   },

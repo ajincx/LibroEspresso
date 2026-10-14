@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   poolConnect: vi.fn(),
   calculateExpectedInventory: vi.fn(),
+  calculateExpectedInventoryBatch: vi.fn(),
   writeAudit: vi.fn(),
   requiresVarianceInvestigation: vi.fn(() => false),
 }));
@@ -12,6 +13,7 @@ vi.mock("../config/database.js", () => ({
 }));
 vi.mock("../services/inventoryCalculation.service.js", () => ({
   calculateExpectedInventory: mocks.calculateExpectedInventory,
+  calculateExpectedInventoryBatch: mocks.calculateExpectedInventoryBatch,
   computeVariance: (expectedQuantity: number, actualQuantity: number, unitCost: number) => {
     const varianceQuantity = actualQuantity - expectedQuantity;
     return {
@@ -70,6 +72,10 @@ function transactionClient() {
 describe("physical-count API unit normalization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.calculateExpectedInventoryBatch.mockResolvedValue({
+      items: [{ inventoryItemId, sku: "RM-002" }],
+      unavailableItems: [],
+    });
     mocks.calculateExpectedInventory.mockResolvedValue({
       inventoryItemId,
       sku: "RM-002",
