@@ -25,7 +25,9 @@ export function calculatePosImportSimulation(
 ) {
   const itemsByRecipe = new Map<string, PosSimulationRecipeItem[]>();
   for (const item of recipeItems) {
-    itemsByRecipe.set(item.recipeVersionId, [...(itemsByRecipe.get(item.recipeVersionId) ?? []), item]);
+    const existing = itemsByRecipe.get(item.recipeVersionId);
+    if (existing) existing.push(item);
+    else itemsByRecipe.set(item.recipeVersionId, [item]);
   }
   const usage = new Map<string, { inventoryItemId: string; sku: string; name: string; unit: string; expectedConsumption: number; estimatedCost: number }>();
   let estimatedSales = 0;

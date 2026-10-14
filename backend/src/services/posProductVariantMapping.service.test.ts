@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFile } from "node:fs/promises";
-import { loadPosSource, normalizePosIdentity, posResolutionFingerprint, resolvePosMapping, type PosMappingRecord } from "./posProductVariantMapping.service.js";
+import { createPosMappingResolver, loadPosSource, normalizePosIdentity, posResolutionFingerprint, resolvePosMapping, type PosMappingRecord } from "./posProductVariantMapping.service.js";
 import type { ParsedPosRow } from "./posCsvImport.service.js";
 
 const branchA = "00000000-0000-4000-8000-000000000001";
@@ -44,6 +44,14 @@ describe("reviewed POS product/variant resolution", () => {
   });
   it("rejects a product unavailable in the branch", () => {
     expect(resolvePosMapping(row("C12 SPNLT"), branchA, [mapping({ branchAvailable: false })]).status).toBe("UNMATCHED");
+  });
+  it("pre-indexes mappings without changing branch override, ambiguity, or exact-match behavior", () => {
+    const local = mapping({ id: "mapping-local", branchId: branchA, menuItemVariantId: "variant-large", variantName: "Large" });
+    const resolver = createPosMappingResolver(branchA, [mapping(), local]);
+    expect(resolver(row("C12 SPNLT"))).toMatchObject({ status: "APPROVED", scope: "BRANCH", menuItemVariantId: "variant-large" });
+    const ambiguous = createPosMappingResolver(branchA, [mapping(), mapping({ id: "duplicate", menuItemVariantId: "other" })]);
+    expect(ambiguous(row("C12 SPNLT"))).toMatchObject({ status: "AMBIGUOUS" });
+    expect(resolver(row("UNKNOWN"))).toMatchObject({ status: "UNMATCHED" });
   });
   it("includes source, parent, variant, mapping identity and version in the resolution fingerprint", () => {
     const first = { menuItemId: "parent", menuItemVariantId: "small", mappingId: "m1", mappingVersion: "v1" };

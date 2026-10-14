@@ -43,4 +43,10 @@ describe("report dataset semantics", () => {
     expect(salesDetail).not.toContain("DELETE FROM pos_imports");
     expect(salesDetail).not.toContain("UPDATE pos_imports");
   });
+
+  it("builds report forecast values without waiting for optional Gemini interpretation", () => {
+    const source = readFileSync(new URL("./reportDataset.service.ts", import.meta.url), "utf8");
+    const predictiveSection = source.slice(source.indexOf('if (selected.has("PREDICTIVE_FORECAST"))'));
+    expect(predictiveSection).toContain("{ includeGemini: false }");
+  });
 });

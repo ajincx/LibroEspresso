@@ -45,39 +45,58 @@ export interface PosMappingResolution {
   version: string | null;
 }
 
+type IndexedPosMapping = PosMappingRecord & { normalizedName: string; normalizedCode: string | null };
+
+export function createPosMappingResolver(branchId: string, mappings: readonly PosMappingRecord[]) {
+  const byName = new Map<string, IndexedPosMapping[]>();
+  const byCode = new Map<string, IndexedPosMapping[]>();
+  for (const mapping of mappings) {
+    if (mapping.status !== "ACTIVE" || (mapping.branchId !== null && mapping.branchId !== branchId)) continue;
+    const indexed = {
+      ...mapping,
+      normalizedName: normalizePosIdentity(mapping.sourceProductName),
+      normalizedCode: mapping.sourceProductCode === null ? null : normalizePosIdentity(mapping.sourceProductCode),
+    };
+    const index = indexed.normalizedCode === null ? byName : byCode;
+    const key = indexed.normalizedCode ?? indexed.normalizedName;
+    const candidates = index.get(key);
+    if (candidates) candidates.push(indexed);
+    else index.set(key, [indexed]);
+  }
+
+  return (row: ParsedPosRow): PosMappingResolution => {
+    const name = normalizePosIdentity(row.sourceProductName ?? row.sourceProduct);
+    const explicitName = row.sourceProductName ? normalizePosIdentity(row.sourceProductName) : null;
+    const code = row.sourceProductId ? normalizePosIdentity(row.sourceProductId) : null;
+    const candidates = code ? (byCode.get(code) ?? []) : (byName.get(name) ?? []);
+    const scoped = candidates.some((mapping) => mapping.branchId === branchId)
+      ? candidates.filter((mapping) => mapping.branchId === branchId)
+      : candidates.filter((mapping) => mapping.branchId === null);
+    const matching = code && explicitName ? scoped.filter((mapping) => mapping.normalizedName === explicitName) : scoped;
+    const empty = (status: "UNMATCHED" | "AMBIGUOUS", issue: string): PosMappingResolution => ({
+      status, scope: null, mappingId: null, menuItemId: null, menuItemVariantId: null,
+      menuItemName: null, variantName: null, issue, version: null,
+    });
+    if (code && scoped.length && !matching.length) return empty("UNMATCHED", "POS product code and name disagree with the approved mapping.");
+    if (!matching.length) return empty("UNMATCHED", "No approved exact POS product/variant mapping exists for this source and branch.");
+    if (matching.length > 1) return empty("AMBIGUOUS", "Multiple approved targets match this POS item.");
+    const mapping = matching[0]!;
+    if (mapping.variantStatus !== "ACTIVE" || mapping.productStatus !== "ACTIVE" || mapping.approvalStatus !== "APPROVED" || !mapping.branchAvailable) {
+      return empty("UNMATCHED", "The mapped product or variant is not active and approved for this branch.");
+    }
+    return {
+      status: "APPROVED", scope: mapping.branchId ? "BRANCH" : "GLOBAL", mappingId: mapping.id,
+      menuItemId: mapping.menuItemId, menuItemVariantId: mapping.menuItemVariantId,
+      menuItemName: mapping.menuItemName, variantName: mapping.variantName, issue: null,
+      version: `${mapping.id}:${mapping.updatedAt}`,
+    };
+  };
+}
+
 // --- POS PRODUCT TO MENU VARIANT MAPPING ---
 // Maps imported POS product data to the correct menu variant and recipe.
 export function resolvePosMapping(row: ParsedPosRow, branchId: string, mappings: readonly PosMappingRecord[]): PosMappingResolution {
-  const name = normalizePosIdentity(row.sourceProductName ?? row.sourceProduct);
-  const explicitName = row.sourceProductName ? normalizePosIdentity(row.sourceProductName) : null;
-  const code = row.sourceProductId ? normalizePosIdentity(row.sourceProductId) : null;
-  const candidates = mappings.filter((mapping) => {
-    if (mapping.status !== "ACTIVE") return false;
-    if (mapping.branchId !== null && mapping.branchId !== branchId) return false;
-    if (code) return mapping.sourceProductCode !== null && normalizePosIdentity(mapping.sourceProductCode) === code;
-    return mapping.sourceProductCode === null && normalizePosIdentity(mapping.sourceProductName) === name;
-  });
-  const scoped = candidates.some((mapping) => mapping.branchId === branchId)
-    ? candidates.filter((mapping) => mapping.branchId === branchId)
-    : candidates.filter((mapping) => mapping.branchId === null);
-  const matching = code && explicitName ? scoped.filter((mapping) => normalizePosIdentity(mapping.sourceProductName) === explicitName) : scoped;
-  const empty = (status: "UNMATCHED" | "AMBIGUOUS", issue: string): PosMappingResolution => ({
-    status, scope: null, mappingId: null, menuItemId: null, menuItemVariantId: null,
-    menuItemName: null, variantName: null, issue, version: null,
-  });
-  if (code && scoped.length && !matching.length) return empty("UNMATCHED", "POS product code and name disagree with the approved mapping.");
-  if (!matching.length) return empty("UNMATCHED", "No approved exact POS product/variant mapping exists for this source and branch.");
-  if (matching.length > 1) return empty("AMBIGUOUS", "Multiple approved targets match this POS item.");
-  const mapping = matching[0]!;
-  if (mapping.variantStatus !== "ACTIVE" || mapping.productStatus !== "ACTIVE" || mapping.approvalStatus !== "APPROVED" || !mapping.branchAvailable) {
-    return empty("UNMATCHED", "The mapped product or variant is not active and approved for this branch.");
-  }
-  return {
-    status: "APPROVED", scope: mapping.branchId ? "BRANCH" : "GLOBAL", mappingId: mapping.id,
-    menuItemId: mapping.menuItemId, menuItemVariantId: mapping.menuItemVariantId,
-    menuItemName: mapping.menuItemName, variantName: mapping.variantName, issue: null,
-    version: `${mapping.id}:${mapping.updatedAt}`,
-  };
+  return createPosMappingResolver(branchId, mappings)(row);
 }
 
 export function posResolutionFingerprint(sourceId: string | null, rows: readonly { menuItemId: string | null; menuItemVariantId?: string | null; mappingId?: string | null; mappingVersion?: string | null; recipeVersionId?: string | null; itemClassification?: string }[]) {

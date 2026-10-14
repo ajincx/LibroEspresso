@@ -672,7 +672,7 @@ export async function buildReportDataset(
       startDate: forecastStart,
       endDate: forecastEnd,
       branchId: branchId ?? undefined,
-    });
+    }, { includeGemini: false });
     summaries.PREDICTIVE_FORECAST.push(
       {
         key: "forecastSales",

@@ -9,7 +9,7 @@ import { calculateFinancialSummary, roundMoney } from "../services/financialMetr
 import { OPERATIONAL_POS_IMPORT_CONDITION, OPERATIONAL_POS_SOURCE_JOIN } from "../services/operationalPosScope.service.js";
 import { classifyUnmatchedPosIdentity, parsePosCsv, POS_SOURCE_FORMATS, PosCsvError, summarizePosRows, validationIssueField, type MatchedPosRow, type PosMenuCandidate } from "../services/posCsvImport.service.js";
 import { inspectPosExcelHeaders, parsePosExcel, TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE, validateExcelFileSignature, type PosFieldMapping } from "../services/posExcelImport.service.js";
-import { loadPosMappings, loadPosSource, posResolutionFingerprint, resolvePosMapping } from "../services/posProductVariantMapping.service.js";
+import { createPosMappingResolver, loadPosMappings, loadPosSource, posResolutionFingerprint } from "../services/posProductVariantMapping.service.js";
 import { getEffectiveBranchId } from "../services/branchScope.js";
 import { writeAudit } from "../services/audit.service.js";
 import { verifyDestructiveAction, writeDestructiveActionAudit } from "../services/destructiveAction.service.js";
@@ -144,7 +144,7 @@ function posRequestSource(req: Request, confirmation: boolean) {
   return confirmation ? posImportInput.parse(req.body) : posPreviewInput.parse(req.body);
 }
 
-async function buildPosPreview(
+export async function buildPosPreview(
   branchId: string,
   source: PosImportSource,
   client: Pick<PoolClient, "query"> = pool,
@@ -213,6 +213,7 @@ async function buildPosPreview(
   const variantById = new Map(variantResult.rows.map((variant)=>[variant.id,variant]));
   const sourceId = source.posSourceId;
   const mappings = await loadPosMappings(client, selectedSource.id, branchId, parsed.businessDate);
+  const resolveMapping = createPosMappingResolver(branchId, mappings);
   const preliminaryRows: MatchedPosRow[] = parsed.rows.map((row) => {
         if (row.status === "INVALID") return {
           ...row,
@@ -237,7 +238,7 @@ async function buildPosPreview(
           status: "VALID",
           issues: ["Operational POS line excluded from sellable-item mapping and COGS validation."],
         };
-        const resolution = resolvePosMapping(row, branchId, mappings);
+        const resolution = resolveMapping(row);
         if (!resolution || resolution.status !== "APPROVED") return {
           ...row, menuItemId: null, matchedMenuProduct: null, menuItemVariantId: null, matchedVariant: null,
           mappingId: null, mappingStatus: resolution?.status ?? "UNMATCHED", mappingScope: null,

@@ -7,7 +7,7 @@ import { buildReportDataset, type ReportDataset } from "../src/services/reportDa
 import { renderReportPdf, renderReportXlsx } from "../src/services/reportRenderers.service.js";
 import { manilaBusinessDate } from "../src/services/businessTime.service.js";
 import { reportRequest } from "../src/validators/reports.js";
-import { benchmark } from "./benchmark-utils.js";
+import { benchmark, benchmarkConcurrent } from "./benchmark-utils.js";
 
 const scenario = process.argv[2] ?? "all";
 const iterations = Math.max(1, Math.min(20, Number(process.env.BENCHMARK_ITERATIONS ?? 3)));
@@ -38,10 +38,20 @@ const dashboardData = async (actor: typeof user | typeof manager, branchId?: str
   ]);
 };
 const results: unknown[] = [];
+const concurrencyResults: unknown[] = [];
 
 if (scenario === "dashboard" || scenario === "all") {
   results.push(await benchmark("Owner dashboard data", "30-day selected branch", 3_000, iterations, () => dashboardData(user, branchResult.rows[0]!.id)));
   results.push(await benchmark("Branch Manager dashboard data", "30-day assigned branch", 3_000, iterations, () => dashboardData(manager)));
+  for (const concurrentUsers of [1, 5, 10, 25, 50]) {
+    concurrencyResults.push(await benchmarkConcurrent(
+      "Owner dashboard mixed API workload",
+      concurrentUsers,
+      2_000,
+      1,
+      () => dashboardData(user, branchResult.rows[0]!.id),
+    ));
+  }
 }
 
 if (scenario === "cogs" || scenario === "all") {
@@ -75,5 +85,5 @@ if (scenario === "reports" || scenario === "all") {
   }
 }
 
-console.log(JSON.stringify({ measuredAt: new Date().toISOString(), environment: { node: process.version, platform: process.platform, architecture: process.arch }, results }, null, 2));
+console.log(JSON.stringify({ measuredAt: new Date().toISOString(), environment: { node: process.version, platform: process.platform, architecture: process.arch }, results, concurrencyResults }, null, 2));
 await pool.end();

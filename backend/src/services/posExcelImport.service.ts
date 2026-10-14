@@ -23,6 +23,7 @@ const REQUIRED_TRANSACTION_HEADERS = [
 ] as const;
 
 type SheetRows = unknown[][];
+const workbookRowCache = new WeakMap<XLSX.WorkBook, Map<string, SheetRows>>();
 
 export interface DetectedPosFormat {
   sourceFormat: Exclude<PosSourceFormat, "CANONICAL_CSV">;
@@ -59,9 +60,18 @@ const numberValue = (value: unknown) => {
 };
 
 function workbookRows(workbook: XLSX.WorkBook, worksheet: string): SheetRows {
+  let rowsByWorksheet = workbookRowCache.get(workbook);
+  if (!rowsByWorksheet) {
+    rowsByWorksheet = new Map<string, SheetRows>();
+    workbookRowCache.set(workbook, rowsByWorksheet);
+  }
+  const cached = rowsByWorksheet.get(worksheet);
+  if (cached) return cached;
   const sheet = workbook.Sheets[worksheet];
   if (!sheet) return [];
-  return XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: true, defval: null, blankrows: true }) as SheetRows;
+  const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: true, defval: null, blankrows: true }) as SheetRows;
+  rowsByWorksheet.set(worksheet, rows);
+  return rows;
 }
 
 function isLegacySignature(buffer: Buffer) {

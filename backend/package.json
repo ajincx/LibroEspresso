@@ -16,6 +16,7 @@
     "db:seed:pos-mappings": "tsx src/database/seed-libro-pos-mappings.ts",
     "db:complete-pos-validation": "tsx src/database/completePosMappingValidation.ts",
     "benchmark:pos-import": "tsx scripts/benchmark-pos-import.ts",
+    "benchmark:pos-scale": "tsx scripts/benchmark-pos-scale.ts",
     "benchmark:dashboard": "tsx scripts/benchmark-system.ts dashboard",
     "benchmark:cogs": "tsx scripts/benchmark-system.ts cogs",
     "benchmark:reports": "tsx scripts/benchmark-system.ts reports",
