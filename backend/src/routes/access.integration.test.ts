@@ -85,6 +85,17 @@ describe("access controls", () => {
     expect(owner.status).toBe(422);
   });
 
+  it("allows only an assigned Branch Manager to confirm operational Starting Stock", async () => {
+    const path = "/api/inventory-opening-baselines/confirm";
+    const [manager, owner, staff, anonymous] = await Promise.all([
+      request(app).post(path).set("Cookie", session({ id: "manager", role: "BRANCH_MANAGER", branchId: "00000000-0000-4000-8000-000000000002" })).send({}),
+      request(app).post(path).set("Cookie", session({ id: "owner", role: "OWNER", branchId: null })).send({}),
+      request(app).post(path).set("Cookie", session({ id: "staff", role: "STAFF", branchId: "00000000-0000-4000-8000-000000000002" })).send({}),
+      request(app).post(path).send({}),
+    ]);
+    expect([manager.status, owner.status, staff.status, anonymous.status]).toEqual([422, 403, 403, 401]);
+  });
+
   it("keeps UAT/Test physical-count history and classification Owner-only", async () => {
     const cookie = session({ id: "manager", role: "BRANCH_MANAGER", branchId: "00000000-0000-4000-8000-000000000002" });
     const history = await request(app).get("/api/inventory-counts/uat-history").set("Cookie", cookie);

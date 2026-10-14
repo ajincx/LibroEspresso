@@ -1,5 +1,5 @@
 import type { ApiSuccess } from "../types/auth";
-import type { CountVarianceItem, DailyPosUploadStatus, EvidenceBasis, ExpectedInventoryItem, InventoryCountSummary, OpeningInventoryBaseline, PosAnalytics, PosFieldMapping, PosFormatSetupRequest, PosHeaderInspection, PosImportPreview, PosImportReconciliation, PosImportRecord, PosInventoryDateAssessment, PosMapping, PosMappingReviewStatus, PosSource, ShrinkageAiAnalysisResult, ShrinkageClassification, ShrinkageEvidence, ShrinkageReport, UnavailableInventoryCountItem, VarianceRecord, WorkflowNotification } from "../types/inventoryWorkflow";
+import type { CountVarianceItem, DailyPosUploadStatus, EvidenceBasis, ExpectedInventoryItem, InventoryCountSummary, OpeningInventoryBaseline, PosAnalytics, PosFieldMapping, PosFormatSetupRequest, PosHeaderInspection, PosImportPreview, PosImportReconciliation, PosImportRecord, PosInventoryDateAssessment, PosMapping, PosMappingReviewStatus, PosSource, ShrinkageAiAnalysisResult, ShrinkageClassification, ShrinkageEvidence, ShrinkageReport, StartingStockSetup, UnavailableInventoryCountItem, VarianceRecord, WorkflowNotification } from "../types/inventoryWorkflow";
 import { api } from "./api";
 
 type PosPreviewSource =
@@ -54,6 +54,12 @@ export const inventoryWorkflowService = {
   },
   async openingBaselines(branchId?: string) {
     return (await api.get<ApiSuccess<{ baselines: OpeningInventoryBaseline[] }>>("/inventory-opening-baselines", { params: { branchId } })).data.data.baselines;
+  },
+  async startingStockSetup(branchId?: string) {
+    return (await api.get<ApiSuccess<{ setup: StartingStockSetup }>>("/inventory-opening-baselines/setup", { params: { branchId } })).data.data.setup;
+  },
+  async confirmStartingStock(items: { inventoryItemId: string; quantity: number; enteredUnit: "g" | "kg" | "ml" | "L" | "pc" }[]) {
+    return (await api.post<ApiSuccess<{ baseline: OpeningInventoryBaseline }>>("/inventory-opening-baselines/confirm", { confirmed: true, items })).data.data.baseline;
   },
   async reports(filters?: { branchId?: string; status?: string; classification?: string; inventoryItemId?: string; incidentType?: string; startDate?: string; endDate?: string }) {
     return (await api.get<ApiSuccess<{ reports: ShrinkageReport[] }>>("/shrinkage-reports", { params: filters })).data.data.reports;

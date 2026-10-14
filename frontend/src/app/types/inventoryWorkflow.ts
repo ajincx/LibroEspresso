@@ -27,11 +27,28 @@ export interface OpeningInventoryBaseline {
   branchId: string;
   branchName: string;
   effectiveAt: string;
-  designation: "UAT_OPENING";
+  designation: "UAT_OPENING" | "STARTING_STOCK";
   notes: string;
   createdAt: string;
   createdBy: string;
   items: Array<{ id: string; inventoryItemId: string; sku: string; name: string; quantity: number; unit: string }>;
+}
+
+export interface StartingStockSetupItem {
+  inventoryItemId: string;
+  sku: string;
+  name: string;
+  category: string;
+  unit: "g" | "ml" | "pc";
+}
+
+export interface StartingStockSetup {
+  branchId: string;
+  branchName: string;
+  status: "READY" | "INITIALIZED" | "BLOCKED";
+  message: string;
+  items: StartingStockSetupItem[];
+  baseline: OpeningInventoryBaseline | null;
 }
 
 export interface PosImportRecord {

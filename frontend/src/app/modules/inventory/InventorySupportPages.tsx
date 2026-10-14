@@ -11,6 +11,7 @@ import { Btn, CalendarDateField, SearchInput, Select, TableCard, TableEmptyRow, 
 import { businessDate } from "../../utils/businessDate";
 import { formatAppDate } from "../../utils/appPreferences";
 import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
+import { StartingStockSetupPage } from "./StartingStockSetup";
 
 type AppRole = "owner" | "manager";
 type InventoryView = "expected" | "usage";
@@ -396,9 +397,10 @@ export function OpeningInventoryBaselinePage({ role, scopeBranchId = "ALL" }: { 
     finally { setLoading(false); }
   };
   useEffect(() => { void load(); }, [owner, scopeBranchId]);
+  if (!owner) return <StartingStockSetupPage/>;
   return <div className="p-4 md:p-6 space-y-5">
     <TableCard title="Starting Stock" subtitle="Initial stock recorded when a branch begins using Libro." toolbar={<div className="ml-auto"><Btn variant="outline" size="sm" icon={RefreshCw} onClick={() => void load()}>Refresh</Btn></div>}>
-      <TableWrapper minWidth={850}><THead cols={["Branch", "Baseline No.", "Effective At", "Designation", "Items", "Created By", "Actions"]}/><tbody>
+      <TableWrapper minWidth={850}><THead cols={["Branch", "Baseline No.", "Effective At", "Type", "Items", "Created By", "Actions"]}/><tbody>
         {loading ? <TableLoadingRow colSpan={7} label="Loading starting stock…"/> : error ? <TableEmptyRow colSpan={7} icon={FileWarning} title="Unable to load starting stock" subtitle={error}/> : baselines.length===0 ? <TableEmptyRow colSpan={7} icon={ClipboardCheck} title="No starting stock" subtitle="No starting stock has been recorded for this scope."/> : baselines.map((baseline)=><TR key={baseline.id}>
           <TD>{baseline.branchName}</TD><TD mono muted>{baseline.baselineNo}</TD><TD>{new Date(baseline.effectiveAt).toLocaleString("en-PH")}</TD><TD><span className="inline-flex rounded-full px-2.5 py-1 text-xs font-semibold bg-[var(--app-primary-faint)] text-[var(--app-primary)]">Starting Stock</span></TD><TD right>{baseline.items.length}</TD><TD muted>{baseline.createdBy}</TD><TD><Btn size="sm" variant="outline" icon={Eye} onClick={()=>setSelected(baseline)}>View</Btn></TD>
         </TR>)}</tbody></TableWrapper>

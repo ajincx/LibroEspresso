@@ -89,6 +89,16 @@ export const openingInventoryBaselineFilters = z.object({
   branchId: z.string().uuid().optional(),
 });
 
+export const startingStockConfirmationInput = z.object({
+  confirmed: z.literal(true, { error: "Explicit confirmation is required" }),
+  items: z.array(z.object({
+    inventoryItemId: z.string().uuid(),
+    quantity: z.number().finite().min(0),
+    enteredUnit: z.enum(["g", "kg", "ml", "L", "pc"]),
+  })).min(1).max(500)
+    .refine((items) => new Set(items.map((item) => item.inventoryItemId)).size === items.length, "Starting Stock items must be unique"),
+});
+
 export const shrinkageInvestigationInput = z.object({
   menuItemId: z.string().uuid().optional(),
   classification: z.enum(MANAGER_CLASSIFICATIONS),

@@ -214,4 +214,19 @@ describe("opening inventory baseline API workflow", () => {
     await inventoryWorkflowService.openingBaselines("branch-1");
     expect(get).toHaveBeenLastCalledWith("/inventory-opening-baselines", { params: { branchId: "branch-1" } });
   });
+
+  it("loads branch-scoped Starting Stock setup and confirms untouched entry units", async () => {
+    const setup = { branchId: "branch-1", branchName: "Lipa", status: "READY", message: "", items: [], baseline: null };
+    const baseline = { id: "baseline-1", branchId: "branch-1", items: [] };
+    const get = vi.spyOn(api, "get").mockResolvedValue({ data: { success: true, data: { setup } } });
+    const post = vi.spyOn(api, "post").mockResolvedValue({ data: { success: true, data: { baseline } } });
+    await expect(inventoryWorkflowService.startingStockSetup("branch-1")).resolves.toBe(setup);
+    expect(get).toHaveBeenCalledWith("/inventory-opening-baselines/setup", { params: { branchId: "branch-1" } });
+    const items = [
+      { inventoryItemId: "espresso", quantity: 3.864, enteredUnit: "kg" as const },
+      { inventoryItemId: "milk", quantity: 0, enteredUnit: "L" as const },
+    ];
+    await expect(inventoryWorkflowService.confirmStartingStock(items)).resolves.toBe(baseline);
+    expect(post).toHaveBeenCalledWith("/inventory-opening-baselines/confirm", { confirmed: true, items });
+  });
 });

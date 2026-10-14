@@ -34,7 +34,7 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import { archiveShrinkageReport, deletePosSourceConfiguration, voidVarianceRecord } from "../controllers/controlledDestructive.controller.js";
 import { copyApprovedGlobalPosMappings, createPosMapping, createPosSource, deactivateApprovedPosMapping, inspectPosSourceHeaders, listPosMappings, listPosSources, revisePendingPosMapping, savePosSourceFieldMapping, updatePosMapping, updatePosSource } from "../controllers/posProductVariantMapping.controller.js";
 import { declareClosedPosDay, listDailyPosStatus, runDailyPosReminderCron } from "../controllers/posDailyMonitoring.controller.js";
-import { createOpeningInventoryBaseline, listOpeningInventoryBaselines } from "../controllers/openingInventory.controller.js";
+import { confirmStartingStock, createOpeningInventoryBaseline, getStartingStockSetup, listOpeningInventoryBaselines } from "../controllers/openingInventory.controller.js";
 import { getShrinkageAiAnalysis } from "../controllers/shrinkageAi.controller.js";
 
 export const deploymentRouter = Router();
@@ -87,6 +87,8 @@ inventoryMovementRouter.post("/", asyncHandler(createInventoryMovement));
 
 export const openingInventoryRouter = Router();
 openingInventoryRouter.use(authenticate, authorize("OWNER", "BRANCH_MANAGER"));
+openingInventoryRouter.get("/setup", asyncHandler(getStartingStockSetup));
+openingInventoryRouter.post("/confirm", authorize("BRANCH_MANAGER"), asyncHandler(confirmStartingStock));
 openingInventoryRouter.get("/", asyncHandler(listOpeningInventoryBaselines));
 openingInventoryRouter.post("/", authorize("OWNER"), asyncHandler(createOpeningInventoryBaseline));
 
