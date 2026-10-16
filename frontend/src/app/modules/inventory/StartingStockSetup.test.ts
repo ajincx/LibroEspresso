@@ -5,6 +5,7 @@ import {
   normalizeStartingStockEntry,
   startingStockCompletion,
   startingStockDraftKey,
+  startingStockStatusLabel,
 } from "./StartingStockSetup";
 import type { StartingStockSetupItem } from "../../types/inventoryWorkflow";
 
@@ -56,5 +57,10 @@ describe("Starting Stock entry normalization", () => {
 
   it("scopes saved drafts to the selected branch", () => {
     expect(startingStockDraftKey("gulod")).not.toBe(startingStockDraftKey("lipa"));
+  });
+
+  it("uses clear confirmed and unconfirmed status labels",()=>{
+    expect(startingStockStatusLabel(false)).toBe("Not Yet Set Up");
+    expect(startingStockStatusLabel(true)).toBe("Confirmed");
   });
 });

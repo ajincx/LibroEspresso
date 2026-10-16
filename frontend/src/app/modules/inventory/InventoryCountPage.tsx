@@ -67,6 +67,13 @@ export const physicalCountPreviewVariance = (
   actualQuantity: number,
 ) => actualQuantity - expectedQuantity;
 
+export const inventoryCountColumns = (countType: InventoryCountType) => countType === "FULL"
+  ? ["SKU", "Ingredient", "Previous Actual", "Received", "Recipe Consumption", "Expected Stock", "Physical Count", "Preview Variance"]
+  : ["SKU", "Ingredient", "Previous Actual", "Received", "Recipe Consumption", "Expected Stock", "Opening Count", "Closing Count", "Preview Variance"];
+
+export const isDailyCountColumnEditable = (countType: InventoryCountType, column: "OPENING" | "CLOSING") =>
+  countType !== "FULL" && countType === column;
+
 export const physicalCountEntryFromCanonical = (
   quantity: number,
   canonicalUnit: string,
@@ -139,7 +146,7 @@ export function PhysicalCountBackAction({ onBack, label="Back to Count History" 
   return <Btn variant="outline" size="sm" icon={ArrowLeft} onClick={onBack}>{label}</Btn>;
 }
 
-export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FULL" }: { onSubmitted?: () => void; onBackToHistory?: () => void; countType?:InventoryCountType }) {
+export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FULL", embedded=false }: { onSubmitted?: () => void; onBackToHistory?: () => void; countType?:InventoryCountType; embedded?:boolean }) {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const requestedCountId = params.get("editCount");
@@ -257,16 +264,16 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
             Return to New Count
           </button>
         )}
-        <PhysicalCountBackAction onBack={backToHistory} label={countType==="FULL"?"Back to Count History":"Back to Stock Operations"}/>
+        {!embedded&&<PhysicalCountBackAction onBack={backToHistory} label={countType==="FULL"?"Back to Count History":"Back to Stock Operations"}/>}
       </div>
     </div>
   );
 
-  return <div className="p-4 md:p-6 space-y-5">
-    <div>
+  return <div className={embedded?"space-y-5":"p-4 md:p-6 space-y-5"}>
+    {!embedded&&<div>
       <PhysicalCountBackAction onBack={backToHistory} label={countType==="FULL"?"Back to Count History":"Back to Stock Operations"}/>
-    </div>
-    <div className="flex items-start justify-between gap-4">
+    </div>}
+    {!embedded&&<div className="flex items-start justify-between gap-4">
       <div>
         <div className="flex items-center gap-3">
         <h1 className="text-xl font-bold" style={{ color: "var(--app-text)" }}>
@@ -285,7 +292,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
         </p>
       </div>
       <CalendarDateField label="Count date" value={countDate} max={currentBusinessDate} onChange={setCountDate} disabled={Boolean(editingCountId)}/>
-    </div>
+    </div>}
 
     {!editingCountId && unavailable.length > 0 && (
       <div className="rounded-2xl border p-4 bg-[var(--app-warning-bg)] border-[var(--app-warning)]" role="status">
@@ -312,25 +319,26 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
 
     {submitted ? <CountResult countNo={submitted.countNo} items={submitted.items} onEdit={() => { setEntries(Object.fromEntries(submitted.items.map((item) => [item.inventoryItemId, physicalCountEntryFromCanonical(item.actualQuantity, item.unit)]))); setEditingCountId(submitted.id); setSubmitted(null); }} onInvestigate={(item) => item.shrinkageReportId && navigate(`/shrinkage?reportId=${item.shrinkageReportId}`)} onNewCount={() => void loadExpected()} /> : (
       <TableCard
-        title={editingCountId ? "Correct Physical Count" : "Physical Count Entry"}
-        subtitle="Record and verify the physical stock available at the branch. Expected stock remains system-calculated."
+        title={countType==="FULL"?(editingCountId ? "Correct Physical Count" : "Full Physical Count Entry"):undefined}
+        subtitle={countType==="FULL"?"Record and verify the physical stock available at the branch. Expected stock remains system-calculated.":undefined}
         badge={
           <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-0.5 rounded-full bg-[var(--app-primary-faint)] text-[var(--app-primary)] border border-[var(--app-border)]">
             {expected.length} item{expected.length === 1 ? "" : "s"}
           </span>
         }
         toolbar={<>
+          {embedded&&<CalendarDateField label="Count date" value={countDate} max={currentBusinessDate} onChange={setCountDate} disabled={Boolean(editingCountId)}/>}
           <SearchInput placeholder="Search ingredient or SKU…" width={260} value={search} onChange={setSearch}/>
           <Select small value={completionFilter} onChange={(value) => setCompletionFilter(value as PhysicalCountCompletionFilter)} options={[{ value: "ALL", label: "All" }, { value: "COUNTED", label: "Counted" }, { value: "NOT_COUNTED", label: "Not Counted" }]}/>
           <span className="text-xs font-medium text-[var(--app-text-muted)]">Showing {visibleItems.length} of {expected.length} items</span>
           {search && <Btn variant="outline" size="sm" onClick={() => setSearch("")}>Clear search</Btn>}
           {countType==="OPENING"&&dailyContext?.previousClosingItems.length&&!activeDailyCount?<Btn variant="outline" size="sm" onClick={()=>{const copied=new Map(dailyContext.previousClosingItems.map((item)=>[item.inventoryItemId,item.actualQuantity]));setEntries(Object.fromEntries(expected.map((item)=>[item.inventoryItemId,copied.has(item.inventoryItemId)?physicalCountEntryFromCanonical(copied.get(item.inventoryItemId)!,item.unit):blankPhysicalCountEntry(item.unit)])));setHasUnsavedChanges(true);setPreviewing(false);}}>Copy Previous Closing</Btn>:null}
-          <Btn icon={Send} disabled={saving || expected.length === 0 || Boolean(activeDailyCount) || (countType==="FULL"&&completion.remaining > 0) || (countType==="CLOSING"&&(!dailyContext?.openingCount||!dailyContext.posDayComplete))} onClick={() => void submit()}>
-            {saving ? "Saving…" : editingCountId ? "Save Corrections" : previewing ? "Confirm and Submit" : activeDailyCount ? `${countType === "OPENING" ? "Opening" : "Closing"} Submitted` : countType==="FULL"?"Submit Count":"Preview Variance"}
-          </Btn>
+          <div className="ml-auto"><Btn icon={Send} disabled={saving || expected.length === 0 || Boolean(activeDailyCount) || (countType==="FULL"&&completion.remaining > 0) || (countType==="CLOSING"&&(!dailyContext?.openingCount||!dailyContext.posDayComplete))} onClick={() => void submit()}>
+            {saving ? "Saving…" : editingCountId ? "Save Corrections" : previewing ? "Confirm and Submit" : activeDailyCount ? `${countType === "OPENING" ? "Opening" : "Closing"} Submitted` : "Submit Count"}
+          </Btn></div>
         </>}
       >
-        {countType!=="FULL"&&<div className="border-b p-4 border-[var(--app-border)]"><div className="mb-3 rounded-xl bg-[var(--app-surface-muted)] p-3 text-sm text-[var(--app-text-muted)]">{countType==="CLOSING"&&!dailyContext?.openingCount?"Closing Count is unavailable until today's Opening Count is submitted.":countType==="CLOSING"&&!dailyContext?.posDayComplete?"Closing Count is unavailable until the reconciled end-of-day POS report is imported and confirmed complete.":activeDailyCount?`${countType === "OPENING" ? "Opening" : "Closing"} Count has already been submitted for this date.`:"Blank ingredients are not counted and remain unchanged. Entered zero is saved as zero."}</div><TableWrapper minWidth={520}><THead cols={["Ingredient","Opening","Closing","Unit"]}/><tbody>{expected.map((item)=><TR key={`daily-${item.inventoryItemId}`}><TD bold>{item.itemName}</TD><TD right>{openingQuantities[item.inventoryItemId]===undefined?"—":openingQuantities[item.inventoryItemId].toFixed(2)}</TD><TD right>{closingQuantities[item.inventoryItemId]===undefined?"—":closingQuantities[item.inventoryItemId].toFixed(2)}</TD><TD muted>{item.unit}</TD></TR>)}</tbody></TableWrapper></div>}
+        {countType!=="FULL"&&<div className="border-b p-4 text-sm text-[var(--app-text-muted)] border-[var(--app-border)] bg-[var(--app-surface-muted)]">{countType==="CLOSING"&&!dailyContext?.openingCount?"Closing Count is unavailable until today's Opening Count is submitted.":countType==="CLOSING"&&!dailyContext?.posDayComplete?"Closing Count is unavailable until the reconciled end-of-day POS report is imported and confirmed complete.":activeDailyCount?`${countType === "OPENING" ? "Opening" : "Closing"} Count has already been submitted for this date.`:"Blank ingredients are not counted and remain unchanged. Entered zero is saved as zero."}</div>}
         <div className="border-b p-4" style={{ borderColor: "var(--app-border)" }}>
           <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
             <strong>{completion.counted} of {expected.length} ingredients counted</strong>
@@ -342,18 +350,20 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
           {countType==="FULL"&&completion.remaining > 0 && <p className="mt-2 text-xs text-[var(--app-text-muted)]">Complete the remaining physical quantities before submitting. Still needed: {completion.remainingItems.slice(0, 5).map((item) => item.itemName).join(", ")}{completion.remaining > 5 ? ` and ${completion.remaining - 5} more` : ""}.</p>}
           {countType!=="FULL"&&previewing&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">Preview ready. Review the calculated variances, then choose Confirm and Submit. Only entered ingredients will establish checkpoints.</p>}
         </div>
-        <TableWrapper minWidth={900}>
-          <THead cols={["SKU", "Ingredient", "Previous Actual", "Received", "Recipe Consumption", "Expected Stock", "Physical Count", "Preview Variance"]} />
+        <TableWrapper minWidth={countType==="FULL"?900:1120}>
+          <THead cols={inventoryCountColumns(countType)} />
           <tbody>
             {expected.length === 0 ? (
-              <TableEmptyRow colSpan={8} title="No ingredients available" subtitle="No ingredients are configured for physical counting." />
+              <TableEmptyRow colSpan={inventoryCountColumns(countType).length} title="No ingredients available" subtitle="No ingredients are configured for physical counting." />
             ) : visibleItems.length === 0 ? (
-              <TableEmptyRow colSpan={8} title="No ingredients found" subtitle="Try a different ingredient name or SKU." />
+              <TableEmptyRow colSpan={inventoryCountColumns(countType).length} title="No ingredients found" subtitle="Try a different ingredient name or SKU." />
             ) : (
               visibleItems.map((item) => {
                 const entry = entries[item.inventoryItemId] ?? blankPhysicalCountEntry(item.unit);
                 const normalizedActual = normalizePhysicalCountPreview(entry, item.unit);
                 const variance = normalizedActual === null ? null : physicalCountPreviewVariance(item.expectedQuantity, normalizedActual);
+                const countEntry=<div className="flex flex-col items-end gap-1"><div className="flex items-center gap-1.5"><input type="number" min={0} step="any" value={entry.quantity} onChange={(event) => { setHasUnsavedChanges(true); setPreviewing(false); setEntries((current) => ({ ...current, [item.inventoryItemId]: { ...entry, quantity: event.target.value } })); }} placeholder="Not counted" className="min-h-9 w-28 px-2.5 py-1.5 rounded-xl border text-right font-semibold text-sm outline-none transition-colors border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] focus:border-[var(--app-primary)] focus:ring-2 focus:ring-[var(--app-primary-faint)]" aria-label={`${item.itemName} ${countType.toLowerCase()} quantity`}/><Select small value={entry.enteredUnit} onChange={(value) => { setHasUnsavedChanges(true); setPreviewing(false); setEntries((current) => ({ ...current, [item.inventoryItemId]: changePhysicalCountEntryUnit(entry, item.unit, value as PhysicalCountUnit) })); }} className="w-20 [&_.custom-select-trigger]:!min-w-0" ariaLabel={`${item.itemName} physical count unit`} options={allowedPhysicalCountUnits(item.unit).map((unit) => ({ value: unit, label: unit }))}/></div><span className="text-[10px] whitespace-nowrap text-[var(--app-text-muted)]">{entry.quantity.trim() === ""?"Not yet counted":normalizedActual === null?"Enter a valid non-negative quantity":`Converted to system unit: ${normalizedActual.toLocaleString("en-US", { maximumFractionDigits: 4 })} ${item.unit}`}</span></div>;
+                const savedQuantity=(value:number|undefined)=>value===undefined?<span className="text-[var(--app-text-muted)]">—</span>:<span className="font-semibold">{value.toLocaleString("en-PH",{maximumFractionDigits:4})} {item.unit}</span>;
                 return (
                   <TR key={item.inventoryItemId}>
                     <TD mono><span className="font-semibold text-[var(--app-primary)]">{item.sku}</span></TD>
@@ -362,39 +372,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
                     <TD right muted>{item.stockReceived.toFixed(2)} {item.unit}</TD>
                     <TD right><span className="font-medium text-[var(--app-primary)]">−{item.expectedConsumption.toFixed(2)} {item.unit}</span></TD>
                     <TD right><span className="font-bold text-[var(--app-text)]">{item.expectedQuantity.toFixed(2)} {item.unit}</span></TD>
-                    <TD right>
-                      <div className="flex flex-col items-end gap-1">
-                        <div className="flex items-center gap-1.5">
-                          <input
-                            type="number"
-                            min={0}
-                            step="any"
-                            value={entry.quantity}
-                            onChange={(event) => { setHasUnsavedChanges(true); setPreviewing(false); setEntries((current) => ({ ...current, [item.inventoryItemId]: { ...entry, quantity: event.target.value } })); }}
-                            placeholder="Not counted"
-                            className="min-h-9 w-28 px-2.5 py-1.5 rounded-xl border text-right font-semibold text-sm outline-none transition-colors border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] focus:border-[var(--app-primary)] focus:ring-2 focus:ring-[var(--app-primary-faint)]"
-                            aria-label={`${item.itemName} physical quantity`}
-                            disabled={Boolean(activeDailyCount&&!editingCountId)}
-                          />
-                          <Select
-                            small
-                            value={entry.enteredUnit}
-                            onChange={(value) => { setHasUnsavedChanges(true); setPreviewing(false); setEntries((current) => ({ ...current, [item.inventoryItemId]: changePhysicalCountEntryUnit(entry, item.unit, value as PhysicalCountUnit) })); }}
-                            className="w-20 [&_.custom-select-trigger]:!min-w-0"
-                            ariaLabel={`${item.itemName} physical count unit`}
-                            disabled={Boolean(activeDailyCount&&!editingCountId)}
-                            options={allowedPhysicalCountUnits(item.unit).map((unit) => ({ value: unit, label: unit }))}
-                          />
-                        </div>
-                        <span className="text-[10px] whitespace-nowrap text-[var(--app-text-muted)]">
-                          {entry.quantity.trim() === ""
-                            ? "Not yet counted"
-                            : normalizedActual === null
-                              ? "Enter a valid non-negative quantity"
-                            : `Converted to system unit: ${normalizedActual.toLocaleString("en-US", { maximumFractionDigits: 4 })} ${item.unit}`}
-                        </span>
-                      </div>
-                    </TD>
+                    {countType==="FULL"?<TD right>{countEntry}</TD>:<><TD right>{isDailyCountColumnEditable(countType,"OPENING")&&!activeDailyCount?countEntry:savedQuantity(openingQuantities[item.inventoryItemId])}</TD><TD right>{isDailyCountColumnEditable(countType,"CLOSING")&&!activeDailyCount?countEntry:savedQuantity(closingQuantities[item.inventoryItemId])}</TD></>}
                     <TD right>
                       <span
                         className="font-bold text-sm"

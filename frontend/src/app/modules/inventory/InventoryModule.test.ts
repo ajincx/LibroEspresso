@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { canConfigureBranchReorderPolicy, inventoryAdjustmentValidationError, InventoryOverview, inventoryOverviewColumns, inventoryTabs, projectedAdjustmentStock, recordCountShortcutDestination, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, stockOperationCards, subscribeToInventoryDataChanges } from "./InventoryModule";
+import { branchReorderSettingsInput, canConfigureBranchReorderPolicy, canOpenClosingCount, dailyCountStatusLabel, inventoryAdjustmentValidationError, InventoryOverview, inventoryOverviewColumns, inventoryTabs, projectedAdjustmentStock, recordCountShortcutDestination, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, shouldShowStockOperationCards, stockOperationCards, subscribeToInventoryDataChanges } from "./InventoryModule";
 import type { InventoryCountSummary } from "../../types/inventoryWorkflow";
 
 afterEach(() => vi.useRealTimers());
@@ -41,6 +41,27 @@ describe("Inventory Management terminology", () => {
   it("allows only the Branch Manager to configure branch reorder policies", () => {
     expect(canConfigureBranchReorderPolicy("owner")).toBe(false);
     expect(canConfigureBranchReorderPolicy("manager")).toBe(true);
+  });
+
+  it("keeps the existing business category while removing it from Manager input",()=>{
+    const item={branchId:"branch-1",inventoryItemId:"item-1",reorderCategory:"FAST",reorderLevel:10,reorderDays:5} as Parameters<typeof branchReorderSettingsInput>[0];
+    expect(branchReorderSettingsInput(item,"25","7"," Verified branch threshold ")).toMatchObject({category:"FAST",reorderLevel:25,reorderDays:7,reason:"Verified branch threshold"});
+  });
+
+  it("hides operation cards while a workflow is open and restores them after Back",()=>{
+    expect(shouldShowStockOperationCards(null)).toBe(true);
+    expect(shouldShowStockOperationCards("starting")).toBe(false);
+    expect(shouldShowStockOperationCards("daily")).toBe(false);
+    expect(shouldShowStockOperationCards("full")).toBe(false);
+  });
+
+  it("uses saved daily-count state and enforces Closing prerequisites",()=>{
+    const context={countType:"OPENING" as const,openingCount:{id:"opening-1",countNo:"IC-1",countType:"OPENING" as const,submittedAt:"2026-10-16T00:00:00Z"},closingCount:null,previousClosingItems:[],posDayComplete:true};
+    expect(dailyCountStatusLabel(null)).toBe("—");
+    expect(dailyCountStatusLabel(context.openingCount)).toBe("Recorded");
+    expect(canOpenClosingCount(context)).toBe(true);
+    expect(canOpenClosingCount({...context,posDayComplete:false})).toBe(false);
+    expect(canOpenClosingCount({...context,openingCount:null})).toBe(false);
   });
 
   it("does not render a duplicate Record Stock Count action in Inventory Overview", () => {

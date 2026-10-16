@@ -2,7 +2,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { ExpectedInventoryItem } from "../../types/inventoryWorkflow";
-import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, filterPhysicalCountItems, initialPhysicalCountDate, isFutureInventoryCountDate, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, physicalCountCompletion, physicalCountEntryFromCanonical, physicalCountPreviewVariance, validPhysicalCountEntries } from "./InventoryCountPage";
+import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, filterPhysicalCountItems, initialPhysicalCountDate, inventoryCountColumns, isDailyCountColumnEditable, isFutureInventoryCountDate, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, physicalCountCompletion, physicalCountEntryFromCanonical, physicalCountPreviewVariance, validPhysicalCountEntries } from "./InventoryCountPage";
 import { buildEnteredPhysicalCountItems } from "./InventoryCountPage";
 
 const item = (inventoryItemId: string, sku: string, itemName: string): ExpectedInventoryItem => ({
@@ -20,6 +20,18 @@ describe("Daily partial physical counts",()=>{
       {inventoryItemId:"ice",quantity:0,enteredUnit:"pc"},
       {inventoryItemId:"sugar",quantity:3,enteredUnit:"pc"},
     ]);
+  });
+
+  it("uses side-by-side Opening and Closing columns while editing only the active count",()=>{
+    expect(inventoryCountColumns("OPENING")).toEqual(["SKU","Ingredient","Previous Actual","Received","Recipe Consumption","Expected Stock","Opening Count","Closing Count","Preview Variance"]);
+    expect(isDailyCountColumnEditable("OPENING","OPENING")).toBe(true);
+    expect(isDailyCountColumnEditable("OPENING","CLOSING")).toBe(false);
+    expect(isDailyCountColumnEditable("CLOSING","OPENING")).toBe(false);
+    expect(isDailyCountColumnEditable("CLOSING","CLOSING")).toBe(true);
+  });
+
+  it("keeps the complete Full Physical Count table",()=>{
+    expect(inventoryCountColumns("FULL")).toEqual(["SKU","Ingredient","Previous Actual","Received","Recipe Consumption","Expected Stock","Physical Count","Preview Variance"]);
   });
 
   it("supports the Daily Count return label without changing the Full Count default",()=>{

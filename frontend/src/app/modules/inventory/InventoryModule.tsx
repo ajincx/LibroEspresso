@@ -7,10 +7,11 @@ import { masterDataService } from "../../services/masterData.service";
 import { operationsService } from "../../services/operations.service";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
 import type { Branch } from "../../types/masterData";
-import type { InventoryCountSummary } from "../../types/inventoryWorkflow";
+import type { DailyInventoryCountContext, InventoryCountSummary } from "../../types/inventoryWorkflow";
 import type { InventoryHealthStatus, InventoryOverviewItem, InventoryStockLedger, InventoryLedgerActivityType } from "../../types/operations";
 import type { Page, Role } from "../../types/navigation";
 import { formatAppCurrency } from "../../utils/appPreferences";
+import { businessDate } from "../../utils/businessDate";
 
 const InventoryCountPage = lazy(() => import("./InventoryCountPage").then((module) => ({ default: module.InventoryCountPage })));
 const supportPages = () => import("./InventorySupportPages");
@@ -211,15 +212,19 @@ function StockLedgerModal({ item, refreshVersion, onClose }: { item: InventoryOv
   </div>;
 }
 
+export function branchReorderSettingsInput(item:InventoryOverviewItem,reorderLevel:string,reorderDays:string,reason:string){
+  const category:NonNullable<InventoryOverviewItem["reorderCategory"]>=item.reorderCategory??"MEDIUM";
+  return { branchId:item.branchId,category,reorderLevel:Number(reorderLevel),reorderDays:Number(reorderDays),reason:reason.trim() };
+}
+
 function BranchInventorySettingsModal({ item, onClose, onSaved }: { item: InventoryOverviewItem; onClose: () => void; onSaved: () => void }) {
-  const [reorderCategory, setReorderCategory] = useState<"FAST" | "MEDIUM" | "SLOW">(item.reorderCategory ?? "MEDIUM");
   const [reorderLevel, setReorderLevel] = useState(String(item.reorderLevel));
   const [reorderDays, setReorderDays] = useState(String(item.reorderDays));
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const save = async () => {
-    const input = { branchId: item.branchId, category: reorderCategory, reorderLevel: Number(reorderLevel), reorderDays: Number(reorderDays), reason: reason.trim() };
+    const input = branchReorderSettingsInput(item,reorderLevel,reorderDays,reason);
     if (!Number.isFinite(input.reorderLevel) || input.reorderLevel < 0 || !Number.isInteger(input.reorderDays) || input.reorderDays < 1 || input.reorderDays > 365 || input.reason.length < 10) {
       setError("Enter a valid reorder quantity, coverage of 1–365 days, and a reason of at least 10 characters."); return;
     }
@@ -228,7 +233,7 @@ function BranchInventorySettingsModal({ item, onClose, onSaved }: { item: Invent
     catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to update inventory settings."); }
     finally { setSaving(false); }
   };
-  return <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.52)" }} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div role="dialog" aria-modal="true" aria-labelledby="branch-inventory-settings-title" className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border p-6 shadow-2xl" style={{ background: C.surface, borderColor: C.border }}><div className="flex items-start justify-between gap-4"><div><h2 id="branch-inventory-settings-title" className="text-lg font-bold" style={{ color: C.primary }}>Branch Reorder Configuration</h2><p className="text-xs mt-1" style={{ color: C.secondary }}>{item.name} · {item.branchName}</p></div><button aria-label="Close branch inventory settings" onClick={onClose} className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: C.grayBg }}><X size={15}/></button></div><div className="grid sm:grid-cols-2 gap-4 mt-6"><label className="text-sm font-medium sm:col-span-2">Business Category<Select className="mt-1.5" value={reorderCategory} onChange={(value) => setReorderCategory(value as "FAST" | "MEDIUM" | "SLOW")} options={[{ value: "FAST", label: "Fast" }, { value: "MEDIUM", label: "Medium" }, { value: "SLOW", label: "Slow" }]}/></label><label className="block text-sm font-medium">Reorder Quantity ({item.unit})<input className="field mt-1.5 w-full" type="number" min="0" step="any" value={reorderLevel} onChange={(event) => setReorderLevel(event.target.value)}/><span className="block text-[11px] mt-1" style={{ color: C.muted }}>Stock threshold used to identify low inventory for this branch.</span></label><label className="block text-sm font-medium">Target Coverage (Days)<input className="field mt-1.5 w-full" type="number" min="1" max="365" step="1" value={reorderDays} onChange={(event) => setReorderDays(event.target.value)}/><span className="block text-[11px] mt-1" style={{ color: C.muted }}>Desired days of stock coverage. Changing this does not automatically recalculate Reorder Quantity.</span></label><label className="block text-sm font-medium sm:col-span-2">Reason<textarea className="field mt-1.5 min-h-24 w-full resize-y" value={reason} maxLength={500} onChange={(event) => setReason(event.target.value)} placeholder="Explain why this branch-specific policy is changing."/></label></div>{error && <p className="text-sm mt-4" style={{ color: C.red }}>{error}</p>}<div className="flex justify-end gap-2 mt-6"><Btn variant="outline" disabled={saving} onClick={onClose}>Cancel</Btn><Btn disabled={saving} onClick={() => void save()}>{saving ? "Saving…" : "Save Configuration"}</Btn></div></div></div>;
+  return <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.52)" }} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div role="dialog" aria-modal="true" aria-labelledby="branch-inventory-settings-title" className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border p-6 shadow-2xl" style={{ background: C.surface, borderColor: C.border }}><div className="flex items-start justify-between gap-4"><div><h2 id="branch-inventory-settings-title" className="text-lg font-bold" style={{ color: C.primary }}>Branch Reorder Configuration</h2><p className="text-xs mt-1" style={{ color: C.secondary }}>{item.name} · {item.branchName}</p></div><button aria-label="Close branch inventory settings" onClick={onClose} className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: C.grayBg }}><X size={15}/></button></div><div className="grid sm:grid-cols-2 gap-4 mt-6"><label className="block text-sm font-medium">Reorder Quantity ({item.unit})<input className="field mt-1.5 w-full" type="number" min="0" step="any" value={reorderLevel} onChange={(event) => setReorderLevel(event.target.value)}/><span className="block text-[11px] mt-1" style={{ color: C.muted }}>Stock threshold used to identify low inventory for this branch.</span></label><label className="block text-sm font-medium">Target Coverage (Days)<input className="field mt-1.5 w-full" type="number" min="1" max="365" step="1" value={reorderDays} onChange={(event) => setReorderDays(event.target.value)}/><span className="block text-[11px] mt-1" style={{ color: C.muted }}>Desired days of stock coverage. Changing this does not automatically recalculate Reorder Quantity.</span></label><label className="block text-sm font-medium sm:col-span-2">Reason<textarea className="field mt-1.5 min-h-24 w-full resize-y" value={reason} maxLength={500} onChange={(event) => setReason(event.target.value)} placeholder="Explain why this branch-specific policy is changing."/></label></div>{error && <p className="text-sm mt-4" style={{ color: C.red }}>{error}</p>}<div className="flex justify-end gap-2 mt-6"><Btn variant="outline" disabled={saving} onClick={onClose}>Cancel</Btn><Btn disabled={saving} onClick={() => void save()}>{saving ? "Saving…" : "Save Configuration"}</Btn></div></div></div>;
 }
 
 export const inventoryTabs = [{ id: "overview", label: "Inventory Overview" }, { id: "operations", label: "Stock Operations" }, { id: "history", label: "Stock History" }] as const;
@@ -248,7 +253,7 @@ export const stockOperationCards = (role: Role) => [
     id: "daily" as const,
     title: "Daily Stock Count",
     description: "Record selected ingredients at opening and closing without changing ingredients left blank.",
-    action: role === "manager" ? "Opening / Closing" : "View Daily Counts",
+    action: role === "manager" ? "Record Daily Count" : "View Daily Counts",
     enabled: true,
   },
   {
@@ -264,37 +269,51 @@ export const stockOperationCards = (role: Role) => [
 
 const stockOperationIcons = { starting: PackageOpen, daily: SunMoon, full: ClipboardCheck } satisfies Record<StockOperationId, typeof PackageOpen>;
 
-function DailyStockCountWorkflow({role,scopeBranchId,onBack}:{role:Role;scopeBranchId:string;onBack:()=>void}){
-  const [countType,setCountType]=useState<"OPENING"|"CLOSING">("OPENING");
+export const shouldShowStockOperationCards = (selected: StockOperationId | null) => selected === null;
+export const dailyCountStatusLabel = (count: DailyInventoryCountContext["openingCount"] | DailyInventoryCountContext["closingCount"]) => count ? "Recorded" : "—";
+export const canOpenClosingCount = (context: DailyInventoryCountContext | null) => Boolean(context?.openingCount && context.posDayComplete);
+
+function DailyStockCountWorkflow({role,countType,onSubmitted}:{role:Role;countType:"OPENING"|"CLOSING";onSubmitted:()=>void}){
   const [revision,setRevision]=useState(0);
   if(role!=="manager") return <div className="p-4 md:p-6"><p className="rounded-xl bg-[var(--app-surface-muted)] p-4 text-sm text-[var(--app-text-muted)]">Daily Opening and Closing Counts are recorded by the assigned Branch Manager. Review submitted entries in Stock History.</p></div>;
-  return <div><div className="flex gap-2 border-b p-4 border-[var(--app-border)]"><Btn variant={countType==="OPENING"?"primary":"outline"} onClick={()=>setCountType("OPENING")}>Opening Count</Btn><Btn variant={countType==="CLOSING"?"primary":"outline"} onClick={()=>setCountType("CLOSING")}>Closing Count</Btn></div><InventoryCountPage key={`${countType}-${revision}`} countType={countType} onBackToHistory={onBack} onSubmitted={()=>{setRevision((value)=>value+1);if(countType==="OPENING")setCountType("CLOSING");}}/></div>;
+  return <InventoryCountPage key={`${countType}-${revision}`} countType={countType} embedded onSubmitted={()=>{setRevision((value)=>value+1);onSubmitted();}}/>;
 }
 
 export function StockOperations({ role, scopeBranchId = "ALL", initialOperation = null }: { role: Role; scopeBranchId?: string; initialOperation?: StockOperationId | null }) {
   const [selected, setSelected] = useState<StockOperationId | null>(initialOperation);
+  const [dailyCountType,setDailyCountType]=useState<"OPENING"|"CLOSING">("OPENING");
+  const [dailyContext,setDailyContext]=useState<DailyInventoryCountContext|null>(null);
+  const [dailyRefresh,setDailyRefresh]=useState(0);
   useEffect(() => setSelected(initialOperation), [initialOperation]);
+  useEffect(()=>{
+    if(role!=="manager") return;
+    let active=true;
+    inventoryWorkflowService.expected(businessDate(),scopeBranchId==="ALL"?undefined:scopeBranchId,"OPENING")
+      .then((context)=>{if(active)setDailyContext(context);})
+      .catch(()=>{if(active)setDailyContext(null);});
+    return()=>{active=false;};
+  },[dailyRefresh,role,scopeBranchId]);
   const cards = stockOperationCards(role);
   return <div className="p-4 md:p-6 space-y-5">
-    <SectionHeader title="Stock Operations" sub="Use the existing inventory workflows for branch setup and verified physical counting."/>
-    <div className="grid gap-4 md:grid-cols-3">
+    {!selected&&<SectionHeader title="Stock Operations" sub="Use the existing inventory workflows for branch setup and verified physical counting."/>}
+    {shouldShowStockOperationCards(selected)&&<div className="grid gap-4 md:grid-cols-3">
       {cards.map((card) => {
         const Icon = stockOperationIcons[card.id];
         return <section key={card.id} className="flex min-h-56 flex-col rounded-2xl border p-5 bg-[var(--app-surface)] border-[var(--app-border)]">
           <div className="flex items-start justify-between gap-3"><span className="flex h-11 w-11 items-center justify-center rounded-xl bg-[var(--app-primary-faint)] text-[var(--app-primary)]"><Icon size={21}/></span><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${card.enabled ? "bg-[var(--app-success-bg)] text-[var(--app-success)]" : "bg-[var(--app-surface-muted)] text-[var(--app-text-muted)]"}`}>{card.enabled ? "Available" : card.id === "daily" ? "Not yet available" : "Read only"}</span></div>
           <h2 className="mt-4 text-lg font-bold">{card.title}</h2><p className="mt-2 flex-1 text-sm leading-6 text-[var(--app-text-muted)]">{card.description}</p>
-          <Btn className="mt-5 w-full" variant={selected === card.id ? "primary" : "outline"} disabled={!card.enabled} onClick={() => setSelected(card.id)}>{card.action}</Btn>
+          {card.id==="daily"&&role==="manager"?<div className="mt-5 grid grid-cols-2 gap-3"><div className="rounded-xl border p-3 border-[var(--app-border)]"><div className="mb-2 flex items-center justify-between gap-2 text-xs"><span className="font-semibold">Opening</span><span className="font-bold text-[var(--app-text-muted)]">{dailyCountStatusLabel(dailyContext?.openingCount??null)}</span></div><Btn className="w-full" variant="outline" disabled={Boolean(dailyContext?.openingCount)} onClick={()=>{setDailyCountType("OPENING");setSelected("daily");}}>Opening Count</Btn></div><div className="rounded-xl border p-3 border-[var(--app-border)]"><div className="mb-2 flex items-center justify-between gap-2 text-xs"><span className="font-semibold">Closing</span><span className="font-bold text-[var(--app-text-muted)]">{dailyCountStatusLabel(dailyContext?.closingCount??null)}</span></div><Btn className="w-full" variant="outline" disabled={Boolean(dailyContext?.closingCount)||!canOpenClosingCount(dailyContext)} onClick={()=>{setDailyCountType("CLOSING");setSelected("daily");}}>Closing Count</Btn></div></div>:<Btn className="mt-5 w-full" variant="outline" disabled={!card.enabled} onClick={() => setSelected(card.id)}>{card.action}</Btn>}
         </section>;
       })}
-    </div>
+    </div>}
     {selected && <section className="overflow-hidden rounded-2xl border bg-[var(--app-surface)] border-[var(--app-border)]">
       <div className="flex flex-col gap-3 border-b p-4 sm:flex-row sm:items-center sm:justify-between border-[var(--app-border)]"><div><p className="text-xs font-semibold uppercase tracking-wide text-[var(--app-primary)]">Stock Operations</p><h2 className="mt-1 font-bold">{cards.find((card) => card.id === selected)?.title}</h2></div><Btn variant="outline" size="sm" onClick={() => setSelected(null)}>Back to operations</Btn></div>
       {selected === "starting"
         ? <Suspense fallback={<ModuleLoadingFallback/>}><OpeningInventoryBaselinePage role={role} scopeBranchId={scopeBranchId}/></Suspense>
         : selected === "daily"
-          ? <Suspense fallback={<ModuleLoadingFallback/>}><DailyStockCountWorkflow role={role} scopeBranchId={scopeBranchId} onBack={()=>setSelected(null)}/></Suspense>
+          ? <Suspense fallback={<ModuleLoadingFallback/>}><DailyStockCountWorkflow role={role} countType={dailyCountType} onSubmitted={()=>setDailyRefresh((value)=>value+1)}/></Suspense>
         : selected === "full"
-          ? <PhysicalCountsModule role={role} initialTab="record" scopeBranchId={scopeBranchId}/>
+          ? <PhysicalCountsModule role={role} initialTab="record" scopeBranchId={scopeBranchId} embedded/>
           : null}
     </section>}
     {!selected && <div className="rounded-xl border p-4 text-sm border-[var(--app-border)] bg-[var(--app-surface-muted)] text-[var(--app-text-muted)]">Choose the stock operation that matches the branch task. Starting Stock is one-time setup; Daily Count is Opening/Closing; Full Physical Count remains the complete inventory workflow.</div>}
@@ -320,7 +339,7 @@ export function resolveInventoryCountHistoryVisibility(current: boolean, initial
   return initialView === "history" ? true : current;
 }
 
-export function PhysicalCountsModule({ role, initialTab = "history", scopeBranchId = "ALL" }: { role: Role; initialTab?: PhysicalCountInitialView; scopeBranchId?: string }) {
+export function PhysicalCountsModule({ role, initialTab = "history", scopeBranchId = "ALL", embedded=false }: { role: Role; initialTab?: PhysicalCountInitialView; scopeBranchId?: string; embedded?:boolean }) {
   const [searchParams] = useSearchParams();
   const editCountId = searchParams.get("editCount");
   const shortcutDate = searchParams.get("countIntent") === "record" ? searchParams.get("countDate") : null;
@@ -339,7 +358,7 @@ export function PhysicalCountsModule({ role, initialTab = "history", scopeBranch
         {showHistory
           ? <PhysicalCountHistoryPage role={role} scopeBranchId={scopeBranchId} onOperationalCountsLoaded={resolveShortcut} onEditCount={() => setShowHistory(false)} onRecordCount={() => setShowHistory(false)}/>
           : role === "manager"
-            ? <InventoryCountPage onSubmitted={() => setShowHistory(true)} onBackToHistory={() => setShowHistory(true)}/>
+            ? <InventoryCountPage embedded={embedded} onSubmitted={() => setShowHistory(true)} onBackToHistory={() => setShowHistory(true)}/>
             : <ExpectedInventoryPage role={role} view="expected" scopeBranchId={scopeBranchId}/>}
       </Suspense>
     </AnimatedTabPanel>
