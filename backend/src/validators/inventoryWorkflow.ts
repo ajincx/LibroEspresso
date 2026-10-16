@@ -16,6 +16,7 @@ export const posImportInput = posCsvSourceInput.extend({
   expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/i, "Preview the CSV again before importing"),
   expectedResolutionFingerprint: z.string().regex(/^[a-f0-9]{64}$/i),
   posSourceId: z.string().uuid(),
+  confirmDayComplete: z.boolean().optional().default(false),
 });
 export const testDataAuthorizationInput = z.object({ reason: z.string().trim().min(10).max(500) });
 export const posCleanupAuthorizationInput = z.object({ reason: z.string().trim().min(10).max(500) });
@@ -52,6 +53,8 @@ export const inventoryMovementInput = z.object({
 
 export const inventoryCountInput = z.object({
   countDate: z.iso.date(),
+  countType: z.enum(["FULL", "OPENING", "CLOSING"]).optional().default("FULL"),
+  correctionReason: z.string().trim().min(10).max(1000).optional(),
   items: z.array(z.object({
     inventoryItemId: z.string().uuid(),
     quantity: z.number().finite().min(0),

@@ -67,13 +67,14 @@ export function PosImportModal({ open, branchId, branchName, onClose, onImported
   const [error, setError] = useState("");
   const [mappingRecoveryRequired, setMappingRecoveryRequired] = useState(false);
   const [formatRequestSent, setFormatRequestSent] = useState(false);
+  const [dayCompleteConfirmed, setDayCompleteConfirmed] = useState(false);
   const [result, setResult] = useState<{ rowsImported: number; totalSales: number; businessDate: string } | null>(null);
   const activeSources = useMemo(() => activePosSourcesForBranch(sources, branchId), [sources, branchId]);
 
   useEffect(() => {
     if (!open) return;
     let current = true;
-    setStep("select"); setSources([]); setSourceId(""); setSourcesLoading(true); setFile(null); setCsvText(""); setPreview(null); setResult(null); setError(""); setMappingRecoveryRequired(false); setFormatRequestSent(false);
+    setStep("select"); setSources([]); setSourceId(""); setSourcesLoading(true); setFile(null); setCsvText(""); setPreview(null); setResult(null); setError(""); setMappingRecoveryRequired(false); setFormatRequestSent(false); setDayCompleteConfirmed(false);
     void inventoryWorkflowService.posSources()
       .then((nextSources) => { if (current) setSources(nextSources); })
       .catch(() => { if (current) setError("Unable to load configured POS sources."); })
@@ -120,8 +121,8 @@ export function PosImportModal({ open, branchId, branchName, onClose, onImported
     setBusy(true); setError("");
     try {
       const imported = csvText
-        ? await inventoryWorkflowService.importPosSales({ sourceFilename: file.name, csvText, posSourceId: sourceId, expectedContentHash: preview.contentHash, expectedResolutionFingerprint: preview.resolutionFingerprint })
-        : await inventoryWorkflowService.importPosSales({ sourceFilename: file.name, file, posSourceId: sourceId, expectedContentHash: preview.contentHash, expectedResolutionFingerprint: preview.resolutionFingerprint });
+        ? await inventoryWorkflowService.importPosSales({ sourceFilename: file.name, csvText, posSourceId: sourceId, expectedContentHash: preview.contentHash, expectedResolutionFingerprint: preview.resolutionFingerprint, confirmDayComplete:dayCompleteConfirmed })
+        : await inventoryWorkflowService.importPosSales({ sourceFilename: file.name, file, posSourceId: sourceId, expectedContentHash: preview.contentHash, expectedResolutionFingerprint: preview.resolutionFingerprint, confirmDayComplete:dayCompleteConfirmed });
       setResult(imported); setStep("done");
       window.dispatchEvent(new CustomEvent("libro-data-changed", { detail: { businessDate: imported.businessDate } }));
       onImported(imported.businessDate);
@@ -156,6 +157,7 @@ export function PosImportModal({ open, branchId, branchName, onClose, onImported
             actionLabel={busy?"Sending Request…":"Request POS Format Setup"}
             onConfigure={()=>void requestFormatSetup()}
           />}{error&&<p role="alert" className="mt-2 rounded-xl bg-[var(--app-danger-bg)] p-3 text-sm text-[var(--app-danger)]">{error}</p>}</div>}
+      {step==="preview"&&preview?.summary.canImport&&<label className="mt-4 flex items-start gap-3 rounded-xl border p-3 text-sm border-[var(--app-border)]"><input type="checkbox" className="mt-0.5 h-4 w-4 accent-[var(--app-primary)]" checked={dayCompleteConfirmed} onChange={(event)=>setDayCompleteConfirmed(event.target.checked)}/><span><strong>Complete business day</strong><span className="mt-0.5 block text-xs text-[var(--app-text-muted)]">Confirm this report contains all sales for the selected branch and business date when it will be used for Closing Count.</span></span></label>}
       {error&&!mappingRecoveryRequired&&<p role="alert" className="mt-4 rounded-xl bg-[var(--app-danger-bg)] p-3 text-sm text-[var(--app-danger)]">{error}</p>}
     </div>
   </div>;

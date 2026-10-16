@@ -221,7 +221,7 @@ export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCo
     return counts.filter((item) => !query || [item.countNo, item.branchName, item.submittedBy, item.countDate].some((value) => value.toLowerCase().includes(query)));
   }, [counts, search]);
 
-  const cols = [...(owner ? ["Branch"] : []), "Count No.", "Count Date", "Recorded By", "Items Counted", "Variances", "Submitted", "Actions"];
+  const cols = [...(owner ? ["Branch"] : []), "Count No.", "Type", "Count Date", "Recorded By", "Items Counted", "Variances", "Submitted", "Actions"];
   const colCount = cols.length;
   const viewCount = async (count: InventoryCountSummary) => {
     setViewTarget(count);
@@ -307,6 +307,7 @@ export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCo
                 return <TR key={item.id}>
                   {owner && <TD muted>{item.branchName}</TD>}
                   <TD mono muted>{item.countNo}</TD>
+                  <TD><span className="inline-flex rounded-full px-2.5 py-1 text-xs font-semibold bg-[var(--app-primary-faint)] text-[var(--app-primary)]">{item.countType === "OPENING" ? "Opening" : item.countType === "CLOSING" ? "Closing" : "Full"}</span></TD>
                   <TD>{formatAppDate(item.countDate)}</TD>
                   <TD muted>{item.submittedBy}</TD>
                   <TD right>{item.itemCount}</TD>

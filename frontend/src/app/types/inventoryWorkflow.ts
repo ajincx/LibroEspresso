@@ -10,7 +10,7 @@ export interface ExpectedInventoryItem {
   approvedAdjustments: number;
   expectedQuantity: number;
   baselineDate: string;
-  baselineSource?: "PHYSICAL_COUNT" | "OPENING_BASELINE" | "BALANCE";
+  baselineSource?: "PHYSICAL_COUNT" | "DAILY_OPENING" | "DAILY_CLOSING" | "OPENING_BASELINE" | "BALANCE";
 }
 
 export interface UnavailableInventoryCountItem {
@@ -302,12 +302,22 @@ export interface InventoryCountSummary {
   id: string;
   countNo: string;
   countDate: string;
+  countType?: InventoryCountType;
   submittedAt: string;
   branchId: string;
   branchName: string;
   submittedBy: string;
   itemCount: number;
   varianceCount: number;
+}
+
+export type InventoryCountType = "FULL" | "OPENING" | "CLOSING";
+export interface DailyInventoryCountContext {
+  countType: InventoryCountType;
+  openingCount: { id:string;countNo:string;countType:"OPENING";submittedAt:string } | null;
+  closingCount: { id:string;countNo:string;countType:"CLOSING";submittedAt:string } | null;
+  previousClosingItems: Array<{inventoryItemId:string;actualQuantity:number}>;
+  posDayComplete: boolean;
 }
 
 export interface CountVarianceItem {

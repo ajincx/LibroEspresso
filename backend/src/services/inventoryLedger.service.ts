@@ -17,6 +17,7 @@ type RawLedgerActivity = {
   reference: string;
   quantity: number;
   sourceUnit?: string;
+  dayPhase?: number;
 };
 
 export type InventoryLedgerActivity = RawLedgerActivity & {
@@ -42,6 +43,12 @@ const activityPriority: Record<InventoryLedgerActivityType, number> = {
 
 export function buildInventoryLedger(rawActivities: RawLedgerActivity[]) {
   const activities = [...rawActivities].sort((left, right) => {
+    const leftDate = left.occurredAt.slice(0,10);
+    const rightDate = right.occurredAt.slice(0,10);
+    const day = leftDate.localeCompare(rightDate);
+    if (day) return day;
+    const phase = (left.dayPhase ?? 2) - (right.dayPhase ?? 2);
+    if (phase) return phase;
     const time = new Date(left.occurredAt).getTime() - new Date(right.occurredAt).getTime();
     return time || activityPriority[left.activityType] - activityPriority[right.activityType] || left.id.localeCompare(right.id);
   });
@@ -136,11 +143,14 @@ export async function loadInventoryLedger(
         ORDER BY im.occurred_at,im.id`,
       [branchId, inventoryItemId, fromAt, baselineMode],
     ),
-    client.query<{ id: string; occurredAt: string; reference: string; quantity: number }>(
-      `SELECT ic.id,((ic.count_date::timestamp + interval '1 day' - interval '1 second') AT TIME ZONE 'Asia/Manila')::text "occurredAt",
-              ic.count_no reference,ici.actual_quantity::float8 quantity
+    client.query<{ id: string; occurredAt: string; reference: string; quantity: number; dayPhase:number }>(
+      `SELECT ic.id,COALESCE(ic.effective_at,(ic.count_date::timestamp + interval '1 day' - interval '1 second') AT TIME ZONE 'Asia/Manila')::text "occurredAt",
+              ic.count_no reference,COALESCE(correction.corrected_actual_quantity,ici.actual_quantity)::float8 quantity,
+              CASE WHEN ic.count_type='OPENING' THEN 1 ELSE 3 END "dayPhase"
          FROM inventory_counts ic
          JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id AND ici.voided_at IS NULL
+         LEFT JOIN LATERAL (SELECT corrected_actual_quantity FROM inventory_count_corrections
+           WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
         WHERE ic.branch_id=$1 AND ici.inventory_item_id=$2 AND NOT ic.is_test_data
           AND ic.count_date >= ($3::timestamptz AT TIME ZONE 'Asia/Manila')::date
         ORDER BY ic.count_date,ic.submitted_at,ic.id`,
@@ -153,7 +163,7 @@ export async function loadInventoryLedger(
     const quantity = convertQuantity(Number(row.quantity), row.sourceUnit, canonicalUnit);
     const current = posByImport.get(row.importId);
     if (current) current.quantity += quantity;
-    else posByImport.set(row.importId, { ...row, id: row.importId, activityType: "POS_CONSUMPTION", quantity });
+    else posByImport.set(row.importId, { ...row, id: row.importId, activityType: "POS_CONSUMPTION", quantity, dayPhase:2 });
   }
 
   return buildInventoryLedger([
@@ -213,11 +223,11 @@ export async function loadInventoryLedgerBalances(
      ), activity_rows AS (
        SELECT b."branchId",b."inventoryItemId",b.id,b."occurredAt",b.reference,b.quantity,
          CASE WHEN b.mode='OPENING' THEN 'STARTING_STOCK' ELSE 'BALANCE_BASELINE' END "activityType",
-         NULL::text "sourceUnit",NULL::text "importId"
+         NULL::text "sourceUnit",NULL::text "importId",0 "dayPhase"
        FROM baselines b WHERE b.id IS NOT NULL
        UNION ALL
        SELECT pi.branch_id,usage.inventory_item_id,concat(pi.id,'-',usage.unit),pi.business_date::text,
-         concat(source.display_name,' · ',pi.source_filename),sum(usage.quantity_consumed)::float8,'POS_CONSUMPTION',usage.unit,pi.id::text
+         concat(source.display_name,' · ',pi.source_filename),sum(usage.quantity_consumed)::float8,'POS_CONSUMPTION',usage.unit,pi.id::text,2
        FROM baselines b
        JOIN pos_imports pi ON pi.branch_id=b."branchId" AND NOT pi.is_test_data
        JOIN pos_sources source ON source.id=pi.pos_source_id AND source.status='ACTIVE'
@@ -230,7 +240,7 @@ export async function loadInventoryLedgerBalances(
        SELECT im.branch_id,im.inventory_item_id,im.id::text,im.occurred_at::text,
          coalesce(im.reference_no,im.notes,im.movement_type::text),im.quantity::float8,
          CASE im.movement_type WHEN 'RECEIPT' THEN 'RECEIPT' WHEN 'APPROVED_ADJUSTMENT_INCREASE' THEN 'APPROVED_INCREASE' ELSE 'APPROVED_DECREASE' END,
-         NULL::text,NULL::text
+         NULL::text,NULL::text,2
        FROM baselines b JOIN inventory_movements im
          ON im.branch_id=b."branchId" AND im.inventory_item_id=b."inventoryItemId"
        WHERE NOT im.is_test_data
@@ -239,11 +249,14 @@ export async function loadInventoryLedgerBalances(
            OR (b.mode='BALANCE' AND im.occurred_at>b."occurredAt"::timestamptz))
        UNION ALL
        SELECT ic.branch_id,ici.inventory_item_id,ic.id::text,
-         ((ic.count_date::timestamp+interval '1 day'-interval '1 second') AT TIME ZONE 'Asia/Manila')::text,
-         ic.count_no,ici.actual_quantity::float8,'PHYSICAL_COUNT',NULL::text,NULL::text
+         COALESCE(ic.effective_at,(ic.count_date::timestamp+interval '1 day'-interval '1 second') AT TIME ZONE 'Asia/Manila')::text,
+         ic.count_no,COALESCE(correction.corrected_actual_quantity,ici.actual_quantity)::float8,'PHYSICAL_COUNT',NULL::text,NULL::text,
+         CASE WHEN ic.count_type='OPENING' THEN 1 ELSE 3 END
        FROM baselines b JOIN inventory_counts ic ON ic.branch_id=b."branchId" AND NOT ic.is_test_data
        JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id
          AND ici.inventory_item_id=b."inventoryItemId" AND ici.voided_at IS NULL
+       LEFT JOIN LATERAL (SELECT corrected_actual_quantity FROM inventory_count_corrections
+         WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
        WHERE ic.count_date>=b."baselineDate"::date
      ) SELECT * FROM activity_rows ORDER BY "branchId","inventoryItemId","occurredAt",id`,
     [JSON.stringify(uniqueTargets)],
@@ -255,14 +268,14 @@ export async function loadInventoryLedgerBalances(
     const posByImport = new Map<string, RawLedgerActivity>();
     for (const row of activities.rows.filter((item) => inventoryLedgerKey(item.branchId, item.inventoryItemId) === key)) {
       if (row.activityType !== "POS_CONSUMPTION") {
-        raw.push({ id: row.id, occurredAt: row.occurredAt, activityType: row.activityType, reference: row.reference, quantity: Number(row.quantity) });
+        raw.push({ id: row.id, occurredAt: row.occurredAt, activityType: row.activityType, reference: row.reference, quantity: Number(row.quantity), dayPhase:row.dayPhase });
         continue;
       }
       const quantity = convertQuantity(Number(row.quantity), row.sourceUnit!, target.canonicalUnit);
       const importId = row.importId!;
       const current = posByImport.get(importId);
       if (current) current.quantity += quantity;
-      else posByImport.set(importId, { id: importId, occurredAt: row.occurredAt, activityType: "POS_CONSUMPTION", reference: row.reference, quantity });
+      else posByImport.set(importId, { id: importId, occurredAt: row.occurredAt, activityType: "POS_CONSUMPTION", reference: row.reference, quantity, dayPhase:2 });
     }
     result.set(key, buildInventoryLedger([...raw, ...posByImport.values()]));
   }

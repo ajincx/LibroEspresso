@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { ExpectedInventoryItem } from "../../types/inventoryWorkflow";
 import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, filterPhysicalCountItems, initialPhysicalCountDate, isFutureInventoryCountDate, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, physicalCountCompletion, physicalCountEntryFromCanonical, physicalCountPreviewVariance, validPhysicalCountEntries } from "./InventoryCountPage";
+import { buildEnteredPhysicalCountItems } from "./InventoryCountPage";
 
 const item = (inventoryItemId: string, sku: string, itemName: string): ExpectedInventoryItem => ({
   inventoryItemId, sku, itemName, unit: "pc", unitCost: 1, previousActualQuantity: 10,
@@ -10,6 +11,22 @@ const item = (inventoryItemId: string, sku: string, itemName: string): ExpectedI
   baselineDate: "2026-10-01",
 });
 const ingredients = [item("ice", "RM-004", "Ice"), item("milk", "RM-005", "Whole Milk"), item("sugar", "ING-010", "Brown Sugar")];
+
+describe("Daily partial physical counts",()=>{
+  it("saves explicit zero and omits blank ingredients",()=>{
+    expect(buildEnteredPhysicalCountItems(ingredients,{
+      ice:{quantity:"0",enteredUnit:"pc"},milk:{quantity:"",enteredUnit:"pc"},sugar:{quantity:"3",enteredUnit:"pc"},
+    })).toEqual([
+      {inventoryItemId:"ice",quantity:0,enteredUnit:"pc"},
+      {inventoryItemId:"sugar",quantity:3,enteredUnit:"pc"},
+    ]);
+  });
+
+  it("supports the Daily Count return label without changing the Full Count default",()=>{
+    expect(renderToStaticMarkup(React.createElement(PhysicalCountBackAction,{onBack:vi.fn()}))).toContain("Back to Count History");
+    expect(renderToStaticMarkup(React.createElement(PhysicalCountBackAction,{onBack:vi.fn(),label:"Back to Stock Operations"}))).toContain("Back to Stock Operations");
+  });
+});
 
 describe("Inventory physical-count history navigation", () => {
   it("explains that only material discrepancies may require investigation", () => {

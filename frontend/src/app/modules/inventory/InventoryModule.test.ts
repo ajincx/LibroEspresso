@@ -1,18 +1,36 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { canConfigureBranchReorderPolicy, inventoryAdjustmentValidationError, InventoryOverview, inventoryOverviewColumns, inventoryTabs, projectedAdjustmentStock, recordCountShortcutDestination, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, subscribeToInventoryDataChanges } from "./InventoryModule";
+import { canConfigureBranchReorderPolicy, inventoryAdjustmentValidationError, InventoryOverview, inventoryOverviewColumns, inventoryTabs, projectedAdjustmentStock, recordCountShortcutDestination, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, stockOperationCards, subscribeToInventoryDataChanges } from "./InventoryModule";
 import type { InventoryCountSummary } from "../../types/inventoryWorkflow";
 
 afterEach(() => vi.useRealTimers());
 
 describe("Inventory Management terminology", () => {
-  it("labels the initial branch inventory feature as Starting Stock", () => {
+  it("uses the approved three-tab inventory structure", () => {
     expect(inventoryTabs).toEqual([
       { id: "overview", label: "Inventory Overview" },
-      { id: "counts", label: "Inventory Counts" },
-      { id: "opening", label: "Starting Stock" },
+      { id: "operations", label: "Stock Operations" },
+      { id: "history", label: "Stock History" },
     ]);
+  });
+
+  it("keeps coverage classifications out of the main Inventory Overview table", () => {
+    expect(inventoryOverviewColumns("manager")).not.toContain("Category");
+    expect(inventoryOverviewColumns("manager")).not.toContain("Coverage");
+    expect(inventoryOverviewColumns("owner")).not.toContain("Category");
+    expect(inventoryOverviewColumns("owner")).not.toContain("Coverage");
+  });
+
+  it("provides Starting Stock, Daily Stock Count, and Full Physical Count operation cards", () => {
+    expect(stockOperationCards("manager").map((card) => card.title)).toEqual([
+      "Starting Stock",
+      "Daily Stock Count",
+      "Full Physical Count",
+    ]);
+    expect(stockOperationCards("manager").find((card) => card.id === "daily")?.enabled).toBe(true);
+    expect(stockOperationCards("manager").find((card) => card.id === "full")?.enabled).toBe(true);
+    expect(stockOperationCards("owner").find((card) => card.id === "full")?.enabled).toBe(false);
   });
 
   it("provides Stock Details from the existing catalog for both management roles", () => {
@@ -28,6 +46,7 @@ describe("Inventory Management terminology", () => {
   it("does not render a duplicate Record Stock Count action in Inventory Overview", () => {
     const markup = renderToStaticMarkup(React.createElement(InventoryOverview, { role: "manager" }));
     expect(markup).not.toContain("Record Stock Count");
+    expect(markup).not.toContain("Record Stock Adjustment");
   });
 });
 

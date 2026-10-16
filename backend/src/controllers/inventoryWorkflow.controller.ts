@@ -115,6 +115,7 @@ type PosImportSource =
 type ConfirmedPosImportSource = PosImportSource & {
   expectedContentHash: string;
   expectedResolutionFingerprint?: string;
+  confirmDayComplete: boolean;
 };
 
 function decodedPosFilename(value: string | string[] | undefined) {
@@ -129,19 +130,20 @@ function decodedPosFilename(value: string | string[] | undefined) {
 }
 
 function posRequestSource(req: Request, confirmation: false): PosImportSource;
-function posRequestSource(req: Request, confirmation: true): PosImportSource & { expectedContentHash: string; expectedResolutionFingerprint?: string };
+function posRequestSource(req: Request, confirmation: true): ConfirmedPosImportSource;
 function posRequestSource(req: Request, confirmation: boolean) {
   if (Buffer.isBuffer(req.body)) {
     const sourceFilename = decodedPosFilename(req.headers["x-pos-filename"]);
     const expectedContentHash = req.headers["x-pos-content-hash"];
     const posSourceId = req.headers["x-pos-source-id"];
     const expectedResolutionFingerprint = req.headers["x-pos-resolution-fingerprint"];
+    const confirmDayComplete = req.headers["x-pos-day-complete"] === "true";
     if (typeof posSourceId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(posSourceId)) throw new AppError(422, "POS_SOURCE_INVALID", "Select a valid POS source.");
     if (expectedResolutionFingerprint !== undefined && (typeof expectedResolutionFingerprint !== "string" || !/^[a-f0-9]{64}$/i.test(expectedResolutionFingerprint))) throw new AppError(422, "POS_RESOLUTION_INVALID", "Preview the POS file again before importing.");
     if (confirmation && (typeof expectedContentHash !== "string" || !/^[a-f0-9]{64}$/i.test(expectedContentHash))) {
       throw new AppError(422, "POS_PREVIEW_REQUIRED", "Preview the POS file again before importing.");
     }
-    return { sourceFilename, fileBuffer: req.body, posSourceId, ...(confirmation ? { expectedContentHash, expectedResolutionFingerprint } : {}) };
+    return { sourceFilename, fileBuffer: req.body, posSourceId, ...(confirmation ? { expectedContentHash, expectedResolutionFingerprint, confirmDayComplete } : {}) };
   }
   return confirmation ? posImportInput.parse(req.body) : posPreviewInput.parse(req.body);
 }
@@ -463,6 +465,13 @@ async function executePosImport(
     if (!preview.summary.canImport || !preview.businessDate) throw new AppError(422, "POS_IMPORT_INVALID", "POS import was not completed because the preview contains invalid or unmatched rows.");
     if (!input.expectedResolutionFingerprint || preview.resolutionFingerprint !== input.expectedResolutionFingerprint) throw new AppError(409, "POS_MAPPING_CHANGED", "POS source or product/variant mapping changed after preview. Preview the file again.");
     await lockBranchInventoryOperation(client, branchId);
+    const finalizedClosing = await client.query<{ countNo:string }>(
+      `SELECT count_no "countNo" FROM inventory_counts
+        WHERE branch_id=$1 AND count_type='CLOSING' AND NOT is_test_data AND count_date >= $2::date
+        ORDER BY count_date,submitted_at LIMIT 1`, [branchId,preview.businessDate]);
+    if (finalizedClosing.rows[0]) {
+      throw new AppError(409,"POS_IMPORT_AFTER_CLOSING",`This sales report cannot be imported because Closing Count ${finalizedClosing.rows[0].countNo} already finalized inventory on or after ${preview.businessDate}. The submitted count and variance were not changed.`);
+    }
     const duplicateAfterLock = await client.query(
       `SELECT 1 FROM pos_imports WHERE branch_id=$1 AND content_hash=$2 LIMIT 1`,
       [branchId, preview.contentHash],
@@ -545,6 +554,18 @@ async function executePosImport(
     const reconciliation={id:reconciliationResult.rows[0]!.id,generatedAt:reconciliationResult.rows[0]!.generatedAt,
       posSalesTotal:sourceSalesTotal,importedSalesTotal:Number(meta?.totalSales??0),posQuantity:sourceQuantity,importedQuantity:Number(meta?.unitsSold??0),
       expectedCogs:preview.simulation.estimatedCogs,generatedCogs:actualCogs,salesTotalMatches,quantityMatches,recipeConsumptionMatches,cogsMatches,branchIsolated};
+    if (input.confirmDayComplete) {
+      const existingDeclaration = await client.query<{ declaration:string }>(
+        `SELECT declaration FROM pos_daily_declarations WHERE branch_id=$1 AND business_date=$2 FOR UPDATE`,
+        [branchId,preview.businessDate]);
+      if (existingDeclaration.rows[0]) {
+        throw new AppError(409,"POS_DAY_ALREADY_FINALIZED","This business day already has a completed sales declaration.");
+      }
+      await client.query(`INSERT INTO pos_daily_declarations
+        (branch_id,business_date,declaration,notes,declared_by,pos_source_id,pos_import_id,confirmed_at)
+        VALUES($1,$2,'SALES_COMPLETE','Manager confirmed the imported report covers the complete business day.',$3,$4,$5,now())`,
+        [branchId,preview.businessDate,actor.id,preview.posSourceId,importId]);
+    }
     if (meta) {
       const formattedSales = new Intl.NumberFormat("en-PH", {
         style: "currency",
@@ -799,7 +820,7 @@ export const configurePosFormatRequest: RequestHandler = async (req, res) => {
       return res.json({success:true,data:{requestId:id,status:"BLOCKED",imported:false,validationIssues:issues,preview}});
     }
     const importer = {id:pending.requestedBy,role:pending.requesterRole,branchId:pending.requesterBranchId};
-    const imported = await executePosImport(client,importer,pending.branchId,{...source,expectedContentHash:preview.contentHash,expectedResolutionFingerprint:preview.resolutionFingerprint});
+    const imported = await executePosImport(client,importer,pending.branchId,{...source,expectedContentHash:preview.contentHash,expectedResolutionFingerprint:preview.resolutionFingerprint,confirmDayComplete:false});
     await client.query(`UPDATE pos_format_setup_requests SET status='COMPLETED',pos_import_id=$2,completed_at=now(),validation_issues=NULL,updated_at=now() WHERE id=$1`,[id,imported.importId]);
     await client.query(`INSERT INTO notifications(recipient_user_id,branch_id,type,title,message,entity_type,entity_id)
       VALUES($1,$2,'POS_FORMAT_SETUP_COMPLETED','POS Format Setup Completed',$3,'POS_FORMAT_SETUP_REQUEST',$4)`,
@@ -1040,8 +1061,11 @@ export const getPosAnalytics: RequestHandler = async (req, res) => {
         params,
       ),
       pool.query(
-        `SELECT coalesce(sum(CASE WHEN ici.actual_quantity < ici.expected_quantity THEN abs(ici.variance_value) ELSE 0 END),0)::float8 "detectedShortageValue"
+        `SELECT coalesce(sum(CASE WHEN COALESCE(correction.corrected_actual_quantity,ici.actual_quantity) < ici.expected_quantity
+                 THEN abs(COALESCE(correction.corrected_variance_value,ici.variance_value)) ELSE 0 END),0)::float8 "detectedShortageValue"
          FROM inventory_counts ic JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id
+         LEFT JOIN LATERAL (SELECT corrected_actual_quantity,corrected_variance_value
+           FROM inventory_count_corrections WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
         WHERE NOT ic.is_test_data AND ic.count_date BETWEEN $1::date AND $2::date ${branchId ? `AND ic.branch_id=$3` : ""}`,
         params,
       ),
@@ -1253,8 +1277,45 @@ export const getExpectedInventory: RequestHandler = async (req, res) => {
       ? req.query.countDate
       : manilaBusinessDate();
   assertInventoryCountDateNotFuture(countDate);
-  const { items, unavailableItems } = await calculateExpectedInventoryBatch(pool, branchId, countDate);
-  res.json({ success: true, data: { branchId, countDate, items, unavailableItems } });
+  const parsedType = z.enum(["FULL", "OPENING", "CLOSING"]).safeParse(req.query.countType ?? "FULL");
+  if (!parsedType.success) throw new AppError(422, "INVENTORY_COUNT_TYPE_INVALID", "Select a valid physical count type.");
+  const countType = parsedType.data;
+  const { items, unavailableItems } = await calculateExpectedInventoryBatch(pool, branchId, countDate, countType);
+  if (countType === "FULL") {
+    return res.json({ success: true, data: { branchId, countDate, items, unavailableItems } });
+  }
+  const dailyCounts = await pool.query<{
+    id: string; countNo: string; countType: "OPENING" | "CLOSING"; submittedAt: string;
+  }>(`SELECT id,count_no "countNo",count_type "countType",submitted_at "submittedAt"
+        FROM inventory_counts WHERE branch_id=$1 AND count_date=$2 AND count_type IN ('OPENING','CLOSING') AND NOT is_test_data`,
+      [branchId,countDate]);
+  const previousClosing = countType === "OPENING" ? await pool.query<{
+    inventoryItemId: string; actualQuantity: number;
+  }>(`SELECT ici.inventory_item_id "inventoryItemId",COALESCE(correction.corrected_actual_quantity,ici.actual_quantity)::float8 "actualQuantity"
+        FROM inventory_counts ic JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id
+        LEFT JOIN LATERAL (SELECT corrected_actual_quantity FROM inventory_count_corrections
+          WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
+       WHERE ic.branch_id=$1 AND ic.count_type='CLOSING' AND ic.count_date<$2 AND NOT ic.is_test_data
+         AND ic.id=(SELECT prior.id FROM inventory_counts prior WHERE prior.branch_id=$1 AND prior.count_type='CLOSING'
+           AND prior.count_date<$2 AND NOT prior.is_test_data ORDER BY prior.count_date DESC,prior.submitted_at DESC LIMIT 1)`,
+      [branchId,countDate]) : { rows: [] as {inventoryItemId:string;actualQuantity:number}[] };
+  const completeness = await pool.query<{ complete: boolean }>(
+    `SELECT EXISTS(
+       SELECT 1 FROM pos_daily_declarations declaration
+       JOIN pos_imports imported ON imported.id=declaration.pos_import_id AND imported.branch_id=declaration.branch_id
+       JOIN pos_import_reconciliations reconciliation ON reconciliation.pos_import_id=imported.id
+        AND reconciliation.sales_total_matches AND reconciliation.quantity_matches
+        AND reconciliation.recipe_consumption_matches AND reconciliation.cogs_matches AND reconciliation.branch_isolated
+       WHERE declaration.branch_id=$1 AND declaration.business_date=$2
+         AND declaration.declaration='SALES_COMPLETE'
+     ) "complete"`, [branchId,countDate]);
+  res.json({ success: true, data: {
+    branchId, countDate, countType, items, unavailableItems,
+    openingCount: dailyCounts.rows.find((count)=>count.countType==="OPENING") ?? null,
+    closingCount: dailyCounts.rows.find((count)=>count.countType==="CLOSING") ?? null,
+    previousClosingItems: previousClosing.rows,
+    posDayComplete: completeness.rows[0]?.complete === true,
+  } });
 };
 
 export function validateCompleteInventoryCountItemSet(
@@ -1296,6 +1357,13 @@ async function assertCompleteInventoryCount(
   );
 }
 
+function validatePartialInventoryCountItemSet(expected: ExpectedInventoryBatchResult, submittedItemIds: string[]) {
+  const allowed = new Set(expected.items.map((item) => item.inventoryItemId));
+  if (new Set(submittedItemIds).size !== submittedItemIds.length || submittedItemIds.some((id) => !allowed.has(id))) {
+    throw new AppError(422, "INVENTORY_COUNT_ITEMS_INVALID", "Daily counts may include only active ingredients with a valid inventory baseline.");
+  }
+}
+
 export const submitInventoryCount: RequestHandler = async (req, res) => {
   const input = inventoryCountInput.parse(req.body);
   assertInventoryCountDateNotFuture(input.countDate);
@@ -1313,30 +1381,44 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
       absoluteQuantity: Number(rulesResult.rows[0]?.absoluteTolerance ?? 1),
       relativePercent: Number(rulesResult.rows[0]?.relativeTolerance ?? 2),
     };
-    const existingCount = await client.query<{ countNo: string }>(
-      `SELECT count_no "countNo" FROM inventory_counts WHERE branch_id=$1 AND count_date=$2 LIMIT 1`,
+    const existingCount = await client.query<{ countNo: string; countType: "FULL"|"OPENING"|"CLOSING" }>(
+      `SELECT count_no "countNo",count_type "countType" FROM inventory_counts
+        WHERE branch_id=$1 AND count_date=$2 AND NOT is_test_data FOR UPDATE`,
       [branchId, input.countDate],
     );
-    if (existingCount.rowCount) {
+    const conflicting = existingCount.rows.find((count) =>
+      count.countType === input.countType || count.countType === "FULL" || input.countType === "FULL");
+    if (conflicting) {
       throw new AppError(
         409,
         "INVENTORY_COUNT_DUPLICATE",
-        `Physical count ${existingCount.rows[0]!.countNo} was already submitted for ${input.countDate}`,
+        `Physical count ${conflicting.countNo} already conflicts with the requested ${input.countType.toLowerCase()} count for ${input.countDate}.`,
       );
     }
-    await assertCompleteInventoryCount(
-      client,
-      branchId,
-      input.countDate,
-      input.items.map((item) => item.inventoryItemId),
-    );
+    if (input.countType === "CLOSING") {
+      if (!existingCount.rows.some((count)=>count.countType === "OPENING")) {
+        throw new AppError(409,"OPENING_COUNT_REQUIRED","Submit today's Opening Count before recording the Closing Count.");
+      }
+      const completeDay = await client.query(`SELECT 1 FROM pos_daily_declarations declaration
+        JOIN pos_imports imported ON imported.id=declaration.pos_import_id AND imported.branch_id=declaration.branch_id
+        JOIN pos_import_reconciliations reconciliation ON reconciliation.pos_import_id=imported.id
+          AND reconciliation.sales_total_matches AND reconciliation.quantity_matches
+          AND reconciliation.recipe_consumption_matches AND reconciliation.cogs_matches AND reconciliation.branch_isolated
+        WHERE declaration.branch_id=$1 AND declaration.business_date=$2 AND declaration.declaration='SALES_COMPLETE' FOR UPDATE OF declaration`,
+        [branchId,input.countDate]);
+      if (!completeDay.rows[0]) throw new AppError(409,"POS_DAY_COMPLETENESS_REQUIRED","Import and reconcile the complete end-of-day POS report, then confirm that it covers the full business day before submitting Closing Count.");
+    }
+    const expectedSet = await calculateExpectedInventoryBatch(client,branchId,input.countDate,input.countType);
+    if (input.countType === "FULL") validateCompleteInventoryCountItemSet(expectedSet,input.items.map((item)=>item.inventoryItemId));
+    else validatePartialInventoryCountItemSet(expectedSet,input.items.map((item)=>item.inventoryItemId));
     const countNoResult = await client.query<{ countNo: string }>(
       `SELECT 'IC-'||to_char($1::date,'YYYY')||'-'||lpad(nextval('inventory_count_number_seq')::text,5,'0') "countNo"`,
       [input.countDate],
     );
     const count = await client.query<{ id: string; countNo: string }>(
-      `INSERT INTO inventory_counts (count_no,branch_id,count_date,submitted_by) VALUES ($1,$2,$3,$4) RETURNING id,count_no "countNo"`,
-      [countNoResult.rows[0]!.countNo, branchId, input.countDate, req.user!.id],
+      `INSERT INTO inventory_counts (count_no,branch_id,count_date,submitted_by,count_type,effective_at)
+       VALUES ($1,$2,$3,$4,$5::varchar(10),CASE WHEN $5::varchar(10)='FULL' THEN NULL ELSE now() END) RETURNING id,count_no "countNo"`,
+      [countNoResult.rows[0]!.countNo, branchId, input.countDate, req.user!.id,input.countType],
     );
     const countItems = [];
     for (const submitted of input.items) {
@@ -1345,6 +1427,7 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
         branchId,
         submitted.inventoryItemId,
         input.countDate,
+        input.countType,
       );
       let actualQuantity: number;
       try {
@@ -1388,13 +1471,14 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
       );
       await client.query(
         `INSERT INTO branch_inventory_balances (branch_id,inventory_item_id,actual_quantity,as_of,is_test_data)
-         VALUES ($1,$2,$3,$4::date + time '23:59:59',false)
+         VALUES ($1,$2,$3,CASE WHEN $5='FULL' THEN $4::date + time '23:59:59' ELSE now() END,false)
          ON CONFLICT (branch_id,inventory_item_id) DO UPDATE SET actual_quantity=excluded.actual_quantity,as_of=excluded.as_of,is_test_data=false,updated_at=now()`,
         [
           branchId,
           submitted.inventoryItemId,
           actualQuantity,
           input.countDate,
+          input.countType,
         ],
       );
       const countItem = inserted.rows[0] as { id: string };
@@ -1453,7 +1537,7 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
       "INVENTORY_COUNT",
       count.rows[0]!.id,
       `Submitted physical inventory count ${count.rows[0]!.countNo}`,
-      { branchId, itemCount: countItems.length },
+      { branchId, countType: input.countType, itemCount: countItems.length },
       client,
     );
     await client.query("COMMIT");
@@ -1466,6 +1550,7 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
             ...count.rows[0],
             branchId,
             countDate: input.countDate,
+            countType: input.countType,
             items: countItems,
           },
         },
@@ -1489,13 +1574,14 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
   const { id } = idParams.parse(req.params);
   const input = inventoryCountInput.parse(req.body);
   assertInventoryCountDateNotFuture(input.countDate);
+  if (!input.correctionReason) throw new AppError(422,"COUNT_CORRECTION_REASON_REQUIRED","Provide a correction reason of at least 10 characters.");
   const branchId = requiredBranchId(req.user!);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     await lockBranchInventoryOperation(client, branchId);
-    const count = await client.query<{ countNo: string; countDate: string; isTestData: boolean }>(
-      `SELECT count_no "countNo",count_date::text "countDate",is_test_data "isTestData" FROM inventory_counts
+    const count = await client.query<{ countNo: string; countDate: string; countType:"FULL"|"OPENING"|"CLOSING"; effectiveAt:string|null; submittedAt:string; isTestData: boolean }>(
+      `SELECT count_no "countNo",count_date::text "countDate",count_type "countType",effective_at "effectiveAt",submitted_at "submittedAt",is_test_data "isTestData" FROM inventory_counts
         WHERE id=$1 AND branch_id=$2 AND submitted_by=$3 FOR UPDATE`,
       [id, branchId, req.user!.id],
     );
@@ -1512,25 +1598,31 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
         "The submitted count date cannot be changed",
       );
     const later = await client.query(
-      `SELECT 1 FROM inventory_counts WHERE branch_id=$1 AND NOT is_test_data AND count_date>$2::date LIMIT 1`,
-      [branchId, input.countDate],
+      `SELECT 1 FROM inventory_counts newer WHERE newer.branch_id=$1 AND newer.id<>$2 AND NOT newer.is_test_data
+         AND (newer.count_date>$3::date OR (newer.count_date=$3::date AND COALESCE(newer.effective_at,newer.submitted_at)>$4::timestamptz))
+       UNION ALL SELECT 1 FROM inventory_movements movement WHERE movement.branch_id=$1 AND NOT movement.is_test_data
+         AND movement.occurred_at>$4::timestamptz
+       UNION ALL SELECT 1 FROM pos_imports imported WHERE imported.branch_id=$1 AND NOT imported.is_test_data
+         AND (imported.business_date>$3::date OR (imported.business_date=$3::date AND imported.imported_at>$5::timestamptz))
+       LIMIT 1`,
+      [branchId,id,input.countDate,count.rows[0].effectiveAt ?? count.rows[0].submittedAt,count.rows[0].submittedAt],
     );
     if (later.rows[0])
       throw new AppError(
         409,
         "COUNT_CORRECTION_LOCKED",
-        "This count cannot be edited because a newer physical count exists",
+        "This count cannot be corrected because later inventory activity exists.",
       );
     const locked = await client.query(
       `SELECT 1 FROM shrinkage_reports sr JOIN inventory_count_items ici ON ici.id=sr.inventory_count_item_id
-        WHERE ici.inventory_count_id=$1 AND sr.status<>'DETECTED' LIMIT 1`,
+        WHERE ici.inventory_count_id=$1 LIMIT 1`,
       [id],
     );
     if (locked.rows[0])
       throw new AppError(
         409,
         "COUNT_CORRECTION_LOCKED",
-        "This count can no longer be edited because its variance investigation has been submitted",
+        "This count cannot be corrected because a variance investigation is already linked to it.",
       );
     const rulesResult = await client.query<{ absoluteTolerance: number; relativeTolerance: number }>(
       `SELECT variance_tolerance_quantity::float8 "absoluteTolerance",
@@ -1550,14 +1642,24 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
       sku: string;
       itemName: string;
       unitCost: number;
+      actualQuantity: number;
+      varianceQuantity: number;
+      varianceValue: number;
+      revision: number;
       shrinkageReportId: string | null;
     }>(
       `SELECT ici.id,ici.inventory_item_id "inventoryItemId",ici.expected_quantity::float8 "expectedQuantity",
         ici.expected_consumption::float8 "expectedConsumption",ici.unit,ii.sku,ii.name "itemName",
-        COALESCE(bis.current_unit_cost,ii.unit_cost)::float8 "unitCost",sr.id "shrinkageReportId"
+        COALESCE(bis.current_unit_cost,ii.unit_cost)::float8 "unitCost",sr.id "shrinkageReportId",
+        COALESCE(correction.corrected_actual_quantity,ici.actual_quantity)::float8 "actualQuantity",
+        COALESCE(correction.corrected_variance_quantity,ici.variance_quantity)::float8 "varianceQuantity",
+        COALESCE(correction.corrected_variance_value,ici.variance_value)::float8 "varianceValue",
+        COALESCE(correction.revision,0)::int revision
        FROM inventory_count_items ici JOIN inventory_items ii ON ii.id=ici.inventory_item_id
        LEFT JOIN branch_inventory_settings bis ON bis.inventory_item_id=ii.id AND bis.branch_id=$2
        LEFT JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ici.id
+       LEFT JOIN LATERAL (SELECT revision,corrected_actual_quantity,corrected_variance_quantity,corrected_variance_value
+         FROM inventory_count_corrections WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
        WHERE ici.inventory_count_id=$1`,
       [id, branchId],
     );
@@ -1604,17 +1706,19 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
         Number(row.unitCost),
       );
       await client.query(
-        `UPDATE inventory_count_items SET actual_quantity=$2,variance_quantity=$3,variance_value=$4 WHERE id=$1`,
-        [row.id, actualQuantity, varianceQuantity, varianceValue],
+        `INSERT INTO inventory_count_corrections
+          (inventory_count_item_id,revision,previous_actual_quantity,corrected_actual_quantity,
+           previous_variance_quantity,corrected_variance_quantity,previous_variance_value,corrected_variance_value,reason,corrected_by)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [row.id,row.revision+1,row.actualQuantity,actualQuantity,row.varianceQuantity,varianceQuantity,row.varianceValue,varianceValue,input.correctionReason,req.user!.id],
       );
       await client.query(
-        `UPDATE branch_inventory_balances SET actual_quantity=$3,as_of=$4::date+time '23:59:59',is_test_data=$5,updated_at=now()
+        `UPDATE branch_inventory_balances SET actual_quantity=$3,as_of=now(),is_test_data=$4,updated_at=now()
           WHERE branch_id=$1 AND inventory_item_id=$2`,
         [
           branchId,
           row.inventoryItemId,
           actualQuantity,
-          input.countDate,
           count.rows[0].isTestData,
         ],
       );
@@ -1694,17 +1798,13 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
         shrinkageReportId,
       });
     }
-    await client.query(
-      `UPDATE inventory_counts SET submitted_at=now() WHERE id=$1`,
-      [id],
-    );
     await writeAudit(
       req.user!,
       "CORRECT_INVENTORY_COUNT",
       "INVENTORY_COUNT",
       id,
       `Corrected physical inventory count ${count.rows[0].countNo}`,
-      { branchId, itemCount: returned.length },
+      { branchId, itemCount: returned.length, reason: input.correctionReason, correctionType: "APPEND_ONLY" },
       client,
     );
     await client.query("COMMIT");
@@ -1735,13 +1835,15 @@ export const listInventoryCounts: RequestHandler = async (req, res) => {
     typeof req.query.branchId === "string" ? req.query.branchId : undefined,
   );
   const result = await pool.query(
-    `SELECT ic.id,ic.count_no "countNo",ic.count_date::text "countDate",ic.submitted_at "submittedAt",b.id "branchId",b.name "branchName",
+    `SELECT ic.id,ic.count_no "countNo",ic.count_date::text "countDate",ic.count_type "countType",ic.submitted_at "submittedAt",b.id "branchId",b.name "branchName",
               (ic.submitted_by=$1 AND NOT EXISTS(SELECT 1 FROM inventory_counts newer WHERE newer.branch_id=ic.branch_id AND NOT newer.is_test_data AND (newer.count_date,newer.submitted_at)>(ic.count_date,ic.submitted_at))
                 AND NOT EXISTS(SELECT 1 FROM inventory_count_items ci JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ci.id WHERE ci.inventory_count_id=ic.id AND sr.status<>'DETECTED')) "canEdit",
               concat(u.first_name,' ',u.last_name) "submittedBy",count(ici.id)::int "itemCount",count(*) OVER()::int "__total",
-              (count(ici.id) FILTER (WHERE abs(ici.variance_quantity)>0.0001))::int "varianceCount"
+              (count(ici.id) FILTER (WHERE abs(COALESCE(correction.corrected_variance_quantity,ici.variance_quantity))>0.0001))::int "varianceCount"
        FROM inventory_counts ic JOIN branches b ON b.id=ic.branch_id JOIN users u ON u.id=ic.submitted_by
        LEFT JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id AND ici.voided_at IS NULL
+       LEFT JOIN LATERAL (SELECT corrected_variance_quantity FROM inventory_count_corrections
+         WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
       WHERE NOT ic.is_test_data AND ($2::uuid IS NULL OR ic.branch_id=$2)
       GROUP BY ic.id,b.id,u.id ORDER BY ic.count_date DESC,ic.submitted_at DESC LIMIT $3 OFFSET $4`,
     [req.user!.id, branchId ?? null, pagination.pageSize, (pagination.page-1)*pagination.pageSize],
@@ -1790,7 +1892,7 @@ export const getInventoryCount: RequestHandler = async (req, res) => {
   const { id } = idParams.parse(req.params);
   const branchId = getEffectiveBranchId(req.user!);
   const count = await pool.query(
-    `SELECT ic.id,ic.count_no "countNo",ic.count_date::text "countDate",ic.branch_id "branchId",
+    `SELECT ic.id,ic.count_no "countNo",ic.count_date::text "countDate",ic.count_type "countType",ic.branch_id "branchId",
       (ic.submitted_by=$3 AND NOT EXISTS(SELECT 1 FROM inventory_counts n WHERE n.branch_id=ic.branch_id AND NOT n.is_test_data AND (n.count_date,n.submitted_at)>(ic.count_date,ic.submitted_at))
        AND NOT EXISTS(SELECT 1 FROM inventory_count_items ci JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ci.id WHERE ci.inventory_count_id=ic.id AND sr.status<>'DETECTED')) "canEdit"
      FROM inventory_counts ic WHERE ic.id=$1 AND NOT ic.is_test_data AND ($2::uuid IS NULL OR ic.branch_id=$2)`, [id,branchId ?? null,req.user!.id]);
@@ -1798,13 +1900,14 @@ export const getInventoryCount: RequestHandler = async (req, res) => {
   const items = await pool.query(`SELECT ici.id,ici.inventory_item_id "inventoryItemId",ii.sku,ii.name "itemName",ici.unit,
     ici.previous_actual_quantity::float8 "previousActualQuantity",ici.stock_received::float8 "stockReceived",
     ici.expected_consumption::float8 "expectedConsumption",ici.approved_adjustments::float8 "approvedAdjustments",
-    ici.expected_quantity::float8 "expectedQuantity",ici.actual_quantity::float8 "actualQuantity",
-    (ici.actual_quantity-ici.expected_quantity)::float8 "varianceQuantity",
-    CASE WHEN ici.actual_quantity>ici.expected_quantity THEN abs(ici.variance_value)
-         WHEN ici.actual_quantity<ici.expected_quantity THEN -abs(ici.variance_value) ELSE 0 END::float8 "varianceValue",
-    CASE WHEN ici.expected_quantity > 0 THEN (((ici.actual_quantity-ici.expected_quantity) / ici.expected_quantity) * 100)::float8 ELSE NULL END "variancePercentage",
+    ici.expected_quantity::float8 "expectedQuantity",COALESCE(correction.corrected_actual_quantity,ici.actual_quantity)::float8 "actualQuantity",
+    COALESCE(correction.corrected_variance_quantity,ici.variance_quantity)::float8 "varianceQuantity",
+    COALESCE(correction.corrected_variance_value,ici.variance_value)::float8 "varianceValue",
+    CASE WHEN ici.expected_quantity > 0 THEN ((COALESCE(correction.corrected_variance_quantity,ici.variance_quantity) / ici.expected_quantity) * 100)::float8 ELSE NULL END "variancePercentage",
     sr.id "shrinkageReportId",(sr.status='DETECTED') "requiresInvestigation"
     FROM inventory_count_items ici JOIN inventory_items ii ON ii.id=ici.inventory_item_id
+    LEFT JOIN LATERAL (SELECT corrected_actual_quantity,corrected_variance_quantity,corrected_variance_value
+      FROM inventory_count_corrections WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
     LEFT JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ici.id AND sr.archived_at IS NULL
     WHERE ici.inventory_count_id=$1 AND ici.voided_at IS NULL ORDER BY ii.name`,[id]);
   res.json({success:true,data:{count:{...count.rows[0],items:items.rows}}});
@@ -1955,16 +2058,17 @@ export const listInventoryVariances: RequestHandler = async (req, res) => {
   const result = await pool.query(
     `SELECT ici.id "countItemId",ic.count_no "countNo",ic.count_date::text "countDate",
             b.id "branchId",b.name "branchName",ii.id "inventoryItemId",ii.sku,ii.name "itemName",
-            ici.expected_quantity::float8 "expectedQuantity",ici.actual_quantity::float8 "actualQuantity",
-            (ici.actual_quantity-ici.expected_quantity)::float8 "varianceQuantity",
-            CASE WHEN ici.actual_quantity>ici.expected_quantity THEN abs(ici.variance_value)
-                 WHEN ici.actual_quantity<ici.expected_quantity THEN -abs(ici.variance_value) ELSE 0 END::float8 "varianceValue",ici.unit,
-            CASE WHEN ici.expected_quantity > 0 THEN (((ici.actual_quantity-ici.expected_quantity) / ici.expected_quantity) * 100)::float8 ELSE NULL END "variancePercentage",
+            ici.expected_quantity::float8 "expectedQuantity",COALESCE(correction.corrected_actual_quantity,ici.actual_quantity)::float8 "actualQuantity",
+            COALESCE(correction.corrected_variance_quantity,ici.variance_quantity)::float8 "varianceQuantity",
+            COALESCE(correction.corrected_variance_value,ici.variance_value)::float8 "varianceValue",ici.unit,
+            CASE WHEN ici.expected_quantity > 0 THEN ((COALESCE(correction.corrected_variance_quantity,ici.variance_quantity) / ici.expected_quantity) * 100)::float8 ELSE NULL END "variancePercentage",
             sr.id "anomalyId",sr.report_no "reportNo",sr.status "anomalyStatus",sr.classification,count(*) OVER()::int "__total"
        FROM inventory_count_items ici
        JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
        JOIN branches b ON b.id=ic.branch_id
        JOIN inventory_items ii ON ii.id=ici.inventory_item_id
+       LEFT JOIN LATERAL (SELECT corrected_actual_quantity,corrected_variance_quantity,corrected_variance_value
+         FROM inventory_count_corrections WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
        LEFT JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ici.id AND sr.archived_at IS NULL
       ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
       ORDER BY ic.count_date DESC,abs(ici.variance_value) DESC,ii.name LIMIT $${values.length+1} OFFSET $${values.length+2}`,
