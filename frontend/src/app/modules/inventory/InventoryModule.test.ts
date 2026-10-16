@@ -57,7 +57,7 @@ describe("Inventory Management terminology", () => {
 
   it("uses saved daily-count state and enforces Closing prerequisites",()=>{
     const context={countType:"OPENING" as const,openingCount:{id:"opening-1",countNo:"IC-1",countType:"OPENING" as const,submittedAt:"2026-10-16T00:00:00Z"},closingCount:null,previousClosingItems:[],previousClosingDate:null,posDayComplete:true};
-    expect(dailyCountStatusLabel(null)).toBe("—");
+    expect(dailyCountStatusLabel(null)).toBe("--");
     expect(dailyCountStatusLabel(context.openingCount)).toBe("Recorded");
     expect(canOpenClosingCount(context)).toBe(true);
     expect(canOpenClosingCount({...context,posDayComplete:false})).toBe(false);

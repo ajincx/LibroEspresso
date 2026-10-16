@@ -107,9 +107,12 @@ export function InventoryOverview({ role, scopeBranchId = "ALL", onDailyStockCou
   };
 
   return <div className="p-4 md:p-6 space-y-5">
-    <SectionHeader title="Inventory Overview" sub={role === "owner" ? "System-calculated stock across all branches; Last Physical Count shows the latest verified count" : "System-calculated stock for your branch; Last Physical Count shows the latest verified count"}/>
+    <SectionHeader
+      title="Inventory Overview"
+      sub={role === "owner" ? "System-calculated stock across all branches; Last Physical Count shows the latest verified count" : "System-calculated stock for your branch; Last Physical Count shows the latest verified count"}
+      actions={role === "manager" ? <Btn className="w-full sm:w-auto" disabled={dailyShortcutLoading} onClick={() => void openDailyStockCount()}>{dailyShortcutLoading ? "Opening…" : "+ Daily Stock Count"}</Btn> : undefined}
+    />
     {error && <div className="rounded-xl border p-4 flex items-center justify-between gap-3" style={{ borderColor: C.red, background: C.redBg }}><span className="text-sm" style={{ color: C.red }}>{error}</span><Btn variant="outline" size="sm" onClick={() => void load()}>Retry</Btn></div>}
-    {role === "manager" && <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4"><div className="sm:col-start-1 xl:col-start-5"><Btn className="w-full" disabled={dailyShortcutLoading} onClick={() => void openDailyStockCount()}>{dailyShortcutLoading ? "Opening…" : "+ Daily Stock Count"}</Btn></div></div>}
     <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
       <KPICard label="Inventory Value" value={peso(scoped.reduce((sum, item) => sum + item.inventoryValue, 0))} sub="System-calculated stock value" icon={DollarSign} color={C.blue}/>
       <KPICard label="Inventory Records" value={String(scoped.length)} sub="Branch and ingredient records" icon={Hash} color={C.maroon}/>
@@ -280,7 +283,7 @@ export const stockOperationCards = (role: Role) => [
 const stockOperationIcons = { starting: PackageOpen, daily: SunMoon, full: ClipboardCheck } satisfies Record<StockOperationId, typeof PackageOpen>;
 
 export const shouldShowStockOperationCards = (selected: StockOperationId | null) => selected === null;
-export const dailyCountStatusLabel = (count: DailyInventoryCountContext["openingCount"] | DailyInventoryCountContext["closingCount"]) => count ? "Recorded" : "—";
+export const dailyCountStatusLabel = (count: DailyInventoryCountContext["openingCount"] | DailyInventoryCountContext["closingCount"]) => count ? "Recorded" : "--";
 export const canOpenClosingCount = (context: DailyInventoryCountContext | null) => Boolean(context?.openingCount && context.posDayComplete);
 export const dailyCountShortcutDestination = (context: DailyInventoryCountContext) => ({
   countType: context.openingCount ? "CLOSING" as const : "OPENING" as const,
@@ -318,7 +321,7 @@ export function StockOperations({ role, scopeBranchId = "ALL", initialOperation 
         return <section key={card.id} className="flex min-h-56 flex-col rounded-2xl border p-5 bg-[var(--app-surface)] border-[var(--app-border)]">
           <div className="flex items-start justify-between gap-3"><span className="flex h-11 w-11 items-center justify-center rounded-xl bg-[var(--app-primary-faint)] text-[var(--app-primary)]"><Icon size={21}/></span><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${card.enabled ? "bg-[var(--app-success-bg)] text-[var(--app-success)]" : "bg-[var(--app-surface-muted)] text-[var(--app-text-muted)]"}`}>{card.enabled ? "Available" : card.id === "daily" ? "Not yet available" : "Read only"}</span></div>
           <h2 className="mt-4 text-lg font-bold">{card.title}</h2><p className="mt-2 flex-1 text-sm leading-6 text-[var(--app-text-muted)]">{card.description}</p>
-          {card.id==="daily"&&role==="manager"?<div className="mt-5 grid grid-cols-2 gap-3"><div className="rounded-xl border p-3 border-[var(--app-border)]"><div className="mb-2 flex items-center justify-between gap-2 text-xs"><span className="font-semibold">Opening</span><span className="font-bold text-[var(--app-text-muted)]">{dailyCountStatusLabel(dailyContext?.openingCount??null)}</span></div><Btn className="w-full" variant="outline" disabled={Boolean(dailyContext?.openingCount)} onClick={()=>{setDailyCountType("OPENING");setSelected("daily");}}>Opening Count</Btn></div><div className="rounded-xl border p-3 border-[var(--app-border)]"><div className="mb-2 flex items-center justify-between gap-2 text-xs"><span className="font-semibold">Closing</span><span className="font-bold text-[var(--app-text-muted)]">{dailyCountStatusLabel(dailyContext?.closingCount??null)}</span></div><Btn className="w-full" variant="outline" disabled={Boolean(dailyContext?.closingCount)||!canOpenClosingCount(dailyContext)} onClick={()=>{setDailyCountType("CLOSING");setSelected("daily");}}>Closing Count</Btn></div></div>:<Btn className="mt-5 w-full" variant="outline" disabled={!card.enabled} onClick={() => setSelected(card.id)}>{card.action}</Btn>}
+          {card.id==="daily"&&role==="manager"?<div className="mt-5 grid grid-cols-2 gap-3"><div className="flex flex-col gap-2"><p className="text-center text-xs font-semibold">Opening Count</p><Btn className="w-full" variant="outline" title="Open today's Opening Count" disabled={Boolean(dailyContext?.openingCount)} onClick={()=>{setDailyCountType("OPENING");setSelected("daily");}}>{dailyCountStatusLabel(dailyContext?.openingCount??null)}</Btn></div><div className="flex flex-col gap-2"><p className="text-center text-xs font-semibold">Closing Count</p><Btn className="w-full" variant="outline" title="Open today's Closing Count" disabled={Boolean(dailyContext?.closingCount)||!canOpenClosingCount(dailyContext)} onClick={()=>{setDailyCountType("CLOSING");setSelected("daily");}}>{dailyCountStatusLabel(dailyContext?.closingCount??null)}</Btn></div></div>:<Btn className="mt-5 w-full" variant="outline" disabled={!card.enabled} onClick={() => setSelected(card.id)}>{card.action}</Btn>}
         </section>;
       })}
     </div>}
