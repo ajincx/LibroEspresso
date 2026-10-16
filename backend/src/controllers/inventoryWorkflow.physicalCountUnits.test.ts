@@ -36,19 +36,28 @@ const branchId = "11111111-1111-4111-8111-111111111111";
 const inventoryItemId = "22222222-2222-4222-8222-222222222222";
 const countId = "33333333-3333-4333-8333-333333333333";
 
-function transactionClient() {
+function transactionClient(options: { existingCounts?: Array<{ countNo: string; countType: string }>; posComplete?: boolean } = {}) {
   const query = vi.fn(async (sql: string, params?: unknown[]) => {
     if (sql.includes("FROM calculation_settings")) {
       return { rows: [{ absoluteTolerance: 1, relativeTolerance: 2 }] };
     }
     if (sql.includes("SELECT count_no") && sql.includes("inventory_counts")) {
-      return { rowCount: 0, rows: [] };
+      return { rowCount: options.existingCounts?.length ?? 0, rows: options.existingCounts ?? [] };
+    }
+    if (sql.includes("FROM pos_daily_declarations")) {
+      return { rowCount: options.posComplete ? 1 : 0, rows: options.posComplete ? [{ complete: true }] : [] };
     }
     if (sql.includes("nextval('inventory_count_number_seq')")) {
       return { rows: [{ countNo: "IC-2026-00010" }] };
     }
     if (sql.includes("INSERT INTO inventory_counts")) {
       return { rows: [{ id: countId, countNo: "IC-2026-00010" }] };
+    }
+    if (sql.includes("nextval('shrinkage_report_number_seq')")) {
+      return { rows: [{ reportNo: "SR-2026-00010" }] };
+    }
+    if (sql.includes("INSERT INTO shrinkage_reports")) {
+      return { rows: [{ id: "55555555-5555-4555-8555-555555555555" }] };
     }
     if (sql.includes("INSERT INTO inventory_count_items")) {
       return {
@@ -72,6 +81,7 @@ function transactionClient() {
 describe("physical-count API unit normalization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.requiresVarianceInvestigation.mockReturnValue(false);
     mocks.calculateExpectedInventoryBatch.mockResolvedValue({
       items: [{ inventoryItemId, sku: "RM-002" }],
       unavailableItems: [],
@@ -170,5 +180,67 @@ describe("physical-count API unit normalization", () => {
     });
     expect(client.query).toHaveBeenCalledWith("ROLLBACK");
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO inventory_count_items"))).toBe(false);
+  });
+
+  it("preserves the Opening snapshot without creating a shrinkage investigation", async () => {
+    mocks.calculateExpectedInventory.mockResolvedValueOnce({
+      inventoryItemId,
+      sku: "RM-002",
+      itemName: "Espresso Blend Beans",
+      unit: "g",
+      unitCost: 0.82,
+      previousActualQuantity: 5000,
+      stockReceived: 0,
+      expectedConsumption: 0,
+      approvedAdjustments: 0,
+      expectedQuantity: 5000,
+      baselineDate: "2026-10-02",
+      baselineSource: "DAILY_CLOSING",
+    });
+    mocks.requiresVarianceInvestigation.mockReturnValue(true);
+    const client = transactionClient();
+    mocks.poolConnect.mockResolvedValue(client);
+    const json = vi.fn();
+    const status = vi.fn(() => ({ json }));
+
+    await submitInventoryCount({
+      body: { countDate: "2026-10-03", countType: "OPENING", items: [{ inventoryItemId, quantity: 4800, enteredUnit: "g" }] },
+      user: { id: "manager", role: "BRANCH_MANAGER", branchId },
+    } as never, { status } as never, vi.fn());
+
+    const countItemInsert = client.query.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO inventory_count_items"));
+    expect(countItemInsert?.[1]?.[6]).toBe(5000);
+    expect(countItemInsert?.[1]?.[7]).toBe(4800);
+    expect(countItemInsert?.[1]?.[8]).toBe(-200);
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO shrinkage_reports"))).toBe(false);
+    expect(mocks.requiresVarianceInvestigation).not.toHaveBeenCalled();
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({
+      data: { count: expect.objectContaining({
+        items: [expect.objectContaining({ actualQuantity: 4800, varianceQuantity: -200, requiresInvestigation: false })],
+      }) },
+    }));
+  });
+
+  it.each([
+    ["FULL" as const, transactionClient()],
+    ["CLOSING" as const, transactionClient({ existingCounts: [{ countNo: "IC-2026-00009", countType: "OPENING" }], posComplete: true })],
+  ])("continues creating shrinkage investigations for %s counts", async (countType, client) => {
+    mocks.requiresVarianceInvestigation.mockReturnValue(true);
+    mocks.poolConnect.mockResolvedValue(client);
+    const json = vi.fn();
+    const status = vi.fn(() => ({ json }));
+
+    await submitInventoryCount({
+      body: { countDate: "2026-10-03", countType, items: [{ inventoryItemId, quantity: 3700, enteredUnit: "g" }] },
+      user: { id: "manager", role: "BRANCH_MANAGER", branchId },
+    } as never, { status } as never, vi.fn());
+
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO shrinkage_reports"))).toBe(true);
+    expect(mocks.requiresVarianceInvestigation).toHaveBeenCalled();
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({
+      data: { count: expect.objectContaining({
+        items: [expect.objectContaining({ requiresInvestigation: true })],
+      }) },
+    }));
   });
 });

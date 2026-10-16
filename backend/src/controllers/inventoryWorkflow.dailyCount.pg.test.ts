@@ -59,7 +59,7 @@ suite("Opening Count PostgreSQL integration", () => {
       );
       await client.query(
         `INSERT INTO inventory_opening_baseline_items(opening_baseline_id,inventory_item_id,quantity,unit)
-         VALUES($1,$2,10,$3)`,
+         VALUES($1,$2,5200,$3)`,
         [baselineId, inventoryItemId, inventoryUnit],
       );
       await client.query("COMMIT");
@@ -85,7 +85,7 @@ suite("Opening Count PostgreSQL integration", () => {
     await pool.end();
   });
 
-  it("submits an Opening Count using the real PostgreSQL parameter types", async () => {
+  it("preserves an Opening snapshot as a baseline without creating operational shrinkage", async () => {
     const state: { status: number; body?: unknown } = { status: 200 };
     const response = {
       status(code: number) { state.status = code; return this; },
@@ -99,18 +99,58 @@ suite("Opening Count PostgreSQL integration", () => {
       body: {
         countDate: businessDate,
         countType: "OPENING",
-        items: [{ inventoryItemId, quantity: 10, enteredUnit: inventoryUnit }],
+        items: [{ inventoryItemId, quantity: 5000, enteredUnit: inventoryUnit }],
       },
       user: { id: managerId, role: "BRANCH_MANAGER", branchId },
     } as never, response as never, () => {});
 
     expect(state.status).toBe(201);
-    const stored = await pool.query<{ id: string; countType: string; effectiveAt: string | null }>(
-      `SELECT id,count_type "countType",effective_at "effectiveAt" FROM inventory_counts WHERE branch_id=$1`,
+    const stored = await pool.query<{
+      id: string;
+      countType: string;
+      effectiveAt: string | null;
+      expectedQuantity: number;
+      actualQuantity: number;
+      varianceQuantity: number;
+    }>(
+      `SELECT ic.id,ic.count_type "countType",ic.effective_at "effectiveAt",
+              ici.expected_quantity::float8 "expectedQuantity",
+              ici.actual_quantity::float8 "actualQuantity",
+              ici.variance_quantity::float8 "varianceQuantity"
+       FROM inventory_counts ic
+       JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id
+       WHERE ic.branch_id=$1`,
       [branchId],
     );
     countId = stored.rows[0]!.id;
-    expect(stored.rows).toEqual([expect.objectContaining({ countType: "OPENING" })]);
+    expect(stored.rows).toEqual([expect.objectContaining({
+      countType: "OPENING",
+      expectedQuantity: 5200,
+      actualQuantity: 5000,
+      varianceQuantity: -200,
+    })]);
     expect(stored.rows[0]!.effectiveAt).not.toBeNull();
+
+    const [balance, shrinkage, audit] = await Promise.all([
+      pool.query<{ quantity: number }>(
+        `SELECT actual_quantity::float8 quantity FROM branch_inventory_balances
+         WHERE branch_id=$1 AND inventory_item_id=$2`,
+        [branchId, inventoryItemId],
+      ),
+      pool.query<{ count: number }>(
+        `SELECT count(*)::int count
+         FROM shrinkage_reports sr
+         JOIN inventory_count_items ici ON ici.id=sr.inventory_count_item_id
+         WHERE ici.inventory_count_id=$1`,
+        [countId],
+      ),
+      pool.query<{ count: number }>(
+        `SELECT count(*)::int count FROM audit_logs WHERE entity_id=$1`,
+        [countId],
+      ),
+    ]);
+    expect(balance.rows[0]?.quantity).toBe(5000);
+    expect(shrinkage.rows[0]?.count).toBe(0);
+    expect(audit.rows[0]?.count).toBeGreaterThan(0);
   });
 });

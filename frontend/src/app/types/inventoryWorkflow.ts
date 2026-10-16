@@ -316,7 +316,8 @@ export interface DailyInventoryCountContext {
   countType: InventoryCountType;
   openingCount: { id:string;countNo:string;countType:"OPENING";submittedAt:string } | null;
   closingCount: { id:string;countNo:string;countType:"CLOSING";submittedAt:string } | null;
-  previousClosingItems: Array<{inventoryItemId:string;actualQuantity:number}>;
+  previousClosingItems: Array<{inventoryItemId:string;actualQuantity:number;countDate:string}>;
+  previousClosingDate: string | null;
   posDayComplete: boolean;
 }
 

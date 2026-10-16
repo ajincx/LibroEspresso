@@ -152,6 +152,12 @@ describe("thesis inventory calculation formulas", () => {
   });
 
   describe("computeVariance", () => {
+    it("computes the daily Closing example from Opening and POS consumption", () => {
+      const expectedClosing = computeExpectedStock(5000, 0, 1500, 0, 0);
+      expect(expectedClosing).toBe(3500);
+      expect(computeVariance(expectedClosing, 3300, 1).varianceQuantity).toBe(-200);
+    });
+
     it("computes shortage as negative variance (Actual - Expected < 0)", () => {
       const result = computeVariance(100, 90, 2.5);
       expect(result.varianceQuantity).toBe(-10);

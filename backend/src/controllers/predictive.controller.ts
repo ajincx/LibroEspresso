@@ -152,7 +152,9 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
     pool.query<{ verifiedShrinkageCost: number }>(
       `SELECT coalesce(sum(CASE WHEN sr.actual_quantity<sr.expected_quantity THEN abs(sr.variance_value) ELSE 0 END),0)::float8 "verifiedShrinkageCost"
          FROM shrinkage_reports sr
-        WHERE NOT sr.is_test_data AND sr.detected_at::date BETWEEN $1::date AND $2::date
+         JOIN inventory_count_items ici ON ici.id=sr.inventory_count_item_id
+         JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
+        WHERE NOT sr.is_test_data AND ic.count_type<>'OPENING' AND sr.detected_at::date BETWEEN $1::date AND $2::date
           AND sr.status IN ('VERIFIED', 'REVIEWED')
           AND sr.classification IN (${VERIFIED_SHRINKAGE_CLASSIFICATIONS_SQL})
           ${shrinkageBranchClause}`, shrinkageParams),

@@ -67,6 +67,30 @@ export const physicalCountPreviewVariance = (
   actualQuantity: number,
 ) => actualQuantity - expectedQuantity;
 
+export const displayedPhysicalCountVariance = (
+  countType: InventoryCountType,
+  expectedQuantity: number,
+  actualQuantity: number | null,
+) => countType === "OPENING" || actualQuantity === null
+  ? null
+  : physicalCountPreviewVariance(expectedQuantity, actualQuantity);
+
+export const previousClosingCopyMessage = (countDate: string) =>
+  `Values copied from the Closing Count on ${countDate}. Review and confirm them before submitting.`;
+
+export const copyPreviousClosingEntries = (
+  items: ExpectedInventoryItem[],
+  previousClosingItems: DailyInventoryCountContext["previousClosingItems"],
+) => {
+  const copied = new Map(previousClosingItems.map((item) => [item.inventoryItemId, item.actualQuantity]));
+  return Object.fromEntries(items.map((item) => [
+    item.inventoryItemId,
+    copied.has(item.inventoryItemId)
+      ? physicalCountEntryFromCanonical(copied.get(item.inventoryItemId)!, item.unit)
+      : blankPhysicalCountEntry(item.unit),
+  ]));
+};
+
 export const inventoryCountColumns = (countType: InventoryCountType) => countType === "FULL"
   ? ["SKU", "Ingredient", "Previous Actual", "Received", "Recipe Consumption", "Expected Stock", "Physical Count", "Preview Variance"]
   : ["SKU", "Ingredient", "Previous Actual", "Received", "Recipe Consumption", "Expected Stock", "Opening Count", "Closing Count", "Preview Variance"];
@@ -164,6 +188,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
   const [completionFilter, setCompletionFilter] = useState<PhysicalCountCompletionFilter>("ALL");
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [dailyContext,setDailyContext]=useState<DailyInventoryCountContext|null>(null);
+  const [copiedClosingDate,setCopiedClosingDate]=useState<string|null>(null);
   const [openingQuantities,setOpeningQuantities]=useState<Record<string,number>>({});
   const [closingQuantities,setClosingQuantities]=useState<Record<string,number>>({});
   const [previewing,setPreviewing]=useState(false);
@@ -243,7 +268,11 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
       if(editingCountId&&(!reason||reason.length<10)){toast.error("Provide a correction reason of at least 10 characters.");return;}
       const count = editingCountId ? await inventoryWorkflowService.updateCount(editingCountId, countDate, items,reason!) : await inventoryWorkflowService.submitCount(countDate, items,countType);
       if (!onSubmitted) setSubmitted({ id: count.id, countNo: count.countNo, items: count.items });
-      toast.success(editingCountId ? "Physical count corrections saved" : "Physical count submitted and variances calculated automatically");
+      toast.success(editingCountId
+        ? "Physical count corrections saved"
+        : countType === "OPENING"
+          ? "Opening Count submitted"
+          : "Physical count submitted and variances calculated automatically");
       setEditingCountId(null);
       setParams({}, { replace: true });
       onSubmitted?.();
@@ -332,7 +361,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
           <Select small value={completionFilter} onChange={(value) => setCompletionFilter(value as PhysicalCountCompletionFilter)} options={[{ value: "ALL", label: "All" }, { value: "COUNTED", label: "Counted" }, { value: "NOT_COUNTED", label: "Not Counted" }]}/>
           <span className="text-xs font-medium text-[var(--app-text-muted)]">Showing {visibleItems.length} of {expected.length} items</span>
           {search && <Btn variant="outline" size="sm" onClick={() => setSearch("")}>Clear search</Btn>}
-          {countType==="OPENING"&&dailyContext?.previousClosingItems.length&&!activeDailyCount?<Btn variant="outline" size="sm" onClick={()=>{const copied=new Map(dailyContext.previousClosingItems.map((item)=>[item.inventoryItemId,item.actualQuantity]));setEntries(Object.fromEntries(expected.map((item)=>[item.inventoryItemId,copied.has(item.inventoryItemId)?physicalCountEntryFromCanonical(copied.get(item.inventoryItemId)!,item.unit):blankPhysicalCountEntry(item.unit)])));setHasUnsavedChanges(true);setPreviewing(false);}}>Copy Previous Closing</Btn>:null}
+          {countType==="OPENING"&&dailyContext?.previousClosingItems.length&&!activeDailyCount?<Btn variant="outline" size="sm" onClick={()=>{setEntries(copyPreviousClosingEntries(expected,dailyContext.previousClosingItems));setCopiedClosingDate(dailyContext.previousClosingDate);setHasUnsavedChanges(true);setPreviewing(false);}}>Copy Previous Closing</Btn>:null}
           <div className="ml-auto"><Btn icon={Send} disabled={saving || expected.length === 0 || Boolean(activeDailyCount) || (countType==="FULL"&&completion.remaining > 0) || (countType==="CLOSING"&&(!dailyContext?.openingCount||!dailyContext.posDayComplete))} onClick={() => void submit()}>
             {saving ? "Saving…" : editingCountId ? "Save Corrections" : previewing ? "Confirm and Submit" : activeDailyCount ? `${countType === "OPENING" ? "Opening" : "Closing"} Submitted` : "Submit Count"}
           </Btn></div>
@@ -348,7 +377,8 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
             <div className="h-full rounded-full bg-[var(--app-primary)] transition-[width]" style={{ width: expected.length ? `${(completion.counted / expected.length) * 100}%` : "0%" }}/>
           </div>
           {countType==="FULL"&&completion.remaining > 0 && <p className="mt-2 text-xs text-[var(--app-text-muted)]">Complete the remaining physical quantities before submitting. Still needed: {completion.remainingItems.slice(0, 5).map((item) => item.itemName).join(", ")}{completion.remaining > 5 ? ` and ${completion.remaining - 5} more` : ""}.</p>}
-          {countType!=="FULL"&&previewing&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">Preview ready. Review the calculated variances, then choose Confirm and Submit. Only entered ingredients will establish checkpoints.</p>}
+          {copiedClosingDate&&countType==="OPENING"&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">{previousClosingCopyMessage(copiedClosingDate)}</p>}
+          {countType!=="FULL"&&previewing&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">{countType==="OPENING"?"Review the entered Opening quantities, then choose Confirm and Submit. Only entered ingredients will establish checkpoints.":"Preview ready. Review the calculated variances, then choose Confirm and Submit. Only entered ingredients will establish checkpoints."}</p>}
         </div>
         <TableWrapper minWidth={countType==="FULL"?900:1120}>
           <THead cols={inventoryCountColumns(countType)} />
@@ -361,7 +391,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
               visibleItems.map((item) => {
                 const entry = entries[item.inventoryItemId] ?? blankPhysicalCountEntry(item.unit);
                 const normalizedActual = normalizePhysicalCountPreview(entry, item.unit);
-                const variance = normalizedActual === null ? null : physicalCountPreviewVariance(item.expectedQuantity, normalizedActual);
+                const variance = displayedPhysicalCountVariance(countType, item.expectedQuantity, normalizedActual);
                 const countEntry=<div className="flex flex-col items-end gap-1"><div className="flex items-center gap-1.5"><input type="number" min={0} step="any" value={entry.quantity} onChange={(event) => { setHasUnsavedChanges(true); setPreviewing(false); setEntries((current) => ({ ...current, [item.inventoryItemId]: { ...entry, quantity: event.target.value } })); }} placeholder="Not counted" className="min-h-9 w-28 px-2.5 py-1.5 rounded-xl border text-right font-semibold text-sm outline-none transition-colors border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] focus:border-[var(--app-primary)] focus:ring-2 focus:ring-[var(--app-primary-faint)]" aria-label={`${item.itemName} ${countType.toLowerCase()} quantity`}/><Select small value={entry.enteredUnit} onChange={(value) => { setHasUnsavedChanges(true); setPreviewing(false); setEntries((current) => ({ ...current, [item.inventoryItemId]: changePhysicalCountEntryUnit(entry, item.unit, value as PhysicalCountUnit) })); }} className="w-20 [&_.custom-select-trigger]:!min-w-0" ariaLabel={`${item.itemName} physical count unit`} options={allowedPhysicalCountUnits(item.unit).map((unit) => ({ value: unit, label: unit }))}/></div><span className="text-[10px] whitespace-nowrap text-[var(--app-text-muted)]">{entry.quantity.trim() === ""?"Not yet counted":normalizedActual === null?"Enter a valid non-negative quantity":`Converted to system unit: ${normalizedActual.toLocaleString("en-US", { maximumFractionDigits: 4 })} ${item.unit}`}</span></div>;
                 const savedQuantity=(value:number|undefined)=>value===undefined?<span className="text-[var(--app-text-muted)]">—</span>:<span className="font-semibold">{value.toLocaleString("en-PH",{maximumFractionDigits:4})} {item.unit}</span>;
                 return (
@@ -395,7 +425,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
         </TableWrapper>
         <div className="flex flex-wrap items-center justify-between gap-4 p-4 border-t bg-[var(--app-surface)]" style={{ borderColor: "var(--app-border)" }}>
           <p className="text-xs text-[var(--app-text-muted)] max-w-md">
-            Variance and possible shrinkage are calculated by the server. {PHYSICAL_COUNT_INVESTIGATION_GUIDANCE}
+            {countType==="OPENING"?"Opening quantities establish the day's actual starting stock. Daily variance is calculated only when Closing Count is submitted.":<>Variance and possible shrinkage are calculated by the server. {PHYSICAL_COUNT_INVESTIGATION_GUIDANCE}</>}
           </p>
           <div className="flex items-center gap-2">
             {editingCountId && (

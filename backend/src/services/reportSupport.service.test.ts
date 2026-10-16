@@ -60,5 +60,17 @@ describe("inventory report calculation source", () => {
       expect(sql).toContain("source.status='ACTIVE'");
       expect(sql).toContain("NOT pi.is_test_data");
     }
+
+    const inventoryVarianceQueries = mocks.poolQuery.mock.calls
+      .map(([sql]) => String(sql))
+      .filter((sql) => sql.includes("FROM inventory_counts ic"));
+    expect(inventoryVarianceQueries.length).toBeGreaterThan(0);
+    expect(inventoryVarianceQueries.every((sql) => sql.includes("ic.count_type<>'OPENING'"))).toBe(true);
+
+    const shrinkageQueries = mocks.poolQuery.mock.calls
+      .map(([sql]) => String(sql))
+      .filter((sql) => sql.includes("FROM shrinkage_reports sr"));
+    expect(shrinkageQueries.length).toBeGreaterThan(0);
+    expect(shrinkageQueries.every((sql) => sql.includes("ic.count_type<>'OPENING'"))).toBe(true);
   });
 });

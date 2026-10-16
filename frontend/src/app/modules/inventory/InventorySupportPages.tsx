@@ -312,7 +312,7 @@ export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCo
                   <TD muted>{item.submittedBy}</TD>
                   <TD right>{item.itemCount}</TD>
                   <TD right bold className={item.varianceCount ? "text-[var(--app-danger)]" : "text-[var(--app-success)]"}>
-                    {item.varianceCount}
+                    {item.countType === "OPENING" ? "—" : item.varianceCount}
                   </TD>
                   <TD><span className="inline-flex rounded-full px-2.5 py-1 text-xs font-semibold bg-[var(--app-success-bg)] text-[var(--app-success)]">Yes</span></TD>
                   <TD center className="whitespace-nowrap">
@@ -360,8 +360,8 @@ export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCo
                 <tbody>
                   {viewLoading ? <TableLoadingRow colSpan={7} label="Loading count details…"/> : viewItems.map((item) => <TR key={item.id}>
                     <TD mono muted>{item.sku}</TD><TD bold>{item.itemName}</TD><TD right>{number(item.expectedQuantity)}</TD><TD right>{number(item.actualQuantity)}</TD>
-                    <TD right bold className={Math.abs(item.varianceQuantity) > 0.0001 ? "text-[var(--app-danger)]" : "text-[var(--app-success)]"}>{number(item.varianceQuantity)}</TD>
-                    <TD right>{number(item.varianceValue)}</TD><TD muted>{item.unit}</TD>
+                    <TD right bold className={viewTarget.countType === "OPENING" ? "text-[var(--app-text-muted)]" : Math.abs(item.varianceQuantity) > 0.0001 ? "text-[var(--app-danger)]" : "text-[var(--app-success)]"}>{viewTarget.countType === "OPENING" ? "—" : number(item.varianceQuantity)}</TD>
+                    <TD right>{viewTarget.countType === "OPENING" ? "—" : number(item.varianceValue)}</TD><TD muted>{item.unit}</TD>
                   </TR>)}
                 </tbody>
               </TableWrapper>

@@ -1066,7 +1066,8 @@ export const getPosAnalytics: RequestHandler = async (req, res) => {
          FROM inventory_counts ic JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id
          LEFT JOIN LATERAL (SELECT corrected_actual_quantity,corrected_variance_value
            FROM inventory_count_corrections WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
-        WHERE NOT ic.is_test_data AND ic.count_date BETWEEN $1::date AND $2::date ${branchId ? `AND ic.branch_id=$3` : ""}`,
+         WHERE NOT ic.is_test_data AND ic.count_type<>'OPENING'
+           AND ic.count_date BETWEEN $1::date AND $2::date ${branchId ? `AND ic.branch_id=$3` : ""}`,
         params,
       ),
       pool.query<{ name: string; value: number }>(
@@ -1290,15 +1291,16 @@ export const getExpectedInventory: RequestHandler = async (req, res) => {
         FROM inventory_counts WHERE branch_id=$1 AND count_date=$2 AND count_type IN ('OPENING','CLOSING') AND NOT is_test_data`,
       [branchId,countDate]);
   const previousClosing = countType === "OPENING" ? await pool.query<{
-    inventoryItemId: string; actualQuantity: number;
-  }>(`SELECT ici.inventory_item_id "inventoryItemId",COALESCE(correction.corrected_actual_quantity,ici.actual_quantity)::float8 "actualQuantity"
+    inventoryItemId: string; actualQuantity: number; countDate: string;
+  }>(`SELECT ici.inventory_item_id "inventoryItemId",COALESCE(correction.corrected_actual_quantity,ici.actual_quantity)::float8 "actualQuantity",
+            ic.count_date::text "countDate"
         FROM inventory_counts ic JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id
         LEFT JOIN LATERAL (SELECT corrected_actual_quantity FROM inventory_count_corrections
           WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
        WHERE ic.branch_id=$1 AND ic.count_type='CLOSING' AND ic.count_date<$2 AND NOT ic.is_test_data
          AND ic.id=(SELECT prior.id FROM inventory_counts prior WHERE prior.branch_id=$1 AND prior.count_type='CLOSING'
            AND prior.count_date<$2 AND NOT prior.is_test_data ORDER BY prior.count_date DESC,prior.submitted_at DESC LIMIT 1)`,
-      [branchId,countDate]) : { rows: [] as {inventoryItemId:string;actualQuantity:number}[] };
+      [branchId,countDate]) : { rows: [] as {inventoryItemId:string;actualQuantity:number;countDate:string}[] };
   const completeness = await pool.query<{ complete: boolean }>(
     `SELECT EXISTS(
        SELECT 1 FROM pos_daily_declarations declaration
@@ -1314,6 +1316,7 @@ export const getExpectedInventory: RequestHandler = async (req, res) => {
     openingCount: dailyCounts.rows.find((count)=>count.countType==="OPENING") ?? null,
     closingCount: dailyCounts.rows.find((count)=>count.countType==="CLOSING") ?? null,
     previousClosingItems: previousClosing.rows,
+    previousClosingDate: previousClosing.rows[0]?.countDate ?? null,
     posDayComplete: completeness.rows[0]?.complete === true,
   } });
 };
@@ -1488,7 +1491,7 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
       // If the shortage exceeds the configured tolerance,
       // create a DETECTED shrinkage investigation.
       // Do not automatically classify it as confirmed shrinkage.
-      if (requiresVarianceInvestigation(expected.expectedQuantity, varianceQuantity, varianceTolerance)) {
+      if (input.countType !== "OPENING" && requiresVarianceInvestigation(expected.expectedQuantity, varianceQuantity, varianceTolerance)) {
         const reportNo = await client.query<{ reportNo: string }>(
           `SELECT 'SR-'||to_char(now(),'YYYY')||'-'||lpad(nextval('shrinkage_report_number_seq')::text,5,'0') "reportNo"`,
         );
@@ -1723,7 +1726,7 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
         ],
       );
       let shrinkageReportId = row.shrinkageReportId;
-      const requiresInvestigation = requiresVarianceInvestigation(
+      const requiresInvestigation = count.rows[0].countType !== "OPENING" && requiresVarianceInvestigation(
         expectedQty,
         varianceQuantity,
         varianceTolerance,
@@ -1839,7 +1842,7 @@ export const listInventoryCounts: RequestHandler = async (req, res) => {
               (ic.submitted_by=$1 AND NOT EXISTS(SELECT 1 FROM inventory_counts newer WHERE newer.branch_id=ic.branch_id AND NOT newer.is_test_data AND (newer.count_date,newer.submitted_at)>(ic.count_date,ic.submitted_at))
                 AND NOT EXISTS(SELECT 1 FROM inventory_count_items ci JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ci.id WHERE ci.inventory_count_id=ic.id AND sr.status<>'DETECTED')) "canEdit",
               concat(u.first_name,' ',u.last_name) "submittedBy",count(ici.id)::int "itemCount",count(*) OVER()::int "__total",
-              (count(ici.id) FILTER (WHERE abs(COALESCE(correction.corrected_variance_quantity,ici.variance_quantity))>0.0001))::int "varianceCount"
+              (count(ici.id) FILTER (WHERE ic.count_type<>'OPENING' AND abs(COALESCE(correction.corrected_variance_quantity,ici.variance_quantity))>0.0001))::int "varianceCount"
        FROM inventory_counts ic JOIN branches b ON b.id=ic.branch_id JOIN users u ON u.id=ic.submitted_by
        LEFT JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id AND ici.voided_at IS NULL
        LEFT JOIN LATERAL (SELECT corrected_variance_quantity FROM inventory_count_corrections
@@ -2045,7 +2048,7 @@ export const listInventoryVariances: RequestHandler = async (req, res) => {
   const filters = varianceFilters.parse(req.query);
   const pagination = paginationQuery.parse(req.query);
   const branchId = getEffectiveBranchId(req.user!, filters.branchId);
-  const clauses: string[] = ["NOT ic.is_test_data", "ici.voided_at IS NULL"];
+  const clauses: string[] = ["NOT ic.is_test_data", "ici.voided_at IS NULL", "ic.count_type <> 'OPENING'"];
   const values: unknown[] = [];
   if (branchId) {
     values.push(branchId);
@@ -2095,7 +2098,7 @@ export const listShrinkageReports: RequestHandler = async (req, res) => {
   const filters = shrinkageFilters.parse(req.query);
   const pagination = paginationQuery.parse(req.query);
   const branchId = getEffectiveBranchId(req.user!, filters.branchId);
-  const clauses: string[] = ["NOT sr.is_test_data", "sr.archived_at IS NULL"];
+  const clauses: string[] = ["NOT sr.is_test_data", "sr.archived_at IS NULL", "ic.count_type <> 'OPENING'"];
   const values: unknown[] = [];
   if (branchId) {
     values.push(branchId);

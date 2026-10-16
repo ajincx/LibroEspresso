@@ -102,4 +102,15 @@ describe("predictive controller Gemini boundaries", () => {
     expect(ingredientDemandSql).toContain("source.status='ACTIVE'");
     expect(ingredientDemandSql).toContain("NOT pi.is_test_data");
   });
+
+  it("excludes Opening Count differences from verified shrinkage context", async () => {
+    mocks.generateGeminiInsights.mockResolvedValue(null);
+    await buildPredictiveForecast(manager, { startDate: "2026-10-02", endDate: "2026-10-31" });
+
+    const shrinkageSql = mocks.poolQuery.mock.calls
+      .map(([sql]) => String(sql))
+      .find((sql) => sql.includes("FROM shrinkage_reports"));
+    expect(shrinkageSql).toContain("JOIN inventory_counts ic");
+    expect(shrinkageSql).toContain("ic.count_type<>'OPENING'");
+  });
 });

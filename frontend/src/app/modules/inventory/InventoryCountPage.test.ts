@@ -2,7 +2,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { ExpectedInventoryItem } from "../../types/inventoryWorkflow";
-import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, filterPhysicalCountItems, initialPhysicalCountDate, inventoryCountColumns, isDailyCountColumnEditable, isFutureInventoryCountDate, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, physicalCountCompletion, physicalCountEntryFromCanonical, physicalCountPreviewVariance, validPhysicalCountEntries } from "./InventoryCountPage";
+import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, copyPreviousClosingEntries, displayedPhysicalCountVariance, filterPhysicalCountItems, initialPhysicalCountDate, inventoryCountColumns, isDailyCountColumnEditable, isFutureInventoryCountDate, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, physicalCountCompletion, physicalCountEntryFromCanonical, physicalCountPreviewVariance, previousClosingCopyMessage, validPhysicalCountEntries } from "./InventoryCountPage";
 import { buildEnteredPhysicalCountItems } from "./InventoryCountPage";
 
 const item = (inventoryItemId: string, sku: string, itemName: string): ExpectedInventoryItem => ({
@@ -32,6 +32,30 @@ describe("Daily partial physical counts",()=>{
 
   it("keeps the complete Full Physical Count table",()=>{
     expect(inventoryCountColumns("FULL")).toEqual(["SKU","Ingredient","Previous Actual","Received","Recipe Consumption","Expected Stock","Physical Count","Preview Variance"]);
+  });
+
+  it("shows daily variance only for Closing Count",()=>{
+    expect(displayedPhysicalCountVariance("OPENING",3500,3300)).toBeNull();
+    expect(displayedPhysicalCountVariance("CLOSING",3500,3300)).toBe(-200);
+    expect(displayedPhysicalCountVariance("FULL",3500,3300)).toBe(-200);
+    expect(displayedPhysicalCountVariance("CLOSING",3500,null)).toBeNull();
+  });
+
+  it("identifies the source date after copying the previous Closing Count",()=>{
+    expect(previousClosingCopyMessage("2026-10-15")).toBe(
+      "Values copied from the Closing Count on 2026-10-15. Review and confirm them before submitting.",
+    );
+  });
+
+  it("copies explicit zero while leaving ingredients missing from the previous Closing blank",()=>{
+    expect(copyPreviousClosingEntries(ingredients,[
+      {inventoryItemId:"ice",actualQuantity:0,countDate:"2026-10-15"},
+      {inventoryItemId:"sugar",actualQuantity:3,countDate:"2026-10-15"},
+    ])).toEqual({
+      ice:{quantity:"0",enteredUnit:"pc"},
+      milk:{quantity:"",enteredUnit:"pc"},
+      sugar:{quantity:"3",enteredUnit:"pc"},
+    });
   });
 
   it("supports the Daily Count return label without changing the Full Count default",()=>{

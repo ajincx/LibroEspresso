@@ -44,6 +44,14 @@ describe("report dataset semantics", () => {
     expect(salesDetail).not.toContain("UPDATE pos_imports");
   });
 
+  it("excludes Opening Count differences from operational variance and shrinkage reports", () => {
+    const source = readFileSync(new URL("./reportDataset.service.ts", import.meta.url), "utf8");
+    const varianceSection = source.slice(source.indexOf('if (selected.has("INVENTORY_VARIANCE"))'), source.indexOf('if (selected.has("SHRINKAGE"))'));
+    const shrinkageSection = source.slice(source.indexOf('if (selected.has("SHRINKAGE"))'), source.indexOf('if (selected.has("PURCHASE_ORDER"))'));
+    expect(varianceSection).toContain("ic.count_type<>'OPENING'");
+    expect(shrinkageSection).toContain("ic.count_type<>'OPENING'");
+  });
+
   it("builds report forecast values without waiting for optional Gemini interpretation", () => {
     const source = readFileSync(new URL("./reportDataset.service.ts", import.meta.url), "utf8");
     const predictiveSection = source.slice(source.indexOf('if (selected.has("PREDICTIVE_FORECAST"))'));

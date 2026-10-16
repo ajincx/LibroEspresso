@@ -431,7 +431,7 @@ export async function buildReportDataset(
            WHEN ici.actual_quantity<ici.expected_quantity THEN -abs(ici.variance_value) ELSE 0 END::float8 "varianceValue",
       CASE WHEN ici.expected_quantity>0 THEN ((ici.actual_quantity-ici.expected_quantity)/ici.expected_quantity*100)::float8 ELSE NULL END "variancePercentage"
       FROM inventory_counts ic JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id JOIN branches b ON b.id=ic.branch_id JOIN inventory_items ii ON ii.id=ici.inventory_item_id
-      WHERE NOT ic.is_test_data AND ic.count_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR ic.branch_id=$3::uuid) AND ($4::uuid IS NULL OR ii.id=$4::uuid)
+      WHERE NOT ic.is_test_data AND ic.count_type<>'OPENING' AND ic.count_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR ic.branch_id=$3::uuid) AND ($4::uuid IS NULL OR ii.id=$4::uuid)
       ORDER BY ic.count_date DESC,abs(ici.variance_value) DESC LIMIT 5001`,
       [
         request.startDate,
@@ -505,8 +505,10 @@ export async function buildReportDataset(
       sr.classification::text "finalClassification",CASE WHEN sr.status IN ('VERIFIED','REVIEWED') AND sr.classification IN (${VERIFIED_SHRINKAGE_CLASSIFICATIONS_SQL}) AND sr.actual_quantity<sr.expected_quantity THEN abs(sr.variance_value)::float8 ELSE 0 END "verifiedShrinkageCost",
       CASE WHEN sr.status IN ('VERIFIED','REVIEWED') THEN concat(mu.first_name,' ',mu.last_name) ELSE NULL END "branchManagerVerification",
       CASE WHEN sr.status='REVIEWED' THEN 'REVIEWED' WHEN sr.status='VERIFIED' THEN 'AWAITING OWNER REVIEW' ELSE 'NOT YET SUBMITTED' END "ownerReviewState"
-      FROM shrinkage_reports sr JOIN branches b ON b.id=sr.branch_id JOIN inventory_items ii ON ii.id=sr.inventory_item_id LEFT JOIN users mu ON mu.id=sr.submitted_by
-      WHERE NOT sr.is_test_data AND sr.detected_at::date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR sr.branch_id=$3::uuid) AND ($4::uuid IS NULL OR ii.id=$4::uuid)
+      FROM shrinkage_reports sr JOIN branches b ON b.id=sr.branch_id JOIN inventory_items ii ON ii.id=sr.inventory_item_id
+      JOIN inventory_count_items ici ON ici.id=sr.inventory_count_item_id JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
+      LEFT JOIN users mu ON mu.id=sr.submitted_by
+      WHERE NOT sr.is_test_data AND ic.count_type<>'OPENING' AND sr.detected_at::date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR sr.branch_id=$3::uuid) AND ($4::uuid IS NULL OR ii.id=$4::uuid)
         AND ($5::text IS NULL OR sr.classification::text=$5::text) ORDER BY sr.detected_at DESC LIMIT 5001`,
       [
         request.startDate,
