@@ -6,6 +6,15 @@ import { pool } from "../config/database.js";
 describe("health and readiness", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it("reports that the API is running at the root endpoint", async () => {
+    const response = await request(app).get("/");
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      status: "ok",
+      message: "Libro Espresso API is running",
+    });
+  });
+
   it("reports process health and returns a request correlation ID", async () => {
     const response = await request(app).get("/health").set("X-Request-ID", "health-check-1");
     expect(response.status).toBe(200);
