@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
-import { AlertCircle, AlertTriangle, ClipboardCheck, DollarSign, Eye, Hash, MoreHorizontal, PackageOpen, RefreshCw, SlidersHorizontal, SunMoon, X, XCircle } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowLeft, ClipboardCheck, DollarSign, Eye, Hash, MoreHorizontal, PackageOpen, RefreshCw, SlidersHorizontal, SunMoon, X, XCircle } from "lucide-react";
 import { AnimatedTabPanel, Btn, C, KPICard, ModuleLoadingFallback, ModuleTabSwitcher, SearchInput, SectionHeader, Select, StatusChip, TableCard, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../../components/ui/dropdown-menu";
 import { masterDataService } from "../../services/masterData.service";
@@ -62,7 +62,7 @@ export function subscribeToInventoryDataChanges(
   };
 }
 
-export function InventoryOverview({ role, scopeBranchId = "ALL" }: { role: Role; scopeBranchId?: string }) {
+export function InventoryOverview({ role, scopeBranchId = "ALL", onDailyStockCount }: { role: Role; scopeBranchId?: string; onDailyStockCount?: (countType: "OPENING" | "CLOSING") => void }) {
   const [items, setItems] = useState<InventoryOverviewItem[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [loading, setLoading] = useState(true);
@@ -73,6 +73,7 @@ export function InventoryOverview({ role, scopeBranchId = "ALL" }: { role: Role;
   const [settingsItem, setSettingsItem] = useState<InventoryOverviewItem | null>(null);
   const [detailsItem, setDetailsItem] = useState<InventoryOverviewItem | null>(null);
   const [dataRefreshVersion, setDataRefreshVersion] = useState(0);
+  const [dailyShortcutLoading, setDailyShortcutLoading] = useState(false);
   const load = useCallback(async () => {
     setLoading(true); setError("");
     try {
@@ -96,10 +97,19 @@ export function InventoryOverview({ role, scopeBranchId = "ALL" }: { role: Role;
   const scoped = role === "owner" && branchId !== "ALL" ? items.filter((item) => item.branchId === branchId) : items;
   const count = (value: InventoryHealthStatus) => scoped.filter((item) => item.status === value).length;
   const refresh = () => { setSearch(""); setStatus("ALL"); setBranchId(scopeBranchId); void load(); };
+  const openDailyStockCount = async () => {
+    setDailyShortcutLoading(true); setError("");
+    try {
+      const context = await inventoryWorkflowService.expected(businessDate(), scopeBranchId === "ALL" ? undefined : scopeBranchId, "OPENING");
+      onDailyStockCount?.(dailyCountShortcutDestination(context).countType);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to open today's Daily Stock Count."); }
+    finally { setDailyShortcutLoading(false); }
+  };
 
   return <div className="p-4 md:p-6 space-y-5">
     <SectionHeader title="Inventory Overview" sub={role === "owner" ? "System-calculated stock across all branches; Last Physical Count shows the latest verified count" : "System-calculated stock for your branch; Last Physical Count shows the latest verified count"}/>
     {error && <div className="rounded-xl border p-4 flex items-center justify-between gap-3" style={{ borderColor: C.red, background: C.redBg }}><span className="text-sm" style={{ color: C.red }}>{error}</span><Btn variant="outline" size="sm" onClick={() => void load()}>Retry</Btn></div>}
+    {role === "manager" && <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4"><div className="sm:col-start-1 xl:col-start-5"><Btn className="w-full" disabled={dailyShortcutLoading} onClick={() => void openDailyStockCount()}>{dailyShortcutLoading ? "Opening…" : "+ Daily Stock Count"}</Btn></div></div>}
     <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
       <KPICard label="Inventory Value" value={peso(scoped.reduce((sum, item) => sum + item.inventoryValue, 0))} sub="System-calculated stock value" icon={DollarSign} color={C.blue}/>
       <KPICard label="Inventory Records" value={String(scoped.length)} sub="Branch and ingredient records" icon={Hash} color={C.maroon}/>
@@ -272,6 +282,11 @@ const stockOperationIcons = { starting: PackageOpen, daily: SunMoon, full: Clipb
 export const shouldShowStockOperationCards = (selected: StockOperationId | null) => selected === null;
 export const dailyCountStatusLabel = (count: DailyInventoryCountContext["openingCount"] | DailyInventoryCountContext["closingCount"]) => count ? "Recorded" : "—";
 export const canOpenClosingCount = (context: DailyInventoryCountContext | null) => Boolean(context?.openingCount && context.posDayComplete);
+export const dailyCountShortcutDestination = (context: DailyInventoryCountContext) => ({
+  countType: context.openingCount ? "CLOSING" as const : "OPENING" as const,
+  completed: Boolean(context.closingCount),
+});
+export const stockOperationSelectionAfterDailySubmit = (): StockOperationId | null => null;
 
 function DailyStockCountWorkflow({role,countType,onSubmitted}:{role:Role;countType:"OPENING"|"CLOSING";onSubmitted:()=>void}){
   const [revision,setRevision]=useState(0);
@@ -279,12 +294,13 @@ function DailyStockCountWorkflow({role,countType,onSubmitted}:{role:Role;countTy
   return <InventoryCountPage key={`${countType}-${revision}`} countType={countType} embedded onSubmitted={()=>{setRevision((value)=>value+1);onSubmitted();}}/>;
 }
 
-export function StockOperations({ role, scopeBranchId = "ALL", initialOperation = null }: { role: Role; scopeBranchId?: string; initialOperation?: StockOperationId | null }) {
+export function StockOperations({ role, scopeBranchId = "ALL", initialOperation = null, initialDailyCountType = "OPENING" }: { role: Role; scopeBranchId?: string; initialOperation?: StockOperationId | null; initialDailyCountType?: "OPENING" | "CLOSING" }) {
   const [selected, setSelected] = useState<StockOperationId | null>(initialOperation);
-  const [dailyCountType,setDailyCountType]=useState<"OPENING"|"CLOSING">("OPENING");
+  const [dailyCountType,setDailyCountType]=useState<"OPENING"|"CLOSING">(initialDailyCountType);
   const [dailyContext,setDailyContext]=useState<DailyInventoryCountContext|null>(null);
   const [dailyRefresh,setDailyRefresh]=useState(0);
   useEffect(() => setSelected(initialOperation), [initialOperation]);
+  useEffect(() => setDailyCountType(initialDailyCountType), [initialDailyCountType]);
   useEffect(()=>{
     if(role!=="manager") return;
     let active=true;
@@ -307,11 +323,11 @@ export function StockOperations({ role, scopeBranchId = "ALL", initialOperation 
       })}
     </div>}
     {selected && <section className="overflow-hidden rounded-2xl border bg-[var(--app-surface)] border-[var(--app-border)]">
-      <div className="flex flex-col gap-3 border-b p-4 sm:flex-row sm:items-center sm:justify-between border-[var(--app-border)]"><div><p className="text-xs font-semibold uppercase tracking-wide text-[var(--app-primary)]">Stock Operations</p><h2 className="mt-1 font-bold">{cards.find((card) => card.id === selected)?.title}</h2></div><Btn variant="outline" size="sm" onClick={() => setSelected(null)}>Back to operations</Btn></div>
+      <div className="flex flex-col gap-3 border-b p-4 sm:flex-row sm:items-center sm:justify-between border-[var(--app-border)]"><div><p className="text-xs font-semibold uppercase tracking-wide text-[var(--app-primary)]">Stock Operations</p><h2 className="mt-1 font-bold">{cards.find((card) => card.id === selected)?.title}</h2></div><Btn variant="outline" size="sm" icon={ArrowLeft} onClick={() => setSelected(null)}>Back to Operations</Btn></div>
       {selected === "starting"
         ? <Suspense fallback={<ModuleLoadingFallback/>}><OpeningInventoryBaselinePage role={role} scopeBranchId={scopeBranchId}/></Suspense>
         : selected === "daily"
-          ? <Suspense fallback={<ModuleLoadingFallback/>}><DailyStockCountWorkflow role={role} countType={dailyCountType} onSubmitted={()=>setDailyRefresh((value)=>value+1)}/></Suspense>
+          ? <Suspense fallback={<ModuleLoadingFallback/>}><DailyStockCountWorkflow role={role} countType={dailyCountType} onSubmitted={()=>{setDailyRefresh((value)=>value+1);setSelected(stockOperationSelectionAfterDailySubmit());}}/></Suspense>
         : selected === "full"
           ? <PhysicalCountsModule role={role} initialTab="record" scopeBranchId={scopeBranchId} embedded/>
           : null}
@@ -321,10 +337,7 @@ export function StockOperations({ role, scopeBranchId = "ALL", initialOperation 
 }
 
 export function StockHistory({ role, scopeBranchId = "ALL" }: { role: Role; scopeBranchId?: string }) {
-  return <div>
-    <div className="p-4 pb-0 md:p-6 md:pb-0"><SectionHeader title="Stock History" sub="Review submitted physical counts. Ingredient-level POS consumption, receipts, movements, and running balances remain available through View Details in Inventory Overview."/></div>
-    <Suspense fallback={<ModuleLoadingFallback/>}><PhysicalCountHistoryPage role={role} scopeBranchId={scopeBranchId}/></Suspense>
-  </div>;
+  return <Suspense fallback={<ModuleLoadingFallback/>}><PhysicalCountHistoryPage role={role} scopeBranchId={scopeBranchId}/></Suspense>;
 }
 
 export type PhysicalCountInitialView = "record" | "expected" | "history";
@@ -356,7 +369,7 @@ export function PhysicalCountsModule({ role, initialTab = "history", scopeBranch
     <AnimatedTabPanel panelKey={showHistory ? "history" : "current"}>
       <Suspense fallback={<ModuleLoadingFallback/>}>
         {showHistory
-          ? <PhysicalCountHistoryPage role={role} scopeBranchId={scopeBranchId} onOperationalCountsLoaded={resolveShortcut} onEditCount={() => setShowHistory(false)} onRecordCount={() => setShowHistory(false)}/>
+          ? <PhysicalCountHistoryPage role={role} scopeBranchId={scopeBranchId} onOperationalCountsLoaded={resolveShortcut} onEditCount={() => setShowHistory(false)}/>
           : role === "manager"
             ? <InventoryCountPage embedded={embedded} onSubmitted={() => setShowHistory(true)} onBackToHistory={() => setShowHistory(true)}/>
             : <ExpectedInventoryPage role={role} view="expected" scopeBranchId={scopeBranchId}/>}
@@ -374,6 +387,9 @@ export function InventoryManagementModule({ role, initialTab = "overview", scope
     ? "starting"
     : searchParams.get("countIntent") === "record" || initialTab === "counts" ? "full" : null;
   const [activeTab, setActiveTab] = useState<"overview" | "operations" | "history">(requestedTab);
+  const [overviewDailyCountType, setOverviewDailyCountType] = useState<"OPENING" | "CLOSING" | null>(null);
   useEffect(() => setActiveTab(requestedTab), [requestedTab]);
-  return <div><ModuleTabSwitcher tabs={inventoryTabs} active={activeTab} onChange={setActiveTab}/><AnimatedTabPanel panelKey={activeTab}>{activeTab === "overview" ? <InventoryOverview role={role} scopeBranchId={scopeBranchId}/> : activeTab === "operations" ? <StockOperations role={role} scopeBranchId={scopeBranchId} initialOperation={requestedOperation}/> : <StockHistory role={role} scopeBranchId={scopeBranchId}/>}</AnimatedTabPanel></div>;
+  const changeTab = (tab: "overview" | "operations" | "history") => { setOverviewDailyCountType(null); setActiveTab(tab); };
+  const openDailyStockCount = (countType: "OPENING" | "CLOSING") => { setOverviewDailyCountType(countType); setActiveTab("operations"); };
+  return <div><ModuleTabSwitcher tabs={inventoryTabs} active={activeTab} onChange={changeTab}/><AnimatedTabPanel panelKey={activeTab}>{activeTab === "overview" ? <InventoryOverview role={role} scopeBranchId={scopeBranchId} onDailyStockCount={openDailyStockCount}/> : activeTab === "operations" ? <StockOperations role={role} scopeBranchId={scopeBranchId} initialOperation={overviewDailyCountType ? "daily" : requestedOperation} initialDailyCountType={overviewDailyCountType ?? "OPENING"}/> : <StockHistory role={role} scopeBranchId={scopeBranchId}/>}</AnimatedTabPanel></div>;
 }

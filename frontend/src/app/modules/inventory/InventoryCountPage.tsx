@@ -19,6 +19,10 @@ export const initialPhysicalCountDate = (requestedDate: string | null, currentBu
     ? requestedDate
     : currentBusinessDate;
 
+export const showInventoryCountDateFilter = (countType: InventoryCountType) => countType === "FULL";
+export const savedCountQuantities = (items: Array<{ inventoryItemId: string; actualQuantity: number }>) =>
+  Object.fromEntries(items.map((item) => [item.inventoryItemId, item.actualQuantity]));
+
 export type PhysicalCountCompletionFilter = "ALL" | "COUNTED" | "NOT_COUNTED";
 
 export const filterPhysicalCountItems = (
@@ -175,7 +179,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
   const [params, setParams] = useSearchParams();
   const requestedCountId = params.get("editCount");
   const currentBusinessDate = businessDate();
-  const [countDate, setCountDate] = useState(() => initialPhysicalCountDate(params.get("countDate"), currentBusinessDate));
+  const [countDate, setCountDate] = useState(() => countType === "FULL" ? initialPhysicalCountDate(params.get("countDate"), currentBusinessDate) : currentBusinessDate);
   const [expected, setExpected] = useState<ExpectedInventoryItem[]>([]);
   const [unavailable, setUnavailable] = useState<UnavailableInventoryCountItem[]>([]);
   const [entries, setEntries] = useState<Record<string, PhysicalCountEntry>>({});
@@ -219,8 +223,8 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
         data.openingCount?inventoryWorkflowService.count(data.openingCount.id):Promise.resolve(null),
         data.closingCount?inventoryWorkflowService.count(data.closingCount.id):Promise.resolve(null),
       ]);
-      setOpeningQuantities(Object.fromEntries(opening?.items.map((item)=>[item.inventoryItemId,item.actualQuantity])??[]));
-      setClosingQuantities(Object.fromEntries(closing?.items.map((item)=>[item.inventoryItemId,item.actualQuantity])??[]));
+      setOpeningQuantities(savedCountQuantities(opening?.items ?? []));
+      setClosingQuantities(savedCountQuantities(closing?.items ?? []));
       setEntries(Object.fromEntries(data.items.map((item) => [item.inventoryItemId, blankPhysicalCountEntry(item.unit)])));
       setCompletionFilter("ALL");
       setHasUnsavedChanges(false);
@@ -293,14 +297,14 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
             Return to New Count
           </button>
         )}
-        {!embedded&&<PhysicalCountBackAction onBack={backToHistory} label={countType==="FULL"?"Back to Count History":"Back to Stock Operations"}/>}
+        {!embedded&&<PhysicalCountBackAction onBack={backToHistory} label={countType==="FULL"?"Back to Count History":"Back to Operations"}/>}
       </div>
     </div>
   );
 
   return <div className={embedded?"space-y-5":"p-4 md:p-6 space-y-5"}>
     {!embedded&&<div>
-      <PhysicalCountBackAction onBack={backToHistory} label={countType==="FULL"?"Back to Count History":"Back to Stock Operations"}/>
+      <PhysicalCountBackAction onBack={backToHistory} label={countType==="FULL"?"Back to Count History":"Back to Operations"}/>
     </div>}
     {!embedded&&<div className="flex items-start justify-between gap-4">
       <div>
@@ -320,7 +324,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
             : "Record and verify the physical stock available at the branch. Expected stock remains system-calculated."}
         </p>
       </div>
-      <CalendarDateField label="Count date" value={countDate} max={currentBusinessDate} onChange={setCountDate} disabled={Boolean(editingCountId)}/>
+      {showInventoryCountDateFilter(countType) && <CalendarDateField label="Count date" value={countDate} max={currentBusinessDate} onChange={setCountDate} disabled={Boolean(editingCountId)}/>}
     </div>}
 
     {!editingCountId && unavailable.length > 0 && (
@@ -356,7 +360,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
           </span>
         }
         toolbar={<>
-          {embedded&&<CalendarDateField label="Count date" value={countDate} max={currentBusinessDate} onChange={setCountDate} disabled={Boolean(editingCountId)}/>}
+          {embedded&&showInventoryCountDateFilter(countType)&&<CalendarDateField label="Count date" value={countDate} max={currentBusinessDate} onChange={setCountDate} disabled={Boolean(editingCountId)}/>}
           <SearchInput placeholder="Search ingredient or SKU…" width={260} value={search} onChange={setSearch}/>
           <Select small value={completionFilter} onChange={(value) => setCompletionFilter(value as PhysicalCountCompletionFilter)} options={[{ value: "ALL", label: "All" }, { value: "COUNTED", label: "Counted" }, { value: "NOT_COUNTED", label: "Not Counted" }]}/>
           <span className="text-xs font-medium text-[var(--app-text-muted)]">Showing {visibleItems.length} of {expected.length} items</span>

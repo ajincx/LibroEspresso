@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { Activity, ClipboardCheck, Edit3, Eye, FileWarning, Plus, RefreshCw, Search, ShieldCheck, TestTube2, Users, X } from "lucide-react";
+import { Activity, ClipboardCheck, Edit3, Eye, FileWarning, RefreshCw, Search, ShieldCheck, TestTube2, Users, X } from "lucide-react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
 import { useAuth } from "../../contexts/AuthContext";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
 import { masterDataService } from "../../services/masterData.service";
-import type { CountVarianceItem, ExpectedInventoryItem, InventoryCountSummary, OpeningInventoryBaseline } from "../../types/inventoryWorkflow";
+import type { CountVarianceItem, ExpectedInventoryItem, InventoryCountSummary, InventoryCountType, OpeningInventoryBaseline } from "../../types/inventoryWorkflow";
 import { Branch } from "../../types/masterData";
 import { Btn, CalendarDateField, SearchInput, Select, TableCard, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
 import { businessDate } from "../../utils/businessDate";
@@ -23,21 +23,26 @@ export function inventoryCountHistoryActions(role: AppRole, canEdit: boolean) {
 export const inventoryCountHistoryModes = (role: AppRole, uatEnabled: boolean) =>
   role === "owner" && uatEnabled ? ["operational", "uat"] as const : ["operational"] as const;
 
-export const canRecordPhysicalCount = (role: AppRole) => role === "manager";
-
-export function PhysicalCountHistoryHeaderActions({ role, historyMode, onRecordCount, onRefresh }: {
-  role: AppRole;
-  historyMode: "operational" | "uat";
-  onRecordCount?: () => void;
+export function PhysicalCountHistoryHeaderActions({ onRefresh }: {
   onRefresh: () => void;
 }) {
-  return <>
-    {historyMode === "operational" && canRecordPhysicalCount(role) && (
-      <Btn size="sm" icon={Plus} onClick={onRecordCount}>Record Stock Count</Btn>
-    )}
-    <Btn variant="outline" size="sm" icon={RefreshCw} onClick={onRefresh}>Refresh</Btn>
-  </>;
+  return <Btn variant="outline" size="sm" icon={RefreshCw} onClick={onRefresh}>Refresh</Btn>;
 }
+
+export type InventoryCountHistoryTypeFilter = "ALL" | InventoryCountType;
+export const filterInventoryCountHistory = (
+  counts: InventoryCountSummary[],
+  search: string,
+  countDate: string,
+  countType: InventoryCountHistoryTypeFilter,
+) => {
+  const query = search.trim().toLowerCase();
+  return counts.filter((item) =>
+    (!query || [item.countNo, item.branchName, item.submittedBy, item.countDate].some((value) => value.toLowerCase().includes(query)))
+    && (!countDate || item.countDate === countDate)
+    && (countType === "ALL" || (item.countType ?? "FULL") === countType)
+  );
+};
 
 const today = businessDate();
 const number = (value: number) => Number(value).toLocaleString("en-PH", { maximumFractionDigits: 4 });
@@ -171,13 +176,15 @@ export function ExpectedInventoryPage({ role, view, scopeBranchId = "ALL" }: { r
   );
 }
 
-export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCount, onRecordCount, onOperationalCountsLoaded }: { role: AppRole; scopeBranchId?: string; onEditCount?: (countId: string) => void; onRecordCount?: () => void; onOperationalCountsLoaded?: (counts: InventoryCountSummary[]) => void }) {
+export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCount, onOperationalCountsLoaded }: { role: AppRole; scopeBranchId?: string; onEditCount?: (countId: string) => void; onOperationalCountsLoaded?: (counts: InventoryCountSummary[]) => void }) {
   const owner = role === "owner";
   const navigate = useNavigate();
   const [branches, setBranches] = useState<Branch[]>([]);
   const [branchId, setBranchId] = useState(scopeBranchId === "ALL" ? "" : scopeBranchId);
   const [counts, setCounts] = useState<InventoryCountSummary[]>([]);
   const [search, setSearch] = useState("");
+  const [historyDate, setHistoryDate] = useState("");
+  const [countType, setCountType] = useState<InventoryCountHistoryTypeFilter>("ALL");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [viewTarget, setViewTarget] = useState<InventoryCountSummary | null>(null);
@@ -217,9 +224,8 @@ export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCo
   useEffect(() => { void load(); }, [branchId, owner, historyMode]);
   useEffect(() => { if (owner) setBranchId(scopeBranchId === "ALL" ? "" : scopeBranchId); }, [owner, scopeBranchId]);
   const visible = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return counts.filter((item) => !query || [item.countNo, item.branchName, item.submittedBy, item.countDate].some((value) => value.toLowerCase().includes(query)));
-  }, [counts, search]);
+    return filterInventoryCountHistory(counts, search, historyDate, countType);
+  }, [countType, counts, historyDate, search]);
 
   const cols = [...(owner ? ["Branch"] : []), "Count No.", "Type", "Count Date", "Recorded By", "Items Counted", "Variances", "Submitted", "Actions"];
   const colCount = cols.length;
@@ -259,9 +265,9 @@ export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCo
   return (
     <div className="p-4 md:p-6 space-y-5">
       <TableCard
-        title={historyMode === "uat" ? "UAT/Test Physical Count History" : "Physical Count History"}
-        subtitle={historyMode === "uat" ? "Owner-only audit view of preserved UAT/Test count snapshots. These records do not reset operational inventory." : "Record and verify the physical stock available at the branch."}
-        actions={<PhysicalCountHistoryHeaderActions role={role} historyMode={historyMode} onRecordCount={onRecordCount} onRefresh={() => void load()}/>}
+        title={historyMode === "uat" ? "UAT/Test Stock History" : "Stock History"}
+        subtitle={historyMode === "uat" ? "Owner-only audit view of preserved UAT/Test count snapshots. These records do not reset operational inventory." : undefined}
+        actions={<PhysicalCountHistoryHeaderActions onRefresh={() => void load()}/>}
         badge={
           visible.length > 0 ? (
             <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-[var(--app-primary-faint)] text-[var(--app-primary)]">
@@ -273,6 +279,8 @@ export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCo
           <>
             <SearchInput placeholder="Search count records…" value={search} onChange={setSearch} />
             <BranchScope owner={owner} branches={branches} branchId={branchId} onChange={setBranchId} />
+            <CalendarDateField label="Count date" value={historyDate} max={businessDate()} onChange={setHistoryDate} />
+            <Select small ariaLabel="Count type" value={countType} onChange={(value) => setCountType(value as InventoryCountHistoryTypeFilter)} options={[{ value: "ALL", label: "All Types" }, { value: "OPENING", label: "Opening Count" }, { value: "CLOSING", label: "Closing Count" }, { value: "FULL", label: "Full Physical Count" }]}/>
             {inventoryCountHistoryModes(role, uatControlsEnabled).length > 1 && (
               <div className="inline-flex rounded-xl border border-[var(--app-border)] p-1">
                 <Btn size="sm" variant={historyMode === "operational" ? "primary" : "outline"} onClick={() => setHistoryMode("operational")}>Operational</Btn>

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { branchReorderSettingsInput, canConfigureBranchReorderPolicy, canOpenClosingCount, dailyCountStatusLabel, inventoryAdjustmentValidationError, InventoryOverview, inventoryOverviewColumns, inventoryTabs, projectedAdjustmentStock, recordCountShortcutDestination, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, shouldShowStockOperationCards, stockOperationCards, subscribeToInventoryDataChanges } from "./InventoryModule";
+import { branchReorderSettingsInput, canConfigureBranchReorderPolicy, canOpenClosingCount, dailyCountShortcutDestination, dailyCountStatusLabel, inventoryAdjustmentValidationError, InventoryOverview, inventoryOverviewColumns, inventoryTabs, projectedAdjustmentStock, recordCountShortcutDestination, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, shouldShowStockOperationCards, stockOperationCards, stockOperationSelectionAfterDailySubmit, subscribeToInventoryDataChanges } from "./InventoryModule";
 import type { InventoryCountSummary } from "../../types/inventoryWorkflow";
 
 afterEach(() => vi.useRealTimers());
@@ -65,9 +65,22 @@ describe("Inventory Management terminology", () => {
   });
 
   it("does not render a duplicate Record Stock Count action in Inventory Overview", () => {
-    const markup = renderToStaticMarkup(React.createElement(InventoryOverview, { role: "manager" }));
-    expect(markup).not.toContain("Record Stock Count");
-    expect(markup).not.toContain("Record Stock Adjustment");
+    const managerMarkup = renderToStaticMarkup(React.createElement(InventoryOverview, { role: "manager" }));
+    const ownerMarkup = renderToStaticMarkup(React.createElement(InventoryOverview, { role: "owner" }));
+    expect(managerMarkup).toContain("+ Daily Stock Count");
+    expect(ownerMarkup).not.toContain("+ Daily Stock Count");
+    expect(managerMarkup).not.toContain("Record Stock Count");
+  });
+
+  it("routes the Overview shortcut according to today's saved Daily Count state", () => {
+    const context={countType:"OPENING" as const,openingCount:null,closingCount:null,previousClosingItems:[],previousClosingDate:null,posDayComplete:false};
+    expect(dailyCountShortcutDestination(context)).toEqual({countType:"OPENING",completed:false});
+    expect(dailyCountShortcutDestination({...context,openingCount:{id:"opening-1",countNo:"IC-1",countType:"OPENING",submittedAt:"2026-10-16T00:00:00Z"}})).toEqual({countType:"CLOSING",completed:false});
+    expect(dailyCountShortcutDestination({...context,openingCount:{id:"opening-1",countNo:"IC-1",countType:"OPENING",submittedAt:"2026-10-16T00:00:00Z"},closingCount:{id:"closing-1",countNo:"IC-2",countType:"CLOSING",submittedAt:"2026-10-16T10:00:00Z"}})).toEqual({countType:"CLOSING",completed:true});
+  });
+
+  it("returns to the Stock Operations cards only after the Daily Count submission callback", () => {
+    expect(stockOperationSelectionAfterDailySubmit()).toBeNull();
   });
 });
 

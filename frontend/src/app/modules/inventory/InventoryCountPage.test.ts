@@ -2,7 +2,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { ExpectedInventoryItem } from "../../types/inventoryWorkflow";
-import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, copyPreviousClosingEntries, displayedPhysicalCountVariance, filterPhysicalCountItems, initialPhysicalCountDate, inventoryCountColumns, isDailyCountColumnEditable, isFutureInventoryCountDate, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, physicalCountCompletion, physicalCountEntryFromCanonical, physicalCountPreviewVariance, previousClosingCopyMessage, validPhysicalCountEntries } from "./InventoryCountPage";
+import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, copyPreviousClosingEntries, displayedPhysicalCountVariance, filterPhysicalCountItems, initialPhysicalCountDate, inventoryCountColumns, isDailyCountColumnEditable, isFutureInventoryCountDate, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, physicalCountCompletion, physicalCountEntryFromCanonical, physicalCountPreviewVariance, previousClosingCopyMessage, savedCountQuantities, showInventoryCountDateFilter, validPhysicalCountEntries } from "./InventoryCountPage";
 import { buildEnteredPhysicalCountItems } from "./InventoryCountPage";
 
 const item = (inventoryItemId: string, sku: string, itemName: string): ExpectedInventoryItem => ({
@@ -60,7 +60,20 @@ describe("Daily partial physical counts",()=>{
 
   it("supports the Daily Count return label without changing the Full Count default",()=>{
     expect(renderToStaticMarkup(React.createElement(PhysicalCountBackAction,{onBack:vi.fn()}))).toContain("Back to Count History");
-    expect(renderToStaticMarkup(React.createElement(PhysicalCountBackAction,{onBack:vi.fn(),label:"Back to Stock Operations"}))).toContain("Back to Stock Operations");
+    expect(renderToStaticMarkup(React.createElement(PhysicalCountBackAction,{onBack:vi.fn(),label:"Back to Operations"}))).toContain("Back to Operations");
+  });
+
+  it("uses today's business date without showing a Daily Count date filter",()=>{
+    expect(showInventoryCountDateFilter("OPENING")).toBe(false);
+    expect(showInventoryCountDateFilter("CLOSING")).toBe(false);
+    expect(showInventoryCountDateFilter("FULL")).toBe(true);
+  });
+
+  it("preserves submitted Opening and Closing quantities for read-only display",()=>{
+    expect(savedCountQuantities([
+      {inventoryItemId:"ice",actualQuantity:0},
+      {inventoryItemId:"milk",actualQuantity:11960},
+    ])).toEqual({ice:0,milk:11960});
   });
 });
 
