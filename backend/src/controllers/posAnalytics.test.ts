@@ -9,13 +9,28 @@ vi.mock("../config/database.js", () => ({
 }));
 
 import { getPosAnalytics } from "./inventoryWorkflow.controller.js";
+import { summarizeShrinkageRows } from "../services/reportDataset.service.js";
 
-describe("getPosAnalytics verified incident shrinkage causes", () => {
+describe("getPosAnalytics verified shrinkage report causes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("calculates verifiedShrinkageCost and shrinkageCauses from verified incident reports", async () => {
+  it("calculates verifiedShrinkageCost and shrinkageCauses from the authoritative shrinkage report scope", async () => {
+    const shrinkageReportSummary = summarizeShrinkageRows([
+      {
+        varianceValue: -36.86,
+        investigationStatus: "VERIFIED",
+        finalClassification: "PREPARATION_ERROR",
+        verifiedShrinkageCost: 36.86,
+      },
+      {
+        varianceValue: -4.32,
+        investigationStatus: "REVIEWED",
+        finalClassification: "WASTAGE",
+        verifiedShrinkageCost: 4.32,
+      },
+    ]);
     mocks.poolQuery
       .mockResolvedValueOnce({ rows: [{ branchName: "Main Branch" }] }) // branch query
       .mockResolvedValueOnce({ rows: [{ sales: 15443, unitsSold: 89, importCount: 1, theoreticalCogs: 4941.535 }] }) // summary
@@ -28,7 +43,7 @@ describe("getPosAnalytics verified incident shrinkage causes", () => {
           { name: "PREPARATION ERROR", value: 36.86 },
           { name: "WASTAGE", value: 4.32 },
         ],
-      }); // verifiedCauses
+      }); // verified shrinkage report causes
 
     const req = {
       query: { startDate: "2026-09-01", endDate: "2026-09-26", branchId: "00000000-0000-4000-8000-000000000001" },
@@ -45,7 +60,9 @@ describe("getPosAnalytics verified incident shrinkage causes", () => {
 
     expect(json).toHaveBeenCalledTimes(1);
     expect(responseData.success).toBe(true);
-    expect(responseData.data.summary.verifiedShrinkageCost).toBe(41.18);
+    expect(responseData.data.summary.verifiedShrinkageCost).toBe(
+      shrinkageReportSummary.verified,
+    );
     expect(responseData.data.shrinkageCauses).toEqual([
       { name: "PREPARATION ERROR", value: 36.86 },
       { name: "WASTAGE", value: 4.32 },
@@ -62,16 +79,28 @@ describe("getPosAnalytics verified incident shrinkage causes", () => {
       expect(sql).toContain("NOT pi.is_test_data");
       expect(sql).toContain("pi.branch_id=$3");
     }
+
+    const shrinkageQuery = mocks.poolQuery.mock.calls
+      .map(([sql]) => String(sql))
+      .find((sql) => sql.includes("FROM shrinkage_reports sr"));
+    expect(shrinkageQuery).toContain("NOT sr.is_test_data");
+    expect(shrinkageQuery).toContain("ici.voided_at IS NULL");
+    expect(shrinkageQuery).toContain("ic.count_type<>'OPENING'");
+    expect(shrinkageQuery).toContain("sr.status IN ('VERIFIED','REVIEWED')");
+    expect(shrinkageQuery).toContain("sr.classification IN");
+    expect(shrinkageQuery).toContain("sr.branch_id=$3");
+    expect(shrinkageQuery).not.toContain("incident_reports");
+    expect(shrinkageQuery).not.toContain("sr.archived_at IS NULL");
   });
 
-  it("returns empty shrinkageCauses and 0 verifiedShrinkageCost when no verified incidents exist", async () => {
+  it("returns empty shrinkageCauses and 0 verifiedShrinkageCost when no verified shrinkage reports exist", async () => {
     mocks.poolQuery
       .mockResolvedValueOnce({ rows: [{ sales: 0, unitsSold: 0, importCount: 0, theoreticalCogs: 0 }] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{ detectedShortageValue: 0 }] })
-      .mockResolvedValueOnce({ rows: [] }); // verifiedCauses empty
+      .mockResolvedValueOnce({ rows: [] }); // verified shrinkage report causes empty
 
     const req = {
       query: { startDate: "2026-09-01", endDate: "2026-09-26" },

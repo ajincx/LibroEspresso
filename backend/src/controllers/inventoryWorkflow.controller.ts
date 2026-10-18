@@ -20,6 +20,7 @@ import { manilaBusinessDate } from "../services/businessTime.service.js";
 import { areUnitsCompatible, normalizeUnit } from "../services/unitConversion.service.js";
 import { normalizePhysicalCountQuantity } from "../services/physicalCountUnit.service.js";
 import { requiresVarianceInvestigation } from "../services/varianceMateriality.service.js";
+import { VERIFIED_SHRINKAGE_CLASSIFICATIONS_SQL } from "../services/shrinkageWorkflow.service.js";
 import { lockBranchInventoryOperation } from "../services/inventoryOperationLock.service.js";
 import { loadInventoryLedger } from "../services/inventoryLedger.service.js";
 import { AppError } from "../utils/appError.js";
@@ -1071,15 +1072,18 @@ export const getPosAnalytics: RequestHandler = async (req, res) => {
         params,
       ),
       pool.query<{ name: string; value: number }>(
-        `SELECT replace(ir.incident_type::text, '_', ' ') "name",
-                round(coalesce(sum(iri.quantity * ii.unit_cost), 0)::numeric, 2)::float8 "value"
-         FROM incident_reports ir
-         JOIN incident_report_items iri ON iri.incident_report_id=ir.id
-         JOIN inventory_items ii ON ii.id = iri.inventory_item_id
-        WHERE NOT ir.is_test_data AND ir.status = 'VERIFIED'
-          AND ir.occurred_at::date BETWEEN $1::date AND $2::date
-          ${branchId ? `AND ir.branch_id=$3` : ""}
-        GROUP BY ir.incident_type
+        `SELECT replace(sr.classification::text, '_', ' ') "name",
+                round(coalesce(sum(CASE WHEN sr.actual_quantity < sr.expected_quantity
+                  THEN abs(sr.variance_value) ELSE 0 END), 0)::numeric, 2)::float8 "value"
+         FROM shrinkage_reports sr
+         JOIN inventory_count_items ici ON ici.id=sr.inventory_count_item_id
+         JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
+        WHERE NOT sr.is_test_data AND ici.voided_at IS NULL AND ic.count_type<>'OPENING'
+          AND sr.detected_at::date BETWEEN $1::date AND $2::date
+          AND sr.status IN ('VERIFIED','REVIEWED')
+          AND sr.classification IN (${VERIFIED_SHRINKAGE_CLASSIFICATIONS_SQL})
+          ${branchId ? `AND sr.branch_id=$3` : ""}
+        GROUP BY sr.classification
         ORDER BY "value" DESC`,
         params,
       ),
