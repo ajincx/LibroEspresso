@@ -15,6 +15,14 @@ import type { Branch } from "./types/masterData";
 import type { Page, Role } from "./types/navigation";
 import { C, ModuleLoadingFallback } from "./components/ModuleUi";
 import {
+  LoginIntroGate,
+  markLoginIntroSeen,
+  SessionLoadingIndicator,
+  SessionRestoreLoader,
+  shouldPreviewSessionLoading,
+  shouldPreviewSessionRestore,
+} from "./components/SessionRestoreLoader";
+import {
   Sidebar,
   TopHeader,
   NotifDrawer,
@@ -143,6 +151,9 @@ export default function App() {
   const [notifOpen, setNotifOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   useEffect(() => { setMobileNavOpen(false); }, [location.pathname]);
+  useEffect(() => {
+    if (user) markLoginIntroSeen();
+  }, [user]);
   const [messageOpen, setMessageOpen] = useState(false);
   const [messageTargetId, setMessageTargetId] = useState<string | null>(null);
   const [notifs, setNotifs] = useState(notificationsData);
@@ -470,23 +481,18 @@ export default function App() {
     }
   };
 
-  if (loading)
-    return (
-      <div
-        className="h-screen flex items-center justify-center"
-        style={{ color: C.maroon }}
-      >
-        Restoring your session…
-      </div>
-    );
+  if (shouldPreviewSessionRestore(location.search))
+    return <SessionRestoreLoader />;
+  if (loading || shouldPreviewSessionLoading(location.search))
+    return <SessionLoadingIndicator />;
 
   if (!user) {
     if (location.pathname !== "/login") return <Navigate to="/login" replace />;
     return (
-      <>
+      <LoginIntroGate>
         <RedesignedLoginPage onLogin={handleLogin} />
         <Toaster position="bottom-right" richColors />
-      </>
+      </LoginIntroGate>
     );
   }
 
