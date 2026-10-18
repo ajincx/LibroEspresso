@@ -9,10 +9,12 @@ import {
   DASHBOARD_INVENTORY_ALERTS_ARE_PAGINATED,
   DASHBOARD_LATEST_POS_PAGE_SIZE,
   DASHBOARD_SHOWS_DAILY_POS_MONITORING,
+  DashboardAnalyticsSkeleton,
   DashboardPosImportModal,
   DEFAULT_DASHBOARD_RANGE,
   STORAGE_KEY_DASHBOARD_USER_RANGE,
   DashboardToolbar,
+  ForecastContentSkeleton,
   ForecastReplenishmentPanel,
   GrossMarginInfoDialog,
   adjustRangeForImport,
@@ -84,6 +86,15 @@ describe("dashboard presentation helpers",()=>{
     expect(markup).toContain("Record Stock Count");
     expect(markup).toContain("Today");
   });
+  it("matches the Dashboard layout with six KPI, chart, and table loading placeholders",()=>{
+    const markup=renderToStaticMarkup(React.createElement(DashboardAnalyticsSkeleton));
+    expect(markup).toContain("data-dashboard-analytics-skeleton");
+    expect(markup.match(/data-dashboard-kpi-skeleton/g)).toHaveLength(6);
+    expect(markup).toContain("dashboard-kpis");
+    expect(markup).toContain("xl:col-span-2");
+    expect(markup).toContain("Loading branch records");
+    expect(markup).toContain("motion-reduce:animate-none");
+  });
   it("routes Record Stock Count into Inventory Management with the current branch and date",()=>{
     expect(recordStockCountUrl("branch-2","2026-10-13")).toBe("/inventory?tab=counts&countIntent=record&countDate=2026-10-13&branchId=branch-2");
   });
@@ -107,6 +118,20 @@ describe("dashboard presentation helpers",()=>{
 const forecast={scope:{branchId:"branch",branchName:"Lipa",forecastStart:"2026-09-13",forecastEnd:"2026-10-12"},methodology:{historicalStart:"2026-01-01",historicalEnd:"2026-09-12",observedSalesDays:120,confidence:"LOW",insightSource:"SYSTEM_ANALYSIS",disclaimer:"Forecasts are estimates based on recorded historical patterns.",salesMaeMethod:"MAE",ingredientMaeMethod:"MAE",stockProjectionAssumption:"Recorded usage"},summary:{forecastSales:125000,demandChange:4,criticalItems:1,projectedCogs:50000,projectedShrinkageRate:0,recommendedReorders:1},accuracy:{sales:{overall:{evaluationStart:null,evaluationEnd:null,evaluatedDays:0,observations:[],mae:null,averageActual:null,averageForecast:null,insufficientHistory:true},branches:[]},ingredients:[]},demandSeries:[],inventorySeries:[],inventoryChartItems:[],predictions:[{branchId:"branch",branchName:"Lipa",inventoryItemId:"beans",sku:"BEAN-01",name:"Espresso Blend Beans",unit:"g",systemStock:2000,dailyUsage:150,outstandingQuantity:500,daysToStockout:12,nextDeliveryDate:null,projectedEndStock:-4000,recommendedReorder:4280,urgency:"HIGH"}],insights:[{title:"Projected demand pattern",description:"Sales may increase during the forecast period.",recommendation:"Review daily demand.",urgency:"LOW"},{title:"Potential stock-out risk",description:"One ingredient may run out.",recommendation:"Review replenishment needs.",urgency:"HIGH"},{title:"Limited historical coverage",description:"Some dates have limited records.",recommendation:"Continue recording complete sales data.",urgency:"MEDIUM"}]} as PredictiveForecast;
 
 describe("Forecast & Replenishment presentation",()=>{
+  it("keeps the forecast header visible while only its content uses skeletons",()=>{
+    const markup=renderToStaticMarkup(React.createElement(ForecastReplenishmentPanel,{forecast:null,forecastError:"",role:"manager",onReview:()=>undefined,onCreateOrder:()=>undefined}));
+    expect(markup).toContain("Decision-support forecast");
+    expect(markup).toContain("Review Forecast");
+    expect(markup).toContain("data-forecast-content-skeleton");
+    expect(markup).not.toContain("animate-spin");
+    expect(markup).not.toContain("Loading forecast…");
+  });
+  it("renders a subtle accessible forecast content skeleton",()=>{
+    const markup=renderToStaticMarkup(React.createElement(ForecastContentSkeleton));
+    expect(markup).toContain('role="status"');
+    expect(markup).toContain("Loading Decision-Support Forecast");
+    expect(markup).toContain("motion-reduce:animate-none");
+  });
   it("keeps forecast data, confidence, insight actions, reorder action, and disclaimer visible",()=>{
     const markup=renderToStaticMarkup(React.createElement(ForecastReplenishmentPanel,{forecast,forecastError:"",role:"manager",onReview:()=>undefined,onCreateOrder:()=>undefined}));
     expect(markup).toContain("Next 30 Days · Forecast &amp; Replenishment");

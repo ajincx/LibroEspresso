@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Btn, Card, clampTablePage, filterSelectOptions, isModalBackdropEvent, isTableDataValue, ModuleTabSwitcher, moveSelectActiveIndex, normalizeSelectOptions, paginationPageNumbers, selectFilteredOption, sharedSelectMenuStyle, sharedSelectPopoverProps, TableWrapper, tableRowsSignature, THead, TR, TD, tableHeaderAlignment } from "./ModuleUi";
+import { Btn, Card, clampTablePage, filterSelectOptions, isModalBackdropEvent, isTableDataValue, ModuleTabSwitcher, moveSelectActiveIndex, normalizeSelectOptions, paginationPageNumbers, selectFilteredOption, sharedSelectMenuStyle, sharedSelectPopoverProps, SkeletonBlock, TableLoadingRow, TableWrapper, tableRowsSignature, THead, TR, TD, tableHeaderAlignment } from "./ModuleUi";
 
 describe("shared table alignment",()=>{
   it("centers numeric headers and values",()=>{
@@ -28,6 +28,13 @@ describe("shared button accessibility",()=>{
 });
 
 describe("shared responsive layout primitives",()=>{
+  it("renders responsive table skeletons with accessible reduced-motion behavior",()=>{
+    const markup=renderToStaticMarkup(React.createElement("table",null,React.createElement("tbody",null,React.createElement(TableLoadingRow,{colSpan:6,label:"Loading records"}))));
+    expect(markup).toContain("data-table-loading-row");
+    expect(markup).toContain('aria-label="Loading records"');
+    expect(markup).not.toContain("animate-spin");
+    expect(renderToStaticMarkup(React.createElement(SkeletonBlock))).toContain("motion-reduce:animate-none");
+  });
   it("allows cards to shrink inside responsive grids without forcing page overflow",()=>{
     const markup=renderToStaticMarkup(React.createElement(Card,null,"Content"));
     expect(markup).toContain("min-w-0");

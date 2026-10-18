@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { initialReportSelection, ReportExportActions, ReportSelector, selectAllReportTypes, shouldApplyPreviewResponse, toggleReportType } from "./ReportsPage";
+import { initialReportSelection, ReportExportActions, ReportPreviewSkeleton, ReportSelector, selectAllReportTypes, shouldApplyPreviewResponse, toggleReportType } from "./ReportsPage";
 
 describe("report multi-selection",()=>{
+  it("uses a report-shaped skeleton without replacing it with a large spinner",()=>{
+    const markup=renderToStaticMarkup(React.createElement(ReportPreviewSkeleton));
+    expect(markup).toContain("data-report-preview-skeleton");
+    expect(markup).toContain("reports-kpi-grid");
+    expect(markup).toContain('aria-label="Loading report preview"');
+    expect(markup).not.toContain("animate-spin");
+  });
   it("opens with no report selected",()=>expect(initialReportSelection()).toEqual([]));
   it("selects one and multiple report types in official order",()=>{
     expect(toggleReportType([],"SALES")).toEqual(["SALES"]);

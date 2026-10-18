@@ -83,18 +83,18 @@ export function getInitials(name: string) {
 }
 
 // ─── Skeleton Components ───────────────────────────────────────────────────────
-export function SkeletonBlock({ w = "100%", h = 16, className = "" }: { w?: string | number; h?: number; className?: string }) {
+export function SkeletonBlock({ w = "100%", h = 16, className = "" }: { w?: string | number; h?: string | number; className?: string }) {
   return (
     <div
-      className={cn("rounded animate-pulse", className)}
-      style={{ width: w, height: h, background: "linear-gradient(90deg, #F0F1F4 25%, #E8E9ED 50%, #F0F1F4 75%)", backgroundSize: "200% 100%" }}
+      className={cn("rounded animate-pulse motion-reduce:animate-none", className)}
+      style={{ width: w, height: h, background: "linear-gradient(90deg, var(--app-surface-muted) 25%, var(--app-primary-faint) 50%, var(--app-surface-muted) 75%)", backgroundSize: "200% 100%" }}
     />
   );
 }
 
 export function SkeletonKPICard() {
   return (
-    <div className="bg-white rounded-xl border p-5 flex flex-col gap-3" style={{ borderColor: C.border }}>
+    <div className="app-card min-w-0 bg-white rounded-2xl border p-5 flex flex-col gap-3" style={{ borderColor: C.border }}>
       <div className="flex items-start justify-between">
         <SkeletonBlock w={80} h={11} />
         <SkeletonBlock w={32} h={32} className="rounded-lg" />
@@ -828,11 +828,18 @@ export function TableLoadingRow({
   label?: string;
 }) {
   return (
-    <tr>
-      <td colSpan={colSpan} className="py-12 px-4 text-center text-sm" style={{ color: C.muted }}>
-        <div className="flex items-center justify-center gap-2">
-          <div className="w-4 h-4 rounded-full border-2 border-[var(--app-primary)] border-t-transparent animate-spin" />
-          <span>{label}</span>
+    <tr data-table-loading-row aria-busy="true">
+      <td colSpan={colSpan} className="px-4 py-5">
+        <div role="status" aria-label={label} className="space-y-3">
+          {Array.from({ length: 4 }).map((_, row) => (
+            <div key={row} className="grid grid-cols-[minmax(0,1.5fr)_repeat(3,minmax(0,1fr))] items-center gap-2 sm:gap-4">
+              <SkeletonBlock h={13} w={row % 2 ? "72%" : "88%"} />
+              <SkeletonBlock h={13} />
+              <SkeletonBlock h={13} />
+              <SkeletonBlock h={24} className="rounded-full" />
+            </div>
+          ))}
+          <span className="sr-only">{label}</span>
         </div>
       </td>
     </tr>

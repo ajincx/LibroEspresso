@@ -1,10 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { attachPendingRecipeDrafts,canManageMenuCategories,CategoryLabel,categoryDescription,ingredientSetsMatch,initializePendingRecipeDrafts,isControlledTestProductRetirement,isValidRecipeQuantity,marginTextClass,normalizeRecipeQuantityInput,recipeIngredientExists,removeRecipeIngredientRow,selectInitialZeroQuantity,updatePendingRecipeDraftRow,variantMarginRate,type RecipeDraft } from "./MenuRecipesPage";
+import { attachPendingRecipeDrafts,canManageMenuCategories,CategoryLabel,categoryDescription,ingredientSetsMatch,initializePendingRecipeDrafts,isControlledTestProductRetirement,isValidRecipeQuantity,marginTextClass,MenuProductsSkeleton,normalizeRecipeQuantityInput,recipeIngredientExists,removeRecipeIngredientRow,selectInitialZeroQuantity,updatePendingRecipeDraftRow,variantMarginRate,type RecipeDraft } from "./MenuRecipesPage";
 import type { MenuCategory, MenuProduct } from "../../types/masterData";
 
 describe("Menu category guidance and permissions",()=>{
+  it("uses the shared table skeleton while menu products load",()=>{
+    const markup=renderToStaticMarkup(createElement(MenuProductsSkeleton));
+    expect(markup).toContain("data-menu-products-skeleton");
+    expect(markup).toContain('aria-label="Loading menu products"');
+    expect(markup).toContain("motion-reduce:animate-none");
+  });
   const categories=[{id:"cold-id",name:"Cold Classics",description:"Chilled and iced beverage products.",status:"ACTIVE",createdAt:"",updatedAt:""},{id:"food-id",name:"Food",description:"",status:"ACTIVE",createdAt:"",updatedAt:""}] satisfies MenuCategory[];
   it("renders accessible category information only when a database description exists",()=>{
     const described=renderToStaticMarkup(createElement(CategoryLabel,{name:"Cold Classics",categories}));

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, ClipboardCheck, FileWarning, Save, Search, X } from "lucide-react";
 import { toast } from "sonner";
-import { Btn, Select, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
+import { Btn, Select, SkeletonTable, TableEmptyRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
 import type { OpeningInventoryBaseline, StartingStockSetup, StartingStockSetupItem } from "../../types/inventoryWorkflow";
 import { compatibleUnits, type MeasurementUnit } from "../../utils/units";
@@ -103,7 +103,7 @@ export function StartingStockSetupPage() {
     finally { setSaving(false); }
   };
 
-  if (loading) return <div className="p-4 md:p-6"><TableLoadingRow colSpan={4} label="Loading Starting Stock setup..."/></div>;
+  if (loading) return <div data-starting-stock-skeleton role="status" aria-label="Loading Starting Stock setup" className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1"><SkeletonTable rows={7} cols={4}/><span className="sr-only">Loading Starting Stock setup</span></div>;
   if (error && !setup) return <div className="p-4 md:p-6"><TableEmptyRow colSpan={4} icon={FileWarning} title="Unable to load Starting Stock" subtitle={error}/></div>;
   if (!setup) return null;
   if (setup.status === "INITIALIZED" && setup.baseline) return <div className="p-4 md:p-6"><BaselineReadOnly baseline={setup.baseline}/></div>;

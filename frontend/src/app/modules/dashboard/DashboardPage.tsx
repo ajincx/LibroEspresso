@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { ShoppingCart, Package, Percent, TrendingDown, RefreshCw, Check, AlertTriangle, Search, BadgeDollarSign, Sparkles, ArrowRight, Pencil, Plus, Upload, Info, X } from "lucide-react";
-import { Card, Btn, KPICard, DashboardFilters, StatusChip, SearchInput, Select, C, isModalBackdropEvent, type DashboardRange, type DashboardComparison } from "../../components/ModuleUi";
+import { Card, Btn, KPICard, DashboardFilters, StatusChip, SearchInput, Select, SkeletonBlock, SkeletonKPICard, C, isModalBackdropEvent, type DashboardRange, type DashboardComparison } from "../../components/ModuleUi";
 import { useAuth } from "../../contexts/AuthContext";
 import { inventoryWorkflowService as workflow } from "../../services/inventoryWorkflow.service";
 import { operationsService } from "../../services/operations.service";
@@ -93,6 +93,53 @@ export function DashboardToolbar({ actions, filters }:{ actions?:ReactNode;filte
   </div>;
 }
 
+function DashboardChartSkeleton({ fullWidth = false }: { fullWidth?: boolean }) {
+  return <Card className={fullWidth ? "min-w-0 xl:col-span-2" : "min-w-0"}>
+    <SkeletonBlock w={190} h={18}/>
+    <SkeletonBlock w={260} h={10} className="mt-2 max-w-full"/>
+    <div className="mt-5 flex h-56 items-end gap-2 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-4 sm:h-64">
+      {[42,68,50,82,62,76,56,88,70,80].map((height,index)=><SkeletonBlock key={index} w="10%" h={height+"%"} className="min-w-0 rounded-t-lg rounded-b-sm"/>)}
+    </div>
+  </Card>;
+}
+
+export function DashboardAnalyticsSkeleton() {
+  return <div data-dashboard-analytics-skeleton role="status" aria-label="Loading Dashboard analytics" className="space-y-5">
+    <div className="dashboard-kpis grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
+      {Array.from({length:6}).map((_,index)=><div key={index} data-dashboard-kpi-skeleton><SkeletonKPICard/></div>)}
+    </div>
+    <div className="grid gap-5 xl:grid-cols-2">
+      <DashboardChartSkeleton fullWidth/>
+      <DashboardChartSkeleton/>
+      <DashboardChartSkeleton/>
+    </div>
+    <Card padding={false} className="overflow-hidden shadow-sm">
+      <div className="space-y-3 px-5 py-5">
+        <SkeletonBlock w={150} h={18}/>
+        <SkeletonBlock w={330} h={10} className="max-w-full"/>
+      </div>
+      <div className="space-y-3 border-t border-[var(--app-border)] p-5">
+        {Array.from({length:3}).map((_,index)=><div key={index} className="grid grid-cols-[minmax(0,1.5fr)_repeat(3,minmax(0,.7fr))] items-center gap-2 sm:gap-3"><SkeletonBlock h={13}/><SkeletonBlock h={13}/><SkeletonBlock h={13}/><SkeletonBlock h={24} className="rounded-full"/></div>)}
+      </div>
+    </Card>
+    <span className="sr-only">Loading branch records</span>
+  </div>;
+}
+
+export function ForecastContentSkeleton() {
+  return <div data-forecast-content-skeleton role="status" aria-label="Loading Decision-Support Forecast" className="space-y-5 bg-[var(--app-bg)] p-5 sm:p-6">
+    <div className="grid gap-4 md:grid-cols-[minmax(0,1.45fr)_minmax(220px,.55fr)]">
+      <div className="rounded-2xl border border-[var(--app-primary-soft)] bg-[var(--app-surface)] p-5"><SkeletonBlock w={120} h={11}/><SkeletonBlock w={230} h={34} className="mt-3 max-w-full"/><SkeletonBlock w={160} h={10} className="mt-3 max-w-full"/></div>
+      <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5"><SkeletonBlock w={135} h={11}/><SkeletonBlock w={88} h={24} className="mt-3 rounded-full"/><SkeletonBlock w="90%" h={10} className="mt-4"/></div>
+    </div>
+    <div className="space-y-3">
+      <SkeletonBlock w={130} h={16}/>
+      {["86%","72%"].map((width,index)=><div key={index} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 sm:p-5"><div className="flex items-center gap-3"><SkeletonBlock w={32} h={32} className="rounded-xl"/><SkeletonBlock w={width} h={13}/></div><SkeletonBlock w="94%" h={10} className="mt-4"/><SkeletonBlock w="78%" h={10} className="mt-2"/></div>)}
+    </div>
+    <span className="sr-only">Loading forecast</span>
+  </div>;
+}
+
 export function GrossMarginInfoDialog({ sales, totalCogs, grossProfit, grossMargin, onClose }: { sales:number;totalCogs:number;grossProfit:number;grossMargin:number;onClose:()=>void }) {
   const values=[["Sales",money(sales),C.maroon],["Total COGS",money(totalCogs),C.amber],["Gross Profit",money(grossProfit),C.green],["Gross Margin",`${grossMargin.toFixed(1)}%`,C.blue]] as const;
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 sm:p-6" onMouseDown={(event)=>{if(isModalBackdropEvent(event))onClose();}}>
@@ -125,7 +172,7 @@ export function ForecastReplenishmentPanel({forecast,forecastError,role,onReview
         <Btn variant="outline" icon={ArrowRight} onClick={onReview}>Review Forecast</Btn>
       </div>
     </div>
-    {forecastError ? <div className="m-5 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700" role="alert">{forecastError}</div> : !forecast ? <div className="flex min-h-56 items-center justify-center p-6" aria-live="polite"><div className="text-center"><span className="mx-auto block h-9 w-9 animate-spin rounded-full border-4 border-[var(--app-primary-faint)] border-t-[var(--app-primary)]"/><p className="mt-3 text-sm font-semibold">Loading forecast…</p></div></div> : <>
+    {forecastError ? <div className="m-5 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700" role="alert">{forecastError}</div> : !forecast ? <ForecastContentSkeleton/> : <>
       <div className="grid gap-4 border-b border-[var(--app-border)] bg-[var(--app-bg)] p-5 sm:p-6 md:grid-cols-[minmax(0,1.45fr)_minmax(220px,.55fr)]">
         <div className="rounded-2xl border border-[var(--app-primary-soft)] bg-[var(--app-surface)] p-5 shadow-sm">
           <p className="text-[11px] font-bold uppercase tracking-[.14em] text-[var(--app-text-muted)]">Projected sales</p>
@@ -343,7 +390,7 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
           setRefresh((v) => v + 1);
         }}
       />} />
-    {error ? <Card><p role="alert" className="text-red-700">{error}</p><Btn onClick={() => setRefresh(v => v+1)}>Retry</Btn></Card> : !totals || !data ? <Card>Loading branch records…</Card> : <>
+    {error ? <Card><p role="alert" className="text-red-700">{error}</p><Btn onClick={() => setRefresh(v => v+1)}>Retry</Btn></Card> : !totals || !data ? <DashboardAnalyticsSkeleton/> : <>
       <div className="dashboard-kpis grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
         <KPICard label={role === "owner" ? "Total Sales" : "Branch Sales"} value={money(financials!.sales)} sub={totals.unitsSold + " units sold"} icon={ShoppingCart} change={changed(financials!.sales,data.previous.summary.sales)} onClick={() => navigate(salesUrl)}/>
         <KPICard label={role === "owner" ? "Total COGS" : "Branch COGS"} value={money(financials!.totalCogs)} sub="Recipe-based cost of products sold" icon={Package} change={changed(financials!.totalCogs,data.previous.summary.totalCogs)} onClick={() => navigate("/cogs?startDate="+startDate+"&endDate="+endDate)}/>

@@ -18,6 +18,8 @@ import {
   Card,
   SectionHeader,
   Select,
+  SkeletonBlock,
+  SkeletonTable,
 } from "../../components/ModuleUi";
 import { useAuth } from "../../contexts/AuthContext";
 import { masterDataService } from "../../services/masterData.service";
@@ -190,6 +192,23 @@ export function ReportExportActions({disabled,exporting,onExport}:{disabled:bool
     <Btn icon={Download} disabled={disabled} onClick={() => onExport("pdf")}>{exporting === "pdf" ? "Creating PDF…" : "Export PDF"}</Btn>
     <Btn variant="outline" icon={FileSpreadsheet} disabled={disabled} onClick={() => onExport("xlsx")}>{exporting === "xlsx" ? "Creating Excel…" : "Export Excel"}</Btn>
   </div>;
+}
+
+export function ReportPreviewSkeleton() {
+  return <Card className="min-h-[520px] overflow-hidden">
+    <div data-report-preview-skeleton role="status" aria-label="Loading report preview" aria-busy="true" className="space-y-6">
+      <div className="space-y-4 border-b border-[var(--app-border)] pb-4">
+        <div className="flex items-center gap-3"><SkeletonBlock w={48} h={48} className="shrink-0 rounded-xl"/><div className="min-w-0 flex-1 space-y-2"><SkeletonBlock w={150} h={12}/><SkeletonBlock w={280} h={24} className="max-w-full"/></div></div>
+        <div className="grid gap-2 sm:grid-cols-2"><SkeletonBlock w="75%" h={10}/><SkeletonBlock w="82%" h={10}/><SkeletonBlock w="68%" h={10}/><SkeletonBlock w="72%" h={10}/></div>
+      </div>
+      <section className="rounded-2xl border border-[var(--app-border)] p-4 md:p-5">
+        <div className="space-y-2 border-b border-[var(--app-border)] pb-3"><SkeletonBlock w={190} h={18}/><SkeletonBlock w={310} h={10} className="max-w-full"/></div>
+        <div className="reports-kpi-grid mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{Array.from({length:4}).map((_,index)=><div key={index} className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-3"><SkeletonBlock w="65%" h={10}/><SkeletonBlock w="48%" h={20} className="mt-2"/></div>)}</div>
+        <div className="mt-5 overflow-hidden rounded-xl border border-[var(--app-border)]"><SkeletonTable rows={6} cols={5}/></div>
+      </section>
+      <span className="sr-only">Updating the report preview</span>
+    </div>
+  </Card>;
 }
 
 export function Reports({
@@ -525,9 +544,7 @@ export function Reports({
               </div>
             </Card>
           ) : loading ? (
-            <Card className="min-h-[520px] flex items-center justify-center" aria-live="polite" aria-busy="true">
-              <div className="text-center"><span className="mx-auto block h-9 w-9 animate-spin rounded-full border-4 border-[var(--app-primary-faint)] border-t-[var(--app-primary)]"/><p className="mt-4 text-sm font-semibold">Loading report…</p><p className="mt-1 text-xs text-[var(--app-text-muted)]">Updating the preview with your current selection and filters.</p></div>
-            </Card>
+            <ReportPreviewSkeleton/>
           ) : !preview ? (
             <Card className="min-h-[520px] flex items-center justify-center"><div className="text-center max-w-md"><FileText size={25} className="mx-auto text-[var(--app-primary)]"/><h2 className="font-semibold mt-4">Preview unavailable</h2><p className="text-sm text-[var(--app-text-muted)] mt-2">Check the selected date range or adjust the filters to try again.</p></div></Card>
           ) : (
