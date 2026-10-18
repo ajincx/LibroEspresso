@@ -73,10 +73,13 @@ async function loadInventoryOverviewItems(branchId?: string, inventoryItemId?: s
   );
   const items = result.rows.map((row) => {
     const ledger = ledgers.get(inventoryLedgerKey(row.branchId, row.inventoryItemId));
+    const hasBaseline = ledger?.availability === "AVAILABLE";
     const stock = ledger?.calculatedBalance ?? 0;
     const reorder = Number(row.reorderLevel);
     const status =
-      stock <= 0
+      !hasBaseline
+        ? "NO_BASELINE"
+        : stock <= 0
         ? "OUT_OF_STOCK"
         : reorder > 0 && stock <= reorder / 2
           ? "CRITICAL"
@@ -85,6 +88,7 @@ async function loadInventoryOverviewItems(branchId?: string, inventoryItemId?: s
             : "HEALTHY";
     return {
       ...row,
+      baselineAvailability: hasBaseline ? "AVAILABLE" : "NO_BASELINE",
       systemStock: stock,
       inventoryValue: Math.max(stock, 0) * Number(row.unitCost),
       status,
@@ -440,7 +444,7 @@ const purchaseOrderSelection = `SELECT po.id,po.po_no "poNo",po.branch_id "branc
     'purchaseUom',poi.purchase_uom,'conversionFactor',poi.conversion_factor::float8,
     'latestPhysicalCountDate',(SELECT max(ic.count_date)::text FROM inventory_counts ic
       JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id
-      WHERE ic.branch_id=po.branch_id AND ici.inventory_item_id=ii.id AND NOT ic.is_test_data))
+      WHERE ic.branch_id=po.branch_id AND ici.inventory_item_id=ii.id AND NOT ic.is_test_data AND ici.voided_at IS NULL))
     ORDER BY ii.name) FILTER (WHERE poi.id IS NOT NULL),'[]') items
   FROM purchase_orders po JOIN branches b ON b.id=po.branch_id JOIN users u ON u.id=po.created_by
   LEFT JOIN purchase_order_items poi ON poi.purchase_order_id=po.id LEFT JOIN inventory_items ii ON ii.id=poi.inventory_item_id`;
@@ -777,7 +781,7 @@ export const receivePurchaseOrder: RequestHandler = async (req, res) => {
       `SELECT max(ic.count_date)::text "countDate"
          FROM inventory_counts ic
          JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id
-        WHERE ic.branch_id=$1 AND ici.inventory_item_id=ANY($2::uuid[]) AND NOT ic.is_test_data`,
+        WHERE ic.branch_id=$1 AND ici.inventory_item_id=ANY($2::uuid[]) AND NOT ic.is_test_data AND ici.voided_at IS NULL`,
       [branchId, [...new Set(lockedItems.map((item) => item.inventoryItemId))]],
     );
     const latestCountDate = latestPhysicalCount.rows[0]?.countDate;

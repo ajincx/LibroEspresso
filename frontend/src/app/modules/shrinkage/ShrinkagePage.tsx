@@ -17,6 +17,18 @@ import { ControlledActionDialog, type ControlledActionValue } from "../../compon
 import { controlledActionService } from "../../services/controlledAction.service";
 const formatDate = (value: string | null) => value ? formatAppDate(value, true) : "—";
 
+export function getActiveShrinkageMetrics(reports: ShrinkageReport[]) {
+  const activeReports = reports.filter((report) => !report.archivedAt);
+  return {
+    detectedValue: activeReports.reduce((sum, report) => sum + Math.max(-report.varianceValue, 0), 0),
+    detected: activeReports.filter((report) => report.status === "DETECTED").length,
+    pending: activeReports.filter((report) => report.status === "PENDING_REVIEW" || report.status === "VERIFIED").length,
+    spoilage: activeReports.filter((report) => report.classification === "SPOILAGE").length,
+    wastage: activeReports.filter((report) => report.classification === "WASTAGE").length,
+    pilferage: activeReports.filter((report) => report.classification === "PILFERAGE").length,
+  };
+}
+
 export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string }) {
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -27,6 +39,7 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
   const [branchId, setBranchId] = useState(scopeBranchId === "ALL" ? "" : scopeBranchId);
   const [status, setStatus] = useState<ShrinkageStatus | "">("");
+  const [archiveScope, setArchiveScope] = useState<"ACTIVE" | "ARCHIVED" | "ALL">("ACTIVE");
   const [classification, setClassification] = useState<ShrinkageClassification | "">("");
   const [inventoryItemId, setInventoryItemId] = useState("");
   const [incidentType, setIncidentType] = useState<IncidentType | "">("");
@@ -47,11 +60,11 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
 
   const load = async () => {
     setLoading(true); setError("");
-    try { setReports(await inventoryWorkflowService.reports({ branchId: branchId || undefined, status: status || undefined, classification: classification || undefined, inventoryItemId: inventoryItemId || undefined, incidentType: incidentType || undefined, startDate: startDate || undefined, endDate: endDate || undefined })); }
+    try { setReports(await inventoryWorkflowService.reports({ branchId: branchId || undefined, archiveScope, status: status || undefined, classification: classification || undefined, inventoryItemId: inventoryItemId || undefined, incidentType: incidentType || undefined, startDate: startDate || undefined, endDate: endDate || undefined })); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to load system-detected anomalies"); }
     finally { setLoading(false); }
   };
-  useEffect(() => { void load(); }, [branchId, status, classification, inventoryItemId, incidentType, startDate, endDate]);
+  useEffect(() => { void load(); }, [branchId, archiveScope, status, classification, inventoryItemId, incidentType, startDate, endDate]);
   useEffect(() => { if (owner) setBranchId(scopeBranchId === "ALL" ? "" : scopeBranchId); }, [owner, scopeBranchId]);
   useEffect(() => {
     void masterDataService.inventoryItems().then(setInventoryItems).catch(() => setInventoryItems([]));
@@ -70,22 +83,19 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
     setInvestigation({ classification: report.classification ?? "", menuItemId: report.menuItemId ?? "", explanation: report.explanation ?? "", supportingNotes: report.supportingNotes ?? "", evidenceReviewConfirmed: report.evidenceReviewConfirmed ?? false, evidenceBasis: report.evidenceBasis ?? [] });
     setEvidence(null);
     setAiAnalysis(null);
-    setAiLoading(true);
     void inventoryWorkflowService.evidence(report.id).then(setEvidence).catch(() => setEvidence(null));
+    if (report.archivedAt) {
+      setAiLoading(false);
+      return;
+    }
+    setAiLoading(true);
     void inventoryWorkflowService.shrinkageAiAnalysis(report.id)
       .then(setAiAnalysis)
       .catch(() => setAiAnalysis({ source: "UNAVAILABLE", analysis: null }))
       .finally(() => setAiLoading(false));
   };
 
-  const metrics = useMemo(() => ({
-    detectedValue: reports.reduce((sum, report) => sum + Math.max(-report.varianceValue, 0), 0),
-    detected: reports.filter((report) => report.status === "DETECTED").length,
-    pending: reports.filter((report) => report.status === "PENDING_REVIEW" || report.status === "VERIFIED").length,
-    spoilage: reports.filter((report) => report.classification === "SPOILAGE").length,
-    wastage: reports.filter((report) => report.classification === "WASTAGE").length,
-    pilferage: reports.filter((report) => report.classification === "PILFERAGE").length,
-  }), [reports]);
+  const metrics = useMemo(() => getActiveShrinkageMetrics(reports), [reports]);
   const archiveReport=async()=>{if(!archiveTarget)return;setControlledBusy(true);try{await controlledActionService.archiveShrinkage(archiveTarget.id,controlledValue);toast.success("Anomaly case archived; its history remains in the audit trail");setArchiveTarget(null);setControlledValue({reason:"",verificationPin:""});await load();}catch(reason){toast.error(reason instanceof Error?reason.message:"Unable to archive anomaly");}finally{setControlledBusy(false);}};
 
   const submitInvestigation = async () => {
@@ -156,6 +166,7 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
           <div className="flex items-center gap-1 p-1 rounded-xl border" style={{ borderColor: "var(--app-border)", background: "var(--app-bg)" }}>{[
             { value: "", label: "All" }, { value: "DETECTED", label: "Needs Investigation" }, { value: "VERIFIED", label: "Verified" }, { value: "PENDING_REVIEW", label: "Pending Review" }, { value: "REVIEWED", label: "Reviewed" },
           ].map((option) => <button key={option.value || "all"} onClick={() => setStatus(option.value as ShrinkageStatus | "")} className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors" style={{ background: status === option.value ? "var(--app-primary)" : "transparent", color: status === option.value ? "#fff" : "var(--app-text-muted)" }}>{option.label}</button>)}</div>
+          <Select value={archiveScope} onChange={(value) => setArchiveScope(value as "ACTIVE" | "ARCHIVED" | "ALL")} options={[{ value: "ACTIVE", label: "Active Cases" }, { value: "ARCHIVED", label: "Archived Cases" }, { value: "ALL", label: "All Records" }]}/>
           {owner && <Select value={branchId} onChange={setBranchId} options={[{ value: "", label: "All Branches" }, ...branches.map((branch) => ({ value: branch.id, label: branch.name }))]}/>}
           <Select value={classification} onChange={(value) => setClassification(value as ShrinkageClassification | "")} options={[{ value: "", label: "All Classifications" }, ...managerClassificationOptions.map((option) => ({ value: option.value, label: option.label }))]}/>
           <Select value={inventoryItemId} onChange={setInventoryItemId} options={[{ value: "", label: "All Ingredients" }, ...inventoryItems.map((item) => ({ value: item.id, label: item.name }))]}/>
@@ -186,7 +197,7 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
                 </TD>
                 <TD muted>{classificationLabel(report.classification)}</TD>
                 <TD right><span className="font-bold text-[var(--app-danger)]">{report.varianceQuantity.toFixed(2)} {report.unit}</span></TD>
-                <TD center><Status status={report.status} /></TD>
+                <TD center>{report.archivedAt ? <span>Archived</span> : <Status status={report.status} />}</TD>
                 <TD muted>{formatDate(report.investigatedAt)}</TD>
                 <TD right>
                   <div className="flex justify-end gap-1">
@@ -199,7 +210,7 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
                   >
                     <Eye size={15} />
                   </button>
-                  {!owner&&<button type="button" title="Archive anomaly" aria-label={`Archive case ${report.reportNo}`} onClick={()=>{setArchiveTarget(report);setControlledValue({reason:"",verificationPin:""});}} className="p-2 rounded-lg border border-[var(--app-border)] text-[var(--app-danger)]"><Archive size={15}/></button>}
+                  {!owner&&!report.archivedAt&&<button type="button" title="Archive anomaly" aria-label={`Archive case ${report.reportNo}`} onClick={()=>{setArchiveTarget(report);setControlledValue({reason:"",verificationPin:""});}} className="p-2 rounded-lg border border-[var(--app-border)] text-[var(--app-danger)]"><Archive size={15}/></button>}
                   </div>
                 </TD>
               </TR>
@@ -213,7 +224,7 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
     <ShrinkageIncidentReports owner={owner} branchId={branchId} />
 
     {selected && <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.5)" }}><div role="dialog" aria-modal="true" aria-labelledby="shrinkage-investigation-title" className="w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6 rounded-2xl border" style={{ background: "var(--app-surface)", borderColor: "var(--app-border)" }}>
-      <div className="flex justify-between mb-5"><div><h2 id="shrinkage-investigation-title" className="text-lg font-bold">{selected.reportNo}</h2><p className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>{selected.branchName} · {selected.inventoryItemName}</p></div><button aria-label="Close shrinkage investigation" onClick={() => setSelected(null)}><X size={18} /></button></div>
+      <div className="flex justify-between mb-5"><div><h2 id="shrinkage-investigation-title" className="text-lg font-bold">{selected.reportNo}</h2><p className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>{selected.branchName} · {selected.inventoryItemName}</p>{selected.archivedAt && <p className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>Archived on {formatDate(selected.archivedAt)}</p>}</div><button aria-label="Close shrinkage investigation" onClick={() => setSelected(null)}><X size={18} /></button></div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">{[["Expected",`${selected.expectedQuantity.toFixed(2)}${selected.unit}`],["Actual",`${selected.actualQuantity.toFixed(2)}${selected.unit}`],["Variance",`${selected.varianceQuantity > 0 ? "+" : ""}${selected.varianceQuantity.toFixed(2)}${selected.unit}`],["Variance Value",`${selected.varianceValue > 0 ? "+" : ""}₱${selected.varianceValue.toFixed(2)}`]].map(([label,value]) => <div key={label} className="p-3 rounded-xl" style={{ background: "var(--app-bg)" }}><div className="text-[10px] uppercase" style={{ color: "var(--app-text-faint)" }}>{label}</div><div className="font-bold mt-1">{value}</div></div>)}</div>
       <div className="p-3 rounded-xl mb-4 flex gap-3" style={{ background: "var(--app-warning-bg)" }}><AlertTriangle size={18} style={{ color: "var(--app-warning)" }} /><p className="text-xs" style={{ color: "var(--app-text-muted)" }}>These quantities were calculated from connected inventory records and cannot be edited in the investigation.</p></div>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4"><Detail label="Variance Percentage" value={selected.variancePercentage == null ? "Not available" : `${selected.variancePercentage.toFixed(2)}%`} /><Detail label="Count Date" value={formatDate(selected.countDate)} /><Detail label="Tolerance Status" value="Above tolerance — investigation required" /></div>
@@ -221,14 +232,14 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
       <div className="mb-5 rounded-xl border p-4" style={{ borderColor: "var(--app-border)", background: "var(--app-surface-elevated)" }}>
         <h3 className="text-sm font-semibold">Supporting Records</h3>
         {!evidence ? <p className="text-xs mt-2" style={{ color: "var(--app-text-muted)" }}>Loading available operational evidence…</p> : <>
-          {evidence.incidents.length ? <div className="mt-3 space-y-2">{evidence.incidents.map((incident) => <div key={incident.incidentReportItemId} className="rounded-xl border p-3 text-xs" style={{ borderColor: "var(--app-border)" }}><div className="flex justify-between gap-2"><strong>{incidentTypeLabel(incident.incidentType)}</strong><span>{incident.explicitlyLinked ? "Linked evidence" : "Possible match"}</span></div><div className="mt-1" style={{ color: "var(--app-text-muted)" }}>{incident.submittedByName} · {formatDate(incident.occurredAt)} · {incident.quantity} {incident.unit} · {incident.status}</div><p className="mt-2">{incident.reason}</p><div className="flex items-center gap-3 mt-2">{incident.photoUrl && <a href={incident.photoUrl} target="_blank" rel="noreferrer" className="font-semibold" style={{ color: "var(--app-primary)" }}>View supporting image</a>}{!owner && !incident.explicitlyLinked && <button disabled={saving} onClick={() => void linkIncident(incident.id,incident.incidentReportItemId)} className="font-semibold" style={{ color: "var(--app-primary)" }}>Link as evidence</button>}</div></div>)}</div> : <p className="text-xs mt-2" style={{ color: "var(--app-text-muted)" }}>No linked or potentially relevant Staff incidents were found.</p>}
+          {evidence.incidents.length ? <div className="mt-3 space-y-2">{evidence.incidents.map((incident) => <div key={incident.incidentReportItemId} className="rounded-xl border p-3 text-xs" style={{ borderColor: "var(--app-border)" }}><div className="flex justify-between gap-2"><strong>{incidentTypeLabel(incident.incidentType)}</strong><span>{incident.explicitlyLinked ? "Linked evidence" : "Possible match"}</span></div><div className="mt-1" style={{ color: "var(--app-text-muted)" }}>{incident.submittedByName} · {formatDate(incident.occurredAt)} · {incident.quantity} {incident.unit} · {incident.status}</div><p className="mt-2">{incident.reason}</p><div className="flex items-center gap-3 mt-2">{incident.photoUrl && <a href={incident.photoUrl} target="_blank" rel="noreferrer" className="font-semibold" style={{ color: "var(--app-primary)" }}>View supporting image</a>}{!owner && !selected.archivedAt && !incident.explicitlyLinked && <button disabled={saving} onClick={() => void linkIncident(incident.id,incident.incidentReportItemId)} className="font-semibold" style={{ color: "var(--app-primary)" }}>Link as evidence</button>}</div></div>)}</div> : <p className="text-xs mt-2" style={{ color: "var(--app-text-muted)" }}>No linked or potentially relevant Staff incidents were found.</p>}
           <div className="grid sm:grid-cols-2 gap-3 mt-3"><div className="rounded-xl p-3" style={{ background: "var(--app-bg)" }}><div className="text-xs font-semibold">Recent inventory records</div>{evidence.movements.length ? <div className="mt-2 space-y-1.5">{evidence.movements.map((movement, index) => <div key={`${movement.occurredAt}-${index}`} className="text-xs" style={{ color: "var(--app-text-muted)" }}><strong>{movement.movementType.replaceAll("_", " ")}</strong> · {movement.quantity} {selected.unit} · {formatDate(movement.occurredAt)}{movement.referenceNo ? ` · ${movement.referenceNo}` : ""}</div>)}</div> : <div className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>No nearby receipt or adjustment records.</div>}</div><div className="rounded-xl p-3" style={{ background: "var(--app-bg)" }}><div className="text-xs font-semibold">Related sales usage</div>{evidence.usage.length ? <div className="mt-2 space-y-1.5">{evidence.usage.map((entry) => <div key={entry.date} className="text-xs" style={{ color: "var(--app-text-muted)" }}>{formatDate(entry.date)} · {entry.expectedUsage.toFixed(2)} {selected.unit} expected usage</div>)}</div> : <div className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>No recent recipe-derived usage.</div>}</div></div>
         </>}
       </div>
 
       <ShrinkageAiAnalysisPanel result={aiAnalysis} loading={aiLoading} />
 
-      {selected.status === "DETECTED" && !owner ? <div>
+      {selected.status === "DETECTED" && !owner && !selected.archivedAt ? <div>
         <h3 className="font-semibold mb-1">Manager Investigation Findings</h3><p className="text-xs mb-4" style={{ color: "var(--app-text-muted)" }}>Investigate with branch personnel, then document the verified or suspected cause.</p>
         <div className="grid grid-cols-2 gap-2 mb-4">{managerClassificationOptions.map((option) => <button key={option.value} onClick={() => setInvestigation((current) => ({ ...current, classification: option.value }))} className="p-3 rounded-xl border text-left" style={{ borderColor: investigation.classification === option.value ? "var(--app-primary)" : "var(--app-border)", background: investigation.classification === option.value ? "var(--app-primary-subtle)" : "var(--app-surface)" }}><div className="text-sm font-semibold">{option.label}</div><div className="text-[11px] mt-1 leading-relaxed" style={{ color: "var(--app-text-muted)" }}>{option.definition}</div></button>)}</div>
         <label className="block text-sm mb-3">Related menu product (optional)<Select className="mt-1.5 w-full" value={investigation.menuItemId} onChange={(value) => setInvestigation((current) => ({ ...current, menuItemId: value }))} options={[{ value: "", label: "No specific menu product" }, ...menu.map((product) => ({ value: product.id, label: product.name }))]}/></label>
@@ -237,7 +248,7 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
         {investigation.classification === "PILFERAGE" && <div className="mt-4 p-4 rounded-xl border" style={{ borderColor: "var(--app-warning)", background: "var(--app-warning-bg)" }}><div className="text-sm font-semibold">Verified Pilferage safeguard</div><p className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>Select at least one traceable evidence basis and confirm that you personally reviewed the available records.</p><div className="grid sm:grid-cols-2 gap-2 mt-3">{evidenceBasisOptions.map((option) => <label key={option.value} className="flex items-start gap-2 text-xs"><input type="checkbox" checked={investigation.evidenceBasis.includes(option.value)} onChange={(event) => setInvestigation((current) => ({ ...current, evidenceBasis: event.target.checked ? [...current.evidenceBasis, option.value] : current.evidenceBasis.filter((value) => value !== option.value) }))}/><span>{option.label}</span></label>)}</div><label className="flex items-start gap-2 text-xs font-semibold mt-4"><input type="checkbox" checked={investigation.evidenceReviewConfirmed} onChange={(event) => setInvestigation((current) => ({ ...current, evidenceReviewConfirmed: event.target.checked }))}/><span>I confirm that I reviewed the available records and supporting evidence before classifying this discrepancy as Verified Pilferage.</span></label></div>}
         <button disabled={saving || !investigation.classification || investigation.explanation.trim().length < 10 || (investigation.classification === "PILFERAGE" && (investigation.explanation.trim().length < 20 || !investigation.evidenceReviewConfirmed || investigation.evidenceBasis.length === 0))} onClick={() => void submitInvestigation()} className="w-full mt-5 py-2.5 rounded-xl text-white font-semibold disabled:opacity-40" style={{ background: "var(--app-primary)" }}>{saving ? "Submitting…" : "Verify & Submit Classification"}</button>
       </div> : <div><Detail label="Classification" value={classificationLabel(selected.classification)} /><Detail label="Investigated by" value={selected.managerName} /><Detail label="Menu reference" value={selected.menuItemName ?? "Not specified"} /><Detail label="Investigation explanation" value={selected.explanation ?? "Awaiting Manager investigation"} /><Detail label="Corrective action / supporting notes" value={selected.supportingNotes || "None"} />
-        {selected.status === "REVIEWED" ? <div className="mt-5 p-4 rounded-xl flex gap-3" style={{ background: "var(--app-success-bg)" }}><CheckCircle style={{ color: "var(--app-success)" }} /><div><div className="font-semibold">Final Verification Complete</div><div className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>Verified by {selected.reviewedByName} · {formatDate(selected.reviewedAt)}</div></div></div> : (selected.status === "PENDING_REVIEW" || selected.status === "VERIFIED") && !owner ? <button onClick={() => setConfirmReview(true)} className="w-full mt-5 py-2.5 rounded-xl text-white font-semibold" style={{ background: "var(--app-primary)" }}>Finalize Verification</button> : <div className="mt-5"><Status status={selected.status} /></div>}
+        {selected.status === "REVIEWED" ? <div className="mt-5 p-4 rounded-xl flex gap-3" style={{ background: "var(--app-success-bg)" }}><CheckCircle style={{ color: "var(--app-success)" }} /><div><div className="font-semibold">Final Verification Complete</div><div className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>Verified by {selected.reviewedByName} · {formatDate(selected.reviewedAt)}</div></div></div> : (selected.status === "PENDING_REVIEW" || selected.status === "VERIFIED") && !owner && !selected.archivedAt ? <button onClick={() => setConfirmReview(true)} className="w-full mt-5 py-2.5 rounded-xl text-white font-semibold" style={{ background: "var(--app-primary)" }}>Finalize Verification</button> : <div className="mt-5"><Status status={selected.status} /></div>}
       </div>}
     </div></div>}
 

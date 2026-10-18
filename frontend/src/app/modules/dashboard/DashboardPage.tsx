@@ -17,7 +17,7 @@ import { officialFinancialMetrics } from "../../utils/financialMetrics";
 import { PosImportModal } from "../cogs/PosImportModal";
 
 export const DashboardPosImportModal = PosImportModal;
-const ALERT_PRIORITY: Record<InventoryOverviewItem["status"], number> = { OUT_OF_STOCK: 4, CRITICAL: 3, LOW_STOCK: 2, HEALTHY: 1 };
+const ALERT_PRIORITY: Record<InventoryOverviewItem["status"], number> = { OUT_OF_STOCK: 4, CRITICAL: 3, LOW_STOCK: 2, HEALTHY: 1, NO_BASELINE: 0 };
 export const DASHBOARD_INVENTORY_TARGET:Page="inventory";
 export const DASHBOARD_SHOWS_DAILY_POS_MONITORING=false;
 export const DASHBOARD_INVENTORY_ALERTS_ARE_PAGINATED=false;

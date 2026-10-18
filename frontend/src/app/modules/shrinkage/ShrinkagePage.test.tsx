@@ -1,9 +1,17 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { ShrinkageAiAnalysisPanel } from "./ShrinkagePage";
+import { getActiveShrinkageMetrics, ShrinkageAiAnalysisPanel } from "./ShrinkagePage";
+import type { ShrinkageReport } from "../../types/inventoryWorkflow";
 
 describe("AI-Assisted Shrinkage Analysis presentation", () => {
+  it("keeps archived investigations out of active case totals", () => {
+    const reports = [
+      { status: "DETECTED", classification: null, varianceValue: -50, archivedAt: null },
+      { status: "VERIFIED", classification: "SPOILAGE", varianceValue: -100, archivedAt: "2026-10-01T00:00:00Z" },
+    ] as ShrinkageReport[];
+    expect(getActiveShrinkageMetrics(reports)).toMatchObject({ detectedValue: 50, detected: 1, pending: 0, spoilage: 0 });
+  });
   it("labels a validated Gemini response and renders each advisory section", () => {
     const markup = renderToStaticMarkup(React.createElement(ShrinkageAiAnalysisPanel, {
       loading: false,

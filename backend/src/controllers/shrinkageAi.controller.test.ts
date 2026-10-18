@@ -65,6 +65,9 @@ describe("shrinkage AI analysis controller", () => {
     await getShrinkageAiAnalysis(request("BRANCH_MANAGER", branchId), { json: vi.fn() } as never, vi.fn());
     const [sql, values] = mocks.poolQuery.mock.calls[0]!;
     expect(String(sql)).toContain("AND sr.branch_id=$2");
+    expect(String(sql)).toContain("ici.voided_at IS NULL");
+    expect(String(sql)).toContain("historical_item.voided_at IS NULL");
+    expect(String(sql)).not.toContain("historical.archived_at IS NULL");
     expect(values).toEqual([reportId, branchId]);
   });
 });

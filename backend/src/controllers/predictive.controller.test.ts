@@ -112,5 +112,7 @@ describe("predictive controller Gemini boundaries", () => {
       .find((sql) => sql.includes("FROM shrinkage_reports"));
     expect(shrinkageSql).toContain("JOIN inventory_counts ic");
     expect(shrinkageSql).toContain("ic.count_type<>'OPENING'");
+    expect(shrinkageSql).toContain("ici.voided_at IS NULL");
+    expect(shrinkageSql).not.toContain("sr.archived_at IS NULL");
   });
 });

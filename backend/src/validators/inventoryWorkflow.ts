@@ -118,6 +118,7 @@ export const shrinkageInvestigationInput = z.object({
 
 export const shrinkageFilters = z.object({
   branchId: z.string().uuid().optional(),
+  archiveScope: z.enum(["ACTIVE", "ARCHIVED", "ALL"]).default("ACTIVE"),
   status: z.enum(["DETECTED", "VERIFIED", "PENDING_REVIEW", "REVIEWED"]).optional(),
   classification: z.enum(MANAGER_CLASSIFICATIONS).optional(),
   inventoryItemId: z.string().uuid().optional(),

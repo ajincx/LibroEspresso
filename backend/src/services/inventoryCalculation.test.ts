@@ -6,9 +6,9 @@ describe("thesis inventory calculation formulas", () => {
     const query = vi.fn(async (statement: unknown) => {
       const sql = String(statement);
       if (sql.includes("FROM inventory_items ii")) return { rows: [{ id: "item-1", sku: "RM-001", name: "Milk", unit: "ml", unitCost: 0.1 }] };
+      if (sql.includes("FROM branch_inventory_balances")) return { rows: [{ actualQuantity: 100, baselineDate: "2026-09-01", baselineAt: "2026-09-01T00:00:00.000Z", baselineSource: "BALANCE" }] };
       if (sql.includes("FROM inventory_count_items ici")) return { rows: [] };
       if (sql.includes("FROM inventory_opening_baseline_items")) return { rows: [] };
-      if (sql.includes("FROM branch_inventory_balances")) return { rows: [{ actualQuantity: 100, baselineDate: "2026-09-01", baselineAt: "2026-09-01T00:00:00.000Z", baselineSource: "BALANCE" }] };
       if (sql.includes("FROM inventory_movements")) return { rows: [{ received: 20, adjustmentIncreases: 0, adjustmentDecreases: 0 }] };
       return { rows: [{ unit: "ml", quantity: 10 }] };
     });

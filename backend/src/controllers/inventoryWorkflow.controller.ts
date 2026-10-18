@@ -1066,7 +1066,7 @@ export const getPosAnalytics: RequestHandler = async (req, res) => {
          FROM inventory_counts ic JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id
          LEFT JOIN LATERAL (SELECT corrected_actual_quantity,corrected_variance_value
            FROM inventory_count_corrections WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
-         WHERE NOT ic.is_test_data AND ic.count_type<>'OPENING'
+         WHERE NOT ic.is_test_data AND ici.voided_at IS NULL AND ic.count_type<>'OPENING'
            AND ic.count_date BETWEEN $1::date AND $2::date ${branchId ? `AND ic.branch_id=$3` : ""}`,
         params,
       ),
@@ -2074,7 +2074,7 @@ export const listInventoryVariances: RequestHandler = async (req, res) => {
          FROM inventory_count_corrections WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
        LEFT JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ici.id AND sr.archived_at IS NULL
       ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
-      ORDER BY ic.count_date DESC,abs(ici.variance_value) DESC,ii.name LIMIT $${values.length+1} OFFSET $${values.length+2}`,
+      ORDER BY ic.count_date DESC,abs(COALESCE(correction.corrected_variance_value,ici.variance_value)) DESC,ii.name LIMIT $${values.length+1} OFFSET $${values.length+2}`,
     [...values,pagination.pageSize,(pagination.page-1)*pagination.pageSize],
   );
   const page = paginatedRows(result.rows, pagination);
@@ -2088,7 +2088,7 @@ const shrinkageSelection = `SELECT sr.id,sr.report_no "reportNo",sr.status,sr.cl
   CASE WHEN sr.actual_quantity>sr.expected_quantity THEN abs(sr.variance_value)
        WHEN sr.actual_quantity<sr.expected_quantity THEN -abs(sr.variance_value) ELSE 0 END::float8 "varianceValue",sr.unit,
   CASE WHEN sr.expected_quantity > 0 THEN (((sr.actual_quantity-sr.expected_quantity) / sr.expected_quantity) * 100)::float8 ELSE NULL END "variancePercentage",
-  ic.count_date::text "countDate",sr.detected_at "detectedAt",sr.investigated_at "investigatedAt",sr.submitted_at "submittedAt",sr.reviewed_at "reviewedAt",b.id "branchId",b.name "branchName",ii.id "inventoryItemId",ii.sku,ii.name "inventoryItemName",
+  ic.count_date::text "countDate",sr.detected_at "detectedAt",sr.investigated_at "investigatedAt",sr.submitted_at "submittedAt",sr.reviewed_at "reviewedAt",sr.archived_at "archivedAt",b.id "branchId",b.name "branchName",ii.id "inventoryItemId",ii.sku,ii.name "inventoryItemName",
   mi.id "menuItemId",mi.name "menuItemName",concat(su.first_name,' ',su.last_name) "managerName",concat(ru.first_name,' ',ru.last_name) "reviewedByName"
   FROM shrinkage_reports sr JOIN branches b ON b.id=sr.branch_id JOIN inventory_items ii ON ii.id=sr.inventory_item_id
   JOIN inventory_count_items ici ON ici.id=sr.inventory_count_item_id JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
@@ -2098,7 +2098,10 @@ export const listShrinkageReports: RequestHandler = async (req, res) => {
   const filters = shrinkageFilters.parse(req.query);
   const pagination = paginationQuery.parse(req.query);
   const branchId = getEffectiveBranchId(req.user!, filters.branchId);
-  const clauses: string[] = ["NOT sr.is_test_data", "sr.archived_at IS NULL", "ic.count_type <> 'OPENING'"];
+  const clauses: string[] = ["NOT sr.is_test_data", "ic.count_type <> 'OPENING'"];
+  if (filters.archiveScope === "ARCHIVED") clauses.push("sr.archived_at IS NOT NULL");
+  else if (filters.archiveScope === "ALL") clauses.push("(sr.archived_at IS NOT NULL OR ici.voided_at IS NULL)");
+  else clauses.push("sr.archived_at IS NULL", "ici.voided_at IS NULL");
   const values: unknown[] = [];
   if (branchId) {
     values.push(branchId);
@@ -2140,7 +2143,7 @@ export const getShrinkageReport: RequestHandler = async (req, res) => {
   const { id } = idParams.parse(req.params);
   const branchId = getEffectiveBranchId(req.user!);
   const result = await pool.query(
-    `${shrinkageSelection} WHERE sr.id=$1 AND NOT sr.is_test_data AND sr.archived_at IS NULL ${branchId ? "AND sr.branch_id=$2" : ""}`,
+    `${shrinkageSelection} WHERE sr.id=$1 AND NOT sr.is_test_data ${branchId ? "AND sr.branch_id=$2" : ""}`,
     branchId ? [id, branchId] : [id],
   );
   if (!result.rows[0])
@@ -2254,7 +2257,7 @@ export const submitShrinkageInvestigation: RequestHandler = async (
               evidence_review_confirmed=$7,evidence_basis=$8,
               verification_safeguard_version=1,
               status='VERIFIED',investigated_at=now(),submitted_at=now(),updated_at=now()
-        WHERE id=$1 AND branch_id=$2 AND status='DETECTED'
+         WHERE id=$1 AND branch_id=$2 AND status='DETECTED' AND archived_at IS NULL
         RETURNING report_no "reportNo",inventory_item_id "inventoryItemId",variance_quantity::float8 "varianceQuantity",unit`,
       [
         id,
@@ -2342,7 +2345,7 @@ export const reviewShrinkageReport: RequestHandler = async (req, res) => {
       branchId: string;
     }>(
       `UPDATE shrinkage_reports SET status='REVIEWED',reviewed_by=$2,reviewed_at=now(),updated_at=now()
-        WHERE id=$1 AND branch_id=$3 AND status IN ('VERIFIED', 'PENDING_REVIEW')
+        WHERE id=$1 AND branch_id=$3 AND status IN ('VERIFIED', 'PENDING_REVIEW') AND archived_at IS NULL
         RETURNING report_no "reportNo",submitted_by "submittedBy",branch_id "branchId"`,
       [id, req.user!.id, branchId],
     );

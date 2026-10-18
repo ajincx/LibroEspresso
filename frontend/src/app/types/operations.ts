@@ -2,7 +2,8 @@ export type InventoryHealthStatus =
   | "HEALTHY"
   | "LOW_STOCK"
   | "CRITICAL"
-  | "OUT_OF_STOCK";
+  | "OUT_OF_STOCK"
+  | "NO_BASELINE";
 
 export interface InventoryOverviewItem {
   branchId: string;
@@ -21,6 +22,7 @@ export interface InventoryOverviewItem {
   systemStock: number;
   inventoryValue: number;
   status: InventoryHealthStatus;
+  baselineAvailability: "AVAILABLE" | "NO_BASELINE";
 }
 
 export type InventoryLedgerActivityType =
@@ -52,6 +54,7 @@ export interface InventoryStockLedger {
   startingStock: number | null;
   operationalPosConsumption: number;
   calculatedBalance: number;
+  availability: "AVAILABLE" | "NO_BASELINE";
   currentExpectedStock: number;
   activities: InventoryLedgerActivity[];
 }

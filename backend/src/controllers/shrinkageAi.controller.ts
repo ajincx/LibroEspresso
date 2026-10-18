@@ -30,13 +30,15 @@ export const getShrinkageAiAnalysis: RequestHandler = async (req, res) => {
             CASE WHEN sr.expected_quantity>0 THEN (((sr.actual_quantity-sr.expected_quantity)/sr.expected_quantity)*100)::float8 ELSE NULL END "variancePercent",
             sr.unit,sr.classification,sr.status,
             (SELECT count(*)::int FROM shrinkage_reports historical
+              JOIN inventory_count_items historical_item ON historical_item.id=historical.inventory_count_item_id
               WHERE historical.id<>sr.id AND historical.branch_id=sr.branch_id
                 AND historical.inventory_item_id=sr.inventory_item_id AND NOT historical.is_test_data
-                AND historical.archived_at IS NULL) "relatedHistoricalCases"
+                AND historical_item.voided_at IS NULL) "relatedHistoricalCases"
        FROM shrinkage_reports sr
+       JOIN inventory_count_items ici ON ici.id=sr.inventory_count_item_id
        JOIN branches b ON b.id=sr.branch_id
        JOIN inventory_items ii ON ii.id=sr.inventory_item_id
-      WHERE sr.id=$1 AND NOT sr.is_test_data AND sr.archived_at IS NULL ${branchId ? "AND sr.branch_id=$2" : ""}`,
+      WHERE sr.id=$1 AND NOT sr.is_test_data AND sr.archived_at IS NULL AND ici.voided_at IS NULL ${branchId ? "AND sr.branch_id=$2" : ""}`,
     branchId ? [id, branchId] : [id],
   );
   const context = report.rows[0];

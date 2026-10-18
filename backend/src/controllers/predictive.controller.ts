@@ -154,7 +154,7 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
          FROM shrinkage_reports sr
          JOIN inventory_count_items ici ON ici.id=sr.inventory_count_item_id
          JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
-        WHERE NOT sr.is_test_data AND ic.count_type<>'OPENING' AND sr.detected_at::date BETWEEN $1::date AND $2::date
+         WHERE NOT sr.is_test_data AND ici.voided_at IS NULL AND ic.count_type<>'OPENING' AND sr.detected_at::date BETWEEN $1::date AND $2::date
           AND sr.status IN ('VERIFIED', 'REVIEWED')
           AND sr.classification IN (${VERIFIED_SHRINKAGE_CLASSIFICATIONS_SQL})
           ${shrinkageBranchClause}`, shrinkageParams),

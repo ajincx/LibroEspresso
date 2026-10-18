@@ -5,6 +5,13 @@ import { inventoryWorkflowService } from "./inventoryWorkflow.service";
 afterEach(() => vi.restoreAllMocks());
 
 describe("physical-count baseline availability", () => {
+  it("passes the archived case scope through the existing shrinkage endpoint", async () => {
+    const get = vi.spyOn(api, "get").mockResolvedValue({ data: { success: true, data: { reports: [] } } });
+    await inventoryWorkflowService.reports({ branchId: "branch-1", archiveScope: "ARCHIVED" });
+    expect(get).toHaveBeenCalledWith("/shrinkage-reports", {
+      params: { branchId: "branch-1", archiveScope: "ARCHIVED" },
+    });
+  });
   it("preserves valid items and the non-countable No Baseline list", async () => {
     const data = {
       branchId: "branch-1",

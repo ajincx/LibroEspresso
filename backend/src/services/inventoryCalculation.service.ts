@@ -107,7 +107,7 @@ export async function calculateExpectedInventory(
        JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
        LEFT JOIN LATERAL (SELECT corrected_actual_quantity FROM inventory_count_corrections
          WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
-      WHERE ic.branch_id=$1 AND ici.inventory_item_id=$2 AND NOT ic.is_test_data
+      WHERE ic.branch_id=$1 AND ici.inventory_item_id=$2 AND NOT ic.is_test_data AND ici.voided_at IS NULL
         AND (($4::text='OPENING' AND ic.count_date < $3::date) OR ($4::text<>'OPENING' AND ic.count_date <= $3::date))
       ORDER BY ic.count_date DESC,COALESCE(ic.effective_at,ic.submitted_at) DESC LIMIT 1`,
     [branchId, inventoryItemId, countDate, calculationPhase],
@@ -127,7 +127,15 @@ export async function calculateExpectedInventory(
             as_of::text "baselineAt",'BALANCE'::text "baselineSource"
        FROM branch_inventory_balances
       WHERE branch_id=$1 AND inventory_item_id=$2 AND NOT is_test_data
-        AND (($4::text='OPENING' AND as_of::date < $3::date) OR ($4::text<>'OPENING' AND as_of::date <= $3::date))`,
+         AND (($4::text='OPENING' AND as_of::date < $3::date) OR ($4::text<>'OPENING' AND as_of::date <= $3::date))
+         AND NOT EXISTS (SELECT 1 FROM inventory_count_items historical_item
+           JOIN inventory_counts historical_count ON historical_count.id=historical_item.inventory_count_id
+           WHERE historical_count.branch_id=$1 AND historical_item.inventory_item_id=$2 AND NOT historical_count.is_test_data
+             AND (($4::text='OPENING' AND historical_count.count_date < $3::date) OR ($4::text<>'OPENING' AND historical_count.count_date <= $3::date)))
+         AND NOT EXISTS (SELECT 1 FROM inventory_opening_baseline_items historical_item
+           JOIN inventory_opening_baselines historical_baseline ON historical_baseline.id=historical_item.opening_baseline_id
+           WHERE historical_baseline.branch_id=$1 AND historical_item.inventory_item_id=$2
+             AND (($4::text='OPENING' AND historical_baseline.effective_at < $3::date) OR ($4::text<>'OPENING' AND historical_baseline.effective_at < ($3::date + interval '1 day'))))`,
     [branchId, inventoryItemId, countDate, calculationPhase],
   );
   if(priorCount.rows[0]) priorCount.rows[0].sourcePriority=0;
@@ -243,7 +251,7 @@ export async function calculateExpectedInventoryBatch(
          JOIN items item ON item."inventoryItemId"=ici.inventory_item_id
          LEFT JOIN LATERAL (SELECT corrected_actual_quantity FROM inventory_count_corrections
            WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
-        WHERE ic.branch_id=$1 AND NOT ic.is_test_data
+         WHERE ic.branch_id=$1 AND NOT ic.is_test_data AND ici.voided_at IS NULL
           AND (($3::text='OPENING' AND ic.count_date < $2::date) OR ($3::text<>'OPENING' AND ic.count_date <= $2::date))
        UNION ALL
        SELECT obi.inventory_item_id,obi.quantity::float8,ob.effective_at::date::text,
@@ -259,7 +267,15 @@ export async function calculateExpectedInventoryBatch(
          FROM branch_inventory_balances balance
          JOIN items item ON item."inventoryItemId"=balance.inventory_item_id
         WHERE balance.branch_id=$1 AND NOT balance.is_test_data
-          AND (($3::text='OPENING' AND balance.as_of::date < $2::date) OR ($3::text<>'OPENING' AND balance.as_of::date <= $2::date))
+           AND (($3::text='OPENING' AND balance.as_of::date < $2::date) OR ($3::text<>'OPENING' AND balance.as_of::date <= $2::date))
+           AND NOT EXISTS (SELECT 1 FROM inventory_count_items historical_item
+             JOIN inventory_counts historical_count ON historical_count.id=historical_item.inventory_count_id
+             WHERE historical_count.branch_id=$1 AND historical_item.inventory_item_id=balance.inventory_item_id AND NOT historical_count.is_test_data
+               AND (($3::text='OPENING' AND historical_count.count_date < $2::date) OR ($3::text<>'OPENING' AND historical_count.count_date <= $2::date)))
+           AND NOT EXISTS (SELECT 1 FROM inventory_opening_baseline_items historical_item
+             JOIN inventory_opening_baselines historical_baseline ON historical_baseline.id=historical_item.opening_baseline_id
+             WHERE historical_baseline.branch_id=$1 AND historical_item.inventory_item_id=balance.inventory_item_id
+               AND (($3::text='OPENING' AND historical_baseline.effective_at < $2::date) OR ($3::text<>'OPENING' AND historical_baseline.effective_at < ($2::date + interval '1 day'))))
      ), baselines AS (
        SELECT DISTINCT ON (candidate."inventoryItemId") candidate.*
          FROM baseline_candidates candidate

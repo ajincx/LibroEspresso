@@ -78,6 +78,27 @@ describe("Inventory Overview system stock", () => {
     expect(mocks.query).toHaveBeenCalledTimes(4);
     expect(mocks.query.mock.calls.filter(([sql]) => String(sql).includes("WITH targets AS"))).toHaveLength(2);
   });
+
+  it("marks an item without a trustworthy ledger checkpoint as No Baseline", async () => {
+    mocks.query.mockImplementation(async (statement: unknown) => {
+      const sql = String(statement);
+      if (sql.includes("FROM branches b CROSS JOIN inventory_items")) return { rows: [{
+        branchId: "branch-1", branchName: "Lipa", inventoryItemId: "item-beans",
+        sku: "RM-002", name: "Espresso Blend Beans", category: "Coffee", unit: "g", unitCost: 0.82,
+        reorderLevel: 1500, reorderDays: 5, lastActualQuantity: 5000, lastCountAt: "2026-10-01T00:00:00Z",
+      }] };
+      return { rows: [] };
+    });
+    const json = vi.fn();
+
+    await getInventoryOverview({ query: {}, user: { id: "owner-1", role: "OWNER", branchId: null } } as never, { json } as never, vi.fn());
+
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({
+      data: { items: [expect.objectContaining({
+        baselineAvailability: "NO_BASELINE", status: "NO_BASELINE", systemStock: 0, inventoryValue: 0,
+      })] },
+    }));
+  });
 });
 
 describe("Inventory Overview stock ledger", () => {
@@ -137,7 +158,9 @@ describe("Inventory Overview stock ledger", () => {
 
     expect(mocks.query.mock.calls[0]?.[1]).toEqual([selectedBranch, inventoryItemId]);
     expect(json).toHaveBeenCalledWith(expect.objectContaining({
-      data: { ledger: expect.objectContaining({ branchName: "Evo", activities: [], currentExpectedStock: 0 }) },
+      data: { ledger: expect.objectContaining({
+        branchName: "Evo", availability: "NO_BASELINE", activities: [], currentExpectedStock: 0,
+      }) },
     }));
   });
 });

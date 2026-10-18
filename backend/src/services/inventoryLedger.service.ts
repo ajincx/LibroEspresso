@@ -42,7 +42,7 @@ const activityPriority: Record<InventoryLedgerActivityType, number> = {
 };
 
 export function buildInventoryLedger(rawActivities: RawLedgerActivity[]) {
-  const activities = [...rawActivities].sort((left, right) => {
+  const sortedActivities = [...rawActivities].sort((left, right) => {
     const leftDate = left.occurredAt.slice(0,10);
     const rightDate = right.occurredAt.slice(0,10);
     const day = leftDate.localeCompare(rightDate);
@@ -52,6 +52,12 @@ export function buildInventoryLedger(rawActivities: RawLedgerActivity[]) {
     const time = new Date(left.occurredAt).getTime() - new Date(right.occurredAt).getTime();
     return time || activityPriority[left.activityType] - activityPriority[right.activityType] || left.id.localeCompare(right.id);
   });
+  const firstBaselineIndex = sortedActivities.findIndex((activity) =>
+    activity.activityType === "STARTING_STOCK"
+      || activity.activityType === "BALANCE_BASELINE"
+      || activity.activityType === "PHYSICAL_COUNT",
+  );
+  const activities = firstBaselineIndex < 0 ? [] : sortedActivities.slice(firstBaselineIndex);
   let runningBalance = 0;
   const ledger = activities.map<InventoryLedgerActivity>((activity) => {
     let quantityChange: number | null;
@@ -71,6 +77,7 @@ export function buildInventoryLedger(rawActivities: RawLedgerActivity[]) {
   });
   return {
     activities: ledger,
+    availability: firstBaselineIndex < 0 ? "NO_BASELINE" as const : "AVAILABLE" as const,
     startingStock: ledger.find((activity) => activity.activityType === "STARTING_STOCK")?.quantity ?? null,
     operationalPosConsumption: ledger
       .filter((activity) => activity.activityType === "POS_CONSUMPTION")
@@ -104,7 +111,13 @@ export async function loadInventoryLedger(
     `SELECT concat(branch_id,'-',inventory_item_id) id,as_of::text "occurredAt",'Current balance baseline' reference,
             actual_quantity::float8 quantity
        FROM branch_inventory_balances
-      WHERE branch_id=$1 AND inventory_item_id=$2 AND NOT is_test_data`,
+      WHERE branch_id=$1 AND inventory_item_id=$2 AND NOT is_test_data
+        AND NOT EXISTS (
+          SELECT 1 FROM inventory_count_items historical_item
+          JOIN inventory_counts historical_count ON historical_count.id=historical_item.inventory_count_id
+          WHERE historical_count.branch_id=$1 AND historical_item.inventory_item_id=$2
+            AND NOT historical_count.is_test_data
+        )`,
     [branchId, inventoryItemId],
   );
   const fromAt = firstOpeningAt ?? fallback.rows[0]?.occurredAt ?? "1970-01-01T00:00:00.000Z";
@@ -218,6 +231,13 @@ export async function loadInventoryLedgerBalances(
          FROM branch_inventory_balances bal
          WHERE opening.id IS NULL AND bal.branch_id=target."branchId"
            AND bal.inventory_item_id=target."inventoryItemId" AND NOT bal.is_test_data
+            AND NOT EXISTS (
+              SELECT 1 FROM inventory_count_items historical_item
+              JOIN inventory_counts historical_count ON historical_count.id=historical_item.inventory_count_id
+              WHERE historical_count.branch_id=target."branchId"
+                AND historical_item.inventory_item_id=target."inventoryItemId"
+                AND NOT historical_count.is_test_data
+            )
          LIMIT 1
        ) balance ON true
      ), activity_rows AS (

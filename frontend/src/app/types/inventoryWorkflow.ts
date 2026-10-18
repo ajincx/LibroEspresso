@@ -353,6 +353,7 @@ export type EvidenceBasis = "LINKED_STAFF_INCIDENT" | "PHYSICAL_COUNT" | "INVENT
 
 export interface ShrinkageReport {
   id: string;
+  archivedAt?: string | null;
   reportNo: string;
   branchId: string;
   branchName: string;

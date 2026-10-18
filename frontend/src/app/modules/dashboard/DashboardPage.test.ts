@@ -30,7 +30,7 @@ import {
 import { adjustRangeForAutomaticImport } from "../../utils/businessDate";
 import { PosImportModal } from "../cogs/PosImportModal";
 
-const item=(name:string,status:InventoryOverviewItem["status"],stock:number,reorderLevel=10):InventoryOverviewItem=>({branchId:"branch",branchName:"Main",inventoryItemId:name,sku:name,name,category:"Coffee",unit:"g",unitCost:1,reorderLevel,reorderDays:7,lastActualQuantity:stock,lastCountAt:null,systemStock:stock,inventoryValue:stock,status});
+const item=(name:string,status:InventoryOverviewItem["status"],stock:number,reorderLevel=10):InventoryOverviewItem=>({branchId:"branch",branchName:"Main",inventoryItemId:name,sku:name,name,category:"Coffee",unit:"g",unitCost:1,reorderLevel,reorderDays:7,lastActualQuantity:stock,lastCountAt:null,systemStock:stock,inventoryValue:stock,status,baselineAvailability:status==="NO_BASELINE"?"NO_BASELINE":"AVAILABLE"});
 
 describe("dashboard presentation helpers",()=>{
   it("opens the shared POS import implementation from Dashboard",()=>{
@@ -58,6 +58,7 @@ describe("dashboard presentation helpers",()=>{
   });
   it("reuses Live Stock Catalog status semantics and links to Inventory Management",()=>{
     expect([stockStatusChip("OUT_OF_STOCK"),stockStatusChip("CRITICAL"),stockStatusChip("LOW_STOCK")]).toEqual(["out_neutral","critical","low"]);
+    expect(stockStatusChip("NO_BASELINE")).toBe("no_baseline");
     expect(DASHBOARD_INVENTORY_TARGET).toBe("inventory");
   });
   it("renders Out of Stock with the neutral palette while Critical retains the danger palette",()=>{

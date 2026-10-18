@@ -121,6 +121,7 @@ describe("purchase-order receipt idempotency", () => {
     await receivePurchaseOrder(request(3), response() as never, vi.fn());
 
     expect(statements.some(({ sql }) => sql.includes("INSERT INTO inventory_movements"))).toBe(true);
+    expect(statements.find(({ sql }) => sql.includes("FROM inventory_counts"))?.sql).toContain("ici.voided_at IS NULL");
     expect(statements.at(-1)?.sql).toBe("COMMIT");
   });
 

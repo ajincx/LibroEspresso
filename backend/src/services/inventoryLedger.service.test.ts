@@ -45,7 +45,7 @@ describe("inventory stock ledger", () => {
     expect(ledger).toMatchObject({ startingStock: 5750, operationalPosConsumption: 696, calculatedBalance: 5054 });
   });
 
-  it("returns a zero ledger when a valid branch item has no baseline or activity", async () => {
+  it("returns No Baseline when a valid branch item has no trustworthy checkpoint", async () => {
     const statements: string[] = [];
     const query = vi.fn(async (statement: unknown) => {
       statements.push(String(statement));
@@ -54,8 +54,21 @@ describe("inventory stock ledger", () => {
 
     const ledger = await loadInventoryLedger({ query } as never, "evo", "asian-noodles", "g");
 
-    expect(ledger).toEqual({ activities: [], startingStock: null, operationalPosConsumption: 0, calculatedBalance: 0 });
+    expect(ledger).toEqual({ activities: [], availability: "NO_BASELINE", startingStock: null, operationalPosConsumption: 0, calculatedBalance: 0 });
     expect(statements.find((sql) => sql.includes("FROM inventory_movements"))).toContain("im.movement_type::text");
+    expect(statements.find((sql) => sql.includes("FROM branch_inventory_balances"))).toContain("inventory_count_items historical_item");
+  });
+
+  it("does not expose activity before the first valid physical-count checkpoint", () => {
+    const ledger = buildInventoryLedger([
+      { id: "stale-pos", occurredAt: "2026-10-01", activityType: "POS_CONSUMPTION", reference: "Before checkpoint", quantity: 25 },
+      { id: "valid-count", occurredAt: "2026-10-02T12:00:00Z", activityType: "PHYSICAL_COUNT", reference: "IC-VALID", quantity: 80 },
+      { id: "later-pos", occurredAt: "2026-10-03", activityType: "POS_CONSUMPTION", reference: "After checkpoint", quantity: 10 },
+    ]);
+
+    expect(ledger.availability).toBe("AVAILABLE");
+    expect(ledger.activities.map((activity) => activity.reference)).toEqual(["IC-VALID", "After checkpoint"]);
+    expect(ledger.calculatedBalance).toBe(70);
   });
 
   it("batches authoritative branch ledgers and preserves the approved Gulod/Lipa balances", async () => {
@@ -64,6 +77,7 @@ describe("inventory stock ledger", () => {
       expect(sql).toContain("source.status='ACTIVE'");
       expect(sql).toContain("NOT pi.is_test_data");
       expect(sql).toContain("NOT ic.is_test_data");
+      expect(sql).toContain("inventory_count_items historical_item");
       return { rows: [
         { branchId: "gulod", inventoryItemId: "espresso", id: "g-open", importId: null, occurredAt: "2026-09-16T00:00:00+08:00", activityType: "STARTING_STOCK", reference: "OB-G", quantity: 5750, sourceUnit: null },
         { branchId: "gulod", inventoryItemId: "espresso", id: "g-pos-g", importId: "g-pos", occurredAt: "2026-09-16", activityType: "POS_CONSUMPTION", reference: "Active Gulod", quantity: 696, sourceUnit: "g" },

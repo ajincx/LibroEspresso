@@ -50,6 +50,10 @@ describe("report dataset semantics", () => {
     const shrinkageSection = source.slice(source.indexOf('if (selected.has("SHRINKAGE"))'), source.indexOf('if (selected.has("PURCHASE_ORDER"))'));
     expect(varianceSection).toContain("ic.count_type<>'OPENING'");
     expect(shrinkageSection).toContain("ic.count_type<>'OPENING'");
+    expect(varianceSection).toContain("ici.voided_at IS NULL");
+    expect(varianceSection).toContain("ORDER BY revision DESC LIMIT 1");
+    expect(shrinkageSection).toContain("ici.voided_at IS NULL");
+    expect(shrinkageSection).not.toContain("sr.archived_at IS NULL");
   });
 
   it("builds report forecast values without waiting for optional Gemini interpretation", () => {
