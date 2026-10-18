@@ -6,6 +6,10 @@ import type { DatabaseError } from "pg";
 export const notFoundHandler: RequestHandler = (req, _res, next) => next(new AppError(404, "NOT_FOUND", `Route ${req.method} ${req.path} was not found`));
 export const errorHandler: ErrorRequestHandler = (error, req, res, _next) => {
   const requestId = req.requestId;
+  const bodyParseError = error as SyntaxError & { status?: number; type?: string };
+  if (bodyParseError.status === 400 && bodyParseError.type === "entity.parse.failed") {
+    return void res.status(400).json({ success: false, error: { code: "INVALID_JSON", message: "Request body contains invalid JSON", requestId } });
+  }
   if (error instanceof ZodError) return void res.status(422).json({ success: false, error: { code: "VALIDATION_ERROR", message: "Request validation failed", details: error.flatten(), requestId } });
   if (error instanceof AppError) return void res.status(error.status).json({ success: false, error: { code: error.code, message: error.message, details: error.details, requestId } });
   const databaseError = error as DatabaseError;

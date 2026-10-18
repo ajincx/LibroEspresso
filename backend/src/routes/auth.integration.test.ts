@@ -92,6 +92,21 @@ beforeEach(() => {
 });
 
 describe("POST /api/auth/login response contract", () => {
+  it("returns HTTP 400 for malformed JSON before authentication runs", async () => {
+    const response = await request(app)
+      .post("/api/auth/login")
+      .set("Content-Type", "application/json")
+      .send("{identifier:manager@libro.com,password:correct-password}");
+
+    expectSerializedError(
+      response,
+      400,
+      "INVALID_JSON",
+      "Request body contains invalid JSON",
+    );
+    expect(mocks.connect).not.toHaveBeenCalled();
+  });
+
   it("serializes ACCOUNT_NOT_FOUND for an unknown email", async () => {
     const response = await request(app)
       .post("/api/auth/login")
