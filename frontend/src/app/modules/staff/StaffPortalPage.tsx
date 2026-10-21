@@ -26,6 +26,7 @@ import { StaffIncidentModal } from "./StaffIncidentModal";
 import { IncidentReportDetailsModal } from "./IncidentReportDetailsModal";
 import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
 import { controlledActionService } from "../../services/controlledAction.service";
+import { SkeletonBlock, SkeletonTable } from "../../components/ModuleUi";
 type StaffTab = "home" | "reports";
 type Props = {
   unreadCount: number;
@@ -42,6 +43,18 @@ const reportLabel = (value: string) =>
     .replaceAll("_", " ")
     .toLowerCase()
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+export function StaffPortalLoadingSkeleton({ tab = "home" }: { tab?: StaffTab }) {
+  if (tab === "reports") return <section data-staff-portal-skeleton role="status" aria-label="Loading Staff incident reports" className="mt-6 overflow-hidden rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface)]">
+    <div className="space-y-3 border-b border-[var(--app-border)] p-5"><SkeletonBlock w={190} h={18}/><SkeletonBlock w={360} h={10} className="max-w-full"/><div className="grid grid-cols-2 gap-2 pt-2 sm:grid-cols-4">{Array.from({length:4},(_,index)=><SkeletonBlock key={index} h={40} className="rounded-xl"/>)}</div></div>
+    <SkeletonTable rows={5} cols={4}/><span className="sr-only">Loading Staff incident reports…</span>
+  </section>;
+  return <section data-staff-portal-skeleton role="status" aria-label="Loading Staff portal" className="mt-6 rounded-[32px] border border-[var(--app-border)] bg-[var(--app-surface)] p-6 sm:p-9">
+    <div className="mx-auto max-w-2xl space-y-4 text-center"><SkeletonBlock w={64} h={64} className="mx-auto rounded-2xl"/><SkeletonBlock w={210} h={10} className="mx-auto"/><SkeletonBlock w="68%" h={24} className="mx-auto"/><SkeletonBlock w="92%" h={10} className="mx-auto"/><SkeletonBlock w="76%" h={10} className="mx-auto"/><SkeletonBlock w={210} h={48} className="mx-auto rounded-2xl"/></div>
+    <div className="mx-auto mt-8 grid max-w-2xl grid-cols-2 gap-3">{Array.from({length:2},(_,index)=><div key={index} className="rounded-2xl border border-[var(--app-border)] p-4"><SkeletonBlock w="36%" h={26} className="mx-auto"/><SkeletonBlock w="62%" h={9} className="mx-auto mt-3"/></div>)}</div>
+    <span className="sr-only">Loading Staff portal…</span>
+  </section>;
+}
 function ReportRows({
   reports,
   onSelect,
@@ -275,7 +288,7 @@ export function StaffPortalPage({
           </button>
         </div>
         {loading ? (
-          <div className="mt-6 h-[420px] animate-pulse rounded-[32px] bg-[var(--app-surface-muted)]" />
+          <StaffPortalLoadingSkeleton tab={tab}/>
         ) : (
           <div className="mt-6">
             {tab === "home" ? (

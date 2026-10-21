@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
 import type { CountVarianceItem, DailyInventoryCountContext, ExpectedInventoryItem, InventoryCountType, UnavailableInventoryCountItem } from "../../types/inventoryWorkflow";
-import { CalendarDateField, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, Btn, SearchInput, Select } from "../../components/ModuleUi";
+import { CalendarDateField, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, Btn, SearchInput, Select, SkeletonBlock, SkeletonTable } from "../../components/ModuleUi";
 
 import { businessDate } from "../../utils/businessDate";
 
@@ -22,6 +22,25 @@ export const initialPhysicalCountDate = (requestedDate: string | null, currentBu
 export const showInventoryCountDateFilter = (countType: InventoryCountType) => countType === "FULL";
 export const savedCountQuantities = (items: Array<{ inventoryItemId: string; actualQuantity: number }>) =>
   Object.fromEntries(items.map((item) => [item.inventoryItemId, item.actualQuantity]));
+
+export function PhysicalCountLoadingSkeleton() {
+  return <div data-physical-count-skeleton role="status" aria-label="Calculating expected stock" className="space-y-4">
+    <div className="grid gap-3 sm:grid-cols-3">
+      {Array.from({ length: 3 }, (_, index) => <div key={index} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
+        <SkeletonBlock w={index === 1 ? "62%" : "48%"} h={10} />
+        <SkeletonBlock w={index === 2 ? "84%" : "70%"} h={18} className="mt-3" />
+      </div>)}
+    </div>
+    <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
+      <div className="flex flex-col gap-3 border-b border-[var(--app-border)] p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="space-y-2"><SkeletonBlock w={190} h={16}/><SkeletonBlock w={310} h={9} className="max-w-full"/></div>
+        <SkeletonBlock w={180} h={40} className="rounded-xl"/>
+      </div>
+      <SkeletonTable rows={7} cols={6}/>
+    </div>
+    <span className="sr-only">Calculating expected stock from recipes and POS sales…</span>
+  </div>;
+}
 
 export type PhysicalCountCompletionFilter = "ALL" | "COUNTED" | "NOT_COUNTED";
 
@@ -284,7 +303,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
     finally { setSaving(false); }
   };
 
-  if (loading) return <div className="p-16 text-center text-sm" style={{ color: "var(--app-text-muted)" }}>Calculating expected stock from recipes and POS sales…</div>;
+  if (loading) return <PhysicalCountLoadingSkeleton />;
   if (error) return (
     <div className="p-16 text-center">
       <p className="text-sm mb-3" style={{ color: "var(--app-danger)" }}>{error}</p>

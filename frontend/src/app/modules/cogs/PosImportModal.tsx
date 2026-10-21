@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Check, CheckCircle, Upload, X } from "lucide-react";
-import { Btn, C, formatPeso, isModalBackdropEvent } from "../../components/ModuleUi";
+import { Btn, C, formatPeso, isModalBackdropEvent, SkeletonBlock } from "../../components/ModuleUi";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
 import type { PosImportPreview, PosSource } from "../../types/inventoryWorkflow";
 import { deduplicatePosValidationIssues, PosMappingRecoveryNotice, requiresPosMappingRecovery } from "./posImportPresentation";
@@ -40,7 +40,7 @@ export function PosSourceField({ sources, sourceId, loading, onChange }: {
   }
   return <div className="text-sm font-semibold">
     <span className="block">POS Source</span>
-    {loading ? <div role="status" className="field mt-2 text-[var(--app-text-muted)]">Loading POS sources…</div>
+    {loading ? <div role="status" aria-label="Loading POS sources" className="field mt-2 flex items-center"><SkeletonBlock w="72%" h={14}/><span className="sr-only">Loading POS sources…</span></div>
       : sources.length === 0 ? <p role="alert" className="mt-2 rounded-xl bg-[var(--app-warning-bg)] p-3 text-sm text-[var(--app-warning)]">No active POS source is configured for this branch.</p>
         : <select aria-label="POS Source" value={sourceId} onChange={(event) => onChange(event.target.value)} className="field mt-2">
           <option value="">Select active POS source</option>

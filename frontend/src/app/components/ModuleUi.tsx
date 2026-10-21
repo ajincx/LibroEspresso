@@ -107,7 +107,7 @@ export function SkeletonKPICard() {
 
 export function SkeletonTable({ rows = 5, cols = 6 }: { rows?: number; cols?: number }) {
   return (
-    <div className="p-1">
+    <div data-skeleton-table className="p-1">
       <div className="flex gap-3 px-4 py-3 border-b mb-1" style={{ borderColor: C.border }}>
         {Array.from({ length: cols }).map((_, i) => <SkeletonBlock key={i} w={`${100 / cols}%`} h={11} />)}
       </div>

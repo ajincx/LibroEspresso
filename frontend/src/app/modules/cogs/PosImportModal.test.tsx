@@ -66,6 +66,14 @@ describe("Import POS Sales source selection", () => {
     expect(canValidatePosImport(true, false, "gulod-source", sources)).toBe(true);
   });
 
+  it("uses the shared reduced-motion skeleton while branch POS sources load", () => {
+    const markup = renderToStaticMarkup(<PosSourceField sources={[]} sourceId="" loading onChange={vi.fn()} />);
+
+    expect(markup).toContain('aria-label="Loading POS sources"');
+    expect(markup).toContain("motion-reduce:animate-none");
+    expect(markup).not.toContain("No active POS source");
+  });
+
   it("renders a dropdown for multiple active sources and requires a selection", () => {
     const sources = [source("source-a", "gulod", "Source A"), source("source-b", "gulod", "Source B")];
     const markup = renderToStaticMarkup(<PosSourceField sources={sources} sourceId="" loading={false} onChange={vi.fn()} />);

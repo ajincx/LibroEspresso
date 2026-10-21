@@ -24,7 +24,7 @@ import {
   defaultAppPreferences,
   type AppPreferences,
 } from "../../utils/appPreferences";
-import { Select } from "../../components/ModuleUi";
+import { Select, SkeletonBlock } from "../../components/ModuleUi";
 import { HelpGuide } from "./HelpGuide";
 import type { UserRole } from "../../types/auth";
 
@@ -64,6 +64,14 @@ export function settingsMenuForRole(role: UserRole): {
         { id: "preferences", label: "UI Preferences", icon: MonitorCog },
         { id: "help", label: "Help & User Guide", icon: BookOpen },
       ];
+}
+
+export function SettingsSectionSkeleton() {
+  return <section data-settings-section-skeleton role="status" aria-label="Loading settings" className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5 sm:p-6">
+    <div className="flex items-start gap-3 border-b border-[var(--app-border)] pb-5"><SkeletonBlock w={40} h={40} className="shrink-0 rounded-xl"/><div className="min-w-0 flex-1 space-y-2"><SkeletonBlock w={190} h={17}/><SkeletonBlock w={390} h={10} className="max-w-full"/></div></div>
+    <div className="mt-5 grid gap-4 sm:grid-cols-2">{Array.from({length:6},(_,index)=><div key={index} className={index === 4 ? "sm:col-span-2" : ""}><SkeletonBlock w={index % 2 ? "38%" : "46%"} h={9}/><SkeletonBlock h={42} className="mt-2 rounded-xl"/></div>)}</div>
+    <span className="sr-only">Loading settings…</span>
+  </section>;
 }
 const defaultNotifications = {
   lowStock: true,
@@ -134,9 +142,11 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void } = {}) {
     "profile" | "password" | "business" | null
   >(null);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [settingsLoading, setSettingsLoading] = useState(true);
 
   useEffect(() => {
     if (user) {
+      setSettingsLoading(true);
       setProfile({
         firstName: user.firstName,
         lastName: user.lastName,
@@ -155,7 +165,8 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void } = {}) {
         })
         .catch((error) =>
           toast.error(errorMessage(error, "Unable to load settings")),
-        );
+        )
+        .finally(() => setSettingsLoading(false));
     }
   }, [user]);
 
@@ -165,6 +176,7 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void } = {}) {
   const isOwner = user.role === "OWNER";
   const isStaff = user.role === "STAFF";
   const menu = settingsMenuForRole(user.role);
+  const remoteSettingsSection = active === "notifications" || active === "preferences" || active === "business";
 
   const persistPreferences = async (includeSystemSettings = false) => {
     setSavingSettings(true);
@@ -507,7 +519,9 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void } = {}) {
           </form>
         )}
 
-        {active === "notifications" && (
+        {settingsLoading && remoteSettingsSection && <SettingsSectionSkeleton />}
+
+        {active === "notifications" && !settingsLoading && (
           <section className="rounded-2xl border bg-[var(--app-surface)] border-[var(--app-border)] p-5 sm:p-6">
             <div className="flex items-start gap-3 mb-5">
               <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-[var(--app-primary-subtle)] text-[var(--app-primary)]">
@@ -619,7 +633,7 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void } = {}) {
           </section>
         )}
 
-        {active === "preferences" && (
+        {active === "preferences" && !settingsLoading && (
           <section className="rounded-2xl border bg-[var(--app-surface)] border-[var(--app-border)] p-5 sm:p-6">
             <div className="flex items-start gap-3 mb-5">
               <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-[var(--app-primary-subtle)] text-[var(--app-primary)]">
@@ -874,7 +888,7 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void } = {}) {
           </section>
         )}
 
-        {active === "business" && isOwner && (
+        {active === "business" && isOwner && !settingsLoading && (
           <section className="rounded-2xl border bg-[var(--app-surface)] border-[var(--app-border)] p-5 sm:p-6 space-y-6">
             <div className="flex items-start gap-3">
               <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-[var(--app-primary-subtle)] text-[var(--app-primary)]">

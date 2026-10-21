@@ -7,7 +7,7 @@ import {
   HelpGuide,
   searchAuthorizedHelp,
 } from "./HelpGuide";
-import { settingsMenuForRole } from "./SettingsPage";
+import { SettingsSectionSkeleton, settingsMenuForRole } from "./SettingsPage";
 
 const sectionIds = (role: "OWNER" | "BRANCH_MANAGER" | "STAFF") =>
   getAuthorizedHelpSections(role).map((section) => section.id);
@@ -57,6 +57,13 @@ describe("Help & User Guide access", () => {
 });
 
 describe("Help & User Guide UI", () => {
+  it("uses the shared settings-form skeleton while remote preferences load", () => {
+    const markup = renderToStaticMarkup(React.createElement(SettingsSectionSkeleton));
+    expect(markup).toContain("data-settings-section-skeleton");
+    expect(markup).toContain('aria-label="Loading settings"');
+    expect(markup).toContain("motion-reduce:animate-none");
+  });
+
   it("renders searchable, expandable, responsive theme-aware categories", () => {
     const markup = renderToStaticMarkup(React.createElement(HelpGuide, { role: "BRANCH_MANAGER" }));
     expect(markup).toContain("Search help topics");

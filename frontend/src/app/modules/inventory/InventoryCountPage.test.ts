@@ -2,7 +2,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { ExpectedInventoryItem } from "../../types/inventoryWorkflow";
-import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, copyPreviousClosingEntries, displayedPhysicalCountVariance, filterPhysicalCountItems, initialPhysicalCountDate, inventoryCountColumns, isDailyCountColumnEditable, isFutureInventoryCountDate, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, physicalCountCompletion, physicalCountEntryFromCanonical, physicalCountPreviewVariance, previousClosingCopyMessage, savedCountQuantities, showInventoryCountDateFilter, validPhysicalCountEntries } from "./InventoryCountPage";
+import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, copyPreviousClosingEntries, displayedPhysicalCountVariance, filterPhysicalCountItems, initialPhysicalCountDate, inventoryCountColumns, isDailyCountColumnEditable, isFutureInventoryCountDate, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, PhysicalCountLoadingSkeleton, physicalCountCompletion, physicalCountEntryFromCanonical, physicalCountPreviewVariance, previousClosingCopyMessage, savedCountQuantities, showInventoryCountDateFilter, validPhysicalCountEntries } from "./InventoryCountPage";
 import { buildEnteredPhysicalCountItems } from "./InventoryCountPage";
 
 const item = (inventoryItemId: string, sku: string, itemName: string): ExpectedInventoryItem => ({
@@ -13,6 +13,14 @@ const item = (inventoryItemId: string, sku: string, itemName: string): ExpectedI
 const ingredients = [item("ice", "RM-004", "Ice"), item("milk", "RM-005", "Whole Milk"), item("sugar", "ING-010", "Brown Sugar")];
 
 describe("Daily partial physical counts",()=>{
+  it("uses a layout-matched accessible skeleton while expected stock is calculated",()=>{
+    const markup=renderToStaticMarkup(React.createElement(PhysicalCountLoadingSkeleton));
+    expect(markup).toContain("data-physical-count-skeleton");
+    expect(markup).toContain('aria-label="Calculating expected stock"');
+    expect(markup).toContain("motion-reduce:animate-none");
+    expect(markup).not.toContain("No inventory");
+  });
+
   it("saves explicit zero and omits blank ingredients",()=>{
     expect(buildEnteredPhysicalCountItems(ingredients,{
       ice:{quantity:"0",enteredUnit:"pc"},milk:{quantity:"",enteredUnit:"pc"},sugar:{quantity:"3",enteredUnit:"pc"},

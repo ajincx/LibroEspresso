@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { useAuth } from "../../contexts/AuthContext";
 import { messageService } from "../../services/message.service";
 import type { DirectMessage, MessageContact } from "../../types/messaging";
+import { SkeletonBlock } from "../../components/ModuleUi";
 
 function initials(contact: MessageContact) { return `${contact.firstName[0] ?? ""}${contact.lastName[0] ?? ""}`.toUpperCase(); }
 export const canDeleteSentMessage = (message: DirectMessage, currentUserId?: string) => Boolean(currentUserId && message.senderUserId === currentUserId);
@@ -12,6 +13,20 @@ export const withoutDeletedMessage = (messages: DirectMessage[], messageId: stri
 export function SentMessageDeleteButton({ visible, onDelete }: { visible: boolean; onDelete: () => void }) {
   if (!visible) return null;
   return <button type="button" aria-label="Delete sent message" title="Delete message" onClick={onDelete} className="absolute -left-9 top-1 flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-danger)] opacity-70 shadow-sm transition-opacity hover:opacity-100 focus:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"><Trash2 size={13}/></button>;
+}
+
+export function MessageContactsSkeleton() {
+  return <div data-message-contacts-skeleton role="status" aria-label="Loading users" className="divide-y divide-[var(--app-border)]">
+    {Array.from({ length: 5 }, (_, index) => <div key={index} className="flex items-center gap-3 px-4 py-3">
+      <SkeletonBlock w={40} h={40} className="shrink-0 rounded-xl" />
+      <div className="min-w-0 flex-1 space-y-2">
+        <SkeletonBlock w={`${70 - index * 4}%`} h={12} />
+        <SkeletonBlock w={`${88 - index * 5}%`} h={9} />
+        <SkeletonBlock w="46%" h={8} />
+      </div>
+    </div>)}
+    <span className="sr-only">Loading users...</span>
+  </div>;
 }
 
 export function MessagesPanel({ embedded = false, initialMessageId = null }: { embedded?: boolean; initialMessageId?: string | null }) {
@@ -115,7 +130,7 @@ export function MessagesPanel({ embedded = false, initialMessageId = null }: { e
         <aside className="flex flex-col min-h-0 border-b md:border-b-0 md:border-r border-[var(--app-border)]">
           <div className="p-4 border-b border-[var(--app-border)]"><div className="flex items-center justify-between mb-3"><div className="flex items-center gap-2 font-semibold text-[var(--app-text)]"><Users size={17}/>People</div><button onClick={() => void loadContacts()} className="text-[var(--app-text-faint)]" title="Refresh contacts"><RefreshCw size={15}/></button></div><div className="relative"><Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--app-text-faint)]"/><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search users..." className="w-full rounded-xl border pl-9 pr-3 py-2 text-sm outline-none bg-[var(--app-bg)] text-[var(--app-text)] border-[var(--app-border)] focus:border-[var(--app-primary)]"/></div></div>
           <div className="overflow-y-auto max-h-64 md:max-h-none md:flex-1">
-            {loading ? <div className="p-8 text-center text-sm text-[var(--app-text-muted)]">Loading users...</div> : filtered.length === 0 ? <div className="p-8 text-center text-sm text-[var(--app-text-muted)]">No users found.</div> : filtered.map(contact => <button key={contact.id} onClick={() => setSelectedId(contact.id)} className="w-full flex items-center gap-3 px-4 py-3 text-left border-b transition-colors border-[var(--app-border)]" style={{ background: selectedId === contact.id ? "var(--app-primary-subtle)" : "transparent" }}>
+            {loading ? <MessageContactsSkeleton /> : filtered.length === 0 ? <div className="p-8 text-center text-sm text-[var(--app-text-muted)]">No users found.</div> : filtered.map(contact => <button key={contact.id} onClick={() => setSelectedId(contact.id)} className="w-full flex items-center gap-3 px-4 py-3 text-left border-b transition-colors border-[var(--app-border)]" style={{ background: selectedId === contact.id ? "var(--app-primary-subtle)" : "transparent" }}>
               <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xs font-bold text-white bg-[var(--app-primary)]">{initials(contact)}</div>
               <div className="flex-1 min-w-0"><div className="flex justify-between gap-2"><p className="font-semibold text-sm truncate text-[var(--app-text)]">{contact.firstName} {contact.lastName}</p>{contact.unreadCount > 0 && <span className="min-w-5 h-5 px-1 rounded-full flex items-center justify-center text-[10px] font-bold text-white bg-[var(--app-primary)]">{contact.unreadCount}</span>}</div><p className="text-xs truncate text-[var(--app-text-muted)]">{contact.lastMessage ?? contact.position}</p><p className="text-[11px] truncate mt-0.5 text-[var(--app-text-faint)]">{contact.branchName ?? "All branches"}</p></div>
             </button>)}

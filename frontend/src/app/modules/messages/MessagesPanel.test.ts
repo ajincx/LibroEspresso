@@ -2,11 +2,19 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { DirectMessage } from "../../types/messaging";
-import { canDeleteSentMessage, SentMessageDeleteButton, withoutDeletedMessage } from "./MessagesPanel";
+import { canDeleteSentMessage, MessageContactsSkeleton, SentMessageDeleteButton, withoutDeletedMessage } from "./MessagesPanel";
 
 const message=(id:string,senderUserId:string):DirectMessage=>({id,senderUserId,recipientUserId:"recipient",body:"Message",readAt:null,createdAt:"2026-10-02T00:00:00Z"});
 
 describe("sent-message deletion UI",()=>{
+  it("renders contact-shaped skeleton rows without a premature empty state",()=>{
+    const markup=renderToStaticMarkup(React.createElement(MessageContactsSkeleton));
+    expect(markup).toContain("data-message-contacts-skeleton");
+    expect(markup).toContain('aria-label="Loading users"');
+    expect(markup).toContain("motion-reduce:animate-none");
+    expect(markup).not.toContain("No users found");
+  });
+
   it("shows the delete action only for the current user's own message",()=>{
     const mine=message("mine","current");
     const theirs=message("theirs","other");

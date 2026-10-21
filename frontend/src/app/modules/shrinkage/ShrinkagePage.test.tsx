@@ -5,6 +5,17 @@ import { getActiveShrinkageMetrics, ShrinkageAiAnalysisPanel } from "./Shrinkage
 import type { ShrinkageReport } from "../../types/inventoryWorkflow";
 
 describe("AI-Assisted Shrinkage Analysis presentation", () => {
+  it("shows content-shaped skeletons while analysis is generated", () => {
+    const markup = renderToStaticMarkup(React.createElement(ShrinkageAiAnalysisPanel, {
+      loading: true,
+      result: null,
+    }));
+    expect(markup).toContain("data-shrinkage-ai-skeleton");
+    expect(markup).toContain('aria-label="Generating advisory analysis"');
+    expect(markup).toContain("motion-reduce:animate-none");
+    expect(markup).not.toContain("currently unavailable");
+  });
+
   it("keeps archived investigations out of active case totals", () => {
     const reports = [
       { status: "DETECTED", classification: null, varianceValue: -50, archivedAt: null },
