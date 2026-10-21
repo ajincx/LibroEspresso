@@ -212,10 +212,10 @@ export function StatusChip({ status, kind = "status", className = "" }: { status
 export const StatusBadge = StatusChip;
 
 // ─── KPI Card ──────────────────────────────────────────────────────────────────
-export function KPICard({ label, value, change, changeDir, sub, color = C.maroon, icon: Icon, sparkData: _sparkData, comparisonLabel = "previous period", onClick, onInfo, infoLabel, active = false }: {
+export function KPICard({ label, value, change, changeDir, sub, color = C.maroon, icon: Icon, sparkData: _sparkData, comparisonLabel = "previous period", onClick, onInfo, infoLabel, active = false, loading = false }: {
   label: string; value: string; change?: string; changeDir?: "up" | "down" | "neutral";
   sub?: string; color?: string; icon?: React.ElementType; sparkData?: number[]; comparisonLabel?: string;
-  onClick?: () => void; onInfo?: () => void; infoLabel?: string; active?: boolean;
+  onClick?: () => void; onInfo?: () => void; infoLabel?: string; active?: boolean; loading?: boolean;
 }) {
   const isPositiveChange = changeDir === "up";
   const isNegativeChange = changeDir === "down";
@@ -226,6 +226,7 @@ export function KPICard({ label, value, change, changeDir, sub, color = C.maroon
       style={{ borderColor: active ? color : C.border, boxShadow: active ? `0 14px 30px rgb(52 27 34 / 0.13), 0 0 0 2px color-mix(in srgb, ${color} 14%, transparent), inset 0 1px 0 rgb(255 255 255 / 0.72)` : undefined }}
       onClick={onClick} role={onClick ? "button" : undefined} tabIndex={onClick ? 0 : undefined}
       aria-pressed={onClick ? active : undefined}
+      aria-busy={loading}
       onKeyDown={event => { if (onClick && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onClick(); } }}>
       <div className="kpi-card__header flex items-start justify-between gap-2 min-w-0">
         <span className="kpi-card__label min-w-0 text-xs font-semibold uppercase tracking-wider leading-tight" style={{ color: C.secondary }}>
@@ -242,10 +243,15 @@ export function KPICard({ label, value, change, changeDir, sub, color = C.maroon
         )}</div>
       </div>
       <div>
-        <div className="kpi-card__value text-[24px] font-bold leading-tight tracking-tight" style={{ color: C.primary }}>{value}</div>
-        {sub && <div className="kpi-card__sub text-xs mt-1.5" style={{ color: C.muted }}>{sub}</div>}
+        {loading ? <div data-kpi-loading-value aria-label={`Loading ${label}`}>
+          <SkeletonBlock w="62%" h={29} className="kpi-card__value"/>
+          {sub && <SkeletonBlock w="76%" h={11} className="mt-2"/>}
+        </div> : <>
+          <div className="kpi-card__value text-[24px] font-bold leading-tight tracking-tight" style={{ color: C.primary }}>{value}</div>
+          {sub && <div className="kpi-card__sub text-xs mt-1.5" style={{ color: C.muted }}>{sub}</div>}
+        </>}
       </div>
-      {change && (
+      {!loading && change && (
         <div className="flex items-center gap-1.5 text-xs font-medium pt-2.5 mt-auto border-t" style={{ borderColor: C.border, color: changeColor }}>
           {isPositiveChange ? <ArrowUp size={11} /> : isNegativeChange ? <ArrowDown size={11} /> : <Minus size={11} />}
           <span>{change} vs {comparisonLabel}</span>

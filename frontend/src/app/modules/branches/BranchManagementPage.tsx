@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Building2, CheckCircle, Plus, RefreshCw, Power, X } from "lucide-react";
 import { toast } from "sonner";
-import { Btn, KPICard, Select, StatusBadge, TableCard, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
+import { Btn, KPICard, Select, SkeletonBlock, StatusBadge, TableCard, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
 import { masterDataService } from "../../services/masterData.service";
 import type { Branch, RecordStatus } from "../../types/masterData";
 import { formatAppDate } from "../../utils/appPreferences";
@@ -118,12 +118,14 @@ export function BranchManagementPage({
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <KPICard
+          loading={loading}
           label={scopeBranchId === "ALL" ? "Total Branches" : "Selected Branch"}
           value={String(visibleBranches.length)}
           icon={Building2}
           color="var(--app-primary)"
         />
         <KPICard
+          loading={loading}
           label="Active Branches"
           value={`${visibleBranches.filter((branch) => branch.status === "ACTIVE").length} of ${visibleBranches.length}`}
           icon={CheckCircle}
@@ -134,7 +136,7 @@ export function BranchManagementPage({
       <TableCard
         title="Branch Locations"
         subtitle="Manage branches and review their assigned Manager account status"
-        badge={
+        badge={loading ? <SkeletonBlock w={74} h={22} className="rounded-full"/> : error ? undefined :
           <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-[var(--app-primary-faint)] text-[var(--app-primary)]">
             {visibleBranches.length} branches
           </span>

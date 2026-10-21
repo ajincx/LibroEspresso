@@ -16,6 +16,7 @@ import {
   SearchInput,
   SectionHeader,
   Select,
+  SkeletonBlock,
   StatusChip,
   TableCard,
   TableEmptyRow,
@@ -159,6 +160,7 @@ export function StaffMonitoringPage({
       )}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <KPICard
+          loading={loading}
           label="Total Reports"
           value={String(branchIncidents.length)}
           sub="Shrinkage-related incidents"
@@ -166,6 +168,7 @@ export function StaffMonitoringPage({
           color={C.blue}
         />
         <KPICard
+          loading={loading}
           label="Pending Review"
           value={String(
             branchIncidents.filter((r) => r.status === "PENDING").length,
@@ -175,6 +178,7 @@ export function StaffMonitoringPage({
           color={C.amber}
         />
         <KPICard
+          loading={loading}
           label="Verified"
           value={String(
             branchIncidents.filter((r) => r.status === "VERIFIED").length,
@@ -184,6 +188,7 @@ export function StaffMonitoringPage({
           color={C.green}
         />
         <KPICard
+          loading={loading}
           label="Rejected"
           value={String(
             branchIncidents.filter((r) => r.status === "REJECTED").length,
@@ -196,7 +201,7 @@ export function StaffMonitoringPage({
       <TableCard
         title="Incident Log"
         subtitle="Review and verify staff incident reports explaining inventory discrepancies"
-        badge={
+        badge={loading ? <SkeletonBlock w={72} h={22} className="rounded-full"/> : error ? undefined :
           <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-[var(--app-primary-faint)] text-[var(--app-primary)]">
             {visible.length} reports
           </span>

@@ -72,6 +72,14 @@ describe("Inventory Management terminology", () => {
     expect(managerMarkup).not.toContain("Record Stock Count");
   });
 
+  it("uses KPI skeletons instead of temporary zero inventory totals during the initial request", () => {
+    const markup = renderToStaticMarkup(React.createElement(InventoryOverview, { role: "manager" }));
+    expect(markup.match(/data-kpi-loading-value/g)).toHaveLength(5);
+    expect(markup).not.toContain("₱0.00");
+    expect(markup).not.toContain("0 records");
+    expect(markup).not.toContain('kpi-card__value text-[24px]');
+  });
+
   it("routes the Overview shortcut according to today's saved Daily Count state", () => {
     const context={countType:"OPENING" as const,openingCount:null,closingCount:null,previousClosingItems:[],previousClosingDate:null,posDayComplete:false};
     expect(dailyCountShortcutDestination(context)).toEqual({countType:"OPENING",completed:false});

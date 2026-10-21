@@ -10,7 +10,7 @@ import type { EvidenceBasis, ShrinkageAiAnalysisResult, ShrinkageClassification,
 import type { Branch, InventoryItem, MenuItem } from "../../types/masterData";
 import type { IncidentType } from "../../types/operations";
 import { ShrinkageIncidentReports } from "./ShrinkageIncidentReports";
-import { CalendarDateField, Select, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, TableLoadingRow } from "../../components/ModuleUi";
+import { CalendarDateField, Select, SkeletonBlock, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, TableLoadingRow } from "../../components/ModuleUi";
 import { formatAppDate } from "../../utils/appPreferences";
 import { classificationLabel, evidenceBasisOptions, incidentTypeLabel, incidentTypeOptions, managerClassificationOptions } from "../../utils/shrinkageTaxonomy";
 import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
@@ -149,13 +149,13 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
 
     <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">{[
       ["Detected Value", `₱${metrics.detectedValue.toLocaleString("en-PH", { maximumFractionDigits: 2 })}`], ["Needs Investigation", String(metrics.detected)], ["Pending Final Verification", String(metrics.pending)], ["Spoilage", String(metrics.spoilage)], ["Wastage", String(metrics.wastage)], ["Verified Pilferage", String(metrics.pilferage)],
-    ].map(([label, value], index) => <div key={label} className="p-4 rounded-2xl border" style={{ borderColor: (index === 1 && metrics.detected) || (index === 2 && metrics.pending) ? "var(--app-warning)" : "var(--app-border)", background: "var(--app-surface)" }}><div className="text-[10px] uppercase tracking-wider" style={{ color: "var(--app-text-faint)" }}>{label}</div><div className="text-xl font-bold mt-1.5" style={{ color: index === 0 ? "var(--app-primary)" : "var(--app-text)" }}>{value}</div></div>)}</div>
+    ].map(([label, value], index) => <div key={label} className="p-4 rounded-2xl border" style={{ borderColor: !loading && ((index === 1 && metrics.detected) || (index === 2 && metrics.pending)) ? "var(--app-warning)" : "var(--app-border)", background: "var(--app-surface)" }} aria-busy={loading}><div className="text-[10px] uppercase tracking-wider" style={{ color: "var(--app-text-faint)" }}>{label}</div>{loading ? <SkeletonBlock w="68%" h={24} className="mt-1.5"/> : <div className="text-xl font-bold mt-1.5" style={{ color: index === 0 ? "var(--app-primary)" : "var(--app-text)" }}>{value}</div>}</div>)}</div>
 
     <TableCard
       title="System-Detected Anomaly Cases"
       subtitle="Shortages above tolerance flagged automatically from physical counts for Manager investigation"
       badge={
-        reports.length > 0 ? (
+        !loading && reports.length > 0 ? (
           <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-0.5 rounded-full text-rose-700 bg-rose-50 border border-rose-200">
             {reports.length} case{reports.length === 1 ? "" : "s"}
           </span>

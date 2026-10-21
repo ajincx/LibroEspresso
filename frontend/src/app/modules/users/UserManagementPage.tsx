@@ -16,7 +16,7 @@ import { useAuth } from "../../contexts/AuthContext";
 import { masterDataService } from "../../services/masterData.service";
 import type { Branch, ManagedUser, RecordStatus } from "../../types/masterData";
 import { formatAppDate } from "../../utils/appPreferences";
-import { Btn, KPICard, Select, StatusBadge, TableCard, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
+import { Btn, KPICard, Select, SkeletonBlock, StatusBadge, TableCard, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
 import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
 
 type UserRole = "OWNER" | "BRANCH_MANAGER" | "STAFF";
@@ -320,6 +320,7 @@ export function UserManagementPage({
         {stats.map(([label, value, Icon, color]) => (
           <KPICard
             key={label}
+            loading={loading}
             label={label}
             value={String(value)}
             icon={Icon}
@@ -331,7 +332,7 @@ export function UserManagementPage({
       <TableCard
         title="User Accounts"
         subtitle="Manage accounts, credentials, roles, and branch access"
-        badge={
+        badge={loading ? <SkeletonBlock w={66} h={22} className="rounded-full"/> : error ? undefined :
           <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-[var(--app-primary-faint)] text-[var(--app-primary)]">
             {visibleUsers.length} users
           </span>

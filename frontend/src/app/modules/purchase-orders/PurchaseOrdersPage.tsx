@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { Eye, Inbox, PackageCheck, Plus, RefreshCw, Send, ShieldCheck, ShoppingCart, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
-import { Btn, C, CalendarDateField, KPICard, SearchInput, SectionHeader, Select, StatusChip, TableCard, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
+import { Btn, C, CalendarDateField, KPICard, SearchInput, SectionHeader, Select, SkeletonBlock, StatusChip, TableCard, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
 import { masterDataService } from "../../services/masterData.service";
 import { operationsService } from "../../services/operations.service";
 import type { Branch, InventoryItem } from "../../types/masterData";
@@ -217,14 +217,14 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
     </>}/>
     {error && <div className="rounded-xl border p-4 text-sm" style={{ borderColor: C.red, background: C.redBg, color: C.red }}>{error}</div>}
     <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-      <KPICard label="Open Orders" value={String(orders.filter((o) => o.status === "ORDERED" || o.status === "PARTIALLY_RECEIVED").length)} sub="Awaiting full receipt" icon={ShoppingCart} color={C.maroon}/>
-      <KPICard label="Received" value={String(orders.filter((o) => o.status === "RECEIVED").length)} sub="Completed purchase orders" icon={PackageCheck} color={C.green}/>
-      <KPICard label="Order Value" value={peso(orders.filter((o) => o.status !== "CANCELLED").reduce((sum, o) => sum + o.totalAmount, 0))} sub="Excludes cancelled orders" icon={ShoppingCart} color={C.blue}/>
+      <KPICard loading={loading} label="Open Orders" value={String(orders.filter((o) => o.status === "ORDERED" || o.status === "PARTIALLY_RECEIVED").length)} sub="Awaiting full receipt" icon={ShoppingCart} color={C.maroon}/>
+      <KPICard loading={loading} label="Received" value={String(orders.filter((o) => o.status === "RECEIVED").length)} sub="Completed purchase orders" icon={PackageCheck} color={C.green}/>
+      <KPICard loading={loading} label="Order Value" value={peso(orders.filter((o) => o.status !== "CANCELLED").reduce((sum, o) => sum + o.totalAmount, 0))} sub="Excludes cancelled orders" icon={ShoppingCart} color={C.blue}/>
     </div>
     <TableCard
       title={role === "owner" ? "Purchase Order Registry" : "Purchase Orders"}
       subtitle={role === "owner" ? "Monitor branch procurement lifecycle, delivery fulfillment, and receiving records" : "Manage branch procurement, order approvals, and delivery fulfillment"}
-      badge={<span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-[var(--app-primary-faint)] text-[var(--app-primary)]">{filtered.length} orders</span>}
+      badge={loading ? <SkeletonBlock w={72} h={22} className="rounded-full"/> : error ? undefined : <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-[var(--app-primary-faint)] text-[var(--app-primary)]">{filtered.length} orders</span>}
       toolbar={<>
         <SearchInput placeholder="Search PO, supplier, or branch…" width={270} value={search} onChange={setSearch}/>
         {role === "owner" && <Select value={branchId} onChange={setBranchId} options={[{ value: "ALL", label: "All Branches" }, ...branches.map((item) => ({ value: item.id, label: item.name }))]}/>}

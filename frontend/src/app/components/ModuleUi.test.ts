@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Btn, Card, clampTablePage, filterSelectOptions, isModalBackdropEvent, isTableDataValue, ModuleTabSwitcher, moveSelectActiveIndex, normalizeSelectOptions, paginationPageNumbers, selectFilteredOption, sharedSelectMenuStyle, sharedSelectPopoverProps, SkeletonBlock, TableLoadingRow, TableWrapper, tableRowsSignature, THead, TR, TD, tableHeaderAlignment } from "./ModuleUi";
+import { Btn, Card, clampTablePage, filterSelectOptions, isModalBackdropEvent, isTableDataValue, KPICard, ModuleTabSwitcher, moveSelectActiveIndex, normalizeSelectOptions, paginationPageNumbers, selectFilteredOption, sharedSelectMenuStyle, sharedSelectPopoverProps, SkeletonBlock, TableLoadingRow, TableWrapper, tableRowsSignature, THead, TR, TD, tableHeaderAlignment } from "./ModuleUi";
 
 describe("shared table alignment",()=>{
   it("centers numeric headers and values",()=>{
@@ -46,6 +46,25 @@ describe("shared responsive layout primitives",()=>{
     expect(markup).toContain("overflow-x-auto");
     expect(markup).toContain("min-w-max");
     expect(markup).toContain("whitespace-nowrap");
+  });
+});
+
+describe("shared KPI loading presentation",()=>{
+  it("keeps the KPI label but hides temporary numeric and supporting values while loading",()=>{
+    const markup=renderToStaticMarkup(React.createElement(KPICard,{label:"Order Value",value:"₱0.00",sub:"0 open orders",loading:true}));
+    expect(markup).toContain("Order Value");
+    expect(markup).toContain("data-kpi-loading-value");
+    expect(markup).toContain('aria-busy="true"');
+    expect(markup).not.toContain("₱0.00");
+    expect(markup).not.toContain("0 open orders");
+  });
+
+  it("renders a legitimate zero after loading completes and removes the skeleton",()=>{
+    const markup=renderToStaticMarkup(React.createElement(KPICard,{label:"Open Orders",value:"0",sub:"No orders awaiting receipt",loading:false}));
+    expect(markup).toContain(">0<");
+    expect(markup).toContain("No orders awaiting receipt");
+    expect(markup).not.toContain("data-kpi-loading-value");
+    expect(markup).toContain('aria-busy="false"');
   });
 });
 

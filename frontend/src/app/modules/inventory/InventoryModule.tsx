@@ -114,16 +114,16 @@ export function InventoryOverview({ role, scopeBranchId = "ALL", onDailyStockCou
     />
     {error && <div className="rounded-xl border p-4 flex items-center justify-between gap-3" style={{ borderColor: C.red, background: C.redBg }}><span className="text-sm" style={{ color: C.red }}>{error}</span><Btn variant="outline" size="sm" onClick={() => void load()}>Retry</Btn></div>}
     <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
-      <KPICard label="Inventory Value" value={peso(scoped.reduce((sum, item) => sum + item.inventoryValue, 0))} sub="System-calculated stock value" icon={DollarSign} color={C.blue}/>
-      <KPICard label="Inventory Records" value={String(scoped.length)} sub="Branch and ingredient records" icon={Hash} color={C.maroon}/>
-      <KPICard label="Low Stock" value={String(count("LOW_STOCK"))} sub="At or below reorder level" icon={AlertCircle} color={C.amber} onClick={() => setStatus("LOW_STOCK")} active={status === "LOW_STOCK"}/>
-      <KPICard label="Critical" value={String(count("CRITICAL"))} sub="At or below half reorder level" icon={AlertTriangle} color={C.red} onClick={() => setStatus("CRITICAL")} active={status === "CRITICAL"}/>
-      <KPICard label="Out of Stock" value={String(count("OUT_OF_STOCK"))} sub="Immediate attention required" icon={XCircle} color={C.deepMaroon} onClick={() => setStatus("OUT_OF_STOCK")} active={status === "OUT_OF_STOCK"}/>
+      <KPICard loading={loading} label="Inventory Value" value={peso(scoped.reduce((sum, item) => sum + item.inventoryValue, 0))} sub="System-calculated stock value" icon={DollarSign} color={C.blue}/>
+      <KPICard loading={loading} label="Inventory Records" value={String(scoped.length)} sub="Branch and ingredient records" icon={Hash} color={C.maroon}/>
+      <KPICard loading={loading} label="Low Stock" value={String(count("LOW_STOCK"))} sub="At or below reorder level" icon={AlertCircle} color={C.amber} onClick={() => setStatus("LOW_STOCK")} active={status === "LOW_STOCK"}/>
+      <KPICard loading={loading} label="Critical" value={String(count("CRITICAL"))} sub="At or below half reorder level" icon={AlertTriangle} color={C.red} onClick={() => setStatus("CRITICAL")} active={status === "CRITICAL"}/>
+      <KPICard loading={loading} label="Out of Stock" value={String(count("OUT_OF_STOCK"))} sub="Immediate attention required" icon={XCircle} color={C.deepMaroon} onClick={() => setStatus("OUT_OF_STOCK")} active={status === "OUT_OF_STOCK"}/>
     </div>
     <TableCard
       title="Live Stock Catalog"
       subtitle={role === "owner" ? "Expected system quantities and reorder thresholds across all branches; these are not automatically physical counts" : "Expected system quantities and reorder thresholds for your branch; these are not automatically physical counts"}
-      badge={<span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-[var(--app-primary-faint)] text-[var(--app-primary)]">{filtered.length} records</span>}
+      badge={loading ? <SkeletonBlock w={76} h={22} className="rounded-full"/> : error ? undefined : <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-[var(--app-primary-faint)] text-[var(--app-primary)]">{filtered.length} records</span>}
       toolbar={<>
         <SearchInput placeholder="Search SKU or ingredient…" value={search} onChange={setSearch}/>
         {role === "owner" && <Select value={branchId} onChange={setBranchId} options={[{ value: "ALL", label: "All Branches" }, ...branches.map((b) => ({ value: b.id, label: b.name }))]}/>}

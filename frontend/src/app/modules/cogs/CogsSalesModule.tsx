@@ -1,7 +1,7 @@
 import React, { lazy, Suspense, useEffect, useState } from "react";
 import { ShoppingCart, Package, TrendingDown, Search, X, Upload, Check, Coffee, CheckCircle, TrendingUp, DollarSign, GitCompare, BarChart2, Hash, Percent, Trash2, Building2, Layers, GitBranch, ArrowRight, Copy, Eye, Info, ShieldCheck } from "lucide-react";
 import { Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart } from "recharts";
-import { C, CalendarDateField, DashboardRange, DashboardComparison, dashboardPeriodLabel, formatPeso, isModalBackdropEvent, StatusChip, KPICard, Card, SectionHeader, Btn, SearchInput, Select, DashboardFilters, THead, TR, TD, Pagination, ChartTip, ModuleTabSwitcher, AnimatedTabPanel, TableCard, TableWrapper, TableEmptyRow, TableLoadingRow } from "../../components/ModuleUi";
+import { C, CalendarDateField, DashboardRange, DashboardComparison, dashboardPeriodLabel, formatPeso, isModalBackdropEvent, StatusChip, KPICard, Card, SectionHeader, Btn, SearchInput, Select, DashboardFilters, THead, TR, TD, Pagination, ChartTip, ModuleTabSwitcher, AnimatedTabPanel, SkeletonBlock, TableCard, TableWrapper, TableEmptyRow, TableLoadingRow } from "../../components/ModuleUi";
 import { toast } from "sonner";
 import type { Page, Role } from "../../types/navigation";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
@@ -19,6 +19,12 @@ import { PosImportModal } from "./PosImportModal";
 
 export const SalesPosImportModal = PosImportModal;
 export const marginValueColor = (margin:number) => margin > 0 ? C.green : margin < 0 ? C.red : "var(--app-text-muted)";
+function AnalyticsChartLoading({ label }: { label: string }) {
+  return <div className="flex h-full items-end gap-3 px-4 pb-3" aria-label={label}>{[42,68,52,82,61,76,56,70].map((height,index)=><SkeletonBlock key={index} w={1} h={`${height}%`} className="min-w-0 flex-1 rounded-t-lg rounded-b-sm"/>)}</div>;
+}
+function AnalyticsListLoading({ label }: { label: string }) {
+  return <div className="space-y-4" aria-label={label}>{["92%","78%","86%","70%","82%"].map((width,index)=><div key={index}><div className="flex justify-between gap-3"><SkeletonBlock w={width} h={12}/><SkeletonBlock w={44} h={12}/></div><SkeletonBlock h={6} className="mt-2 rounded-full"/></div>)}</div>;
+}
 export const isOwnerRole = (role?: string | null) => role?.toLowerCase() === "owner";
 export const canDeletePosImport = (role: Role | string, record: Pick<PosImportRecord, "canCleanup">) => isOwnerRole(role) && Boolean(record?.canCleanup);
 export const canAuthorizePosImportCleanup = (role: Role | string, record: Pick<PosImportRecord, "canAuthorizeCleanup">) => isOwnerRole(role) && Boolean(record?.canAuthorizeCleanup);
@@ -1065,10 +1071,10 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
       {!isOwner && searchParams.get("configureMapping") && <p role="alert" className="rounded-xl border p-3 text-sm" style={{borderColor:C.amber,background:C.amberBg}}>POS column mapping is Owner-only. Ask an Owner to open this mapping request.</p>}
 
       <div className="sales-kpi-grid grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <KPICard label="Total Sales" value={analyticsLoading ? "—" : formatPeso(analytics?.summary.sales ?? 0)} sub={periodLabel} icon={ShoppingCart} color={C.maroon} comparisonLabel={comparisonLabel} />
-        <KPICard label="Recipe COGS" value={analyticsLoading ? "—" : formatPeso(analytics?.summary.theoreticalCogs ?? 0)} sub="Based on saved ingredient costs" icon={Package} color={C.amber} comparisonLabel={comparisonLabel} />
-        <KPICard label="Gross Profit" value={analyticsLoading ? "—" : formatPeso(analytics?.summary.grossProfit ?? 0)} sub={`${(analytics?.summary.grossMargin ?? 0).toFixed(1)}% margin`} icon={TrendingUp} color={C.green} comparisonLabel={comparisonLabel} />
-        <KPICard label="Units Sold" value={analyticsLoading ? "—" : (analytics?.summary.unitsSold ?? 0).toLocaleString()} sub={`${analytics?.summary.importCount ?? 0} POS import(s)`} icon={Hash} color={C.blue} comparisonLabel={comparisonLabel} />
+        <KPICard loading={analyticsLoading} label="Total Sales" value={formatPeso(analytics?.summary.sales ?? 0)} sub={periodLabel} icon={ShoppingCart} color={C.maroon} comparisonLabel={comparisonLabel} />
+        <KPICard loading={analyticsLoading} label="Recipe COGS" value={formatPeso(analytics?.summary.theoreticalCogs ?? 0)} sub="Based on saved ingredient costs" icon={Package} color={C.amber} comparisonLabel={comparisonLabel} />
+        <KPICard loading={analyticsLoading} label="Gross Profit" value={formatPeso(analytics?.summary.grossProfit ?? 0)} sub={`${(analytics?.summary.grossMargin ?? 0).toFixed(1)}% margin`} icon={TrendingUp} color={C.green} comparisonLabel={comparisonLabel} />
+        <KPICard loading={analyticsLoading} label="Units Sold" value={(analytics?.summary.unitsSold ?? 0).toLocaleString()} sub={`${analytics?.summary.importCount ?? 0} POS import(s)`} icon={Hash} color={C.blue} comparisonLabel={comparisonLabel} />
       </div>
 
       <div className="sales-section-tabs flex max-w-full gap-1 overflow-x-auto border-b" style={{ borderColor: C.border }}>
@@ -1088,7 +1094,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
               <h3 className="font-semibold mb-4" style={{ color: C.primary }}>Sales vs COGS Trend</h3>
             </div>
             <div className="h-64 px-3 pb-4">
-              <ResponsiveContainer width="100%" height="100%">
+              {analyticsLoading ? <AnalyticsChartLoading label="Loading sales and COGS trend"/> : <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={(analytics?.trends ?? []).map((item) => ({ ...item, date: new Date(`${item.date}T00:00:00`).toLocaleDateString("en-PH", { month: "short", day: "numeric" }), gp: item.grossProfit }))}>
                   <CartesianGrid strokeDasharray="3 3" stroke={C.border} vertical={false} />
                   <XAxis dataKey="date" tick={{ fontSize: 11, fill: C.secondary }} axisLine={false} tickLine={false} />
@@ -1100,13 +1106,13 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
                   <Line dataKey="cogs" name="COGS" stroke={C.amber} strokeWidth={2} dot={false} />
                   <Line dataKey="gp" name="Gross Profit" stroke={C.green} strokeWidth={2} dot={false} />
                 </ComposedChart>
-              </ResponsiveContainer>
+              </ResponsiveContainer>}
             </div>
           </Card>
           <Card>
             <h3 className="font-semibold mb-4" style={{ color: C.primary }}>Top Products</h3>
             <div className="space-y-3.5">
-              {(analytics?.products ?? []).slice(0, 5).map((p, i) => (
+              {analyticsLoading ? <AnalyticsListLoading label="Loading top products"/> : (analytics?.products ?? []).slice(0, 5).map((p, i) => (
                 <div key={p.id}>
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-sm" style={{ color: C.primary }}>{p.name}</span>
@@ -1393,12 +1399,12 @@ function COGSAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role |
         } />
 
       <div className="cogs-kpi-grid grid gap-4">
-        <KPICard label="Total Sales" value={loading ? "—" : formatPeso(summary?.sales ?? 0)} sub={`${summary?.unitsSold ?? 0} units sold`} icon={DollarSign} color={C.blue} />
-        <KPICard label="Total COGS" value={loading ? "—" : formatPeso(summary?.totalCogs ?? 0)} sub="Sum of recipe-based product COGS" icon={BarChart2} color={C.amber} />
-        <KPICard label="Gross Profit" value={loading ? "—" : formatPeso(summary?.grossProfit ?? 0)} sub="Total Sales less Total COGS" icon={TrendingUp} color={C.green} />
-        <KPICard label="Gross Margin" value={loading ? "—" : `${(summary?.grossMargin ?? 0).toFixed(1)}%`} sub="Gross Profit ÷ Sales × 100" icon={Percent} color={C.maroon} />
-          <KPICard label="Detected Shortage" value={loading ? "—" : formatPeso(summary?.detectedShortageValue ?? 0)} sub="Inventory shortage awaiting or under review" icon={TrendingDown} color={C.red} />
-          <KPICard label="Verified Shrinkage" value={loading ? "—" : formatPeso(summary?.verifiedShrinkageCost ?? 0)} sub="Verified shrinkage causes only" icon={GitCompare} color={C.red} />
+        <KPICard loading={loading} label="Total Sales" value={formatPeso(summary?.sales ?? 0)} sub={`${summary?.unitsSold ?? 0} units sold`} icon={DollarSign} color={C.blue} />
+        <KPICard loading={loading} label="Total COGS" value={formatPeso(summary?.totalCogs ?? 0)} sub="Sum of recipe-based product COGS" icon={BarChart2} color={C.amber} />
+        <KPICard loading={loading} label="Gross Profit" value={formatPeso(summary?.grossProfit ?? 0)} sub="Total Sales less Total COGS" icon={TrendingUp} color={C.green} />
+        <KPICard loading={loading} label="Gross Margin" value={`${(summary?.grossMargin ?? 0).toFixed(1)}%`} sub="Gross Profit ÷ Sales × 100" icon={Percent} color={C.maroon} />
+          <KPICard loading={loading} label="Detected Shortage" value={formatPeso(summary?.detectedShortageValue ?? 0)} sub="Inventory shortage awaiting or under review" icon={TrendingDown} color={C.red} />
+          <KPICard loading={loading} label="Verified Shrinkage" value={formatPeso(summary?.verifiedShrinkageCost ?? 0)} sub="Verified shrinkage causes only" icon={GitCompare} color={C.red} />
       </div>
 
       <div className="cogs-analysis-grid grid grid-cols-3 gap-5">
@@ -1408,7 +1414,7 @@ function COGSAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role |
             <p className="text-xs mb-4" style={{ color: C.secondary }}>Daily totals from imported POS sales and saved recipe costs</p>
           </div>
           <div className="h-56 px-3 pb-4">
-            <ResponsiveContainer width="100%" height="100%">
+            {loading ? <AnalyticsChartLoading label="Loading COGS trend"/> : <ResponsiveContainer width="100%" height="100%">
               <ComposedChart data={(analytics?.trends ?? []).map((item) => ({ ...item, label: new Date(`${item.date}T00:00:00`).toLocaleDateString("en-PH", { month: "short", day: "numeric" }), margin: item.sales ? (item.grossProfit / item.sales) * 100 : 0 }))}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.border} vertical={false} />
                 <XAxis dataKey="label" tick={{ fontSize: 11, fill: C.secondary }} axisLine={false} tickLine={false} />
@@ -1422,12 +1428,12 @@ function COGSAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role |
                 <Bar yAxisId="l" dataKey="cogs" name="Recipe COGS" fill={`color-mix(in srgb, ${C.maroon} 38%, transparent)`} stroke={C.maroon} strokeWidth={1} radius={[3, 3, 0, 0]} />
                 <Line yAxisId="r" type="monotone" dataKey="margin" name="Gross Margin %" stroke={C.green} strokeWidth={2} dot={{ fill: C.green, r: 3 }} />
               </ComposedChart>
-            </ResponsiveContainer>
+            </ResponsiveContainer>}
           </div>
         </Card>
         <Card>
           <h3 className="font-semibold mb-4" style={{ color: C.primary }}>Ingredient Cost Distribution</h3>
-          {(analytics?.ingredients ?? []).slice(0, 6).map((item, index) => {
+          {loading ? <AnalyticsListLoading label="Loading ingredient cost distribution"/> : (analytics?.ingredients ?? []).slice(0, 6).map((item, index) => {
             const pct = ingredientTotal > 0 ? (item.cost / ingredientTotal) * 100 : 0;
             const colors = [C.maroon, C.blue, C.amber, C.green, C.red, C.muted];
             return (
