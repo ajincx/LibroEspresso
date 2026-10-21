@@ -18,6 +18,8 @@ describe("Daily partial physical counts",()=>{
     expect(markup).toContain("data-physical-count-skeleton");
     expect(markup).toContain('aria-label="Calculating expected stock"');
     expect(markup).toContain("motion-reduce:animate-none");
+    expect(markup).toContain("Full Physical Count Entry");
+    expect(markup).toContain("Expected Stock");
     expect(markup).not.toContain("No inventory");
   });
 

@@ -5,11 +5,14 @@ import { initialReportSelection, ReportExportActions, ReportPreviewSkeleton, Rep
 
 describe("report multi-selection",()=>{
   it("uses a report-shaped skeleton without replacing it with a large spinner",()=>{
-    const markup=renderToStaticMarkup(React.createElement(ReportPreviewSkeleton));
+    const markup=renderToStaticMarkup(React.createElement(ReportPreviewSkeleton,{selectedTypes:["SALES"]}));
     expect(markup).toContain("data-report-preview-skeleton");
     expect(markup).toContain("reports-kpi-grid");
     expect(markup).toContain('aria-label="Loading report preview"');
     expect(markup).not.toContain("animate-spin");
+    expect(markup).toContain("Libro Espresso Cafe");
+    expect(markup).toContain("Sales Report");
+    expect(markup).toContain("Scope:");
   });
   it("opens with no report selected",()=>expect(initialReportSelection()).toEqual([]));
   it("selects one and multiple report types in official order",()=>{

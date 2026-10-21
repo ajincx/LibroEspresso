@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
 import type { CountVarianceItem, DailyInventoryCountContext, ExpectedInventoryItem, InventoryCountType, UnavailableInventoryCountItem } from "../../types/inventoryWorkflow";
-import { CalendarDateField, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, Btn, SearchInput, Select, SkeletonBlock, SkeletonTable } from "../../components/ModuleUi";
+import { CalendarDateField, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, TableLoadingRow, Btn, SearchInput, Select, SkeletonBlock } from "../../components/ModuleUi";
 
 import { businessDate } from "../../utils/businessDate";
 
@@ -23,20 +23,18 @@ export const showInventoryCountDateFilter = (countType: InventoryCountType) => c
 export const savedCountQuantities = (items: Array<{ inventoryItemId: string; actualQuantity: number }>) =>
   Object.fromEntries(items.map((item) => [item.inventoryItemId, item.actualQuantity]));
 
-export function PhysicalCountLoadingSkeleton() {
+export function PhysicalCountLoadingSkeleton({countType="FULL"}:{countType?:InventoryCountType}) {
+  const columns=inventoryCountColumns(countType);
   return <div data-physical-count-skeleton role="status" aria-label="Calculating expected stock" className="space-y-4">
     <div className="grid gap-3 sm:grid-cols-3">
-      {Array.from({ length: 3 }, (_, index) => <div key={index} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-        <SkeletonBlock w={index === 1 ? "62%" : "48%"} h={10} />
-        <SkeletonBlock w={index === 2 ? "84%" : "70%"} h={18} className="mt-3" />
-      </div>)}
+      {["Count date","Count type","Ingredients"].map((label) => <div key={label} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4"><p className="text-xs font-semibold text-[var(--app-text-muted)]">{label}</p><SkeletonBlock w="70%" h={18} className="mt-3"/></div>)}
     </div>
     <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
       <div className="flex flex-col gap-3 border-b border-[var(--app-border)] p-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="space-y-2"><SkeletonBlock w={190} h={16}/><SkeletonBlock w={310} h={9} className="max-w-full"/></div>
+        <div><h2 className="font-bold">{countType==="FULL"?"Full Physical Count Entry":countType==="OPENING"?"Opening Count":"Closing Count"}</h2><p className="mt-1 text-xs text-[var(--app-text-muted)]">Record and verify physical stock. Expected stock remains system-calculated.</p></div>
         <SkeletonBlock w={180} h={40} className="rounded-xl"/>
       </div>
-      <SkeletonTable rows={7} cols={6}/>
+      <TableWrapper minWidth={countType==="FULL"?900:1120}><THead cols={columns}/><tbody>{Array.from({length:7},(_,index)=><TableLoadingRow key={index} colSpan={columns.length}/>)}</tbody></TableWrapper>
     </div>
     <span className="sr-only">Calculating expected stock from recipes and POS sales…</span>
   </div>;
@@ -303,7 +301,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
     finally { setSaving(false); }
   };
 
-  if (loading) return <PhysicalCountLoadingSkeleton />;
+  if (loading) return <PhysicalCountLoadingSkeleton countType={countType}/>;
   if (error) return (
     <div className="p-16 text-center">
       <p className="text-sm mb-3" style={{ color: "var(--app-danger)" }}>{error}</p>

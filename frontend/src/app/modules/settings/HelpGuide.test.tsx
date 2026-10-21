@@ -61,6 +61,8 @@ describe("Help & User Guide UI", () => {
     const markup = renderToStaticMarkup(React.createElement(SettingsSectionSkeleton));
     expect(markup).toContain("data-settings-section-skeleton");
     expect(markup).toContain('aria-label="Loading settings"');
+    expect(markup).toContain("UI Preferences");
+    expect(markup).toContain("Theme");
     expect(markup).toContain("motion-reduce:animate-none");
   });
 

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { ShoppingCart, Package, Percent, TrendingDown, RefreshCw, Check, AlertTriangle, Search, BadgeDollarSign, Sparkles, ArrowRight, Pencil, Plus, Upload, Info, X } from "lucide-react";
-import { Card, Btn, KPICard, DashboardFilters, StatusChip, SearchInput, Select, SkeletonBlock, SkeletonKPICard, C, isModalBackdropEvent, type DashboardRange, type DashboardComparison } from "../../components/ModuleUi";
+import { Card, Btn, KPICard, DashboardFilters, StatusChip, SearchInput, Select, SkeletonBlock, C, isModalBackdropEvent, type DashboardRange, type DashboardComparison } from "../../components/ModuleUi";
 import { useAuth } from "../../contexts/AuthContext";
 import { inventoryWorkflowService as workflow } from "../../services/inventoryWorkflow.service";
 import { operationsService } from "../../services/operations.service";
@@ -93,32 +93,40 @@ export function DashboardToolbar({ actions, filters }:{ actions?:ReactNode;filte
   </div>;
 }
 
-function DashboardChartSkeleton({ fullWidth = false }: { fullWidth?: boolean }) {
+function DashboardChartSkeleton({ title, description, fullWidth = false }: { title:string;description?:string;fullWidth?: boolean }) {
   return <Card className={fullWidth ? "min-w-0 xl:col-span-2" : "min-w-0"}>
-    <SkeletonBlock w={190} h={18}/>
-    <SkeletonBlock w={260} h={10} className="mt-2 max-w-full"/>
+    <h2 className="font-semibold">{title}</h2>
+    {description&&<p className="mt-1 text-xs text-[var(--app-text-muted)]">{description}</p>}
     <div className="mt-5 flex h-56 items-end gap-2 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-4 sm:h-64">
       {[42,68,50,82,62,76,56,88,70,80].map((height,index)=><SkeletonBlock key={index} w="10%" h={height+"%"} className="min-w-0 rounded-t-lg rounded-b-sm"/>)}
     </div>
   </Card>;
 }
 
-export function DashboardAnalyticsSkeleton() {
+export function DashboardAnalyticsSkeleton({role="owner"}:{role?:Role}) {
+  const kpis=[
+    [role==="owner"?"Total Sales":"Branch Sales",ShoppingCart,"Units sold"],
+    [role==="owner"?"Total COGS":"Branch COGS",Package,"Recipe-based cost of products sold"],
+    ["Gross Profit",BadgeDollarSign,"Sales minus official Total COGS"],
+    ["Gross Margin",Percent,"Product margin based on COGS"],
+    ["Detected Shortage",AlertTriangle,"Inventory shortage before resolution"],
+    ["Verified Shrinkage",TrendingDown,"Reviewed legitimate shrinkage causes only"],
+  ] as const;
   return <div data-dashboard-analytics-skeleton role="status" aria-label="Loading Dashboard analytics" className="space-y-5">
     <div className="dashboard-kpis grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
-      {Array.from({length:6}).map((_,index)=><div key={index} data-dashboard-kpi-skeleton><SkeletonKPICard/></div>)}
+      {kpis.map(([label,icon,sub])=><div key={label} data-dashboard-kpi-skeleton><KPICard loading label={label} value="" sub={sub} icon={icon}/></div>)}
     </div>
     <div className="grid gap-5 xl:grid-cols-2">
-      <DashboardChartSkeleton fullWidth/>
-      <DashboardChartSkeleton/>
-      <DashboardChartSkeleton/>
+      <DashboardChartSkeleton title="Sales & Recipe COGS" fullWidth/>
+      <DashboardChartSkeleton title="Inventory Health Distribution" description="Live item counts from the selected branch scope."/>
+      <DashboardChartSkeleton title="Verified Shrinkage Causes" description="Reviewed legitimate shrinkage cost by final classification."/>
     </div>
     <Card padding={false} className="overflow-hidden shadow-sm">
       <div className="space-y-3 px-5 py-5">
-        <SkeletonBlock w={150} h={18}/>
-        <SkeletonBlock w={330} h={10} className="max-w-full"/>
+        <h2 className="font-bold text-base">Inventory Alerts</h2>
+        <p className="text-xs text-[var(--app-text-muted)]">Current stock position compared against branch reorder levels</p>
       </div>
-      <div className="space-y-3 border-t border-[var(--app-border)] p-5">
+      <div className="grid grid-cols-[minmax(0,1.5fr)_repeat(3,minmax(0,.7fr))] gap-2 border-y border-[var(--app-border)] bg-[var(--app-bg)] px-5 py-3 text-xs font-semibold uppercase text-[var(--app-text-muted)]"><span>Ingredient & Category</span><span>Current Stock</span><span>Reorder Level</span><span>Status</span></div><div className="space-y-3 p-5">
         {Array.from({length:3}).map((_,index)=><div key={index} className="grid grid-cols-[minmax(0,1.5fr)_repeat(3,minmax(0,.7fr))] items-center gap-2 sm:gap-3"><SkeletonBlock h={13}/><SkeletonBlock h={13}/><SkeletonBlock h={13}/><SkeletonBlock h={24} className="rounded-full"/></div>)}
       </div>
     </Card>
@@ -129,11 +137,11 @@ export function DashboardAnalyticsSkeleton() {
 export function ForecastContentSkeleton() {
   return <div data-forecast-content-skeleton role="status" aria-label="Loading Decision-Support Forecast" className="space-y-5 bg-[var(--app-bg)] p-5 sm:p-6">
     <div className="grid gap-4 md:grid-cols-[minmax(0,1.45fr)_minmax(220px,.55fr)]">
-      <div className="rounded-2xl border border-[var(--app-primary-soft)] bg-[var(--app-surface)] p-5"><SkeletonBlock w={120} h={11}/><SkeletonBlock w={230} h={34} className="mt-3 max-w-full"/><SkeletonBlock w={160} h={10} className="mt-3 max-w-full"/></div>
-      <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5"><SkeletonBlock w={135} h={11}/><SkeletonBlock w={88} h={24} className="mt-3 rounded-full"/><SkeletonBlock w="90%" h={10} className="mt-4"/></div>
+      <div className="rounded-2xl border border-[var(--app-primary-soft)] bg-[var(--app-surface)] p-5"><p className="text-[11px] font-bold uppercase tracking-[.14em] text-[var(--app-text-muted)]">Projected sales</p><SkeletonBlock w={230} h={34} className="mt-3 max-w-full"/><p className="mt-3 text-xs text-[var(--app-text-muted)]">over the next 30 days</p></div>
+      <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5"><p className="text-[11px] font-bold uppercase tracking-[.14em] text-[var(--app-text-muted)]">Forecast confidence</p><SkeletonBlock w={88} h={24} className="mt-3 rounded-full"/><p className="mt-4 text-xs text-[var(--app-text-muted)]">Based on recorded sales days.</p></div>
     </div>
     <div className="space-y-3">
-      <SkeletonBlock w={130} h={16}/>
+      <div><h3 className="text-sm font-bold">Forecast insights</h3><p className="mt-1 text-xs text-[var(--app-text-muted)]">Review the signals that may require operational attention.</p></div>
       {["86%","72%"].map((width,index)=><div key={index} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 sm:p-5"><div className="flex items-center gap-3"><SkeletonBlock w={32} h={32} className="rounded-xl"/><SkeletonBlock w={width} h={13}/></div><SkeletonBlock w="94%" h={10} className="mt-4"/><SkeletonBlock w="78%" h={10} className="mt-2"/></div>)}
     </div>
     <span className="sr-only">Loading forecast</span>
@@ -390,7 +398,7 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
           setRefresh((v) => v + 1);
         }}
       />} />
-    {error ? <Card><p role="alert" className="text-red-700">{error}</p><Btn onClick={() => setRefresh(v => v+1)}>Retry</Btn></Card> : !totals || !data ? <DashboardAnalyticsSkeleton/> : <>
+    {error ? <Card><p role="alert" className="text-red-700">{error}</p><Btn onClick={() => setRefresh(v => v+1)}>Retry</Btn></Card> : !totals || !data ? <DashboardAnalyticsSkeleton role={role}/> : <>
       <div className="dashboard-kpis grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
         <KPICard label={role === "owner" ? "Total Sales" : "Branch Sales"} value={money(financials!.sales)} sub={totals.unitsSold + " units sold"} icon={ShoppingCart} change={changed(financials!.sales,data.previous.summary.sales)} onClick={() => navigate(salesUrl)}/>
         <KPICard label={role === "owner" ? "Total COGS" : "Branch COGS"} value={money(financials!.totalCogs)} sub="Recipe-based cost of products sold" icon={Package} change={changed(financials!.totalCogs,data.previous.summary.totalCogs)} onClick={() => navigate("/cogs?startDate="+startDate+"&endDate="+endDate)}/>

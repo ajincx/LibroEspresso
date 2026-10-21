@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, AlertTriangle, Package, RefreshCw, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { C, CalendarDateField, StatusChip, KPICard, Card, SectionHeader, Select, SkeletonBlock, SkeletonKPICard, SkeletonTable, TableCard, TableEmptyRow, TableWrapper, THead, TR, TD, ChartTip } from "../../components/ModuleUi";
+import { C, CalendarDateField, StatusChip, KPICard, Card, SectionHeader, Select, SkeletonBlock, TableLoadingRow, TableCard, TableEmptyRow, TableWrapper, THead, TR, TD, ChartTip } from "../../components/ModuleUi";
 import { predictiveService } from "../../services/predictive.service";
 import type { PredictiveForecast } from "../../types/predictive";
 import type { Role } from "../../types/navigation";
@@ -39,19 +39,23 @@ export function predictiveDataSufficiency(forecast: Pick<PredictiveForecast, "sc
   };
 }
 
-export function PredictiveAnalyticsSkeleton() {
+export function PredictiveAnalyticsSkeleton({role="owner"}:{role?:Role}) {
+  const summary=[["Forecasted Sales",TrendingUp],["Demand Change",Activity],["Critical Items",AlertTriangle],["Projected COGS",TrendingDown],["Suggested Reorders",Package]] as const;
+  const accuracy=[["Sales MAE",Activity],["Days Evaluated",RefreshCw],["Average Actual Sales",TrendingUp],["Average Forecast Sales",Activity]] as const;
+  const columns=["Ingredient",...(role==="owner"?["Branch"]:[]),"Unit","Evaluation Period","Days","Average Actual","Average Forecast","MAE","Status"];
   return <div data-predictive-analytics-skeleton role="status" aria-label="Loading Predictive Analytics" className="space-y-5">
     <div className="predictive-kpi-grid grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
-      {Array.from({length:5}).map((_,index)=><SkeletonKPICard key={index}/>)}
+      {summary.map(([label,icon])=><KPICard key={label} loading label={label} value="" icon={icon}/>)}
     </div>
     <Card padding={false}>
-      <div className="space-y-2 px-5 pt-5"><SkeletonBlock w={180} h={18}/><SkeletonBlock w={360} h={10} className="max-w-full"/></div>
+      <div className="px-5 pt-5"><h2 className="font-semibold">Forecast Accuracy</h2><p className="mt-1 text-xs text-[var(--app-text-muted)]">Backtested calculated sales forecasts against recorded results.</p></div>
       <div className="grid gap-4 p-5 lg:grid-cols-5">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:col-span-2">{Array.from({length:4}).map((_,index)=><SkeletonKPICard key={index}/>)}</div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:col-span-2">{accuracy.map(([label,icon])=><KPICard key={label} loading label={label} value="" icon={icon}/>)}</div>
         <div className="flex h-64 items-end gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-4 lg:col-span-3">{[48,72,58,84,66,78,62,88].map((height,index)=><SkeletonBlock key={index} w="12.5%" h={`${height}%`} className="min-w-0 rounded-t-lg rounded-b-sm"/>)}</div>
       </div>
     </Card>
-    <Card padding={false} className="overflow-hidden"><div className="space-y-2 p-5"><SkeletonBlock w={230} h={18}/><SkeletonBlock w={420} h={10} className="max-w-full"/></div><SkeletonTable rows={5} cols={6}/></Card>
+    <TableCard title="Ingredient Usage Forecast Evaluation" subtitle="Calculated ingredient projections compared with recorded consumption."><TableWrapper minWidth={900}><THead cols={columns}/><tbody>{Array.from({length:5},(_,index)=><TableLoadingRow key={index} colSpan={columns.length}/>)}</tbody></TableWrapper></TableCard>
+    <div className="grid gap-5 xl:grid-cols-2"><Card><h2 className="font-semibold">Demand Forecast</h2><p className="mt-1 text-xs text-[var(--app-text-muted)]">Recorded and projected sales demand.</p><SkeletonBlock h={240} className="mt-4 rounded-xl"/></Card><Card><h2 className="font-semibold">Inventory Forecast</h2><p className="mt-1 text-xs text-[var(--app-text-muted)]">Projected ingredient balances from current records.</p><SkeletonBlock h={240} className="mt-4 rounded-xl"/></Card></div>
     <span className="sr-only">Analyzing database records</span>
   </div>;
 }
@@ -190,7 +194,7 @@ export function PredictiveAnalytics({
       )}
 
       {loading && !forecast ? (
-        <PredictiveAnalyticsSkeleton/>
+        <PredictiveAnalyticsSkeleton role={role}/>
       ) : forecast && (
         <>
           <div className="predictive-kpi-grid grid grid-cols-5 gap-4">

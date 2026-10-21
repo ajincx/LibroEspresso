@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { useAuth } from "../../contexts/AuthContext";
 import { masterDataService } from "../../services/masterData.service";
 import type { InventoryItem, MenuCategory, MenuProduct, RecordStatus } from "../../types/masterData";
-import { Btn, SearchInput, Select, SkeletonTable, StatusBadge, TableCard, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
+import { Btn, SearchInput, Select, SkeletonBlock, StatusBadge, TableCard, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
 import { formatAppCurrency } from "../../utils/appPreferences";
 import { compatibleUnits, units } from "../../utils/units";
 import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
@@ -30,7 +30,8 @@ export function CategoryLabel({name,categories}:{name:string;categories:MenuCate
   return <span className="inline-flex items-center gap-1.5"><span>{name}</span><Tooltip><TooltipTrigger asChild><button type="button" title={description} aria-label={`About ${name}`} onClick={(event)=>event.stopPropagation()} className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[var(--app-primary)] hover:bg-[var(--app-primary-faint)]"><Info size={12}/><span className="sr-only">Category information</span></button></TooltipTrigger><TooltipContent><div className="max-w-64"><div className="font-semibold">{name}</div><div className="mt-1">{description}</div></div></TooltipContent></Tooltip></span>;
 }
 export function MenuProductsSkeleton() {
-  return <div data-menu-products-skeleton role="status" aria-label="Loading menu products" className="overflow-hidden"><SkeletonTable rows={6} cols={6}/><span className="sr-only">Loading menu products</span></div>;
+  const headings = ["Product Code", "Product Name", "Scope", "Category", "Selling Price", "Ingredients", "Recipe Cost", "Margin", "Status", "Actions"];
+  return <div data-menu-products-skeleton role="status" aria-label="Loading menu products" className="overflow-hidden"><TableWrapper minWidth={940}><THead cols={headings}/><tbody>{Array.from({length:6},(_,index)=><TableLoadingRow key={index} colSpan={headings.length}/>)}</tbody></TableWrapper><span className="sr-only">Loading menu products</span></div>;
 }
 export const removeRecipeIngredientRow = (items: RecipeRow[], key: string) => items.filter((item) => item.key !== key);
 export const recipeIngredientExists = (inventoryItemId: string, inventory: InventoryItem[]) =>
@@ -216,7 +217,7 @@ export function MenuRecipesPage() {
     <TableCard
       title="Menu Products & Recipes"
       subtitle={owner ? "Master recipe specifications and standard consumption yields" : "Branch product catalog and availability status"}
-      badge={<span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-[var(--app-primary-faint)] text-[var(--app-primary)]">{filtered.length} products</span>}
+      badge={<span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-0.5 rounded-full font-bold bg-[var(--app-primary-faint)] text-[var(--app-primary)]">Products: {loading ? <SkeletonBlock w={22} h={10}/> : filtered.length}</span>}
       toolbar={
         <div className="flex flex-col md:flex-row gap-3 w-full">
           <SearchInput placeholder="Search menu products..." width={280} value={search} onChange={setSearch} />

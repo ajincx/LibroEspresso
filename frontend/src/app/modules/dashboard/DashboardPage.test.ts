@@ -91,6 +91,9 @@ describe("dashboard presentation helpers",()=>{
     expect(markup).toContain("data-dashboard-analytics-skeleton");
     expect(markup.match(/data-dashboard-kpi-skeleton/g)).toHaveLength(6);
     expect(markup).toContain("dashboard-kpis");
+    expect(markup).toContain("Total Sales");
+    expect(markup).toContain("Sales &amp; Recipe COGS");
+    expect(markup).toContain("Inventory Alerts");
     expect(markup).toContain("xl:col-span-2");
     expect(markup).toContain("Loading branch records");
     expect(markup).toContain("motion-reduce:animate-none");
@@ -130,6 +133,9 @@ describe("Forecast & Replenishment presentation",()=>{
     const markup=renderToStaticMarkup(React.createElement(ForecastContentSkeleton));
     expect(markup).toContain('role="status"');
     expect(markup).toContain("Loading Decision-Support Forecast");
+    expect(markup).toContain("Projected sales");
+    expect(markup).toContain("Forecast confidence");
+    expect(markup).toContain("Forecast insights");
     expect(markup).toContain("motion-reduce:animate-none");
   });
   it("keeps forecast data, confidence, insight actions, reorder action, and disclaimer visible",()=>{

@@ -66,10 +66,13 @@ export function settingsMenuForRole(role: UserRole): {
       ];
 }
 
-export function SettingsSectionSkeleton() {
+export function SettingsSectionSkeleton({section="preferences",isOwner=false}:{section?:"notifications"|"preferences"|"business";isOwner?:boolean}) {
+  const title=section==="notifications"?"Notification Preferences":section==="business"?"Business Information":isOwner?"System Preferences":"UI Preferences";
+  const description=section==="notifications"?"Choose which operational alerts you want to receive.":section==="business"?"Organization identity, contact details, and reporting cycle.":isOwner?"Manage display options and the system-wide alert settings used by every branch.":"Personalize how the management portal appears on this device.";
+  const labels=section==="notifications"?["Low Stock Alerts","Critical Stock Alerts","High COGS Warnings","Spoilage and Wastage","Inventory Variance","Purchase Orders"]:section==="business"?["Business Name","Legal / Registered Name","Business Email","Business Phone","Head Office Address","Tax Identifier"]:["Theme","Date Format","Time Format","Currency"];
   return <section data-settings-section-skeleton role="status" aria-label="Loading settings" className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5 sm:p-6">
-    <div className="flex items-start gap-3 border-b border-[var(--app-border)] pb-5"><SkeletonBlock w={40} h={40} className="shrink-0 rounded-xl"/><div className="min-w-0 flex-1 space-y-2"><SkeletonBlock w={190} h={17}/><SkeletonBlock w={390} h={10} className="max-w-full"/></div></div>
-    <div className="mt-5 grid gap-4 sm:grid-cols-2">{Array.from({length:6},(_,index)=><div key={index} className={index === 4 ? "sm:col-span-2" : ""}><SkeletonBlock w={index % 2 ? "38%" : "46%"} h={9}/><SkeletonBlock h={42} className="mt-2 rounded-xl"/></div>)}</div>
+    <div className="border-b border-[var(--app-border)] pb-5"><h2 className="font-semibold text-[var(--app-text)]">{title}</h2><p className="mt-1 text-sm text-[var(--app-text-muted)]">{description}</p></div>
+    <div className={section==="notifications"?"mt-5 divide-y divide-[var(--app-border)]":"mt-5 grid gap-4 sm:grid-cols-2"}>{labels.map((label,index)=>section==="notifications"?<div key={label} className="flex items-center justify-between gap-4 py-4"><span className="text-sm font-medium">{label}</span><SkeletonBlock w={42} h={24} className="rounded-full"/></div>:<div key={label} className={index===4?"sm:col-span-2":""}><p className="text-sm font-medium">{label}</p><SkeletonBlock h={42} className="mt-2 rounded-xl"/></div>)}</div>
     <span className="sr-only">Loading settings…</span>
   </section>;
 }
@@ -519,7 +522,7 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void } = {}) {
           </form>
         )}
 
-        {settingsLoading && remoteSettingsSection && <SettingsSectionSkeleton />}
+        {settingsLoading && remoteSettingsSection && <SettingsSectionSkeleton section={active as "notifications"|"preferences"|"business"} isOwner={isOwner}/>}
 
         {active === "notifications" && !settingsLoading && (
           <section className="rounded-2xl border bg-[var(--app-surface)] border-[var(--app-border)] p-5 sm:p-6">

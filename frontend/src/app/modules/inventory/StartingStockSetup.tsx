@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, ClipboardCheck, FileWarning, Save, Search, X } from "lucide-react";
 import { toast } from "sonner";
-import { Btn, Select, SkeletonTable, TableEmptyRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
+import { Btn, Select, SkeletonBlock, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
 import type { OpeningInventoryBaseline, StartingStockSetup, StartingStockSetupItem } from "../../types/inventoryWorkflow";
 import { compatibleUnits, type MeasurementUnit } from "../../utils/units";
@@ -103,7 +103,14 @@ export function StartingStockSetupPage() {
     finally { setSaving(false); }
   };
 
-  if (loading) return <div data-starting-stock-skeleton role="status" aria-label="Loading Starting Stock setup" className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1"><SkeletonTable rows={7} cols={4}/><span className="sr-only">Loading Starting Stock setup</span></div>;
+  if (loading) return <div data-starting-stock-skeleton role="status" aria-label="Loading Starting Stock setup" className="min-w-0 space-y-5 p-4 md:p-6">
+    <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div><h1 className="text-xl font-bold">Starting Stock</h1><p className="mt-1 text-sm text-[var(--app-text-muted)]">Record the actual stock available when this branch begins using Libro.</p><p className="mt-1 text-xs text-[var(--app-text-muted)]">This is a one-time setup. Daily stock verification belongs in Inventory Counts.</p></div><SkeletonBlock w={120} h={42} className="rounded-xl"/></div>
+      <SkeletonBlock h={8} className="mt-4 rounded-full"/><p className="mt-2 text-xs text-[var(--app-text-muted)]">Loading ingredient completion status...</p>
+    </section>
+    <section className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]"><div className="border-b border-[var(--app-border)] p-4"><h2 className="font-bold">Ingredient quantities</h2><p className="text-xs text-[var(--app-text-muted)]">Choose a practical entry unit; Libro stores the converted system quantity.</p></div><TableWrapper minWidth={760} paginate={false}><THead cols={["SKU","Ingredient","Starting Quantity","Measurement Unit","System Unit"]}/><tbody>{Array.from({length:7},(_,index)=><TableLoadingRow key={index} colSpan={5}/>)}</tbody></TableWrapper></section>
+    <span className="sr-only">Loading Starting Stock setup</span>
+  </div>;
   if (error && !setup) return <div className="p-4 md:p-6"><TableEmptyRow colSpan={4} icon={FileWarning} title="Unable to load Starting Stock" subtitle={error}/></div>;
   if (!setup) return null;
   if (setup.status === "INITIALIZED" && setup.baseline) return <div className="p-4 md:p-6"><BaselineReadOnly baseline={setup.baseline}/></div>;

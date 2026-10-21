@@ -9,6 +9,8 @@ describe("Menu category guidance and permissions",()=>{
     const markup=renderToStaticMarkup(createElement(MenuProductsSkeleton));
     expect(markup).toContain("data-menu-products-skeleton");
     expect(markup).toContain('aria-label="Loading menu products"');
+    expect(markup).toContain("Product Code");
+    expect(markup).toContain("Recipe Cost");
     expect(markup).toContain("motion-reduce:animate-none");
   });
   const categories=[{id:"cold-id",name:"Cold Classics",description:"Chilled and iced beverage products.",status:"ACTIVE",createdAt:"",updatedAt:""},{id:"food-id",name:"Food",description:"",status:"ACTIVE",createdAt:"",updatedAt:""}] satisfies MenuCategory[];

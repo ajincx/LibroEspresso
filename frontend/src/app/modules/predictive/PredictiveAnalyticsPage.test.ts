@@ -35,6 +35,9 @@ describe("Predictive Analytics insight source", () => {
     const markup=renderToStaticMarkup(React.createElement(PredictiveAnalyticsSkeleton));
     expect(markup).toContain("data-predictive-analytics-skeleton");
     expect(markup).toContain("predictive-kpi-grid");
+    expect(markup).toContain("Forecasted Sales");
+    expect(markup).toContain("Forecast Accuracy");
+    expect(markup).toContain("Ingredient Usage Forecast Evaluation");
     expect(markup).not.toContain("animate-spin");
     expect(shouldApplyPredictiveResponse(3,4)).toBe(false);
     expect(shouldApplyPredictiveResponse(4,4)).toBe(true);
