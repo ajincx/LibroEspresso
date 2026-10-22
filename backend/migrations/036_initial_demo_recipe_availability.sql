@@ -47,6 +47,14 @@ BEGIN
    WHERE r.version=1
      AND r.effective_from IN (DATE '2026-09-24',DATE '2026-09-25');
 
+  -- Fresh installations do not contain the historical Libro recipe dataset
+  -- targeted by this corrective migration. Keep every original assertion for
+  -- populated or partially populated catalogs.
+  IF NOT EXISTS (SELECT 1 FROM recipes)
+     AND NOT EXISTS (SELECT 1 FROM recipe_items) THEN
+    RETURN;
+  END IF;
+
   IF affected_recipes<>36 OR affected_items<>141 THEN
     RAISE EXCEPTION 'Initial recipe availability migration expected 36 recipes and 141 items; found % recipes and % items',
       affected_recipes,affected_items;
