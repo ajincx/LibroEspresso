@@ -11,6 +11,7 @@ import {
   PosImportDetailsDialog,
   PosImportCleanupAuthorizationDialog,
   PosImportDeleteDialog,
+  PosImportVoidDialog,
   PosFormatRequestRejectDialog,
   PosMappingActions,
   PosMappingEditDialog,
@@ -20,6 +21,7 @@ import {
   canApprovePosMapping,
   canAuthorizePosImportCleanup,
   canDeletePosImport,
+  canVoidPosImport,
   canDeletePosSource,
   canEditPosMapping,
   clearCogsUserRange,
@@ -124,6 +126,17 @@ describe("profitability presentation",()=>{
 });
 
 describe("POS Import History controls",()=>{
+  it("offers non-destructive voiding only to Owners and requires reason plus confirmation",()=>{
+    expect(canVoidPosImport("OWNER",{status:"COMPLETE",isTestData:false})).toBe(true);
+    expect(canVoidPosImport("manager",{status:"COMPLETE",isTestData:false})).toBe(false);
+    expect(canVoidPosImport("OWNER",{status:"VOIDED",isTestData:false})).toBe(false);
+    const target={sourceFilename:"incorrect.xlsx",branchName:"Lipa",businessDate:"2026-09-08"} as PosImportRecord;
+    const blocked=renderToStaticMarkup(React.createElement(PosImportVoidDialog,{target,busy:false,reason:"too short",confirmed:false,onReasonChange:()=>undefined,onConfirmedChange:()=>undefined,onCancel:()=>undefined,onConfirm:()=>undefined}));
+    const ready=renderToStaticMarkup(React.createElement(PosImportVoidDialog,{target,busy:false,reason:"The accepted report contains incorrect sales.",confirmed:true,onReasonChange:()=>undefined,onConfirmedChange:()=>undefined,onCancel:()=>undefined,onConfirm:()=>undefined}));
+    expect(blocked).toContain("disabled");
+    expect(ready).toContain("checked");
+    expect(ready).toContain("Void Import");
+  });
   it("places compact daily monitoring inside Import History while retaining actual history",()=>{
     expect(DAILY_POS_MONITORING_LOCATION).toBe("import_history");
     expect(DAILY_POS_MONITORING_IS_PAGINATED).toBe(false);

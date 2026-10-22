@@ -236,6 +236,11 @@ describe("physical-count API unit normalization", () => {
     } as never, { status } as never, vi.fn());
 
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO shrinkage_reports"))).toBe(true);
+    if(countType==="CLOSING"){
+      const completenessSql=String(client.query.mock.calls.find(([sql])=>String(sql).includes("FROM pos_daily_declarations"))?.[0]);
+      expect(completenessSql).toContain("declaration.invalidated_at IS NULL");
+      expect(completenessSql).toContain("imported.voided_at IS NULL");
+    }
     expect(mocks.requiresVarianceInvestigation).toHaveBeenCalled();
     expect(json).toHaveBeenCalledWith(expect.objectContaining({
       data: { count: expect.objectContaining({

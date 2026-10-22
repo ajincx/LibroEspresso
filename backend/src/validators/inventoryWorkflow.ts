@@ -20,6 +20,10 @@ export const posImportInput = posCsvSourceInput.extend({
 });
 export const testDataAuthorizationInput = z.object({ reason: z.string().trim().min(10).max(500) });
 export const posCleanupAuthorizationInput = z.object({ reason: z.string().trim().min(10).max(500) });
+export const posImportVoidInput = z.object({
+  reason: z.string().trim().min(10).max(500),
+  confirmed: z.literal(true, { error: "Explicit confirmation is required" }),
+});
 export const posImportApprovalReviewInput = z.object({
   status: z.enum(["APPROVED", "REJECTED"]),
   approvalNotes: z.string().trim().min(3).max(1000),

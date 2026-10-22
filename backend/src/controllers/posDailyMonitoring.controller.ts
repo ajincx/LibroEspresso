@@ -5,6 +5,7 @@ import { env } from "../config/env.js";
 import { manilaBusinessDate } from "../services/businessTime.service.js";
 import { getEffectiveBranchId } from "../services/branchScope.js";
 import { resolveDailyPosStatus } from "../services/posDailyMonitoring.service.js";
+import { lockBranchInventoryOperation } from "../services/inventoryOperationLock.service.js";
 import { AppError } from "../utils/appError.js";
 
 const dateInput=z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -41,9 +42,10 @@ async function loadStatusRows(startDate:string,endDate:string,branchId:string|nu
     LEFT JOIN pos_sources source ON source.branch_id=b.id AND source.status='ACTIVE'
     LEFT JOIN LATERAL (SELECT pi.id,pi.source_filename,pi.imported_at,concat_ws(' ',u.first_name,u.last_name) uploaded_by FROM pos_imports pi
       LEFT JOIN users u ON u.id=pi.imported_by
-      WHERE pi.branch_id=b.id AND pi.pos_source_id=source.id AND pi.business_date=dates.business_date AND pi.completed_at IS NOT NULL
+      WHERE pi.branch_id=b.id AND pi.pos_source_id=source.id AND pi.business_date=dates.business_date
+        AND pi.completed_at IS NOT NULL AND pi.voided_at IS NULL
       ORDER BY pi.imported_at ASC LIMIT 1) imported ON true
-    LEFT JOIN pos_daily_declarations closed ON closed.branch_id=b.id AND closed.business_date=dates.business_date
+    LEFT JOIN pos_daily_declarations closed ON closed.branch_id=b.id AND closed.business_date=dates.business_date AND closed.invalidated_at IS NULL
     WHERE b.status='ACTIVE' AND ($3::uuid IS NULL OR b.id=$3)
     ORDER BY dates.business_date DESC,b.name,source.display_name`,[startDate,endDate,branchId]);
   return result.rows;
@@ -66,13 +68,19 @@ export const declareClosedPosDay:RequestHandler=async(req,res)=>{
   const branchId=req.user!.branchId;
   if(!branchId)throw new AppError(403,"BRANCH_REQUIRED","A Branch Manager must be assigned to a branch.");
   if(input.businessDate>manilaBusinessDate())throw new AppError(422,"POS_DATE_INVALID","A future date cannot be declared closed.");
-  const imported=await pool.query(`SELECT id FROM pos_imports WHERE branch_id=$1 AND business_date=$2::date LIMIT 1`,[branchId,input.businessDate]);
-  if(imported.rows[0])throw new AppError(409,"POS_DAY_ALREADY_IMPORTED","Sales were already imported for this business date.");
-  const result=await pool.query(`INSERT INTO pos_daily_declarations(branch_id,business_date,declaration,notes,declared_by)
-    VALUES($1,$2,'NO_SALES_CLOSED',$3,$4)
-    ON CONFLICT(branch_id,business_date) DO UPDATE SET declaration='NO_SALES_CLOSED',notes=excluded.notes,declared_by=excluded.declared_by,created_at=now()
-    RETURNING id,business_date "businessDate",declaration,notes`,[branchId,input.businessDate,input.notes??null,req.user!.id]);
-  res.status(201).json({success:true,data:{declaration:result.rows[0]}});
+  const client=await pool.connect();
+  try{
+    await client.query("BEGIN");
+    await lockBranchInventoryOperation(client,branchId);
+    const imported=await client.query(`SELECT id FROM pos_imports WHERE branch_id=$1 AND business_date=$2::date AND voided_at IS NULL LIMIT 1`,[branchId,input.businessDate]);
+    if(imported.rows[0])throw new AppError(409,"POS_DAY_ALREADY_IMPORTED","Sales were already imported for this business date.");
+    const existing=await client.query<{id:string}>(`SELECT id FROM pos_daily_declarations WHERE branch_id=$1 AND business_date=$2::date AND invalidated_at IS NULL FOR UPDATE`,[branchId,input.businessDate]);
+    const result=existing.rows[0]
+      ? await client.query(`UPDATE pos_daily_declarations SET declaration='NO_SALES_CLOSED',notes=$2,declared_by=$3,created_at=now() WHERE id=$1 RETURNING id,business_date "businessDate",declaration,notes`,[existing.rows[0].id,input.notes??null,req.user!.id])
+      : await client.query(`INSERT INTO pos_daily_declarations(branch_id,business_date,declaration,notes,declared_by) VALUES($1,$2,'NO_SALES_CLOSED',$3,$4) RETURNING id,business_date "businessDate",declaration,notes`,[branchId,input.businessDate,input.notes??null,req.user!.id]);
+    await client.query("COMMIT");
+    res.status(201).json({success:true,data:{declaration:result.rows[0]}});
+  }catch(error){await client.query("ROLLBACK");throw error;}finally{client.release();}
 };
 
 export async function runDailyPosReminderJob(now=new Date()){
@@ -87,8 +95,8 @@ export async function runDailyPosReminderJob(now=new Date()){
     FROM branches b JOIN pos_sources source ON source.branch_id=b.id AND source.status='ACTIVE'
     JOIN users manager ON manager.branch_id=b.id AND manager.role='BRANCH_MANAGER' AND manager.status='ACTIVE'
     WHERE b.status='ACTIVE'
-      AND NOT EXISTS(SELECT 1 FROM pos_imports pi WHERE pi.branch_id=b.id AND pi.pos_source_id=source.id AND pi.business_date=$1::date)
-      AND NOT EXISTS(SELECT 1 FROM pos_daily_declarations declaration WHERE declaration.branch_id=b.id AND declaration.business_date=$1::date)
+      AND NOT EXISTS(SELECT 1 FROM pos_imports pi WHERE pi.branch_id=b.id AND pi.pos_source_id=source.id AND pi.business_date=$1::date AND pi.voided_at IS NULL)
+      AND NOT EXISTS(SELECT 1 FROM pos_daily_declarations declaration WHERE declaration.branch_id=b.id AND declaration.business_date=$1::date AND declaration.invalidated_at IS NULL)
       AND NOT EXISTS(SELECT 1 FROM notifications existing WHERE existing.recipient_user_id=manager.id AND existing.branch_id=b.id
         AND existing.type='POS_DAILY_REMINDER' AND existing.entity_type='POS_SOURCE' AND existing.entity_id=source.id
         AND existing.message LIKE '%'||$1::date::text||'%')

@@ -18,7 +18,7 @@ vi.mock("../config/database.js", () => ({
 vi.mock("../services/audit.service.js", () => ({ writeAudit: mocks.writeAudit }));
 vi.mock("../config/env.js",()=>({env:mocks.env}));
 
-import { authorizePosImportCleanup, configurePosFormatRequest, deletePosImport, importPosSales, listPosFormatSetupRequests, listPosImportApprovals, listPosImports, previewPosSales, rejectPosFormatRequest, requestPosFormatSetup, requestPosImportApproval, reviewPosImportApproval } from "./inventoryWorkflow.controller.js";
+import { authorizePosImportCleanup, configurePosFormatRequest, deletePosImport, importPosSales, listPosFormatSetupRequests, listPosImportApprovals, listPosImports, previewPosSales, rejectPosFormatRequest, requestPosFormatSetup, requestPosImportApproval, reviewPosImportApproval, voidPosImport } from "./inventoryWorkflow.controller.js";
 
 const branchId = "00000000-0000-4000-8000-000000000002";
 const importId = "00000000-0000-4000-8000-000000000010";
@@ -218,6 +218,51 @@ beforeEach(() => {
   mocks.writeAudit.mockResolvedValue(undefined);
 });
 
+describe("Owner POS import voiding",()=>{
+  const voidRequest=(body:unknown={reason:"The accepted workbook contained incorrect sales rows.",confirmed:true})=>({params:{id:importId},body,user:{id:"owner-1",role:"OWNER",branchId:null}}) as never;
+  function voidClient(dependent=false,failUpdate=false){
+    const statements:string[]=[];
+    const query=vi.fn(async(statement:unknown)=>{
+      const sql=String(statement);statements.push(sql);
+      if(sql.includes('SELECT branch_id "branchId" FROM pos_imports'))return{rows:[{branchId}]};
+      if(sql.includes('source_filename "sourceFilename"'))return{rows:[{branchId,businessDate:"2026-09-08",sourceFilename:"incorrect.xlsx",importedAt:"2026-09-08T12:00:00Z",importedBy:"manager-1",isTestData:false,completedAt:"2026-09-08T12:00:00Z",voidedAt:null}]};
+      if(sql.includes('FROM inventory_counts'))return{rows:dependent?[{countNo:"IC-2026-00001",countType:"CLOSING"}]:[]};
+      if(sql.includes('UPDATE pos_imports')){if(failUpdate)throw new Error("update failed");return{rows:[{voidedAt:"2026-09-08T13:00:00Z"}]};}
+      if(sql.includes('UPDATE pos_daily_declarations'))return{rows:[{id:"declaration-1"}],rowCount:1};
+      return{rows:[],rowCount:0};
+    });
+    return{client:{query,release:vi.fn()},statements};
+  }
+
+  it("preserves records, invalidates EOD, and commits the authoritative exclusion",async()=>{
+    const {client,statements}=voidClient();mocks.connect.mockResolvedValue(client);
+    const res=response();await voidPosImport(voidRequest(),res as never,vi.fn());
+    expect(statements.some(sql=>sql.includes("pg_advisory_xact_lock"))).toBe(true);
+    expect(statements).toEqual(expect.arrayContaining([expect.stringContaining("UPDATE pos_imports"),expect.stringContaining("UPDATE pos_sale_items"),expect.stringContaining("UPDATE pos_daily_declarations")]));
+    expect(statements.some(sql=>/DELETE\s+FROM/i.test(sql))).toBe(false);
+    expect(statements.at(-1)).toBe("COMMIT");
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({success:true,data:expect.objectContaining({voided:true,eodConfirmationInvalidated:true})}));
+  });
+
+  it("blocks voiding after a finalized inventory checkpoint",async()=>{
+    const {client,statements}=voidClient(true);mocks.connect.mockResolvedValue(client);
+    await expect(voidPosImport(voidRequest(),response() as never,vi.fn())).rejects.toMatchObject({status:409,code:"POS_IMPORT_COUNT_DEPENDENCY"});
+    expect(statements).not.toContain(expect.stringContaining("UPDATE pos_imports"));
+    expect(statements.at(-1)).toBe("ROLLBACK");
+  });
+
+  it("rolls back atomically when voiding fails",async()=>{
+    const {client,statements}=voidClient(false,true);mocks.connect.mockResolvedValue(client);
+    await expect(voidPosImport(voidRequest(),response() as never,vi.fn())).rejects.toThrow("update failed");
+    expect(statements.at(-1)).toBe("ROLLBACK");
+  });
+
+  it("requires a meaningful reason and explicit confirmation",async()=>{
+    await expect(voidPosImport(voidRequest({reason:"short",confirmed:false}),response() as never,vi.fn())).rejects.toBeDefined();
+    expect(mocks.connect).not.toHaveBeenCalled();
+  });
+});
+
 describe("Excel POS preview and canonical import integration", () => {
   const csvPreviewRequest = (posSourceId?: string) => ({
     body: { sourceFilename: "sales.csv", csvText, ...(posSourceId ? { posSourceId } : {}) },
@@ -266,6 +311,7 @@ describe("Excel POS preview and canonical import integration", () => {
     expect(sourceLookup?.values).toEqual([sourceId, branchId]);
     const duplicateLookup = queries.find(({ sql }) => sql.includes("SELECT id FROM pos_imports"));
     expect(duplicateLookup?.sql).toContain("branch_id=$1 AND business_date=$2 AND content_hash=$3");
+    expect(duplicateLookup?.sql).toContain("voided_at IS NULL");
     expect(duplicateLookup?.values).toEqual([branchId, "2026-09-08", parsePosCsv(csvText).contentHash]);
   });
 
@@ -451,6 +497,7 @@ describe("Excel POS preview and canonical import integration", () => {
       summary: { canImport: false },
     });
     const overlap = overlapQueries.find(({ sql }) => sql.includes("FROM pos_sale_items existing"));
+    expect(overlap?.sql).toContain("accepted.voided_at IS NULL");
     expect(overlap?.values).toEqual([branchId, sourceId, "2026-09-08", ["OR-1"], ['["M-1",1]']]);
   });
 

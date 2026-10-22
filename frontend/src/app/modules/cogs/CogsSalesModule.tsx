@@ -28,6 +28,7 @@ function AnalyticsListLoading({ label }: { label: string }) {
 export const isOwnerRole = (role?: string | null) => role?.toLowerCase() === "owner";
 export const canDeletePosImport = (role: Role | string, record: Pick<PosImportRecord, "canCleanup">) => isOwnerRole(role) && Boolean(record?.canCleanup);
 export const canAuthorizePosImportCleanup = (role: Role | string, record: Pick<PosImportRecord, "canAuthorizeCleanup">) => isOwnerRole(role) && Boolean(record?.canAuthorizeCleanup);
+export const canVoidPosImport = (role: Role | string, record: Partial<Pick<PosImportRecord, "status" | "isTestData">>) => isOwnerRole(role) && (record.status === "COMPLETE" || record.status === "NEEDS_REVIEW") && !record.isTestData;
 export const canDeletePosSource = (
   role: Role | string | undefined | null,
   source: Pick<PosSource, "status"> & Partial<Pick<PosSource, "hasImports" | "hasSales" | "hasActiveMappings">>
@@ -44,12 +45,14 @@ export function PosImportActions({
   onView,
   onAuthorize,
   onDelete,
+  onVoid,
 }: {
   role: Role | string;
-  record: Pick<PosImportRecord, "canCleanup" | "canAuthorizeCleanup" | "sourceFilename">;
+  record: Pick<PosImportRecord, "canCleanup" | "canAuthorizeCleanup" | "sourceFilename"> & Partial<Pick<PosImportRecord,"status"|"isTestData">>;
   onView?: () => void;
   onAuthorize?: () => void;
   onDelete?: () => void;
+  onVoid?: () => void;
 }) {
   const canAuthorize = canAuthorizePosImportCleanup(role, record);
   const canDelete = canDeletePosImport(role, record);
@@ -79,8 +82,13 @@ export function PosImportActions({
           <Trash2 size={15} />
         </button>
       )}
+      {canVoidPosImport(role,record) && <button type="button" aria-label={`Void import ${record.sourceFilename}`} onClick={onVoid} className="rounded-lg border border-[var(--app-danger)] px-2 py-1 text-xs font-semibold text-[var(--app-danger)]">Void Import</button>}
     </div>
   );
+}
+
+export function PosImportVoidDialog({target,busy,reason,confirmed,onReasonChange,onConfirmedChange,onCancel,onConfirm}:{target:PosImportRecord;busy:boolean;reason:string;confirmed:boolean;onReasonChange:(value:string)=>void;onConfirmedChange:(value:boolean)=>void;onCancel:()=>void;onConfirm:()=>void}){
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-labelledby="void-pos-import-title"><div className="w-full max-w-lg rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-6 shadow-2xl"><h3 id="void-pos-import-title" className="text-lg font-bold">Void this POS import?</h3><p className="mt-2 text-sm text-[var(--app-text-muted)]">The original file and audit records will be preserved. Its sales will stop contributing to operational calculations, and the business day must be reconfirmed before Closing Count.</p><p className="mt-3 break-all text-sm font-semibold">{target.sourceFilename}</p><label className="mt-4 block text-sm font-medium">Reason<textarea className="field mt-1.5 min-h-20" value={reason} onChange={(event)=>onReasonChange(event.target.value)} maxLength={500} placeholder="Explain why this accepted import is incorrect"/></label><label className="mt-4 flex items-start gap-2 text-sm"><input type="checkbox" checked={confirmed} onChange={(event)=>onConfirmedChange(event.target.checked)} className="mt-1"/><span>I confirm this import is incorrect and should be excluded from operational calculations.</span></label><div className="mt-6 flex justify-end gap-2"><Btn variant="outline" disabled={busy} onClick={onCancel}>Cancel</Btn><Btn variant="danger" disabled={busy||reason.trim().length<10||!confirmed} onClick={onConfirm}>{busy?"Voiding…":"Void Import"}</Btn></div></div></div>;
 }
 export const DAILY_POS_MONITORING_LOCATION="import_history" as const;
 export const DAILY_POS_MONITORING_IS_PAGINATED=false;
@@ -202,6 +210,7 @@ export function PosImportDetailsDialog({ record, onClose }: { record: PosImportR
     ["Units sold", record.unitsSold.toLocaleString("en-PH")],
     ["Total sales", formatPeso(record.totalSales)],
     ["Status", record.status.replaceAll("_", " ")],
+    ...(record.status === "VOIDED" ? [["Void reason",record.voidReason ?? "Not available"],["Voided date/time",record.voidedAt ? formatAppDate(record.voidedAt,true) : "Not available"]] : []),
   ];
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-labelledby="pos-import-details-title" onMouseDown={(event)=>{if(isModalBackdropEvent(event))onClose();}}>
     <div className="w-full max-w-2xl rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-6 shadow-2xl">
@@ -896,6 +905,10 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
   const [deleteReason, setDeleteReason] = useState("");
   const [deletePin, setDeletePin] = useState("");
   const [deletingImport, setDeletingImport] = useState(false);
+  const [voidTarget,setVoidTarget]=useState<PosImportRecord|null>(null);
+  const [voidReason,setVoidReason]=useState("");
+  const [voidConfirmed,setVoidConfirmed]=useState(false);
+  const [voidingImport,setVoidingImport]=useState(false);
   const [authorizeTarget,setAuthorizeTarget]=useState<PosImportRecord|null>(null);
   const [authorizeReason,setAuthorizeReason]=useState("");
   const [authorizingImport,setAuthorizingImport]=useState(false);
@@ -1033,6 +1046,17 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
       setAuthorizeTarget(null);setAuthorizeReason("");setHistoryRefresh(value=>value+1);
     }catch(reason){toast.error(reason instanceof Error?reason.message:"Unable to authorize cleanup.");}
     finally{setAuthorizingImport(false);}
+  };
+  const voidImport=async()=>{
+    if(!voidTarget||!canVoidPosImport(effectiveRole,voidTarget)||voidReason.trim().length<10||!voidConfirmed)return;
+    setVoidingImport(true);
+    try{
+      await inventoryWorkflowService.voidPosImport(voidTarget.id,voidReason.trim());
+      toast.success("POS import voided. Daily sales coverage must be reconfirmed before Closing Count.");
+      setVoidTarget(null);setVoidReason("");setVoidConfirmed(false);setHistoryRefresh(value=>value+1);
+      window.dispatchEvent(new CustomEvent("libro-data-changed"));
+    }catch(reason){toast.error(reason instanceof Error?reason.message:"Unable to void the POS import.");}
+    finally{setVoidingImport(false);}
   };
 
   return (
@@ -1216,7 +1240,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
                   <TD right>{formatPeso(row.totalSales)}</TD>
                   <TD center mono>{row.fingerprintIndicator ?? "Legacy"}</TD>
                   <TD center>
-                    {row.status === "NEEDS_REVIEW" ? (
+                    {row.status === "VOIDED" ? <span className="inline-flex rounded-full border border-[var(--app-danger)] bg-[var(--app-danger-bg)] px-2.5 py-0.5 text-xs font-semibold text-[var(--app-danger)]">VOIDED</span> : row.status === "NEEDS_REVIEW" ? (
                       <span
                         className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold whitespace-nowrap border"
                         style={{
@@ -1247,6 +1271,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
                           setDeleteReason("");
                           setDeletePin("");
                         }}
+                        onVoid={()=>{setVoidTarget(row);setVoidReason("");setVoidConfirmed(false);}}
                       />
                   </TD>
                 </TR>
@@ -1258,6 +1283,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
       </div>)}
 
       {viewImportTarget&&<PosImportDetailsDialog record={viewImportTarget} onClose={()=>setViewImportTarget(null)}/>}
+      {voidTarget&&canVoidPosImport(effectiveRole,voidTarget)&&<PosImportVoidDialog target={voidTarget} busy={voidingImport} reason={voidReason} confirmed={voidConfirmed} onReasonChange={setVoidReason} onConfirmedChange={setVoidConfirmed} onCancel={()=>{setVoidTarget(null);setVoidReason("");setVoidConfirmed(false);}} onConfirm={()=>void voidImport()}/>}
       {authorizeTarget&&canAuthorizePosImportCleanup(effectiveRole,authorizeTarget)&&<PosImportCleanupAuthorizationDialog target={authorizeTarget} busy={authorizingImport} reason={authorizeReason} onReasonChange={setAuthorizeReason} onCancel={()=>{setAuthorizeTarget(null);setAuthorizeReason("");}} onConfirm={()=>void authorizeImportCleanup()}/>}
       {deleteTarget&&canDeletePosImport(effectiveRole,deleteTarget)&&(
         <PosImportDeleteDialog target={deleteTarget} deleting={deletingImport} reason={deleteReason} verificationPin={deletePin} onReasonChange={setDeleteReason} onPinChange={setDeletePin} onCancel={()=>{setDeleteTarget(null);setDeleteReason("");setDeletePin("");}} onConfirm={()=>void deleteImport()}/>

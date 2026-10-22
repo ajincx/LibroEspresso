@@ -122,7 +122,7 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
          JOIN menu_items mi ON mi.id=psi.menu_item_id
          LEFT JOIN LATERAL (SELECT sum(u.quantity_consumed*u.unit_cost_snapshot)::float8 cogs
            FROM pos_sale_ingredient_usage u WHERE u.pos_sale_item_id=psi.id) costs ON true
-        WHERE NOT pi.is_test_data AND pi.business_date BETWEEN $1::date AND $2::date ${salesBranchClause}
+        WHERE NOT pi.is_test_data AND pi.voided_at IS NULL AND pi.business_date BETWEEN $1::date AND $2::date ${salesBranchClause}
         GROUP BY pi.business_date ORDER BY pi.business_date`, scopeParams),
     pool.query<InventoryRow>(
       `SELECT b.id "branchId",b.name "branchName",ii.id "inventoryItemId",ii.sku,ii.name,ii.unit,
@@ -135,7 +135,7 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
                   JOIN pos_sale_items psi ON psi.id=u.pos_sale_item_id
                   JOIN pos_imports pi ON pi.id=psi.pos_import_id
                    JOIN pos_sources source ON source.id=pi.pos_source_id
-                 WHERE pi.branch_id=b.id AND u.inventory_item_id=ii.id AND NOT pi.is_test_data
+                 WHERE pi.branch_id=b.id AND u.inventory_item_id=ii.id AND NOT pi.is_test_data AND pi.voided_at IS NULL
                    AND pi.business_date BETWEEN $1::date AND $2::date
                  GROUP BY pi.business_date
                  ORDER BY pi.business_date DESC
@@ -166,7 +166,7 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
          JOIN pos_sources source ON source.id=pi.pos_source_id
          JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
          JOIN menu_items mi ON mi.id=psi.menu_item_id
-        WHERE NOT pi.is_test_data AND pi.business_date BETWEEN $1::date AND $2::date ${evaluationBranchClause}
+        WHERE NOT pi.is_test_data AND pi.voided_at IS NULL AND pi.business_date BETWEEN $1::date AND $2::date ${evaluationBranchClause}
         GROUP BY pi.branch_id,b.name,pi.business_date
         ORDER BY pi.branch_id,pi.business_date`, evaluationParams),
     pool.query<IngredientUsageRow>(
@@ -178,7 +178,7 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
           JOIN pos_sources source ON source.id=pi.pos_source_id
          JOIN branches b ON b.id=pi.branch_id
          JOIN inventory_items ii ON ii.id=usage.inventory_item_id
-        WHERE NOT pi.is_test_data AND pi.business_date BETWEEN $1::date AND $2::date ${evaluationBranchClause}
+        WHERE NOT pi.is_test_data AND pi.voided_at IS NULL AND pi.business_date BETWEEN $1::date AND $2::date ${evaluationBranchClause}
          GROUP BY pi.branch_id,b.name,usage.inventory_item_id,ii.name,usage.unit,ii.unit,pi.business_date
         ORDER BY pi.branch_id,usage.inventory_item_id,pi.business_date`, evaluationParams),
     pool.query<IncomingOrderRow>(

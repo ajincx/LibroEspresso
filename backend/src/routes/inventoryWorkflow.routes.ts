@@ -23,6 +23,7 @@ import {
   submitShrinkageInvestigation,
   submitInventoryCount,
   updateInventoryCount,
+  voidPosImport,
   classifyInventoryCountAsTestData,
   configurePosFormatRequest,
   listPosFormatSetupRequests,
@@ -63,6 +64,7 @@ posSalesRouter.put("/mappings/:id", authorize("OWNER"), asyncHandler(revisePendi
 posSalesRouter.patch("/mappings/:id", authorize("OWNER"), asyncHandler(updatePosMapping));
 posSalesRouter.post("/mappings/:id/deactivate", authorize("OWNER"), asyncHandler(deactivateApprovedPosMapping));
 posSalesRouter.get("/", asyncHandler(listPosImports));
+posSalesRouter.post("/:id/void", authorize("OWNER"), asyncHandler(voidPosImport));
 posSalesRouter.post("/:id/authorize-cleanup", authorize("OWNER"), asyncHandler(authorizePosImportCleanup));
 posSalesRouter.delete("/:id", authorize("OWNER"), asyncHandler(deletePosImport));
 posSalesRouter.post("/preview", authorize("BRANCH_MANAGER"), posFileBody, asyncHandler(previewPosSales));

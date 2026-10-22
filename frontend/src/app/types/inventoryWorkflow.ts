@@ -64,7 +64,12 @@ export interface PosImportRecord {
   productLines: number;
   unitsSold: number;
   totalSales: number;
-  status: "COMPLETE" | "NEEDS_REVIEW";
+    status: "COMPLETE" | "NEEDS_REVIEW" | "VOIDED";
+    importQuality?: "COMPLETE" | "NEEDS_REVIEW";
+    isTestData?: boolean;
+    voidedAt?: string | null;
+    voidedBy?: string | null;
+    voidReason?: string | null;
   totalRows: number;
   validRows: number;
   warningRows: number;

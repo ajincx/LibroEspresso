@@ -25,6 +25,7 @@ describe("thesis inventory calculation formulas", () => {
     expect(consumptionSql).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id");
     expect(consumptionSql).not.toContain("source.status");
     expect(consumptionSql).toContain("NOT pi.is_test_data");
+    expect(consumptionSql).toContain("pi.voided_at IS NULL");
   });
 
   it("rejects a historical query when only a later mutable balance exists", async () => {
@@ -71,6 +72,7 @@ describe("thesis inventory calculation formulas", () => {
         expect(sql).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id");
         expect(sql).not.toContain("source.status");
         expect(sql).toContain("NOT pi.is_test_data");
+        expect(sql).toContain("pi.voided_at IS NULL");
         expect(sql).toContain("pi.business_date >= $3::date");
         expect(params?.[4]).toBe("OPENING_BASELINE");
         return { rows: [{ unit: "g", quantity: 696 }] };
@@ -140,6 +142,7 @@ describe("thesis inventory calculation formulas", () => {
     expect(sql).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id");
     expect(sql).not.toContain("source.status");
     expect(sql).toContain("NOT pi.is_test_data");
+    expect(sql).toContain("pi.voided_at IS NULL");
     expect(sql).toContain("movement.occurred_at::date <= $2::date");
     expect(sql).toContain("pi.business_date <= $2::date");
     expect(sql).toContain("balance.as_of::date <= $2::date");

@@ -96,15 +96,19 @@ describe("predictive controller Gemini boundaries", () => {
     expect(salesSql).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id");
     expect(salesSql).not.toContain("source.status");
     expect(salesSql).toContain("NOT pi.is_test_data");
+    expect(salesSql).toContain("pi.voided_at IS NULL");
     expect(inventorySql).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id");
     expect(inventorySql).not.toContain("source.status");
     expect(inventorySql).toContain("NOT pi.is_test_data");
+    expect(inventorySql).toContain("pi.voided_at IS NULL");
     expect(ledgerSql).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id");
     expect(ledgerSql).not.toContain("source.status");
     expect(ledgerSql).toContain("NOT pi.is_test_data");
+    expect(ledgerSql).toContain("pi.voided_at IS NULL");
     expect(ingredientDemandSql).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id");
     expect(ingredientDemandSql).not.toContain("source.status");
     expect(ingredientDemandSql).toContain("NOT pi.is_test_data");
+    expect(ingredientDemandSql).toContain("pi.voided_at IS NULL");
   });
 
   it("excludes Opening Count differences from verified shrinkage context", async () => {

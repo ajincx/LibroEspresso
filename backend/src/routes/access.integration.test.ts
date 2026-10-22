@@ -338,6 +338,21 @@ describe("access controls", () => {
     expect(responses.map(response=>response.status)).toEqual([403,403,401,403,403]);
   });
 
+  it("keeps non-destructive POS import voiding Owner-only",async()=>{
+    const manager=session({id:"manager",role:"BRANCH_MANAGER",branchId:"00000000-0000-4000-8000-000000000002"});
+    const staff=session({id:"staff",role:"STAFF",branchId:"00000000-0000-4000-8000-000000000002"});
+    const owner=session({id:"owner",role:"OWNER",branchId:null});
+    const path="/api/pos-sales/00000000-0000-4000-8000-000000000010/void";
+    const body={reason:"The accepted report contains incorrect sales.",confirmed:true};
+    const responses=await Promise.all([
+      request(app).post(path).set("Cookie",manager).send(body),
+      request(app).post(path).set("Cookie",staff).send(body),
+      request(app).post(path).send(body),
+      request(app).post(path).set("Cookie",owner).send({reason:"short",confirmed:false}),
+    ]);
+    expect(responses.map(response=>response.status)).toEqual([403,403,401,422]);
+  });
+
   it("allows only an authenticated Branch Manager into POS preview validation", async () => {
     const cookie = session({
       id: "manager",

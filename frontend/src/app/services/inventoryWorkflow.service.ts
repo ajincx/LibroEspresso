@@ -147,6 +147,9 @@ export const inventoryWorkflowService = {
   async deletePosImport(id:string, reason:string, verificationPin:string) {
     return (await api.delete<ApiSuccess<{ id:string;deleted:true }>>(`/pos-sales/${id}`, { data: { reason, verificationPin } })).data.data;
   },
+  async voidPosImport(id:string,reason:string){
+    return (await api.post<ApiSuccess<{id:string;voided:true;voidedAt:string;eodConfirmationInvalidated:boolean}>>(`/pos-sales/${id}/void`,{reason,confirmed:true})).data.data;
+  },
   async authorizePosImportCleanup(id:string,reason:string){
     return (await api.post<ApiSuccess<{id:string;authorized:true}>>(`/pos-sales/${id}/authorize-cleanup`,{reason})).data.data;
   },

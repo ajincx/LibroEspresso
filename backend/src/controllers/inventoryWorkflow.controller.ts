@@ -35,6 +35,7 @@ import {
   posAnalyticsFilters,
   posImportHistoryFilters,
   posImportInput,
+  posImportVoidInput,
   posImportApprovalReviewInput,
   posCleanupAuthorizationInput,
   posPreviewInput,
@@ -148,11 +149,13 @@ async function hasAcceptedPosOverlap(
   const existing = await client.query(
     `SELECT 1
        FROM pos_sale_items existing
+       JOIN pos_imports accepted ON accepted.id=existing.pos_import_id
        JOIN unnest($4::text[],$5::text[]) incoming(transaction_id,line_id)
          ON incoming.transaction_id=existing.source_transaction_id
         AND incoming.line_id=existing.source_line_id
       WHERE existing.branch_id=$1 AND existing.pos_source_id=$2
         AND existing.business_date=$3::date
+        AND accepted.voided_at IS NULL
       LIMIT 1`,
     [
       branchId,
@@ -331,7 +334,7 @@ export async function buildPosPreview(
     ? await Promise.all([
         client.query<{ id: string }>(
           `SELECT id FROM pos_imports
-            WHERE branch_id=$1 AND business_date=$2 AND content_hash=$3 LIMIT 1`,
+            WHERE branch_id=$1 AND business_date=$2 AND content_hash=$3 AND voided_at IS NULL LIMIT 1`,
           [branchId, parsed.businessDate, parsed.contentHash],
         ),
         hasAcceptedPosOverlap(client, branchId, selectedSource.id, parsed.businessDate, rows),
@@ -529,7 +532,7 @@ async function executePosImport(
       throw new AppError(409,"POS_IMPORT_AFTER_CLOSING",`This sales report cannot be imported because Closing Count ${finalizedClosing.rows[0].countNo} already finalized inventory on or after ${preview.businessDate}. The submitted count and variance were not changed.`);
     }
     const duplicateAfterLock = await client.query(
-      `SELECT 1 FROM pos_imports WHERE branch_id=$1 AND content_hash=$2 LIMIT 1`,
+      `SELECT 1 FROM pos_imports WHERE branch_id=$1 AND content_hash=$2 AND voided_at IS NULL LIMIT 1`,
       [branchId, preview.contentHash],
     );
     if (duplicateAfterLock.rows[0]) {
@@ -615,7 +618,8 @@ async function executePosImport(
       expectedCogs:preview.simulation.estimatedCogs,generatedCogs:actualCogs,salesTotalMatches,quantityMatches,recipeConsumptionMatches,cogsMatches,branchIsolated};
     if (input.confirmDayComplete) {
       const existingDeclaration = await client.query<{ declaration:string }>(
-        `SELECT declaration FROM pos_daily_declarations WHERE branch_id=$1 AND business_date=$2 FOR UPDATE`,
+        `SELECT declaration FROM pos_daily_declarations
+          WHERE branch_id=$1 AND business_date=$2 AND invalidated_at IS NULL FOR UPDATE`,
         [branchId,preview.businessDate]);
       if (existingDeclaration.rows[0]) {
         throw new AppError(409,"POS_DAY_ALREADY_FINALIZED","This business day already has a completed sales declaration.");
@@ -904,7 +908,9 @@ export const listPosImports: RequestHandler = async (req, res) => {
   values.push(pagination.pageSize,(pagination.page-1)*pagination.pageSize);
   const result = await pool.query(
     `SELECT pi.id,pi.business_date::text "businessDate",pi.source_filename "sourceFilename",
-            pi.imported_at "importedAt",pi.import_status "status",pi.total_source_rows "totalRows",
+            pi.imported_at "importedAt",CASE WHEN pi.voided_at IS NOT NULL THEN 'VOIDED' ELSE pi.import_status END "status",
+            pi.import_status "importQuality",pi.voided_at "voidedAt",pi.voided_by "voidedBy",pi.void_reason "voidReason",pi.is_test_data "isTestData",
+            pi.total_source_rows "totalRows",
             pi.valid_rows "validRows",pi.warning_rows "warningRows",pi.invalid_rows "invalidRows",pi.unmatched_rows "unmatchedRows",
             pi.created_environment "createdEnvironment",pi.cleanup_authorized_by "cleanupAuthorizedBy",
             pi.cleanup_authorized_at "cleanupAuthorizedAt",pi.cleanup_reason "cleanupReason",
@@ -945,6 +951,85 @@ export const listPosImports: RequestHandler = async (req, res) => {
     ...posCleanupAccess(record as {createdEnvironment:PosLifecycleEnvironment;cleanupAuthorizedAt:string|null},req.user!.role),
   }));
   res.json({ success: true, data: { imports: page.data, pagination: page.pagination } });
+};
+
+export const voidPosImport: RequestHandler = async (req, res) => {
+  const { id } = idParams.parse(req.params);
+  const input = posImportVoidInput.parse(req.body);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const scope = await client.query<{ branchId:string }>(
+      `SELECT branch_id "branchId" FROM pos_imports WHERE id=$1`,
+      [id],
+    );
+    if (!scope.rows[0]) throw new AppError(404,"POS_IMPORT_NOT_FOUND","POS import not found");
+    await lockBranchInventoryOperation(client,scope.rows[0].branchId);
+    const found = await client.query<{
+      branchId:string;businessDate:string;sourceFilename:string;importedAt:string;
+      importedBy:string;isTestData:boolean;completedAt:string|null;voidedAt:string|null;
+    }>(`SELECT branch_id "branchId",business_date::text "businessDate",source_filename "sourceFilename",
+              imported_at::text "importedAt",imported_by "importedBy",is_test_data "isTestData",
+              completed_at::text "completedAt",voided_at::text "voidedAt"
+         FROM pos_imports WHERE id=$1 FOR UPDATE`,[id]);
+    const imported=found.rows[0];
+    if (!imported) throw new AppError(404,"POS_IMPORT_NOT_FOUND","POS import not found");
+    if (imported.voidedAt) throw new AppError(409,"POS_IMPORT_ALREADY_VOIDED","This POS import has already been voided.");
+    if (!imported.completedAt) throw new AppError(409,"POS_IMPORT_NOT_ACCEPTED","Only an accepted POS import can be voided.");
+    if (imported.isTestData) throw new AppError(409,"POS_IMPORT_TEST_DATA","Test-data imports use the existing controlled cleanup workflow.");
+    const dependentCount = await client.query<{ countNo:string;countType:string }>(
+      `SELECT count_no "countNo",count_type "countType"
+         FROM inventory_counts
+        WHERE branch_id=$1 AND NOT is_test_data
+          AND count_date >= $2::date AND submitted_at >= $3::timestamptz
+        ORDER BY count_date,COALESCE(effective_at,submitted_at),submitted_at LIMIT 1`,
+      [imported.branchId,imported.businessDate,imported.importedAt],
+    );
+    if (dependentCount.rows[0]) {
+      throw new AppError(
+        409,
+        "POS_IMPORT_COUNT_DEPENDENCY",
+        `This POS import cannot be voided because finalized ${dependentCount.rows[0].countType.toLowerCase()} count ${dependentCount.rows[0].countNo} depends on it. A controlled inventory reconciliation is required.`,
+      );
+    }
+    const voided = await client.query<{ voidedAt:string }>(
+      `UPDATE pos_imports
+          SET voided_at=now(),voided_by=$2,void_reason=$3
+        WHERE id=$1 RETURNING voided_at::text "voidedAt"`,
+      [id,req.user!.id,input.reason],
+    );
+    await client.query(`UPDATE pos_sale_items SET voided_at=$2::timestamptz WHERE pos_import_id=$1`,[id,voided.rows[0]!.voidedAt]);
+    const invalidated = await client.query(
+      `UPDATE pos_daily_declarations
+          SET invalidated_at=now(),invalidated_by=$3,invalidation_reason=$4
+        WHERE branch_id=$1 AND business_date=$2::date AND invalidated_at IS NULL
+        RETURNING id`,
+      [imported.branchId,imported.businessDate,req.user!.id,`POS import voided: ${input.reason}`],
+    );
+    await writeAudit(
+      req.user!,
+      "VOID_POS_IMPORT",
+      "POS_IMPORT",
+      id,
+      `Voided POS import ${imported.sourceFilename}`,
+      {branchId:imported.branchId,businessDate:imported.businessDate,reason:input.reason,eodDeclarationsInvalidated:invalidated.rowCount??0},
+      client,
+    );
+    await client.query(
+      `INSERT INTO notifications(recipient_user_id,branch_id,type,title,message,entity_type,entity_id)
+       SELECT manager.id,$1,'POS_IMPORT_VOIDED','POS Import Voided',$2,'POS_IMPORT',$3
+         FROM users manager
+        WHERE manager.role='BRANCH_MANAGER' AND manager.status='ACTIVE' AND manager.branch_id=$1`,
+      [imported.branchId,`${imported.sourceFilename} for ${imported.businessDate} was voided by the Owner. Import the corrected sales report and reconfirm complete daily coverage before Closing Count.`,id],
+    );
+    await client.query("COMMIT");
+    res.json({success:true,data:{id,voided:true,voidedAt:voided.rows[0]!.voidedAt,eodConfirmationInvalidated:(invalidated.rowCount??0)>0}});
+  } catch(error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 };
 
 export const authorizePosImportCleanup: RequestHandler = async (req,res) => {
@@ -1370,8 +1455,9 @@ export const getExpectedInventory: RequestHandler = async (req, res) => {
        JOIN pos_import_reconciliations reconciliation ON reconciliation.pos_import_id=imported.id
         AND reconciliation.sales_total_matches AND reconciliation.quantity_matches
         AND reconciliation.recipe_consumption_matches AND reconciliation.cogs_matches AND reconciliation.branch_isolated
-       WHERE declaration.branch_id=$1 AND declaration.business_date=$2
-         AND declaration.declaration='SALES_COMPLETE'
+        WHERE declaration.branch_id=$1 AND declaration.business_date=$2
+          AND declaration.declaration='SALES_COMPLETE'
+          AND declaration.invalidated_at IS NULL AND imported.voided_at IS NULL
      ) "complete"`, [branchId,countDate]);
   res.json({ success: true, data: {
     branchId, countDate, countType, items, unavailableItems,
@@ -1469,7 +1555,8 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
         JOIN pos_import_reconciliations reconciliation ON reconciliation.pos_import_id=imported.id
           AND reconciliation.sales_total_matches AND reconciliation.quantity_matches
           AND reconciliation.recipe_consumption_matches AND reconciliation.cogs_matches AND reconciliation.branch_isolated
-        WHERE declaration.branch_id=$1 AND declaration.business_date=$2 AND declaration.declaration='SALES_COMPLETE' FOR UPDATE OF declaration`,
+        WHERE declaration.branch_id=$1 AND declaration.business_date=$2 AND declaration.declaration='SALES_COMPLETE'
+          AND declaration.invalidated_at IS NULL AND imported.voided_at IS NULL FOR UPDATE OF declaration`,
         [branchId,input.countDate]);
       if (!completeDay.rows[0]) throw new AppError(409,"POS_DAY_COMPLETENESS_REQUIRED","Import and reconcile the complete end-of-day POS report, then confirm that it covers the full business day before submitting Closing Count.");
     }
@@ -1667,7 +1754,7 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
          AND (newer.count_date>$3::date OR (newer.count_date=$3::date AND COALESCE(newer.effective_at,newer.submitted_at)>$4::timestamptz))
        UNION ALL SELECT 1 FROM inventory_movements movement WHERE movement.branch_id=$1 AND NOT movement.is_test_data
          AND movement.occurred_at>$4::timestamptz
-       UNION ALL SELECT 1 FROM pos_imports imported WHERE imported.branch_id=$1 AND NOT imported.is_test_data
+       UNION ALL SELECT 1 FROM pos_imports imported WHERE imported.branch_id=$1 AND NOT imported.is_test_data AND imported.voided_at IS NULL
          AND (imported.business_date>$3::date OR (imported.business_date=$3::date AND imported.imported_at>$5::timestamptz))
        LIMIT 1`,
       [branchId,id,input.countDate,count.rows[0].effectiveAt ?? count.rows[0].submittedAt,count.rows[0].submittedAt],
@@ -2268,7 +2355,7 @@ export const getShrinkageEvidence: RequestHandler = async (req, res) => {
          JOIN pos_sale_items psi ON psi.id=u.pos_sale_item_id
          JOIN pos_imports pi ON pi.id=psi.pos_import_id
        JOIN pos_sources source ON source.id=pi.pos_source_id
-        WHERE pi.branch_id=$1 AND u.inventory_item_id=$2 AND NOT pi.is_test_data
+        WHERE pi.branch_id=$1 AND u.inventory_item_id=$2 AND NOT pi.is_test_data AND pi.voided_at IS NULL
           AND pi.business_date BETWEEN $3::date-7 AND $3::date
         GROUP BY pi.business_date ORDER BY pi.business_date DESC`,
       [context.branchId, context.inventoryItemId, context.countDate],
