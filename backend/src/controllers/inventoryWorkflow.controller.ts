@@ -119,6 +119,52 @@ type ConfirmedPosImportSource = PosImportSource & {
   confirmDayComplete: boolean;
 };
 
+const POS_IMPORT_OVERLAP_MESSAGE =
+  "This report overlaps transactions from a previously accepted POS import. No sales were imported.";
+
+function reliablePosOverlapRows(rows: readonly MatchedPosRow[]) {
+  const identities = new Map<string, { transactionId: string; lineId: string }>();
+  for (const row of rows) {
+    if (row.sourceFormat !== POS_SOURCE_FORMATS.TRANSACTION_SUMMARY
+      || row.itemClassification !== "SELLABLE_ITEM"
+      || row.status === "INVALID"
+      || !row.transactionId
+      || !row.sourceLineId) continue;
+    const key = JSON.stringify([row.transactionId, row.sourceLineId]);
+    identities.set(key, { transactionId: row.transactionId, lineId: row.sourceLineId });
+  }
+  return [...identities.values()];
+}
+
+async function hasAcceptedPosOverlap(
+  client: Pick<PoolClient, "query">,
+  branchId: string,
+  posSourceId: string,
+  businessDate: string | null,
+  rows: readonly MatchedPosRow[],
+) {
+  const identities = reliablePosOverlapRows(rows);
+  if (!businessDate || !identities.length) return false;
+  const existing = await client.query(
+    `SELECT 1
+       FROM pos_sale_items existing
+       JOIN unnest($4::text[],$5::text[]) incoming(transaction_id,line_id)
+         ON incoming.transaction_id=existing.source_transaction_id
+        AND incoming.line_id=existing.source_line_id
+      WHERE existing.branch_id=$1 AND existing.pos_source_id=$2
+        AND existing.business_date=$3::date
+      LIMIT 1`,
+    [
+      branchId,
+      posSourceId,
+      businessDate,
+      identities.map((identity) => identity.transactionId),
+      identities.map((identity) => identity.lineId),
+    ],
+  );
+  return Boolean(existing.rows[0]);
+}
+
 function decodedPosFilename(value: string | string[] | undefined) {
   if (typeof value !== "string") throw new AppError(422, "POS_FILENAME_REQUIRED", "The POS filename is required.");
   let filename: string;
@@ -281,16 +327,23 @@ export async function buildPosPreview(
   });
   const matchAndValidationMs = performance.now() - matchingStartedAt;
   const duplicateStartedAt = performance.now();
-  const existing = parsed.businessDate
-    ? await client.query<{ id: string }>(
-        `SELECT id FROM pos_imports
-          WHERE branch_id=$1 AND business_date=$2 AND content_hash=$3 LIMIT 1`,
-        [branchId, parsed.businessDate, parsed.contentHash],
-      )
-    : { rows: [] as { id: string }[] };
+  const [existing, overlapDetected] = parsed.businessDate
+    ? await Promise.all([
+        client.query<{ id: string }>(
+          `SELECT id FROM pos_imports
+            WHERE branch_id=$1 AND business_date=$2 AND content_hash=$3 LIMIT 1`,
+          [branchId, parsed.businessDate, parsed.contentHash],
+        ),
+        hasAcceptedPosOverlap(client, branchId, selectedSource.id, parsed.businessDate, rows),
+      ])
+    : [{ rows: [] as { id: string }[] }, false] as const;
   const duplicateCheckMs = performance.now() - duplicateStartedAt;
   const summary = summarizePosRows(rows, existing.rows.length > 0);
-  const importBlockedReason = existing.rows.length > 0 ? "This file has already been imported." : parsed.importBlockedReason ?? null;
+  const importBlockedReason = existing.rows.length > 0
+    ? "This file has already been imported."
+    : overlapDetected
+      ? POS_IMPORT_OVERLAP_MESSAGE
+      : parsed.importBlockedReason ?? null;
   if (importBlockedReason) {
     summary.canImport = false;
     summary.quality = "REJECTED";
@@ -340,6 +393,7 @@ export async function buildPosPreview(
     sourceFormat: parsed.sourceFormat,
     formatLabel: parsed.formatLabel,
     importBlockedReason,
+    overlapDetected,
     rows,
     validationIssues,
     summary,
@@ -462,6 +516,7 @@ async function executePosImport(
     const preview = await buildPosPreview(branchId, input, client);
     if (preview.contentHash !== input.expectedContentHash) throw new AppError(409, "POS_PREVIEW_CHANGED", "The selected POS file changed after preview. Preview it again before importing.");
     if (preview.summary.duplicate) throw new AppError(409, "POS_IMPORT_DUPLICATE", "This file has already been imported.");
+    if (preview.overlapDetected) throw new AppError(409, "POS_IMPORT_OVERLAP", POS_IMPORT_OVERLAP_MESSAGE);
     if (preview.importBlockedReason) throw new AppError(422, "POS_FORMAT_IMPORT_BLOCKED", preview.importBlockedReason);
     if (!preview.summary.canImport || !preview.businessDate) throw new AppError(422, "POS_IMPORT_INVALID", "POS import was not completed because the preview contains invalid or unmatched rows.");
     if (!input.expectedResolutionFingerprint || preview.resolutionFingerprint !== input.expectedResolutionFingerprint) throw new AppError(409, "POS_MAPPING_CHANGED", "POS source or product/variant mapping changed after preview. Preview the file again.");
@@ -479,6 +534,9 @@ async function executePosImport(
     );
     if (duplicateAfterLock.rows[0]) {
       throw new AppError(409, "POS_IMPORT_DUPLICATE", "This file has already been imported.");
+    }
+    if (await hasAcceptedPosOverlap(client, branchId, preview.posSourceId, preview.businessDate, preview.rows)) {
+      throw new AppError(409, "POS_IMPORT_OVERLAP", POS_IMPORT_OVERLAP_MESSAGE);
     }
     const importRows = preview.rows.filter((row): row is MatchedPosRow & { menuItemId: string; quantitySold: number; unitPrice: number; businessDate: string } => Boolean(row.menuItemId) && row.quantitySold !== null && row.unitPrice !== null && row.businessDate !== null && row.status !== "INVALID");
     const sourceSalesTotal=importRows.reduce((total,row)=>total+(typeof row.lineAmount==="number"?row.lineAmount:Number(row.quantitySold)*Number(row.unitPrice)),0);

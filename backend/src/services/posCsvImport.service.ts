@@ -139,10 +139,9 @@ export function quantityIssue(value: string, quantity: number | null) {
 function duplicateIdentity(row: ParsedPosRow) {
   const transactionIdentity = row.transactionId ?? row.sourceOrNumber ?? row.sourceTransactionNumber;
   if (!transactionIdentity) return null;
-  const stableLineId = row.sourceFormat === POS_SOURCE_FORMATS.LEGACY_SUMMARY ? null : row.sourceLineId;
   return JSON.stringify([
     transactionIdentity,
-    stableLineId,
+    row.sourceLineId,
     normalizeProduct(row.sourceProductId ?? row.sourceProductName ?? row.sourceProduct),
     row.quantitySold,
     row.businessDate,
@@ -187,7 +186,13 @@ export function hashCanonicalPosRows(rows: readonly ParsedPosRow[]) {
     unitPrice: row.unitPrice,
     businessDate: row.businessDate,
     transactionId: row.transactionId,
-    sourceLineId: row.sourceLineId,
+    // Preserve hashes generated before deterministic Excel line identities were
+    // introduced so an already accepted workbook remains an exact-file duplicate.
+    sourceLineId: row.sourceFormat === POS_SOURCE_FORMATS.LEGACY_SUMMARY
+      ? (row.sourceRow ? String(row.sourceRow) : row.sourceLineId)
+      : row.sourceFormat === POS_SOURCE_FORMATS.TRANSACTION_SUMMARY
+        ? null
+        : row.sourceLineId,
     transactionTimestamp: row.transactionTimestamp,
   }));
   return createHash("sha256").update(JSON.stringify(canonical), "utf8").digest("hex");

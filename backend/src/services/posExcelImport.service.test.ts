@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import * as XLSX from "xlsx";
-import { MAX_POS_SALES_QUANTITY, POS_SOURCE_FORMATS } from "./posCsvImport.service.js";
+import { hashCanonicalPosRows, MAX_POS_SALES_QUANTITY, POS_SOURCE_FORMATS } from "./posCsvImport.service.js";
 import {
   TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE,
   detectPosExcelFormat,
@@ -108,10 +108,29 @@ describe("Summary Items Sold legacy XLS adapter", () => {
     expect(parsed.rows[0]).toMatchObject({
       sourceProduct: "Spanish Latte", quantitySold: 2, unitPrice: 100, lineAmount: 200,
       businessDate: "2026-09-16", transactionId: "TX-1", sourceOrNumber: "OR-1",
-      sourceTransactionNumber: "TX-1", sourceWorksheet: "Sheet1", sourceRow: 11,
+      sourceTransactionNumber: "TX-1", sourceLineId: '["OR-1",1]', sourceWorksheet: "Sheet1", sourceRow: 11,
     });
-    expect(parsed.rows[1]).toMatchObject({ sourceProduct: "Americano", quantitySold: 1, unitPrice: 80, lineAmount: 80 });
+    expect(parsed.rows[1]).toMatchObject({ sourceProduct: "Americano", quantitySold: 1, unitPrice: 80, lineAmount: 80, sourceLineId: '["OR-1",2]' });
     expect(parsed.importBlockedReason).toBeNull();
+  });
+
+  it("preserves identical item lines in one legacy receipt using item ordinals", () => {
+    const rows = legacyRows();
+    rows.splice(11, 0, [...rows[10]!]);
+    rows[13] = row({ 0: 5, 12: 480 });
+    const parsed = parsePosExcel("repeated-items.xls", workbookBuffer(rows, "xls"));
+
+    expect(parsed.rows).toHaveLength(3);
+    expect(parsed.rows.slice(0, 2).map((item) => item.sourceLineId)).toEqual(['["OR-1",1]', '["OR-1",2]']);
+    expect(parsed.rows.every((item) => !item.issues.includes("Duplicate transaction row detected."))).toBe(true);
+  });
+
+  it("still identifies an exactly repeated legacy transaction block", () => {
+    const rows = legacyRows();
+    rows.splice(13, 0, ...rows.slice(6, 13).map((entry) => [...entry]));
+    const parsed = parsePosExcel("duplicate-receipt.xls", workbookBuffer(rows, "xls"));
+
+    expect(parsed.rows.slice(2).every((item) => item.issues.includes("Duplicate transaction row detected."))).toBe(true);
   });
 
   it("excludes footer totals and preserves zero-price operational lines as warnings", () => {
@@ -147,6 +166,7 @@ describe("Transaction Summary XLSX adapter", () => {
     expect(parsed.rows).toHaveLength(2);
     expect(parsed.rows.map((item) => [item.sourceProduct, item.quantitySold])).toEqual([["Americano", 1], ["Spanish Latte", 2]]);
     expect(parsed.rows.every((item) => item.unitPrice === null && item.lineAmount === null)).toBe(true);
+    expect(parsed.rows.map((item) => item.sourceLineId)).toEqual(['["M-1",1]', '["M-1",2]']);
     expect(parsed.rows.every((item) => item.status === "VALID")).toBe(true);
     expect(parsed.rows.every((item) => !item.issues.includes(TRANSACTION_SUMMARY_CAPSTONE_PRICING_NOTICE))).toBe(true);
     expect(parsed.importBlockedReason).toBeNull();
@@ -215,6 +235,34 @@ describe("Transaction Summary XLSX adapter", () => {
     const multiItem = parsePosExcel("multi.xlsx", workbookBuffer(transactionRows(), "xlsx"));
     expect(multiItem.rows).toHaveLength(2);
     expect(multiItem.rows.every((item) => !item.issues.includes("Duplicate transaction row detected."))).toBe(true);
+  });
+
+  it("keeps the same OR distinct across populated machine identities", () => {
+    const rows = transactionRows({ items: "Americanox1", itemQty: 1 });
+    const secondMachine = [...rows[1]!];
+    secondMachine[1] = "M-2";
+    rows.splice(2, 0, secondMachine);
+    const parsed = parsePosExcel("separate-machines.xlsx", workbookBuffer(rows, "xlsx"));
+
+    expect(parsed.rows.map((item) => item.sourceLineId)).toEqual(['["M-1",1]', '["M-2",1]']);
+    expect(parsed.rows.every((item) => !item.issues.includes("Duplicate transaction row detected."))).toBe(true);
+  });
+
+  it("rejects a transaction row without a usable Machine ID", () => {
+    const rows = transactionRows({ items: "Americanox1", itemQty: 1 });
+    rows[1]![1] = null;
+    const parsed = parsePosExcel("missing-machine.xlsx", workbookBuffer(rows, "xlsx"));
+
+    expect(parsed.rows[0]).toMatchObject({ sourceLineId: null, status: "INVALID" });
+    expect(parsed.rows[0]!.issues).toContain("Machine ID is required for safe transaction identification.");
+  });
+
+  it("preserves pre-Phase-1B Excel content hashes", () => {
+    const legacy = parsePosExcel("summary.xls", workbookBuffer(legacyRows(), "xls"));
+    const transaction = parsePosExcel("transactions.xlsx", workbookBuffer(transactionRows(), "xlsx"));
+
+    expect(hashCanonicalPosRows(legacy.rows.map((item) => ({ ...item, sourceLineId: String(item.sourceRow) })))).toBe(legacy.contentHash);
+    expect(hashCanonicalPosRows(transaction.rows.map((item) => ({ ...item, sourceLineId: null })))).toBe(transaction.contentHash);
   });
 
   it("parses and reuses a custom field mapping and reports a missing mapped header", () => {

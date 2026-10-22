@@ -66,10 +66,10 @@ function legacyExcelBuffer(productName = "Iced Latte, Large") {
   return Buffer.from(XLSX.write(workbook, { type: "buffer", bookType: "xls" }));
 }
 
-function transactionSummaryBuffer(businessDate = "2026-09-08 09:00:00") {
+function transactionSummaryBuffer(businessDate = "2026-09-08 09:00:00", machineId = "M-1", orNumber = "OR-1") {
   const rows = [
     ["Store", "Machine ID", "OR No.", "Date", "Payment Time", "Item Name(s)", "Item Qty.", "Due Amt.", "Gross Amt.", "Status", "Voided by"],
-    ["LIBRO ESPRESSO", "M-1", "OR-1", businessDate, "2026-09-08 09:01:00", "Iced Latte, Largex2.0000", 2, 380, 380, "Paid", "--"],
+    ["LIBRO ESPRESSO", machineId, orNumber, businessDate, "2026-09-08 09:01:00", "Iced Latte, Largex2.0000", 2, 380, 380, "Paid", "--"],
     ["Total", null, null, null, null, null, 2, 380, 380],
   ];
   const workbook = XLSX.utils.book_new();
@@ -118,10 +118,11 @@ function response() {
 
 const deleteRequest = (id=importId) => ({params:{id},body:{reason:"Reset an explicitly authorized development fixture",verificationPin:"12345"},user:{id:"owner-1",role:"OWNER",branchId:null}}) as never;
 
-function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate" | "reconciliation", mappingVersion?: string,
+function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate" | "overlap-after-lock" | "reconciliation", mappingVersion?: string,
   variantRows?: Array<{id:string;menuItemId:string;name:string;status:"ACTIVE"|"INACTIVE";recipeVersionId:string|null;recipeUnits:Array<{recipeUnit:string;inventoryUnit:string}>}>,
   sourceFormat = "CANONICAL_CSV", lateHistorical = false) {
   const queries: Array<{ sql: string; values?: unknown[] }> = [];
+  let overlapChecks = 0;
   const query = vi.fn(async (statement: unknown, values?: unknown[]) => {
     const sql = String(statement);
     queries.push({ sql, values });
@@ -151,6 +152,10 @@ function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate" | "reco
     if (sql.includes("FROM pos_sources WHERE")) return { rows: [{ id: sourceId, sourceCode: "VERIFIED", displayName: "Verified POS", supportedFormat: sourceFormat }] };
     if (sql.includes("FROM pos_product_variant_mappings pm")) return { rows: [{ ...mappingRow, sourceProductCode: sourceFormat === "CANONICAL_CSV" ? "LATTE-L" : null, updatedAt: mappingVersion ?? mappingRow.updatedAt }] };
     if (sql.includes("SELECT id FROM pos_imports")) return { rows: [] };
+    if (sql.includes("FROM pos_sale_items existing")) {
+      overlapChecks += 1;
+      return { rows: failAt === "overlap-after-lock" && overlapChecks > 1 ? [{ exists: 1 }] : [] };
+    }
     if (sql.includes("INSERT INTO pos_imports")) {
       if (failAt === "concurrent-duplicate") throw Object.assign(new Error("duplicate"), { code: "23505" });
       return { rows: [{ id: "import-1" }] };
@@ -331,7 +336,7 @@ describe("Excel POS preview and canonical import integration", () => {
     expect(mocks.poolQuery).toHaveBeenCalledWith(expect.stringContaining("bis.branch_id=$2"), [["recipe-v1"], branchId]);
     await importPosSales(excelRequest(buffer, "sales.xls", hash, resolved.resolutionFingerprint, sourceId), response() as never, vi.fn());
     const sale = queries.find(({ sql }) => sql.includes("INSERT INTO pos_sale_items"));
-    expect(sale?.values).toEqual(["import-1", branchId, sourceId, "2026-09-08", ["menu-1"], [2], [190], ["Iced Latte, Large"], ["R-1"], ["11"], [null], [variantId]]);
+    expect(sale?.values).toEqual(["import-1", branchId, sourceId, "2026-09-08", ["menu-1"], [2], [190], ["Iced Latte, Large"], ["R-1"], ['["OR-1",1]'], [null], [variantId]]);
     expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_sale_ingredient_usage"))).toBe(true);
     expect(queries.at(-1)?.sql).toBe("COMMIT");
   });
@@ -416,9 +421,87 @@ describe("Excel POS preview and canonical import integration", () => {
     mocks.connect.mockResolvedValue(client);
     await importPosSales(excelRequest(buffer, "transactions.xlsx", hash, preview.resolutionFingerprint, sourceId), response() as never, vi.fn());
     const sale = queries.find(({sql})=>sql.includes("INSERT INTO pos_sale_items"));
-    expect(sale?.values).toEqual(["import-1",branchId,sourceId,"2026-09-08",["menu-1"],[2],[190],["Iced Latte, Large"],["OR-1"],[null],[null],[variantId]]);
+    expect(sale?.values).toEqual(["import-1",branchId,sourceId,"2026-09-08",["menu-1"],[2],[190],["Iced Latte, Large"],["OR-1"],['["M-1",1]'],[null],[variantId]]);
     expect(mocks.writeAudit).toHaveBeenCalledWith(expect.anything(),"IMPORT_POS_SALES","POS_IMPORT","import-1",expect.any(String),expect.objectContaining({pricingMethod:"MENU_VARIANT_CAPSTONE_FALLBACK",fallbackPricingRows:1}),client);
     expect(queries.at(-1)?.sql).toBe("COMMIT");
+  });
+
+  it("blocks an XLSX preview that overlaps an accepted transaction line", async () => {
+    const overlapQueries: Array<{ sql: string; values?: unknown[] }> = [];
+    mocks.poolQuery.mockImplementation(async (statement: unknown, values?: unknown[]) => {
+      const sql = String(statement);
+      overlapQueries.push({ sql, values });
+      if (sql.includes('SELECT name "branchName" FROM branches')) return { rows: [{ branchName: "Lipa" }] };
+      if (sql.includes("FROM menu_items mi")) return { rows: [{ id: "menu-1", code: "LATTE-L", name: "Iced Latte, Large", sellingPrice: 190 }] };
+      if (sql.includes("FROM menu_item_variants v")) return { rows: [{ id: variantId, menuItemId: "menu-1", name: "Standard", status: "ACTIVE", sellingPrice: 190, recipeVersionId: "recipe-v1", recipeVersion: 1, recipeUnits: [{ recipeUnit: "g", inventoryUnit: "kg" }] }] };
+      if (sql.includes("FROM pos_sources WHERE")) return { rows: [{ id: sourceId, sourceCode: "TRANSACTION", displayName: "Transaction POS", supportedFormat: "TRANSACTION_SUMMARY_XLSX" }] };
+      if (sql.includes("FROM pos_product_variant_mappings pm")) return { rows: [mappingRow] };
+      if (sql.includes('r.id "recipeVersionId",ri.inventory_item_id')) return { rows: [{ recipeVersionId: "recipe-v1", inventoryItemId: "ingredient-1", sku: "BEANS", name: "Coffee Beans", recipeQuantity: 18, recipeUnit: "g", inventoryUnit: "kg", unitCost: 800, yieldQuantity: 1 }] };
+      if (sql.includes("FROM pos_sale_items existing")) return { rows: [{ exists: 1 }] };
+      return { rows: [] };
+    });
+    const res = response();
+
+    await previewPosSales(excelRequest(transactionSummaryBuffer(), "transactions.xlsx", undefined, undefined, sourceId), res as never, vi.fn());
+
+    const preview = (res.json.mock.calls[0]?.[0] as { data: { preview: { overlapDetected: boolean; importBlockedReason: string; summary: { canImport: boolean } } } }).data.preview;
+    expect(preview).toMatchObject({
+      overlapDetected: true,
+      importBlockedReason: "This report overlaps transactions from a previously accepted POS import. No sales were imported.",
+      summary: { canImport: false },
+    });
+    const overlap = overlapQueries.find(({ sql }) => sql.includes("FROM pos_sale_items existing"));
+    expect(overlap?.values).toEqual([branchId, sourceId, "2026-09-08", ["OR-1"], ['["M-1",1]']]);
+  });
+
+  it("allows legitimate same-day reports with distinct machine or receipt identities", async () => {
+    mocks.poolQuery.mockImplementation(async (statement: unknown, values?: unknown[]) => {
+      const sql = String(statement);
+      if (sql.includes('SELECT name "branchName" FROM branches')) return { rows: [{ branchName: "Lipa" }] };
+      if (sql.includes("FROM menu_items mi")) return { rows: [{ id: "menu-1", code: "LATTE-L", name: "Iced Latte, Large", sellingPrice: 190 }] };
+      if (sql.includes("FROM menu_item_variants v")) return { rows: [{ id: variantId, menuItemId: "menu-1", name: "Standard", status: "ACTIVE", sellingPrice: 190, recipeVersionId: "recipe-v1", recipeVersion: 1, recipeUnits: [{ recipeUnit: "g", inventoryUnit: "kg" }] }] };
+      if (sql.includes("FROM pos_sources WHERE")) return { rows: [{ id: sourceId, sourceCode: "TRANSACTION", displayName: "Transaction POS", supportedFormat: "TRANSACTION_SUMMARY_XLSX" }] };
+      if (sql.includes("FROM pos_product_variant_mappings pm")) return { rows: [mappingRow] };
+      if (sql.includes('r.id "recipeVersionId",ri.inventory_item_id')) return { rows: [{ recipeVersionId: "recipe-v1", inventoryItemId: "ingredient-1", sku: "BEANS", name: "Coffee Beans", recipeQuantity: 18, recipeUnit: "g", inventoryUnit: "kg", unitCost: 800, yieldQuantity: 1 }] };
+      if (sql.includes("FROM pos_sale_items existing")) {
+        const incomingTransactions = values?.[3] as string[];
+        const incomingLineIds = values?.[4] as string[];
+        const overlapsExisting = incomingTransactions.some((transactionId, index) =>
+          transactionId === "OR-1" && incomingLineIds[index] === '["M-1",1]');
+        return { rows: overlapsExisting ? [{ exists: 1 }] : [] };
+      }
+      return { rows: [] };
+    });
+    for (const [filename, machineId, orNumber] of [
+      ["terminal-2.xlsx", "M-2", "OR-1"],
+      ["later-report.xlsx", "M-1", "OR-2"],
+    ] as const) {
+      const res = response();
+      await previewPosSales(excelRequest(transactionSummaryBuffer("2026-09-08 09:00:00", machineId, orNumber), filename, undefined, undefined, sourceId), res as never, vi.fn());
+      const preview = (res.json.mock.calls[0]?.[0] as { data: { preview: { overlapDetected: boolean; summary: { canImport: boolean } } } }).data.preview;
+      expect(preview).toMatchObject({ overlapDetected: false, summary: { canImport: true } });
+    }
+  });
+
+  it("atomically rejects an overlap discovered after the branch import lock", async () => {
+    const buffer = transactionSummaryBuffer();
+    const previewClient = createClient(undefined, undefined, undefined, "TRANSACTION_SUMMARY_XLSX");
+    mocks.poolQuery.mockImplementation(previewClient.client.query);
+    const previewResponse = response();
+    await previewPosSales(excelRequest(buffer, "transactions.xlsx", undefined, undefined, sourceId), previewResponse as never, vi.fn());
+    const preview = (previewResponse.json.mock.calls[0]?.[0] as { data: { preview: { contentHash: string; resolutionFingerprint: string } } }).data.preview;
+    const locked = createClient("overlap-after-lock", undefined, undefined, "TRANSACTION_SUMMARY_XLSX");
+    mocks.connect.mockResolvedValue(locked.client);
+
+    await expect(importPosSales(
+      excelRequest(buffer, "transactions.xlsx", preview.contentHash, preview.resolutionFingerprint, sourceId),
+      response() as never,
+      vi.fn(),
+    )).rejects.toMatchObject({ status: 409, code: "POS_IMPORT_OVERLAP" });
+
+    expect(locked.queries.filter(({ sql }) => sql.includes("FROM pos_sale_items existing"))).toHaveLength(2);
+    expect(locked.queries.some(({ sql }) => sql.includes("INSERT INTO pos_imports"))).toBe(false);
+    expect(locked.queries.at(-1)?.sql).toBe("ROLLBACK");
   });
 
   it("reports FT-05 once and skips dependent product mapping for a structurally invalid row", async () => {

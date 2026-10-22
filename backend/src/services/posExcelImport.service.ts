@@ -234,13 +234,17 @@ function parseLegacySummary(rows: SheetRows, worksheet: string): ParsedPosDocume
   let currentOr: string | null = null;
   let currentTransaction: string | null = null;
   let transactionRows: ParsedPosRow[] = [];
+  let currentItemOrdinal = 0;
   let positivePriceRows = 0;
   let structurallyValidPriceRows = 0;
   let footerReached = false;
   let currentDateIssue: string | null = null;
 
   const finishTransaction = (subtotalQuantity?: number | null, subtotalAmount?: number | null) => {
-    if (!transactionRows.length) return;
+    if (!transactionRows.length) {
+      currentItemOrdinal = 0;
+      return;
+    }
     if (subtotalQuantity !== undefined && subtotalQuantity !== null) {
       const actualQuantity = transactionRows.reduce((sum, row) => sum + (row.quantitySold ?? 0), 0);
       if (Math.abs(actualQuantity - subtotalQuantity) > 0.0001) transactionRows.forEach((row) => applyIssue(row, "Transaction item quantities do not match the displayed transaction subtotal."));
@@ -250,6 +254,7 @@ function parseLegacySummary(rows: SheetRows, worksheet: string): ParsedPosDocume
       if (Math.abs(actualAmount - subtotalAmount) > 0.01) transactionRows.forEach((row) => applyIssue(row, "Transaction line amounts do not match the displayed transaction subtotal."));
     }
     transactionRows = [];
+    currentItemOrdinal = 0;
   };
 
   rows.forEach((row, index) => {
@@ -277,6 +282,7 @@ function parseLegacySummary(rows: SheetRows, worksheet: string): ParsedPosDocume
       finishTransaction(quantity, displayedSubtotal); return;
     }
     if (!description) return;
+    currentItemOrdinal += 1;
 
     const unitPrice = numberValue(row[11]);
     const lineAmount = numberValue(row[15]);
@@ -301,7 +307,9 @@ function parseLegacySummary(rows: SheetRows, worksheet: string): ParsedPosDocume
     const parsed: ParsedPosRow = {
       rowNumber, sourceProduct: description, sourceProductId: null, sourceProductName: description,
       quantitySold: quantity !== null && quantity > 0 ? quantity : null, unitPrice, businessDate: currentDate,
-      transactionId: currentTransaction, sourceLineId: String(rowNumber), transactionTimestamp: null,
+      transactionId: currentTransaction,
+      sourceLineId: currentOr ? JSON.stringify([currentOr, currentItemOrdinal]) : null,
+      transactionTimestamp: null,
       sourceFormat: POS_SOURCE_FORMATS.LEGACY_SUMMARY, sourceWorksheet: worksheet, sourceRow: rowNumber,
       lineAmount, sourceOrNumber: currentOr, sourceTransactionNumber: currentTransaction,
       status: rowStatus, issues,
@@ -346,6 +354,7 @@ function parseTransactionSummary(rows: SheetRows, worksheet: string, headerRowNu
     if (!firstValue && row.every((cell) => !text(cell))) return;
     if (firstValue === "total" || firstValue === "success transaction") return;
     const transactionId = text(at(row, "or no.")) || null;
+    const machineId = text(at(row, "machine id")) || null;
     const rawDate = at(row, "date");
     const normalizedDate = normalizedBusinessDate(rawDate);
     const date = normalizedDate.normalizedDate;
@@ -357,7 +366,7 @@ function parseTransactionSummary(rows: SheetRows, worksheet: string, headerRowNu
     const parsedQuantity = tokens.reduce((sum, token) => sum + (token.quantity ?? 0), 0);
     const quantityMismatch = expectedQuantity !== null && Math.abs(expectedQuantity - parsedQuantity) > 0.0001;
     if (!tokens.length) tokens.push({ raw: "", name: "", quantity: null });
-    tokens.forEach((token) => {
+    tokens.forEach((token, tokenIndex) => {
       const issues: string[] = [];
       if (!token.name) issues.push("Product/item name is required.");
       const invalidTokenQuantity = quantityIssue(token.raw ? (token.quantity === null ? token.raw : String(token.quantity)) : "", token.quantity);
@@ -368,6 +377,7 @@ function parseTransactionSummary(rows: SheetRows, worksheet: string, headerRowNu
       const invalidDate = normalizedDate.issue;
       if (invalidDate) issues.push(invalidDate);
       if (!transactionId) issues.push("The transaction has no O.R. number.");
+      if (!machineId) issues.push("Machine ID is required for safe transaction identification.");
       if (status && normalized(status) !== "paid") issues.push(`Transaction status is ${status}; it is not eligible for import.`);
       const dueAmount = numberValue(at(row, "due amt."));
       const grossAmount = numberValue(at(row, "gross amt."));
@@ -375,7 +385,9 @@ function parseTransactionSummary(rows: SheetRows, worksheet: string, headerRowNu
       parsedRows.push({
         rowNumber: sourceRow, sourceProduct: token.name, sourceProductId: null, sourceProductName: token.name || null,
         quantitySold: token.quantity !== null && token.quantity > 0 ? token.quantity : null,
-        unitPrice: null, businessDate: date, transactionId, sourceLineId: null, transactionTimestamp: null,
+        unitPrice: null, businessDate: date, transactionId,
+        sourceLineId: machineId ? JSON.stringify([machineId, tokenIndex + 1]) : null,
+        transactionTimestamp: null,
         sourceFormat: POS_SOURCE_FORMATS.TRANSACTION_SUMMARY, sourceWorksheet: worksheet, sourceRow,
         lineAmount: null, sourceOrNumber: transactionId, sourceTransactionNumber: null,
         transactionStatus: status, transactionTimestampRaw: timestampRaw,
