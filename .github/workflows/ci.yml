@@ -24,6 +24,7 @@ jobs:
           --health-retries 5
     env:
       NODE_ENV: test
+      DATA_LIFECYCLE_ENV: DEVELOPMENT
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/libro_cogs_test
       CLIENT_URL: http://localhost:5173
       JWT_SECRET: ci_only_secret_with_at_least_32_characters
