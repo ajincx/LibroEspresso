@@ -75,7 +75,8 @@ describe("getPosAnalytics verified shrinkage report causes", () => {
       .filter((sql) => sql.includes("FROM pos_imports pi"));
     expect(operationalPosQueries).toHaveLength(4);
     for (const sql of operationalPosQueries) {
-      expect(sql).toContain("source.status='ACTIVE'");
+      expect(sql).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id");
+      expect(sql).not.toContain("source.status");
       expect(sql).toContain("NOT pi.is_test_data");
       expect(sql).toContain("pi.branch_id=$3");
     }

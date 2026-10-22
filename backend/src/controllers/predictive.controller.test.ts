@@ -84,7 +84,7 @@ describe("predictive controller Gemini boundaries", () => {
     expect(scopedCalls.every((call) => (call[1] as unknown[]).includes(managerBranchId))).toBe(true);
   });
 
-  it("uses only active POS sources for operational inventory and ingredient-demand calculations", async () => {
+  it("keeps accepted historical POS data in forecasts after source deactivation", async () => {
     mocks.generateGeminiInsights.mockResolvedValue(null);
     await buildPredictiveForecast(manager, { startDate: "2026-10-02", endDate: "2026-10-31" });
 
@@ -93,13 +93,17 @@ describe("predictive controller Gemini boundaries", () => {
     const inventorySql = statements.find((sql) => sql.includes("CROSS JOIN inventory_items"));
     const ledgerSql = statements.find((sql) => sql.includes("jsonb_to_recordset"));
     const ingredientDemandSql = statements.find((sql) => sql.includes('usage.inventory_item_id "inventoryItemId"'));
-    expect(salesSql).toContain("source.status='ACTIVE'");
+    expect(salesSql).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id");
+    expect(salesSql).not.toContain("source.status");
     expect(salesSql).toContain("NOT pi.is_test_data");
-    expect(inventorySql).toContain("source.status='ACTIVE'");
+    expect(inventorySql).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id");
+    expect(inventorySql).not.toContain("source.status");
     expect(inventorySql).toContain("NOT pi.is_test_data");
-    expect(ledgerSql).toContain("source.status='ACTIVE'");
+    expect(ledgerSql).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id");
+    expect(ledgerSql).not.toContain("source.status");
     expect(ledgerSql).toContain("NOT pi.is_test_data");
-    expect(ingredientDemandSql).toContain("source.status='ACTIVE'");
+    expect(ingredientDemandSql).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id");
+    expect(ingredientDemandSql).not.toContain("source.status");
     expect(ingredientDemandSql).toContain("NOT pi.is_test_data");
   });
 

@@ -117,7 +117,7 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
     pool.query<SalesRow>(
       `SELECT pi.business_date::text date, sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price))::float8 sales,
               coalesce(sum(costs.cogs),0)::float8 cogs
-         FROM pos_imports pi JOIN pos_sources source ON source.id=pi.pos_source_id AND source.status='ACTIVE'
+         FROM pos_imports pi JOIN pos_sources source ON source.id=pi.pos_source_id
          JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
          JOIN menu_items mi ON mi.id=psi.menu_item_id
          LEFT JOIN LATERAL (SELECT sum(u.quantity_consumed*u.unit_cost_snapshot)::float8 cogs
@@ -134,7 +134,7 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
                   FROM pos_sale_ingredient_usage u
                   JOIN pos_sale_items psi ON psi.id=u.pos_sale_item_id
                   JOIN pos_imports pi ON pi.id=psi.pos_import_id
-                   JOIN pos_sources source ON source.id=pi.pos_source_id AND source.status='ACTIVE'
+                   JOIN pos_sources source ON source.id=pi.pos_source_id
                  WHERE pi.branch_id=b.id AND u.inventory_item_id=ii.id AND NOT pi.is_test_data
                    AND pi.business_date BETWEEN $1::date AND $2::date
                  GROUP BY pi.business_date
@@ -163,7 +163,7 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
               sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price))::float8 sales
          FROM pos_imports pi
          JOIN branches b ON b.id=pi.branch_id
-         JOIN pos_sources source ON source.id=pi.pos_source_id AND source.status='ACTIVE'
+         JOIN pos_sources source ON source.id=pi.pos_source_id
          JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
          JOIN menu_items mi ON mi.id=psi.menu_item_id
         WHERE NOT pi.is_test_data AND pi.business_date BETWEEN $1::date AND $2::date ${evaluationBranchClause}
@@ -175,7 +175,7 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
          FROM pos_sale_ingredient_usage usage
          JOIN pos_sale_items psi ON psi.id=usage.pos_sale_item_id
          JOIN pos_imports pi ON pi.id=psi.pos_import_id
-          JOIN pos_sources source ON source.id=pi.pos_source_id AND source.status='ACTIVE'
+          JOIN pos_sources source ON source.id=pi.pos_source_id
          JOIN branches b ON b.id=pi.branch_id
          JOIN inventory_items ii ON ii.id=usage.inventory_item_id
         WHERE NOT pi.is_test_data AND pi.business_date BETWEEN $1::date AND $2::date ${evaluationBranchClause}

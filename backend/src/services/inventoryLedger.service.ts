@@ -130,7 +130,7 @@ export async function loadInventoryLedger(
               concat(source.display_name,' · ',pi.source_filename) reference,
               sum(usage.quantity_consumed)::float8 quantity,usage.unit "sourceUnit"
          FROM pos_imports pi
-         JOIN pos_sources source ON source.id=pi.pos_source_id AND source.status='ACTIVE'
+         JOIN pos_sources source ON source.id=pi.pos_source_id
          JOIN pos_sale_items sale ON sale.pos_import_id=pi.id
          JOIN pos_sale_ingredient_usage usage ON usage.pos_sale_item_id=sale.id
         WHERE pi.branch_id=$1 AND usage.inventory_item_id=$2 AND NOT pi.is_test_data
@@ -250,7 +250,7 @@ export async function loadInventoryLedgerBalances(
          concat(source.display_name,' · ',pi.source_filename),sum(usage.quantity_consumed)::float8,'POS_CONSUMPTION',usage.unit,pi.id::text,2
        FROM baselines b
        JOIN pos_imports pi ON pi.branch_id=b."branchId" AND NOT pi.is_test_data
-       JOIN pos_sources source ON source.id=pi.pos_source_id AND source.status='ACTIVE'
+       JOIN pos_sources source ON source.id=pi.pos_source_id
        JOIN pos_sale_items sale ON sale.pos_import_id=pi.id
        JOIN pos_sale_ingredient_usage usage ON usage.pos_sale_item_id=sale.id AND usage.inventory_item_id=b."inventoryItemId"
        WHERE (b.mode='OPENING' AND pi.business_date>=b."baselineDate"::date)

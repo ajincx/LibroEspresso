@@ -2209,8 +2209,9 @@ export const getShrinkageEvidence: RequestHandler = async (req, res) => {
          FROM pos_sale_ingredient_usage u
          JOIN pos_sale_items psi ON psi.id=u.pos_sale_item_id
          JOIN pos_imports pi ON pi.id=psi.pos_import_id
-       JOIN pos_sources source ON source.id=pi.pos_source_id AND source.status='ACTIVE'
-        WHERE pi.branch_id=$1 AND u.inventory_item_id=$2 AND pi.business_date BETWEEN $3::date-7 AND $3::date
+       JOIN pos_sources source ON source.id=pi.pos_source_id
+        WHERE pi.branch_id=$1 AND u.inventory_item_id=$2 AND NOT pi.is_test_data
+          AND pi.business_date BETWEEN $3::date-7 AND $3::date
         GROUP BY pi.business_date ORDER BY pi.business_date DESC`,
       [context.branchId, context.inventoryItemId, context.countDate],
     ),

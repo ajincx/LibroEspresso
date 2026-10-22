@@ -48,7 +48,8 @@ describe("Inventory Overview system stock", () => {
 
     expect(mocks.query).toHaveBeenCalledTimes(2);
     expect(String(mocks.query.mock.calls[0]?.[0])).not.toContain("pos_sale_ingredient_usage");
-    expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("JOIN pos_sources source ON source.id=pi.pos_source_id AND source.status='ACTIVE'"))).toBe(true);
+    expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("JOIN pos_sources source ON source.id=pi.pos_source_id"))).toBe(true);
+    expect(mocks.query.mock.calls.every(([sql]) => !String(sql).includes("source.status='ACTIVE'"))).toBe(true);
     expect(json).toHaveBeenCalledWith(expect.objectContaining({
       success: true,
       data: { items: [

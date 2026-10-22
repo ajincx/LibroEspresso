@@ -22,7 +22,9 @@ describe("thesis inventory calculation formulas", () => {
     expect(statements.find((sql) => sql.includes("FROM branch_inventory_balances"))).toContain("as_of::date <= $3::date");
     expect(statements.find((sql) => sql.includes("FROM inventory_movements"))).toContain("NOT is_test_data");
     const consumptionSql = statements.find((sql) => sql.includes("FROM pos_sale_ingredient_usage"));
-    expect(consumptionSql).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id AND source.status='ACTIVE'");
+    expect(consumptionSql).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id");
+    expect(consumptionSql).not.toContain("source.status");
+    expect(consumptionSql).toContain("NOT pi.is_test_data");
   });
 
   it("rejects a historical query when only a later mutable balance exists", async () => {
@@ -57,7 +59,7 @@ describe("thesis inventory calculation formulas", () => {
     expect(query.mock.calls.find(([sql]) => String(sql).includes("FROM inventory_count_items ici"))?.[0]).toContain("ic.count_date <= $3::date");
   });
 
-  it("uses a start-of-day opening baseline and includes same-day active-source POS usage", async () => {
+  it("uses a start-of-day opening baseline and includes same-day accepted POS usage after source deactivation", async () => {
     const query = vi.fn(async (statement: unknown, params?: unknown[]) => {
       const sql = String(statement);
       if (sql.includes("FROM inventory_items ii")) return { rows: [{ id: "item-1", sku: "RM-002", name: "Espresso Blend Beans", unit: "g", unitCost: 0.82 }] };
@@ -66,7 +68,9 @@ describe("thesis inventory calculation formulas", () => {
       if (sql.includes("FROM branch_inventory_balances")) return { rows: [] };
       if (sql.includes("FROM inventory_movements")) return { rows: [{ received: 0, adjustmentIncreases: 0, adjustmentDecreases: 0 }] };
       if (sql.includes("FROM pos_sale_ingredient_usage")) {
-        expect(sql).toContain("source.status='ACTIVE'");
+        expect(sql).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id");
+        expect(sql).not.toContain("source.status");
+        expect(sql).toContain("NOT pi.is_test_data");
         expect(sql).toContain("pi.business_date >= $3::date");
         expect(params?.[4]).toBe("OPENING_BASELINE");
         return { rows: [{ unit: "g", quantity: 696 }] };
@@ -133,7 +137,9 @@ describe("thesis inventory calculation formulas", () => {
       inventoryItemId: "test-oat", sku: "ING-00073", itemName: "TEST_Oat Milk", unit: "ml", availability: "NO_BASELINE",
     }]);
     const sql = String(query.mock.calls[0]?.[0]);
-    expect(sql).toContain("source.status='ACTIVE'");
+    expect(sql).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id");
+    expect(sql).not.toContain("source.status");
+    expect(sql).toContain("NOT pi.is_test_data");
     expect(sql).toContain("movement.occurred_at::date <= $2::date");
     expect(sql).toContain("pi.business_date <= $2::date");
     expect(sql).toContain("balance.as_of::date <= $2::date");

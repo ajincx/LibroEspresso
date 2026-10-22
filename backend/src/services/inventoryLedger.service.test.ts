@@ -31,16 +31,17 @@ describe("inventory stock ledger", () => {
     expect(ledger.activities[2]).toMatchObject({ quantityChange: null, runningBalance: 970 });
   });
 
-  it("loads only active POS-source usage for operational deductions", async () => {
+  it("keeps accepted POS usage in the ledger after its source is deactivated", async () => {
     const statements: string[] = [];
     const query = vi.fn(async (statement: unknown) => {
       const sql = String(statement); statements.push(sql);
       if (sql.includes("FROM inventory_opening_baselines")) return { rows: [{ id: "opening", occurredAt: "2026-09-16T00:00:00+08:00", reference: "OB-2026-00001", quantity: 5750 }] };
-      if (sql.includes("FROM pos_imports")) return { rows: [{ id: "active-g", importId: "active", occurredAt: "2026-09-16T12:00:00+08:00", reference: "Active XLSX", quantity: 696, sourceUnit: "g" }] };
+      if (sql.includes("FROM pos_imports")) return { rows: [{ id: "historical-g", importId: "historical", occurredAt: "2026-09-16T12:00:00+08:00", reference: "Deactivated source XLSX", quantity: 696, sourceUnit: "g" }] };
       return { rows: [] };
     });
     const ledger = await loadInventoryLedger({ query } as never, "gulod", "beans", "g");
-    expect(statements.find((sql) => sql.includes("FROM pos_imports"))).toContain("source.status='ACTIVE'");
+    expect(statements.find((sql) => sql.includes("FROM pos_imports"))).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id");
+    expect(statements.find((sql) => sql.includes("FROM pos_imports"))).not.toContain("source.status");
     expect(statements.find((sql) => sql.includes("FROM inventory_counts"))).toContain("NOT ic.is_test_data");
     expect(ledger).toMatchObject({ startingStock: 5750, operationalPosConsumption: 696, calculatedBalance: 5054 });
   });
@@ -71,10 +72,11 @@ describe("inventory stock ledger", () => {
     expect(ledger.calculatedBalance).toBe(70);
   });
 
-  it("batches authoritative branch ledgers and preserves the approved Gulod/Lipa balances", async () => {
+  it("batches authoritative branch ledgers and preserves balances after source deactivation", async () => {
     const query = vi.fn(async (statement: unknown) => {
       const sql = String(statement);
-      expect(sql).toContain("source.status='ACTIVE'");
+      expect(sql).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id");
+      expect(sql).not.toContain("source.status");
       expect(sql).toContain("NOT pi.is_test_data");
       expect(sql).toContain("NOT ic.is_test_data");
       expect(sql).toContain("inventory_count_items historical_item");

@@ -49,7 +49,8 @@ describe("inventory report calculation source", () => {
     const inventoryCall = mocks.poolQuery.mock.calls.find(([sql]) => String(sql).includes("WITH recent_usage"));
     expect(inventoryCall?.[1]).toContain(managerBranchId);
     expect(inventoryCall?.[1]).not.toContain(otherBranchId);
-    expect(String(inventoryCall?.[0])).toContain("source.status='ACTIVE'");
+    expect(String(inventoryCall?.[0])).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id");
+    expect(String(inventoryCall?.[0])).not.toContain("source.status");
     expect(String(inventoryCall?.[0])).toContain("NOT pi.is_test_data");
 
     const operationalFinancialQueries = mocks.poolQuery.mock.calls
@@ -57,7 +58,8 @@ describe("inventory report calculation source", () => {
       .filter((sql) => sql.includes("FROM pos_imports pi"));
     expect(operationalFinancialQueries.length).toBeGreaterThan(0);
     for (const sql of operationalFinancialQueries) {
-      expect(sql).toContain("source.status='ACTIVE'");
+      expect(sql).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id");
+      expect(sql).not.toContain("source.status");
       expect(sql).toContain("NOT pi.is_test_data");
     }
 
