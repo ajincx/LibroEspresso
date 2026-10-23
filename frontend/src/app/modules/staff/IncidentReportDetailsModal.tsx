@@ -45,6 +45,7 @@ export function IncidentReportDetailsModal({
     report.managerComment ?? "",
   );
   const pendingReview = canReview && report.status === "PENDING";
+  const lateApprovalReasonMissing = report.isLate && managerComment.trim().length < 10;
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/55" onMouseDown={(event)=>{if(event.target===event.currentTarget)onClose();}}>
       <div role="dialog" aria-modal="true" aria-labelledby="incident-details-title" className="w-full sm:max-w-2xl max-h-[95vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5 sm:p-6">
@@ -59,6 +60,7 @@ export function IncidentReportDetailsModal({
             <p className="text-xs mt-1 text-[var(--app-text-muted)]">
               Submitted {formatDate(report.createdAt)}
             </p>
+            {report.isLate && <p className="mt-2 inline-flex rounded-full bg-[var(--app-primary-subtle)] px-2.5 py-1 text-xs font-semibold text-[var(--app-primary)]">Late request — Manager verification required</p>}
           </div>
           <button
             autoFocus
@@ -125,7 +127,7 @@ export function IncidentReportDetailsModal({
           {pendingReview ? (
             <label className="block sm:col-span-2 text-xs font-semibold text-[var(--app-text-muted)]">
               <span>
-                Manager Comment <span className="font-normal">(optional)</span>
+                Manager Comment <span className="font-normal">{report.isLate ? "(required for approval; minimum 10 characters)" : "(optional)"}</span>
               </span>
               <textarea
                 value={managerComment}
@@ -138,6 +140,7 @@ export function IncidentReportDetailsModal({
               <span className="block mt-1 text-right font-normal text-[var(--app-text-faint)]">
                 {managerComment.length}/2000
               </span>
+              {lateApprovalReasonMissing && <span className="mt-1 block text-xs font-medium text-[var(--app-danger)]">Explain why this late report should be approved.</span>}
             </label>
           ) : (
             <ReadOnlyField
@@ -197,7 +200,7 @@ export function IncidentReportDetailsModal({
           >
             Close
           </button>
-          {!canReview&&report.status==="PENDING"&&onCancelReport&&<button onClick={onCancelReport} className="h-11 px-5 rounded-xl border border-[var(--app-danger)] text-[var(--app-danger)] text-sm font-semibold">Cancel Report</button>}
+          {!canReview&&report.status==="PENDING"&&!report.businessDateFinalized&&onCancelReport&&<button onClick={onCancelReport} className="h-11 px-5 rounded-xl border border-[var(--app-danger)] text-[var(--app-danger)] text-sm font-semibold">Cancel Report</button>}
           {pendingReview && (
             <>
               <button
@@ -209,7 +212,7 @@ export function IncidentReportDetailsModal({
                 Reject Report
               </button>
               <button
-                disabled={reviewing}
+                disabled={reviewing || lateApprovalReasonMissing}
                 onClick={() => onReview?.("VERIFIED", managerComment)}
                 className="h-11 px-5 rounded-xl bg-[var(--app-primary)] text-white text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-50"
               >

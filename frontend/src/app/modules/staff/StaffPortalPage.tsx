@@ -112,7 +112,7 @@ function ReportRows({
                       : "rgba(217,158,35,.12)",
               }}
             >
-              {report.status}
+              {report.isLate && report.status === "PENDING" ? "LATE REQUEST" : report.status}
             </span>
             <ChevronRight
               size={17}

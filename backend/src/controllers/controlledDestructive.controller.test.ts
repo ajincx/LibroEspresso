@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => ({ connect: vi.fn(), poolQuery: vi.fn(), writeAud
 vi.mock("../config/database.js", () => ({ pool: { connect: mocks.connect, query: mocks.poolQuery } }));
 vi.mock("../services/audit.service.js", () => ({ writeAudit: mocks.writeAudit }));
 
-import { applyPurchaseOrderLifecycle, deletePosSourceConfiguration, removeInventoryItem, retireTestDataProductChain } from "./controlledDestructive.controller.js";
+import { applyPurchaseOrderLifecycle, archiveIncidentReport, deletePosSourceConfiguration, removeInventoryItem, retireTestDataProductChain } from "./controlledDestructive.controller.js";
 
 const itemId = "00000000-0000-4000-8000-000000000099";
 const posSourceId = "00000000-0000-4000-8000-000000000088";
@@ -81,6 +81,21 @@ describe("controlled destructive actions", () => {
     await expect(applyPurchaseOrderLifecycle(request(manager, { ...input, action: "REVERSE" }), response() as never, vi.fn())).rejects.toMatchObject({ status: 409, code: "PO_REVERSAL_COUNT_DEPENDENCY" });
     expect(statements).toContain("ROLLBACK");
     expect(statements.some((sql) => sql.includes("INSERT INTO inventory_movements"))).toBe(false);
+  });
+
+  it("prevents Staff cancellation when Closing or Full has finalized the incident date", async () => {
+    const statements: string[]=[];
+    const client={query:vi.fn(async(statement:unknown)=>{
+      const sql=String(statement);statements.push(sql);
+      if(sql.includes('SELECT branch_id "branchId" FROM incident_reports'))return{rows:[{branchId:"branch-1"}]};
+      if(sql.includes('SELECT ir.branch_id "branchId"'))return{rows:[{branchId:"branch-1",submittedBy:"staff-1",status:"PENDING",businessDateFinalized:true}]};
+      return{rows:[]};
+    }),release:vi.fn()};
+    mocks.connect.mockResolvedValue(client);
+    await expect(archiveIncidentReport({params:{id:itemId},body:{action:"CANCEL",reason:"Entered against the wrong item",verificationPin:"12345"},user:{id:"staff-1",role:"STAFF",branchId:"branch-1"}} as never,response() as never,vi.fn())).rejects.toMatchObject({code:"INCIDENT_DATE_FINALIZED"});
+    expect(statements.findIndex((sql)=>sql.includes("pg_advisory_xact_lock"))).toBeLessThan(statements.findIndex((sql)=>sql.includes('SELECT ir.branch_id "branchId"')));
+    expect(statements.some((sql)=>sql.includes("UPDATE incident_reports SET archived_at"))).toBe(false);
+    expect(statements).toContain("ROLLBACK");
   });
 });
 

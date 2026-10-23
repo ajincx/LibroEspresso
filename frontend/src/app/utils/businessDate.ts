@@ -12,6 +12,27 @@ export function businessDateTime(now = new Date(), timezone = readAppPreferences
   const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return `${value.year}-${value.month}-${value.day}T${value.hour}:${value.minute}`;
 }
+export function manilaBusinessDateTime(now = new Date()) {
+  return businessDateTime(now, "Asia/Manila");
+}
+export function manilaDateTimeToIso(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+  if (!match) throw new Error("Incident date and time is invalid.");
+  const [, yearText, monthText, dayText, hourText, minuteText] = match;
+  const year=Number(yearText),month=Number(monthText),day=Number(dayText),hour=Number(hourText),minute=Number(minuteText);
+  const daysInMonth=new Date(Date.UTC(year,month,0)).getUTCDate();
+  if (month<1||month>12||day<1||day>daysInMonth||hour>23||minute>59) throw new Error("Incident date and time is invalid.");
+  const parsed = new Date(Date.UTC(year,month-1,day,hour-8,minute));
+  return parsed.toISOString();
+}
+export function validateIncidentDateTime(value: string, now = new Date()) {
+  try {
+    const parsed = new Date(manilaDateTimeToIso(value));
+    return parsed.getTime() > now.getTime() ? "Incident date and time cannot be in the future." : "";
+  } catch {
+    return "Incident date and time is invalid.";
+  }
+}
 export function addDateDays(date: string, days: number) {
   return new Date(Date.parse(`${date}T12:00:00Z`) + days * 86400000).toISOString().slice(0, 10);
 }

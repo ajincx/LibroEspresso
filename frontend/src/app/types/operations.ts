@@ -103,6 +103,8 @@ export interface IncidentReport {
   verifiedByName: string | null;
   verifiedAt: string | null;
   managerComment: string | null;
+  businessDateFinalized: boolean;
+  isLate: boolean;
   createdAt: string;
   items?: IncidentAffectedItem[];
   shrinkageLinks?: IncidentShrinkageLink[];

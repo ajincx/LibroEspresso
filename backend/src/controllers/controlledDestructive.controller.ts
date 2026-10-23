@@ -228,9 +228,22 @@ export const archiveIncidentReport: RequestHandler = async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const found = await client.query<{ branchId: string; submittedBy: string; status: string }>(`SELECT branch_id "branchId",submitted_by "submittedBy",status FROM incident_reports WHERE id=$1 AND archived_at IS NULL FOR UPDATE`, [id]);
+    const scope = await client.query<{ branchId: string }>(`SELECT branch_id "branchId" FROM incident_reports WHERE id=$1 AND archived_at IS NULL`, [id]);
+    if (!scope.rows[0]) throw new AppError(404, "INCIDENT_NOT_FOUND", "Active incident report not found");
+    assertBranchAccess(req.user!, scope.rows[0].branchId);
+    await lockBranchInventoryOperation(client, scope.rows[0].branchId);
+    const found = await client.query<{ branchId: string; submittedBy: string; status: string; businessDateFinalized: boolean }>(
+      `SELECT ir.branch_id "branchId",ir.submitted_by "submittedBy",ir.status,
+              EXISTS (SELECT 1 FROM inventory_counts finalized
+                WHERE finalized.branch_id=ir.branch_id
+                  AND finalized.count_date=(ir.occurred_at AT TIME ZONE 'Asia/Manila')::date
+                  AND finalized.count_type IN ('CLOSING','FULL') AND NOT finalized.is_test_data) "businessDateFinalized"
+         FROM incident_reports ir WHERE ir.id=$1 AND ir.archived_at IS NULL FOR UPDATE OF ir`,
+      [id],
+    );
     const incident = found.rows[0]; if (!incident) throw new AppError(404, "INCIDENT_NOT_FOUND", "Active incident report not found"); assertBranchAccess(req.user!, incident.branchId);
     if (req.user!.role === "STAFF" && (input.action !== "CANCEL" || incident.submittedBy !== req.user!.id || incident.status !== "PENDING")) throw new AppError(403, "INCIDENT_LIFECYCLE_FORBIDDEN", "Staff may cancel only their own pending incident reports");
+    if (req.user!.role === "STAFF" && incident.businessDateFinalized) throw new AppError(409, "INCIDENT_DATE_FINALIZED", "This incident belongs to a finalized inventory date and can no longer be cancelled by Staff.");
     await client.query(`UPDATE incident_reports SET archived_at=now(),archived_by=$2,archive_reason=$3,archive_action=$4,updated_at=now() WHERE id=$1`, [id, req.user!.id, input.reason, input.action === "CANCEL" ? "CANCELLED" : "ARCHIVED"]);
     await writeDestructiveActionAudit(req.user!, { module: "INCIDENT_REPORT", action: input.action, recordId: id, reason: input.reason }, `${input.action === "CANCEL" ? "Cancelled" : "Archived"} incident report`, { branchId: incident.branchId, priorStatus: incident.status }, client);
     await client.query("COMMIT"); res.json({ success: true, data: { id, action: input.action === "CANCEL" ? "CANCELLED" : "ARCHIVED" } });

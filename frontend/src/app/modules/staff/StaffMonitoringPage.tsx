@@ -301,7 +301,7 @@ export function StaffMonitoringPage({
                     </span>
                   </TD>
                   <TD center>
-                    <StatusChip status={chips[r.status]} />
+                    <StatusChip status={r.isLate && r.status === "PENDING" ? "late_request" : chips[r.status]} />
                   </TD>
                   <TD center>
                     <div className="flex justify-center gap-1">

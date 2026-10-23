@@ -2332,6 +2332,14 @@ export const getShrinkageEvidence: RequestHandler = async (req, res) => {
          JOIN incident_report_items iri ON iri.incident_report_id=ir.id
         WHERE ir.branch_id=$2 AND iri.inventory_item_id=$3 AND NOT ir.is_test_data AND ir.archived_at IS NULL
           AND (
+            ir.status='VERIFIED'
+            OR NOT EXISTS (SELECT 1 FROM inventory_counts finalized
+              WHERE finalized.branch_id=ir.branch_id
+                AND finalized.count_date=(ir.occurred_at AT TIME ZONE 'Asia/Manila')::date
+                AND finalized.count_type IN ('CLOSING','FULL') AND NOT finalized.is_test_data
+                AND finalized.submitted_at<=ir.created_at)
+          )
+          AND (
             EXISTS (SELECT 1 FROM incident_shrinkage_links isl WHERE isl.incident_report_item_id=iri.id AND isl.shrinkage_report_id=$1)
             OR (
               NOT EXISTS (SELECT 1 FROM incident_shrinkage_links isl WHERE isl.incident_report_item_id=iri.id)

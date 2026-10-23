@@ -3,6 +3,21 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { filterSelectOptions, moveSelectActiveIndex, selectFilteredOption } from "../../components/ModuleUi";
 import { affectedItemsPayload, incidentProductOptionLabel, incidentProductsForIngredient, incidentProductsForIngredients, nextIncidentProductSelection, nextOtherIncidentType, OtherIncidentTypeField, StaffIncidentModal, validAffectedItems, validateOtherIncidentType } from "./StaffIncidentModal";
+import { manilaBusinessDateTime, manilaDateTimeToIso, validateIncidentDateTime } from "../../utils/businessDate";
+
+describe("Staff incident Manila date handling",()=>{
+  it("defaults and converts using Asia/Manila rather than the browser timezone",()=>{
+    const now=new Date("2026-10-22T16:30:00.000Z");
+    expect(manilaBusinessDateTime(now)).toBe("2026-10-23T00:30");
+    expect(manilaDateTimeToIso("2026-10-23T00:30")).toBe("2026-10-22T16:30:00.000Z");
+  });
+  it("rejects impossible and future incident times while allowing the current time",()=>{
+    const now=new Date("2026-10-22T16:30:00.000Z");
+    expect(validateIncidentDateTime("2026-02-30T08:00",now)).toBe("Incident date and time is invalid.");
+    expect(validateIncidentDateTime("2026-10-23T00:31",now)).toBe("Incident date and time cannot be in the future.");
+    expect(validateIncidentDateTime("2026-10-23T00:30",now)).toBe("");
+  });
+});
 
 describe("Staff incident Other specification", () => {
   it("requires a non-whitespace specification only for OTHER", () => {

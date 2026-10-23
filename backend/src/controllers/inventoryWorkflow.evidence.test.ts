@@ -40,6 +40,8 @@ describe("shrinkage supporting-record evidence", () => {
     expect(String(incidentCall![0])).toContain("incident_shrinkage_links");
     expect(String(incidentCall![0])).toContain("NOT ir.is_test_data");
     expect(String(incidentCall![0])).toContain("ir.status IN ('PENDING','VERIFIED')");
+    expect(String(incidentCall![0])).toContain("ir.status='VERIFIED'");
+    expect(String(incidentCall![0])).toContain("finalized.submitted_at<=ir.created_at");
     expect(String(incidentCall![0])).toContain("AT TIME ZONE 'Asia/Manila'");
     expect(incidentCall![1]).toEqual([reportId, branchId, ingredientId, "2026-09-20"]);
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({

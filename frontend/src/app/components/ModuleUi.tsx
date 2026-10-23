@@ -493,13 +493,15 @@ export function CalendarDateField({ label, value, min, max, onChange, className=
   </Popover.Root>;
 }
 
-export function CalendarDateTimeField({label,value,onChange}:{label:string;value:string;onChange:(value:string)=>void}) {
+export function CalendarDateTimeField({label,value,max,onChange}:{label:string;value:string;max?:string;onChange:(value:string)=>void}) {
   const date=value.slice(0,10);
   const time=value.length>=16?value.slice(11,16):"";
+  const maxDate=max?.slice(0,10);
+  const maxTime=max&&date===maxDate?max.slice(11,16):undefined;
   const update=(nextDate:string,nextTime:string)=>onChange(nextDate?`${nextDate}T${nextTime||"00:00"}`:"");
   return <div className="grid grid-cols-1 sm:grid-cols-[minmax(170px,1fr)_130px] gap-2">
-    <CalendarDateField label={label} value={date} onChange={(next)=>update(next,time)}/>
-    <label className="calendar-time-field rounded-xl border px-3 py-2"><span className="block text-[9px] font-bold uppercase tracking-wider" style={{color:C.muted}}>Time</span><input type="time" value={time} onChange={(event)=>update(date,event.target.value)} className="mt-0.5 w-full border-0 bg-transparent p-0 text-xs font-semibold outline-none" aria-label={`${label} time`}/></label>
+    <CalendarDateField label={label} value={date} max={maxDate} onChange={(next)=>update(next,time)}/>
+    <label className="calendar-time-field rounded-xl border px-3 py-2"><span className="block text-[9px] font-bold uppercase tracking-wider" style={{color:C.muted}}>Time</span><input type="time" value={time} max={maxTime} onChange={(event)=>update(date,event.target.value)} className="mt-0.5 w-full border-0 bg-transparent p-0 text-xs font-semibold outline-none" aria-label={`${label} time`}/></label>
   </div>;
 }
 

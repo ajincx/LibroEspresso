@@ -79,7 +79,7 @@ export function ShrinkageIncidentReports({ owner, branchId }: { owner: boolean; 
               <TD>{incidentTypeLabel(report.incidentType)}{report.incidentType === "OTHER" && report.otherIncidentType ? <span className="block text-xs text-[var(--app-text-muted)]">{report.otherIncidentType}</span> : null}</TD>
                 <TD>{(report.items?.length??0)>1?`${report.items!.length} affected items`:report.items?.[0]?.name??report.inventoryItemName}</TD>
                 <TD right muted>{(report.items?.length??0)>1?"See details":`${report.items?.[0]?.quantity??report.quantity} ${report.items?.[0]?.unit??report.unit}`}</TD>
-                <TD center><StatusChip status={report.status.toLowerCase()} /></TD>
+                <TD center><StatusChip status={report.isLate && report.status === "PENDING" ? "late_request" : report.status.toLowerCase()} /></TD>
                 <TD right>
                   <div className="flex justify-end gap-1">
                   <button

@@ -12,6 +12,7 @@ import {
 import { configureBranchReorderPolicy } from "../services/branchInventorySettings.service.js";
 import { baseStockUnitCost, receivedStockQuantity, resolvePurchaseConversion } from "../services/purchaseUom.service.js";
 import { lockBranchInventoryOperation } from "../services/inventoryOperationLock.service.js";
+import { manilaBusinessDate } from "../services/businessTime.service.js";
 import { AppError } from "../utils/appError.js";
 import { idParams } from "../validators/masterData.js";
 import { paginatedRows, paginationQuery } from "../validators/pagination.js";
@@ -42,6 +43,23 @@ function requiredBranchId(
       "A branch is required for this operation",
     );
   return branchId;
+}
+
+export function assertIncidentOccurredAtNotFuture(
+  occurredAt: string,
+  now = new Date(),
+) {
+  const incidentTime = new Date(occurredAt);
+  if (
+    incidentTime.getTime() > now.getTime() ||
+    manilaBusinessDate(incidentTime) > manilaBusinessDate(now)
+  ) {
+    throw new AppError(
+      422,
+      "INCIDENT_DATE_IN_FUTURE",
+      "Incident date and time cannot be in the future.",
+    );
+  }
 }
 
 async function loadInventoryOverviewItems(branchId?: string, inventoryItemId?: string) {
@@ -156,6 +174,13 @@ const incidentSelection = `SELECT ir.id,ir.branch_id "branchId",b.name "branchNa
   ir.menu_item_id "productId",mi.code "productCode",mi.name "productName",ir.menu_item_variant_id "productVariantId",miv.name "productVariantName",
   ir.incident_type "incidentType",ir.other_incident_type "otherIncidentType",ir.quantity::float8,ir.occurred_at "occurredAt",ir.reason,ir.notes,ir.photo_url "photoUrl",
   ir.status,ir.manager_comment "managerComment",ir.submitted_by "submittedByUserId",concat(su.first_name,' ',su.last_name) "submittedByName",su.role "submittedByRole",
+  EXISTS (SELECT 1 FROM inventory_counts finalized WHERE finalized.branch_id=ir.branch_id
+    AND finalized.count_date=(ir.occurred_at AT TIME ZONE 'Asia/Manila')::date
+    AND finalized.count_type IN ('CLOSING','FULL') AND NOT finalized.is_test_data) "businessDateFinalized",
+  EXISTS (SELECT 1 FROM inventory_counts finalized WHERE finalized.branch_id=ir.branch_id
+    AND finalized.count_date=(ir.occurred_at AT TIME ZONE 'Asia/Manila')::date
+    AND finalized.count_type IN ('CLOSING','FULL') AND NOT finalized.is_test_data
+    AND finalized.submitted_at<=ir.created_at) "isLate",
   ir.verified_by "verifiedByUserId",concat(vu.first_name,' ',vu.last_name) "verifiedByName",ir.verified_at "verifiedAt",ir.created_at "createdAt",
   COALESCE((SELECT json_agg(json_build_object('id',iri.id,'inventoryItemId',child.id,'sku',child.sku,'name',child.name,'quantity',iri.quantity::float8,'unit',iri.unit) ORDER BY iri.created_at,iri.id)
     FROM incident_report_items iri JOIN inventory_items child ON child.id=iri.inventory_item_id WHERE iri.incident_report_id=ir.id),'[]') items,
@@ -247,6 +272,7 @@ export const listIncidentItemOptions: RequestHandler = async (req, res) => {
 // They do not directly change inventory quantities.
 export const createIncidentReport: RequestHandler = async (req, res) => {
   const input = incidentCreateInput.parse(req.body);
+  assertIncidentOccurredAtNotFuture(input.occurredAt);
   const branchId = requiredBranchId(req.user!);
   if (req.user!.role === "STAFF" && input.shrinkageReportId) {
     throw new AppError(403, "INCIDENT_LINK_FORBIDDEN", "Only the Branch Manager may link an incident to an investigation");
@@ -255,6 +281,7 @@ export const createIncidentReport: RequestHandler = async (req, res) => {
   let incidentId: string;
   try {
     await client.query("BEGIN");
+    await lockBranchInventoryOperation(client, branchId);
     const itemIds = input.items.map((item) => item.inventoryItemId);
     const foundItems = await client.query<{ id: string; name: string; unit: string }>(
       `SELECT id,name,unit FROM inventory_items WHERE id=ANY($1::uuid[]) AND status='ACTIVE'
@@ -357,34 +384,47 @@ export const reviewIncidentReport: RequestHandler = async (req, res) => {
   const { id } = idParams.parse(req.params);
   const input = incidentReviewInput.parse(req.body);
   const branchId = requiredBranchId(req.user!);
-  const updated = await pool.query(
-    `UPDATE incident_reports SET status=$3,verified_by=$4,verified_at=now(),manager_comment=$5,updated_at=now()
-      WHERE id=$1 AND branch_id=$2 AND status='PENDING' AND archived_at IS NULL RETURNING id`,
-    [
-      id,
-      branchId,
-      input.status,
-      req.user!.id,
-      input.managerComment?.trim() || null,
-    ],
-  );
-  if (!updated.rows[0])
-    throw new AppError(
-      404,
-      "INCIDENT_NOT_PENDING",
-      "Pending incident report not found for your branch",
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await lockBranchInventoryOperation(client, branchId);
+    const incident = await client.query<{ isLate: boolean }>(
+      `SELECT EXISTS (SELECT 1 FROM inventory_counts finalized
+         WHERE finalized.branch_id=ir.branch_id
+           AND finalized.count_date=(ir.occurred_at AT TIME ZONE 'Asia/Manila')::date
+           AND finalized.count_type IN ('CLOSING','FULL') AND NOT finalized.is_test_data
+           AND finalized.submitted_at<=ir.created_at) "isLate"
+         FROM incident_reports ir
+        WHERE ir.id=$1 AND ir.branch_id=$2 AND ir.status='PENDING' AND ir.archived_at IS NULL
+        FOR UPDATE OF ir`,
+      [id, branchId],
     );
-  await writeAudit(
-    req.user!,
-    "REVIEW_INCIDENT_REPORT",
-    "INCIDENT_REPORT",
-    id,
-    `${input.status === "VERIFIED" ? "Verified" : "Rejected"} incident report`,
-    { branchId, commentAdded: Boolean(input.managerComment?.trim()) },
-  );
-  const result = await pool.query(`${incidentSelection} WHERE ir.id=$1`, [id]);
-  await pool.query(
-    `INSERT INTO notifications (recipient_user_id,branch_id,type,title,message,entity_type,entity_id)
+    if (!incident.rows[0])
+      throw new AppError(404, "INCIDENT_NOT_PENDING", "Pending incident report not found for your branch");
+    const managerComment = input.managerComment?.trim() || "";
+    if (input.status === "VERIFIED" && incident.rows[0].isLate && managerComment.length < 10) {
+      throw new AppError(
+        422,
+        "LATE_INCIDENT_APPROVAL_REASON_REQUIRED",
+        "Provide at least 10 characters explaining why this late incident is being approved.",
+      );
+    }
+    await client.query(
+      `UPDATE incident_reports SET status=$3,verified_by=$4,verified_at=now(),manager_comment=$5,updated_at=now()
+        WHERE id=$1 AND branch_id=$2 AND status='PENDING' AND archived_at IS NULL`,
+      [id, branchId, input.status, req.user!.id, managerComment || null],
+    );
+    await writeAudit(
+      req.user!,
+      "REVIEW_INCIDENT_REPORT",
+      "INCIDENT_REPORT",
+      id,
+      `${input.status === "VERIFIED" ? "Verified" : "Rejected"} incident report`,
+      { branchId, commentAdded: Boolean(managerComment), lateRequest: incident.rows[0].isLate },
+      client,
+    );
+    await client.query(
+      `INSERT INTO notifications (recipient_user_id,branch_id,type,title,message,entity_type,entity_id)
      SELECT submitted_by,branch_id,'INCIDENT_REVIEWED','Incident report reviewed',$2,'INCIDENT_REPORT',id
       FROM incident_reports ir WHERE id=$1
         AND NOT EXISTS (
@@ -392,11 +432,16 @@ export const reviewIncidentReport: RequestHandler = async (req, res) => {
            WHERE n.recipient_user_id=ir.submitted_by AND n.type='INCIDENT_REVIEWED'
              AND n.entity_type='INCIDENT_REPORT' AND n.entity_id=ir.id
         )`,
-    [
-      id,
-      `${input.status === "VERIFIED" ? "Your incident report was verified." : "Your incident report was rejected."}${input.managerComment?.trim() ? ` Manager comment: ${input.managerComment.trim()}` : ""}`,
-    ],
-  );
+      [id, `${input.status === "VERIFIED" ? "Your incident report was verified." : "Your incident report was rejected."}${managerComment ? ` Manager comment: ${managerComment}` : ""}`],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+  const result = await pool.query(`${incidentSelection} WHERE ir.id=$1`, [id]);
   res.json({ success: true, data: { incident: result.rows[0] } });
 };
 
@@ -407,8 +452,14 @@ export const linkIncidentToInvestigation: RequestHandler = async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const linked = await client.query<{ incidentReportItemId: string }>(
-      `SELECT iri.id "incidentReportItemId"
+    await lockBranchInventoryOperation(client, branchId);
+    const linked = await client.query<{ incidentReportItemId: string; isLate: boolean; status: string }>(
+      `SELECT iri.id "incidentReportItemId",ir.status,
+              EXISTS (SELECT 1 FROM inventory_counts finalized
+                WHERE finalized.branch_id=ir.branch_id
+                  AND finalized.count_date=(ir.occurred_at AT TIME ZONE 'Asia/Manila')::date
+                  AND finalized.count_type IN ('CLOSING','FULL') AND NOT finalized.is_test_data
+                  AND finalized.submitted_at<=ir.created_at) "isLate"
          FROM incident_reports ir
          JOIN incident_report_items iri ON iri.incident_report_id=ir.id
          JOIN shrinkage_reports sr ON sr.id=$3 AND sr.branch_id=ir.branch_id AND sr.inventory_item_id=iri.inventory_item_id
@@ -420,6 +471,9 @@ export const linkIncidentToInvestigation: RequestHandler = async (req, res) => {
       [id,branchId,input.shrinkageReportId,input.incidentReportItemId??null],
     );
     if (!linked.rows[0]) throw new AppError(422, "INCIDENT_LINK_INVALID", "The active incident item and investigation must belong to the same branch and ingredient");
+    if (linked.rows[0].isLate && linked.rows[0].status !== "VERIFIED") {
+      throw new AppError(409, "LATE_INCIDENT_APPROVAL_REQUIRED", "A late incident must be verified by the Branch Manager before it can be linked as evidence.");
+    }
     await client.query(
       `INSERT INTO incident_shrinkage_links (incident_report_id,incident_report_item_id,shrinkage_report_id)
        VALUES ($1,$2,$3) ON CONFLICT (incident_report_item_id,shrinkage_report_id) DO NOTHING`,
