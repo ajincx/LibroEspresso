@@ -1,6 +1,9 @@
 import { addDateDays } from "./businessDate";
 
 export const FORECAST_HORIZONS = [
+  "Next 7 Days",
+  "Next 14 Days",
+  "Next 28 Days",
   "Next 30 Days",
   "Next 90 Days",
   "Next 180 Days",
@@ -12,6 +15,9 @@ export type ForecastHorizon = (typeof FORECAST_HORIZONS)[number];
 
 export function forecastEndForHorizon(startDate: string, horizon: ForecastHorizon) {
   const days = {
+    "Next 7 Days": 7,
+    "Next 14 Days": 14,
+    "Next 28 Days": 28,
     "Next 30 Days": 30,
     "Next 90 Days": 90,
     "Next 180 Days": 180,

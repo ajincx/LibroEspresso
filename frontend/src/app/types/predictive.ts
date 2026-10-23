@@ -18,12 +18,13 @@ export interface PredictiveForecast {
   methodology: {
     historicalStart: string; historicalEnd: string; observedSalesDays: number;
     confidence: ForecastUrgency; insightSource: "GOOGLE_GEMINI" | "SYSTEM_ANALYSIS"; disclaimer: string;
-    salesMaeMethod: string; ingredientMaeMethod: string; stockProjectionAssumption: string;
+    salesMaeMethod: string; ingredientMaeMethod: string; shrinkageRateMethod: string; stockProjectionAssumption: string;
   };
   summary: {
     forecastSales: number; demandChange: number; criticalItems: number; projectedCogs: number;
-    /** @deprecated Retained temporarily for API compatibility; not a visible KPI. */
-    projectedShrinkageRate: number; recommendedReorders: number;
+    projectedShrinkageRate: number | null; projectedShrinkageCost: number | null;
+    shrinkageForecastStatus: "AVAILABLE" | "INSUFFICIENT_HISTORICAL_DATA" | "UNSUPPORTED_HORIZON";
+    recommendedReorders: number;
   };
   accuracy: {
     sales: {
@@ -34,6 +35,18 @@ export interface PredictiveForecast {
       branchId: string; branchName: string; inventoryItemId: string; name: string; unit: string;
       incompatibleUnits: boolean;
     })[];
+    shrinkage: {
+      maePercentagePoints: number | null;
+      evaluatedWeeks: number;
+      branches: {
+        branchId: string; branchName: string;
+        status: "AVAILABLE" | "INSUFFICIENT_HISTORICAL_DATA" | "UNSUPPORTED_HORIZON";
+        projectedRate: number | null; eligibleWeeks: number;
+        historicalStart: string | null; historicalEnd: string | null;
+        maePercentagePoints: number | null; evaluatedWeeks: number;
+        evaluationStart: string | null; evaluationEnd: string | null;
+      }[];
+    };
   };
   demandSeries: { date: string; label: string; actualSales?: number; projectedSales?: number }[];
   inventorySeries: { date: string; label: string; values: { key: string; name: string; unit: string; value: number }[] }[];

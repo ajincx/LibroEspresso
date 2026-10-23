@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildShrinkageRateForecast,
   calculateMae,
+  combineBranchShrinkageRates,
   combineAccuracySummaries,
   evaluateIngredientMae,
   evaluateSalesMae,
   forecastDailySales,
+  forecastWeeklyShrinkageRate,
   projectStockAvailability,
   summarizeAccuracy,
   type DailyObservation,
@@ -101,5 +104,59 @@ describe("incoming purchase-order timing", () => {
       incomingDeliveries: [{ expectedDeliveryDate: "2026-09-12", quantity: 20 }],
     });
     expect(result.daysToStockout).toBe(15);
+  });
+});
+
+describe("weekly shrinkage-rate forecasting", () => {
+  const weeks = (count: number, shrinkageCost = (index: number) => (index + 1) * 10) =>
+    Array.from({ length: count }, (_, index) => ({
+      weekStart: date(index * 7),
+      sales: 1_000,
+      shrinkageCost: shrinkageCost(index),
+    }));
+
+  it("uses sales and recency weights across the eight latest eligible weeks", () => {
+    expect(forecastWeeklyShrinkageRate(weeks(8), date(60))).toBeCloseTo(5.666666, 5);
+  });
+
+  it("treats evidenced zero shrinkage as zero without inventing missing weeks", () => {
+    expect(forecastWeeklyShrinkageRate(weeks(8, () => 0), date(60))).toBe(0);
+    expect(buildShrinkageRateForecast({ observations: weeks(7, () => 0), targetDate: date(60), horizonDays: 14 }))
+      .toMatchObject({ status: "INSUFFICIENT_HISTORICAL_DATA", projectedRate: null, eligibleWeeks: 7 });
+  });
+
+  it("does not allow a future weekly record to change an earlier forecast", () => {
+    const history = weeks(8, () => 10);
+    const targetDate = date(60);
+    const original = forecastWeeklyShrinkageRate(history, targetDate);
+    expect(forecastWeeklyShrinkageRate([
+      ...history,
+      { weekStart: date(100), sales: 1, shrinkageCost: 1_000_000 },
+    ], targetDate)).toBe(original);
+  });
+
+  it("reports rolling-origin MAE only after four valid evaluation weeks", () => {
+    const eleven = buildShrinkageRateForecast({ observations: weeks(11), targetDate: date(90), horizonDays: 28 });
+    const twelve = buildShrinkageRateForecast({ observations: weeks(12), targetDate: date(90), horizonDays: 28 });
+    expect(eleven).toMatchObject({ status: "AVAILABLE", evaluatedWeeks: 3, maePercentagePoints: null });
+    expect(twelve.status).toBe("AVAILABLE");
+    expect(twelve.evaluatedWeeks).toBe(4);
+    expect(twelve.maePercentagePoints).not.toBeNull();
+  });
+
+  it("does not issue shrinkage forecasts outside the supported 7-28 day horizon", () => {
+    expect(buildShrinkageRateForecast({ observations: weeks(12), targetDate: date(90), horizonDays: 30 }))
+      .toMatchObject({ status: "UNSUPPORTED_HORIZON", projectedRate: null });
+  });
+
+  it("combines Owner branch forecasts using forecast-sales weights", () => {
+    expect(combineBranchShrinkageRates([
+      { status: "AVAILABLE", projectedRate: 1, projectedSales: 1_000 },
+      { status: "AVAILABLE", projectedRate: 3, projectedSales: 3_000 },
+    ])).toBe(2.5);
+    expect(combineBranchShrinkageRates([
+      { status: "AVAILABLE", projectedRate: 1, projectedSales: 1_000 },
+      { status: "INSUFFICIENT_HISTORICAL_DATA", projectedRate: null, projectedSales: 3_000 },
+    ])).toBeNull();
   });
 });

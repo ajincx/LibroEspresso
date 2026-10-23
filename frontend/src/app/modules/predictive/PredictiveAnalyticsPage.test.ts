@@ -14,7 +14,12 @@ const forecastContext = (
   scope: { branchId: "branch-1", branchName, forecastStart: "2026-10-02", forecastEnd: "2026-10-31" },
   methodology: {
     historicalStart: "2025-10-02", historicalEnd: "2026-10-01", observedSalesDays, confidence,
-    insightSource: "SYSTEM_ANALYSIS" as const, disclaimer: "", salesMaeMethod: "", ingredientMaeMethod: "", stockProjectionAssumption: "",
+    insightSource: "SYSTEM_ANALYSIS" as const, disclaimer: "", salesMaeMethod: "", ingredientMaeMethod: "", shrinkageRateMethod: "", stockProjectionAssumption: "",
+  },
+  summary: {
+    forecastSales: 0, demandChange: 0, criticalItems: 0, projectedCogs: 0,
+    projectedShrinkageRate: 0, projectedShrinkageCost: 0,
+    shrinkageForecastStatus: "AVAILABLE" as PredictiveForecast["summary"]["shrinkageForecastStatus"], recommendedReorders: 0,
   },
   accuracy: {
     sales: {
@@ -27,6 +32,7 @@ const forecastContext = (
       branches: [],
     },
     ingredients: [],
+    shrinkage: { maePercentagePoints: null, evaluatedWeeks: 0, branches: [] },
   },
 });
 
@@ -36,6 +42,7 @@ describe("Predictive Analytics insight source", () => {
     expect(markup).toContain("data-predictive-analytics-skeleton");
     expect(markup).toContain("predictive-kpi-grid");
     expect(markup).toContain("Forecasted Sales");
+    expect(markup).toContain("Forecast Shrinkage Rate");
     expect(markup).toContain("Forecast Accuracy");
     expect(markup).toContain("Ingredient Usage Forecast Evaluation");
     expect(markup).not.toContain("animate-spin");
@@ -75,5 +82,16 @@ describe("Predictive Analytics data sufficiency messaging", () => {
   it("retains the API-provided branch scope in the notice", () => {
     expect(predictiveDataSufficiency(forecastContext(1, "LOW", null, 0, "Gulod / Main Branch")).scope)
       .toBe("Gulod / Main Branch");
+  });
+
+  it("explains unavailable and unsupported shrinkage-rate forecasts", () => {
+    const insufficient = forecastContext(90, "HIGH", 125, 30);
+    insufficient.summary.shrinkageForecastStatus = "INSUFFICIENT_HISTORICAL_DATA";
+    expect(predictiveDataSufficiency(insufficient).shrinkageMessage)
+      .toContain("at least 8 eligible complete weekly observations");
+    const unsupported = forecastContext(90, "HIGH", 125, 30);
+    unsupported.summary.shrinkageForecastStatus = "UNSUPPORTED_HORIZON";
+    expect(predictiveDataSufficiency(unsupported).shrinkageMessage)
+      .toContain("7 to 28 days");
   });
 });

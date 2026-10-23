@@ -3,6 +3,8 @@ import { pool } from "../config/database.js";
 import { getEffectiveBranchId } from "../services/branchScope.js";
 import { generateGeminiInsights, type DecisionInsight } from "../services/geminiInsights.service.js";
 import {
+  buildShrinkageRateForecast,
+  combineBranchShrinkageRates,
   combineAccuracySummaries,
   evaluateIngredientMae,
   evaluateSalesMae,
@@ -38,6 +40,9 @@ type IngredientUsageRow = {
 type IncomingOrderRow = {
   branchId: string; inventoryItemId: string; expectedDeliveryDate: string; quantity: number;
 };
+type ShrinkageWeeklyRow = {
+  branchId: string; branchName: string; weekStart: string; sales: number; shrinkageCost: number;
+};
 
 function groupForecast(rows: { date: string; value: number }[], horizonDays: number) {
   const mode = horizonDays <= 62 ? "day" : horizonDays <= 366 ? "week" : "month";
@@ -57,6 +62,32 @@ function groupForecast(rows: { date: string; value: number }[], horizonDays: num
       : { month: "short", day: "numeric", year: horizonDays > 366 ? "numeric" : undefined, timeZone: "UTC" }).format(utcDate(row.date)),
     projectedSales: round(row.value),
   }));
+}
+
+function forecastSalesTotalForRange(
+  rows: { date: string; value: number }[],
+  startDate: string,
+  endDate: string,
+  today: string,
+) {
+  const recent = rows.slice(-28).map((row) => row.value);
+  const prior = rows.slice(-56, -28).map((row) => row.value);
+  const baseline = average(recent);
+  const priorAverage = average(prior) || baseline;
+  const trend = priorAverage > 0 ? clamp((baseline - priorAverage) / priorAverage, -0.25, 0.25) : 0;
+  const overallAverage = average(rows.map((row) => row.value));
+  const weekdayAverages = Array.from({ length: 7 }, (_, weekday) => average(
+    rows.filter((row) => utcDate(row.date).getUTCDay() === weekday).map((row) => row.value),
+  ));
+  const days = differenceInDays(startDate, endDate) + 1;
+  return Array.from({ length: days }, (_, index) => {
+    const date = addDays(startDate, index);
+    const weekdayAverage = weekdayAverages[utcDate(date).getUTCDay()] || overallAverage || baseline;
+    const weekdayFactor = overallAverage > 0 ? clamp(weekdayAverage / overallAverage, 0.6, 1.4) : 1;
+    const offset = differenceInDays(today, date);
+    const attenuatedTrend = 1 + trend * Math.min(Math.max(offset, 0) / 28, 4);
+    return Math.max(0, baseline * weekdayFactor * Math.max(0.25, attenuatedTrend));
+  }).reduce((sum, value) => sum + value, 0);
 }
 
 function analyticalInsights(input: {
@@ -103,8 +134,9 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
   const salesBranchClause = branchId ? `AND pi.branch_id=$${scopeParams.push(branchId)}` : "";
   const inventoryParams: unknown[] = [addDays(historyEnd, -89), historyEnd];
   const inventoryBranchClause = branchId ? `AND b.id=$${inventoryParams.push(branchId)}` : "";
-  const shrinkageParams: unknown[] = [historyStart, historyEnd];
-  const shrinkageBranchClause = branchId ? `AND sr.branch_id=$${shrinkageParams.push(branchId)}` : "";
+  const shrinkageParams: unknown[] = [evaluationHistoryStart, historyEnd];
+  const shrinkageCountBranchClause = branchId ? `AND ic.branch_id=$${shrinkageParams.push(branchId)}` : "";
+  const shrinkageSalesBranchClause = branchId ? `AND pi.branch_id=$${shrinkageParams.length}` : "";
   const evaluationParams: unknown[] = [evaluationHistoryStart, historyEnd];
   const evaluationBranchClause = branchId ? `AND pi.branch_id=$${evaluationParams.push(branchId)}` : "";
   const incomingParams: unknown[] = [];
@@ -112,7 +144,7 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
 
   // --- HISTORICAL SALES DATA FOR FORECASTING ---
   // Uses historical POS sales and recipe-derived ingredient usage per branch.
-  const [scope, salesResult, inventoryResult, varianceResult, evaluationSalesResult, ingredientUsageResult, incomingOrderResult] = await Promise.all([
+  const [scope, salesResult, inventoryResult, shrinkageWeeklyResult, evaluationSalesResult, ingredientUsageResult, incomingOrderResult] = await Promise.all([
     branchId ? pool.query<{ branchName: string }>(`SELECT name "branchName" FROM branches WHERE id=$1 AND status='ACTIVE'`, [branchId]) : Promise.resolve({ rows: [] }),
     pool.query<SalesRow>(
       `SELECT pi.business_date::text date, sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price))::float8 sales,
@@ -146,18 +178,91 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
          LEFT JOIN branch_inventory_settings bis ON bis.branch_id=b.id AND bis.inventory_item_id=ii.id
         WHERE b.status='ACTIVE' AND ii.status='ACTIVE' AND (ii.item_scope='GLOBAL' OR ii.origin_branch_id=b.id) ${inventoryBranchClause}
         ORDER BY b.name,ii.name`, inventoryParams),
-    // --- VERIFIED SHRINKAGE CONTEXT ---
-    // VERIFIED / REVIEWED shrinkage is used only as decision-support context.
-    // It does not change the official sales forecast.
-    pool.query<{ verifiedShrinkageCost: number }>(
-      `SELECT coalesce(sum(CASE WHEN sr.actual_quantity<sr.expected_quantity THEN abs(sr.variance_value) ELSE 0 END),0)::float8 "verifiedShrinkageCost"
-         FROM shrinkage_reports sr
-         JOIN inventory_count_items ici ON ici.id=sr.inventory_count_item_id
-         JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
-         WHERE NOT sr.is_test_data AND ici.voided_at IS NULL AND ic.count_type<>'OPENING' AND sr.detected_at::date BETWEEN $1::date AND $2::date
-          AND sr.status IN ('VERIFIED', 'REVIEWED')
-          AND sr.classification IN (${VERIFIED_SHRINKAGE_CLASSIFICATIONS_SQL})
-          ${shrinkageBranchClause}`, shrinkageParams),
+    // Weekly shrinkage evidence is aligned by the Manila business dates stored
+    // on counts/imports. FULL counts are complete by workflow. A CLOSING count
+    // is eligible only when every currently provable branch ingredient appears.
+    // Weeks with unresolved/count-error evidence are omitted rather than
+    // interpreted as zero shrinkage.
+    pool.query<ShrinkageWeeklyRow>(
+      `WITH candidate_count_weeks AS (
+         SELECT ic.branch_id,
+                (ic.count_date-(extract(isodow from ic.count_date)::int-1))::date week_start,
+                count(*)::int candidate_count
+           FROM inventory_counts ic
+          WHERE NOT ic.is_test_data
+            AND ic.count_date BETWEEN $1::date AND $2::date
+            AND ic.count_type IN ('FULL','CLOSING')
+            ${shrinkageCountBranchClause}
+          GROUP BY ic.branch_id,week_start
+       ), eligible_counts AS (
+         SELECT ic.id,ic.branch_id,ic.count_date
+           FROM inventory_counts ic
+          WHERE NOT ic.is_test_data
+            AND ic.count_date BETWEEN $1::date AND $2::date
+            AND ic.count_type IN ('FULL','CLOSING')
+            ${shrinkageCountBranchClause}
+            AND EXISTS (SELECT 1 FROM inventory_count_items present WHERE present.inventory_count_id=ic.id AND present.voided_at IS NULL)
+            AND NOT EXISTS (SELECT 1 FROM inventory_count_items voided WHERE voided.inventory_count_id=ic.id AND voided.voided_at IS NOT NULL)
+            AND (
+              ic.count_type='FULL'
+              OR NOT EXISTS (
+                SELECT 1 FROM inventory_items required
+                 WHERE required.status='ACTIVE'
+                   AND (required.item_scope='GLOBAL' OR required.origin_branch_id=ic.branch_id)
+                   AND NOT EXISTS (
+                     SELECT 1 FROM inventory_count_items covered
+                      WHERE covered.inventory_count_id=ic.id
+                        AND covered.inventory_item_id=required.id
+                        AND covered.voided_at IS NULL
+                   )
+              )
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM inventory_count_items item
+              JOIN shrinkage_reports unresolved ON unresolved.inventory_count_item_id=item.id
+               WHERE item.inventory_count_id=ic.id
+                 AND (unresolved.is_test_data
+                   OR unresolved.status NOT IN ('VERIFIED','REVIEWED')
+                   OR unresolved.classification='COUNT_ERROR')
+            )
+       ), count_weeks AS (
+         SELECT ec.branch_id,
+                (ec.count_date-(extract(isodow from ec.count_date)::int-1))::date week_start,
+                max(ec.count_date) checkpoint_date,
+                count(DISTINCT ec.id)::int eligible_count,
+                coalesce(sum(CASE WHEN sr.status IN ('VERIFIED','REVIEWED')
+                                    AND NOT sr.is_test_data
+                                    AND sr.classification IN (${VERIFIED_SHRINKAGE_CLASSIFICATIONS_SQL})
+                                    AND sr.actual_quantity<sr.expected_quantity
+                                  THEN abs(sr.variance_value) ELSE 0 END),0)::float8 shrinkage_cost
+           FROM eligible_counts ec
+           JOIN inventory_count_items ici ON ici.inventory_count_id=ec.id AND ici.voided_at IS NULL
+           LEFT JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ici.id
+          GROUP BY ec.branch_id,week_start
+       ), sales_weeks AS (
+         SELECT pi.branch_id,
+                (pi.business_date-(extract(isodow from pi.business_date)::int-1))::date week_start,
+                max(pi.business_date) last_sales_date,
+                sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price))::float8 sales
+           FROM pos_imports pi
+           JOIN pos_sources source ON source.id=pi.pos_source_id
+           JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
+           JOIN menu_items mi ON mi.id=psi.menu_item_id
+          WHERE NOT pi.is_test_data AND pi.voided_at IS NULL
+            AND pi.business_date BETWEEN $1::date AND $2::date
+            ${shrinkageSalesBranchClause}
+          GROUP BY pi.branch_id,week_start
+       )
+       SELECT cw.branch_id "branchId",b.name "branchName",cw.week_start::text "weekStart",
+              sw.sales,cw.shrinkage_cost "shrinkageCost"
+         FROM count_weeks cw
+         JOIN candidate_count_weeks candidate ON candidate.branch_id=cw.branch_id
+          AND candidate.week_start=cw.week_start AND candidate.candidate_count=cw.eligible_count
+         JOIN sales_weeks sw ON sw.branch_id=cw.branch_id AND sw.week_start=cw.week_start
+         JOIN branches b ON b.id=cw.branch_id
+        WHERE sw.sales>0 AND cw.checkpoint_date>=sw.last_sales_date
+          AND cw.week_start+6<=$2::date
+        ORDER BY cw.branch_id,cw.week_start`, shrinkageParams),
     pool.query<EvaluationSalesRow>(
       `SELECT pi.branch_id "branchId",b.name "branchName",pi.business_date::text date,
               sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price))::float8 sales
@@ -270,6 +375,68 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
     return { date, value: Math.max(0, baselineDailySales * weekdayFactor * Math.max(0.25, attenuatedTrend)) };
   });
   const forecastSales = futureDaily.reduce((sum, row) => sum + row.value, 0);
+  const shrinkageGroups = new Map<string, { branchId: string; branchName: string; observations: { weekStart: string; sales: number; shrinkageCost: number }[] }>();
+  shrinkageWeeklyResult.rows.forEach((row) => {
+    const group = shrinkageGroups.get(row.branchId) ?? {
+      branchId: row.branchId,
+      branchName: row.branchName,
+      observations: [],
+    };
+    group.observations.push({
+      weekStart: row.weekStart,
+      sales: Number(row.sales),
+      shrinkageCost: Number(row.shrinkageCost),
+    });
+    shrinkageGroups.set(row.branchId, group);
+  });
+  const shrinkageBranchForecasts = [...salesGroups.values()].map((salesGroup) => {
+    const weekly = shrinkageGroups.get(salesGroup.branchId);
+    const projectedSales = forecastSalesTotalForRange(
+      salesGroup.rows,
+      input.startDate,
+      input.endDate,
+      today,
+    );
+    const rateForecast = buildShrinkageRateForecast({
+      observations: weekly?.observations ?? [],
+      targetDate: input.startDate,
+      horizonDays: forecastDays,
+    });
+    return {
+      branchId: salesGroup.branchId,
+      branchName: salesGroup.branchName,
+      projectedSales: round(projectedSales),
+      ...rateForecast,
+    };
+  });
+  const supportedShrinkageHorizon = forecastDays >= 7 && forecastDays <= 28;
+  const allShrinkageBranchesAvailable = shrinkageBranchForecasts.length > 0 &&
+    shrinkageBranchForecasts.every((row) => row.status === "AVAILABLE" && row.projectedRate !== null && row.projectedSales > 0);
+  const shrinkageForecastStatus = !supportedShrinkageHorizon
+    ? "UNSUPPORTED_HORIZON" as const
+    : allShrinkageBranchesAvailable
+      ? "AVAILABLE" as const
+      : "INSUFFICIENT_HISTORICAL_DATA" as const;
+  const projectedShrinkageRate = allShrinkageBranchesAvailable
+    ? combineBranchShrinkageRates(shrinkageBranchForecasts)
+    : null;
+  const projectedShrinkageCost = projectedShrinkageRate === null
+    ? null
+    : shrinkageBranchForecasts.reduce(
+        (sum, row) => sum + row.projectedSales * (row.projectedRate ?? 0) / 100,
+        0,
+      );
+  const branchesWithShrinkageMae = shrinkageBranchForecasts.filter(
+    (row) => row.maePercentagePoints !== null && row.projectedSales > 0,
+  );
+  const shrinkageMaeWeight = branchesWithShrinkageMae.reduce((sum, row) => sum + row.projectedSales, 0);
+  const shrinkageMaePercentagePoints = allShrinkageBranchesAvailable &&
+    branchesWithShrinkageMae.length === shrinkageBranchForecasts.length && shrinkageMaeWeight > 0
+    ? branchesWithShrinkageMae.reduce(
+        (sum, row) => sum + row.projectedSales * (row.maePercentagePoints ?? 0),
+        0,
+      ) / shrinkageMaeWeight
+    : null;
   const flatBaselineSales = baselineDailySales * forecastDays;
   const demandChange = flatBaselineSales > 0 ? ((forecastSales - flatBaselineSales) / flatBaselineSales) * 100 : 0;
   const historicalSales = salesRows.slice(-30).map((row) => ({
@@ -327,9 +494,6 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
   const historicalSalesTotal = salesRows.reduce((sum, row) => sum + row.sales, 0);
   const historicalCogsTotal = salesRows.reduce((sum, row) => sum + row.cogs, 0);
   const cogsRate = historicalSalesTotal > 0 ? historicalCogsTotal / historicalSalesTotal : 0;
-  const verifiedShrinkageCost = Number(varianceResult.rows[0]?.verifiedShrinkageCost ?? 0);
-  // Deprecated compatibility metric. It is not presented as a primary analytical output.
-  const shrinkageRate = historicalSalesTotal > 0 ? (verifiedShrinkageCost / historicalSalesTotal) * 100 : 0;
   const confidence = observedSalesDays >= 90 && forecastDays <= 90 ? "HIGH" : observedSalesDays >= 30 && forecastDays <= 366 ? "MEDIUM" : "LOW";
   const findings = {
     scope: branchName, forecastStart: input.startDate, forecastEnd: input.endDate, forecastDays,
@@ -337,6 +501,13 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
     demandChangePercent: round(demandChange), historicalCogsRatePercent: round(cogsRate * 100),
     salesMae: overallSalesAccuracy.mae,
     evaluatedSalesDays: overallSalesAccuracy.evaluatedDays,
+    shrinkageForecastStatus,
+    projectedShrinkageRate: projectedShrinkageRate === null ? null : round(projectedShrinkageRate, 4),
+    projectedShrinkageCost: projectedShrinkageCost === null ? null : round(projectedShrinkageCost),
+    shrinkageEligibleWeeks: shrinkageBranchForecasts.length
+      ? Math.min(...shrinkageBranchForecasts.map((row) => row.eligibleWeeks))
+      : 0,
+    shrinkageMaePercentagePoints: shrinkageMaePercentagePoints === null ? null : round(shrinkageMaePercentagePoints, 4),
     largestSalesError: overallSalesAccuracy.observations.length
       ? Math.max(...overallSalesAccuracy.observations.map((row) => row.absoluteError))
       : null,
@@ -353,18 +524,38 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
       insightSource: geminiInsights ? "GOOGLE_GEMINI" : "SYSTEM_ANALYSIS",
       salesMaeMethod: "Each tested branch-day uses only sales records dated before that day; overall MAE uses all underlying branch observations.",
       ingredientMaeMethod: "Each tested ingredient day uses only earlier recipe-derived usage records with the same unit; dates without recorded actual usage are not inserted as zero.",
+      shrinkageRateMethod: "Uses the eight latest eligible complete branch-weeks. Each weekly verified shrinkage rate is weighted by accepted sales and recency; missing or unresolved evidence is never inserted as zero.",
       stockProjectionAssumption: "Only unreceived quantities from ordered or partially received purchase orders are considered, and they affect projected supply no earlier than their expected delivery date. Overdue expected deliveries are not assumed available.",
       disclaimer: "Forecasts are estimates based on recorded historical patterns. They support, but do not replace, management judgment and do not automatically create purchase orders or change inventory.",
     },
     summary: {
       forecastSales: round(forecastSales), demandChange: round(demandChange), criticalItems: predictions.filter((row) => row.urgency === "HIGH").length,
-      // Deprecated compatibility field; no longer shown as a KPI.
-      projectedCogs: round(forecastSales * cogsRate), projectedShrinkageRate: round(shrinkageRate),
+      projectedCogs: round(forecastSales * cogsRate),
+      projectedShrinkageRate: projectedShrinkageRate === null ? null : round(projectedShrinkageRate, 4),
+      projectedShrinkageCost: projectedShrinkageCost === null ? null : round(projectedShrinkageCost),
+      shrinkageForecastStatus,
       recommendedReorders: predictions.filter((row) => row.recommendedReorder > 0).length,
     },
     accuracy: {
       sales: { overall: overallSalesAccuracy, branches: salesAccuracyByBranch },
       ingredients: ingredientAccuracy,
+      shrinkage: {
+        maePercentagePoints: shrinkageMaePercentagePoints === null ? null : round(shrinkageMaePercentagePoints, 4),
+        evaluatedWeeks: shrinkageBranchForecasts.reduce((sum, row) => sum + row.evaluatedWeeks, 0),
+        branches: shrinkageBranchForecasts.map((row) => ({
+          branchId: row.branchId,
+          branchName: row.branchName,
+          status: row.status,
+          projectedRate: row.projectedRate,
+          eligibleWeeks: row.eligibleWeeks,
+          historicalStart: row.historicalStart,
+          historicalEnd: row.historicalEnd,
+          maePercentagePoints: row.maePercentagePoints,
+          evaluatedWeeks: row.evaluatedWeeks,
+          evaluationStart: row.evaluationStart,
+          evaluationEnd: row.evaluationEnd,
+        })),
+      },
     },
     demandSeries: [...historicalSales, ...projectedDemand],
     inventorySeries,
