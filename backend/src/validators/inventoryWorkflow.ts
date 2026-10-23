@@ -137,6 +137,7 @@ export const shrinkageFilters = z.object({
 export const varianceFilters = z.object({
   branchId: z.string().uuid().optional(),
   countDate: z.iso.date().optional(),
+  varianceScope: z.enum(["DISCREPANCIES", "MATCHED", "ALL"]).default("DISCREPANCIES"),
 });
 
 export const notificationIdParams = z.object({ id: z.string().uuid() });

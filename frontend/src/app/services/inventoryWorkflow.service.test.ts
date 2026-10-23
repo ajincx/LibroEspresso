@@ -6,10 +6,19 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("physical-count baseline availability", () => {
   it("passes the archived case scope through the existing shrinkage endpoint", async () => {
-    const get = vi.spyOn(api, "get").mockResolvedValue({ data: { success: true, data: { reports: [] } } });
-    await inventoryWorkflowService.reports({ branchId: "branch-1", archiveScope: "ARCHIVED" });
+    const data = { reports: [], metrics: { detectedValue: 0, detected: 0, pending: 0, spoilage: 0, wastage: 0, pilferage: 0 }, pagination: { page: 1, pageSize: 100, total: 0, totalPages: 1 } };
+    const get = vi.spyOn(api, "get").mockResolvedValue({ data: { success: true, data } });
+    await expect(inventoryWorkflowService.reports({ branchId: "branch-1", archiveScope: "ARCHIVED" })).resolves.toBe(data);
     expect(get).toHaveBeenCalledWith("/shrinkage-reports", {
       params: { branchId: "branch-1", archiveScope: "ARCHIVED" },
+    });
+  });
+
+  it("passes the explicit matched variance scope without changing variance calculations", async () => {
+    const get = vi.spyOn(api, "get").mockResolvedValue({ data: { success: true, data: { variances: [] } } });
+    await inventoryWorkflowService.variances({ branchId: "branch-1", varianceScope: "MATCHED" });
+    expect(get).toHaveBeenCalledWith("/inventory-counts/variances", {
+      params: { branchId: "branch-1", varianceScope: "MATCHED" },
     });
   });
   it("preserves valid items and the non-countable No Baseline list", async () => {

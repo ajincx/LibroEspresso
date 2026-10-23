@@ -356,6 +356,15 @@ export type ShrinkageClassification =
 export type ShrinkageStatus = "DETECTED" | "VERIFIED" | "PENDING_REVIEW" | "REVIEWED";
 export type EvidenceBasis = "LINKED_STAFF_INCIDENT" | "PHYSICAL_COUNT" | "INVENTORY_MOVEMENT" | "SUPPORTING_IMAGE" | "WRITTEN_INVESTIGATION" | "OTHER_OPERATIONAL_RECORD";
 
+export interface ShrinkageMetrics {
+  detectedValue: number;
+  detected: number;
+  pending: number;
+  spoilage: number;
+  wastage: number;
+  pilferage: number;
+}
+
 export interface ShrinkageReport {
   id: string;
   archivedAt?: string | null;

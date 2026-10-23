@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { AlertTriangle, Archive, CheckCircle, Eye, RefreshCw, SearchCheck, ShieldCheck, Sparkles, X } from "lucide-react";
 import { useSearchParams } from "react-router";
 import { toast } from "sonner";
@@ -6,7 +6,7 @@ import { useAuth } from "../../contexts/AuthContext";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
 import { operationsService } from "../../services/operations.service";
 import { masterDataService } from "../../services/masterData.service";
-import type { EvidenceBasis, ShrinkageAiAnalysisResult, ShrinkageClassification, ShrinkageEvidence, ShrinkageReport, ShrinkageStatus } from "../../types/inventoryWorkflow";
+import type { EvidenceBasis, ShrinkageAiAnalysisResult, ShrinkageClassification, ShrinkageEvidence, ShrinkageMetrics, ShrinkageReport, ShrinkageStatus } from "../../types/inventoryWorkflow";
 import type { Branch, InventoryItem, MenuItem } from "../../types/masterData";
 import type { IncidentType } from "../../types/operations";
 import { ShrinkageIncidentReports } from "./ShrinkageIncidentReports";
@@ -17,23 +17,14 @@ import { ControlledActionDialog, type ControlledActionValue } from "../../compon
 import { controlledActionService } from "../../services/controlledAction.service";
 const formatDate = (value: string | null) => value ? formatAppDate(value, true) : "—";
 
-export function getActiveShrinkageMetrics(reports: ShrinkageReport[]) {
-  const activeReports = reports.filter((report) => !report.archivedAt);
-  return {
-    detectedValue: activeReports.reduce((sum, report) => sum + Math.max(-report.varianceValue, 0), 0),
-    detected: activeReports.filter((report) => report.status === "DETECTED").length,
-    pending: activeReports.filter((report) => report.status === "PENDING_REVIEW" || report.status === "VERIFIED").length,
-    spoilage: activeReports.filter((report) => report.classification === "SPOILAGE").length,
-    wastage: activeReports.filter((report) => report.classification === "WASTAGE").length,
-    pilferage: activeReports.filter((report) => report.classification === "PILFERAGE").length,
-  };
-}
+const emptyMetrics: ShrinkageMetrics = { detectedValue: 0, detected: 0, pending: 0, spoilage: 0, wastage: 0, pilferage: 0 };
 
 export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string }) {
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const owner = user?.role === "OWNER";
   const [reports, setReports] = useState<ShrinkageReport[]>([]);
+  const [metrics, setMetrics] = useState<ShrinkageMetrics>(emptyMetrics);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [menu, setMenu] = useState<MenuItem[]>([]);
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
@@ -60,8 +51,12 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
 
   const load = async () => {
     setLoading(true); setError("");
-    try { setReports(await inventoryWorkflowService.reports({ branchId: branchId || undefined, archiveScope, status: status || undefined, classification: classification || undefined, inventoryItemId: inventoryItemId || undefined, incidentType: incidentType || undefined, startDate: startDate || undefined, endDate: endDate || undefined })); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to load system-detected anomalies"); }
+    try {
+      const result = await inventoryWorkflowService.reports({ branchId: branchId || undefined, archiveScope, status: status || undefined, classification: classification || undefined, inventoryItemId: inventoryItemId || undefined, incidentType: incidentType || undefined, startDate: startDate || undefined, endDate: endDate || undefined });
+      setReports(result.reports);
+      setMetrics(result.metrics);
+    }
+    catch (reason) { setReports([]); setMetrics(emptyMetrics); setError(reason instanceof Error ? reason.message : "Unable to load system-detected anomalies"); }
     finally { setLoading(false); }
   };
   useEffect(() => { void load(); }, [branchId, archiveScope, status, classification, inventoryItemId, incidentType, startDate, endDate]);
@@ -95,7 +90,6 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
       .finally(() => setAiLoading(false));
   };
 
-  const metrics = useMemo(() => getActiveShrinkageMetrics(reports), [reports]);
   const archiveReport=async()=>{if(!archiveTarget)return;setControlledBusy(true);try{await controlledActionService.archiveShrinkage(archiveTarget.id,controlledValue);toast.success("Anomaly case archived; its history remains in the audit trail");setArchiveTarget(null);setControlledValue({reason:"",verificationPin:""});await load();}catch(reason){toast.error(reason instanceof Error?reason.message:"Unable to archive anomaly");}finally{setControlledBusy(false);}};
 
   const submitInvestigation = async () => {
@@ -113,8 +107,8 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
         evidenceReviewConfirmed: investigation.evidenceReviewConfirmed,
         evidenceBasis: investigation.evidenceBasis,
       });
-      setReports((current) => status === "DETECTED" ? current.filter((report) => report.id !== updated.id) : current.map((report) => report.id === updated.id ? updated : report));
       setSelected(updated);
+      await load();
       toast.success("Investigation findings verified and submitted");
     } catch (reason) { toast.error(reason instanceof Error ? reason.message : "Unable to submit investigation findings"); }
     finally { setSaving(false); }
@@ -125,8 +119,7 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
     setSaving(true);
     try {
       const reviewed = await inventoryWorkflowService.reviewReport(selected.id);
-      setReports((current) => current.map((report) => report.id === reviewed.id ? reviewed : report));
-      setSelected(reviewed); setConfirmReview(false); toast.success("Investigation marked as reviewed");
+      setSelected(reviewed); setConfirmReview(false); await load(); toast.success("Investigation marked as reviewed");
     } catch (reason) { toast.error(reason instanceof Error ? reason.message : "Unable to review investigation"); }
     finally { setSaving(false); }
   };

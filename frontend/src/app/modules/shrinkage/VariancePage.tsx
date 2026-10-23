@@ -33,6 +33,10 @@ export function displayStatus(record: VarianceRecord): DisplayStatus {
   return "EXCESS_WITHIN_TOLERANCE";
 }
 
+export function varianceScopeForStatus(status: DisplayStatus | "") {
+  return status === "MATCHED" ? "MATCHED" as const : "DISCREPANCIES" as const;
+}
+
 export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string }) {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -51,11 +55,11 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
 
   const load = async () => {
     setLoading(true); setError("");
-    try { setRecords(await inventoryWorkflowService.variances({ branchId: branchId || undefined, countDate: countDate || undefined })); }
+    try { setRecords(await inventoryWorkflowService.variances({ branchId: branchId || undefined, countDate: countDate || undefined, varianceScope: varianceScopeForStatus(status) })); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to load calculated variances"); }
     finally { setLoading(false); }
   };
-  useEffect(() => { void load(); }, [branchId, countDate]);
+  useEffect(() => { void load(); }, [branchId, countDate, status]);
   useEffect(() => { if (owner) setBranchId(scopeBranchId === "ALL" ? "" : scopeBranchId); }, [owner, scopeBranchId]);
   useEffect(() => { if (owner) void masterDataService.branches().then(setBranches).catch(() => setBranches([])); }, [owner]);
 
@@ -117,7 +121,7 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
             value={status}
             onChange={(value) => setStatus(value as DisplayStatus | "")}
             options={[
-              { value: "", label: "All Statuses" },
+              { value: "", label: "All Discrepancies" },
               { value: "MATCHED", label: "Matched" },
               { value: "SHORTAGE_WITHIN_TOLERANCE", label: "Shortage (Within Tolerance)" },
               { value: "EXCESS_WITHIN_TOLERANCE", label: "Excess" },

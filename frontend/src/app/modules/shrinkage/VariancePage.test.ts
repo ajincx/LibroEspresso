@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { displayStatus } from "./VariancePage";
+import { displayStatus, varianceScopeForStatus } from "./VariancePage";
 
 describe("variance sign presentation", () => {
   it("treats negative Actual-minus-Expected variance as shortage", () => {
@@ -12,5 +12,11 @@ describe("variance sign presentation", () => {
 
   it("keeps zero variance matched", () => {
     expect(displayStatus({ varianceQuantity: 0, anomalyStatus: null } as never)).toBe("MATCHED");
+  });
+
+  it("requests matched records only when the existing Matched filter is selected", () => {
+    expect(varianceScopeForStatus("MATCHED")).toBe("MATCHED");
+    expect(varianceScopeForStatus("")).toBe("DISCREPANCIES");
+    expect(varianceScopeForStatus("DETECTED")).toBe("DISCREPANCIES");
   });
 });

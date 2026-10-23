@@ -2207,6 +2207,11 @@ export const listInventoryVariances: RequestHandler = async (req, res) => {
     values.push(filters.countDate);
     clauses.push(`ic.count_date=$${values.length}::date`);
   }
+  if (filters.varianceScope === "DISCREPANCIES") {
+    clauses.push(`abs(COALESCE(correction.corrected_variance_quantity,ici.variance_quantity)) > 0.0001`);
+  } else if (filters.varianceScope === "MATCHED") {
+    clauses.push(`abs(COALESCE(correction.corrected_variance_quantity,ici.variance_quantity)) <= 0.0001`);
+  }
   const result = await pool.query(
     `SELECT ici.id "countItemId",ic.count_no "countNo",ic.count_date::text "countDate",
             b.id "branchId",b.name "branchName",ii.id "inventoryItemId",ii.sku,ii.name "itemName",
@@ -2280,12 +2285,41 @@ export const listShrinkageReports: RequestHandler = async (req, res) => {
     values.push(filters.incidentType);
     clauses.push(`EXISTS (SELECT 1 FROM incident_shrinkage_links isl JOIN incident_reports ir ON ir.id=isl.incident_report_id WHERE NOT ir.is_test_data AND ir.archived_at IS NULL AND isl.shrinkage_report_id=sr.id AND ir.incident_type=$${values.length})`);
   }
-  const result = await pool.query(
-    `${shrinkageSelection.replace("SELECT ","SELECT count(*) OVER()::int \"__total\",")} ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""} ORDER BY CASE sr.status WHEN 'DETECTED' THEN 0 WHEN 'PENDING_REVIEW' THEN 1 ELSE 2 END,sr.detected_at DESC LIMIT $${values.length+1} OFFSET $${values.length+2}`,
-    [...values,pagination.pageSize,(pagination.page-1)*pagination.pageSize],
-  );
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const [result, aggregate] = await Promise.all([
+    pool.query(
+      `${shrinkageSelection.replace("SELECT ","SELECT count(*) OVER()::int \"__total\",")} ${where} ORDER BY CASE sr.status WHEN 'DETECTED' THEN 0 WHEN 'PENDING_REVIEW' THEN 1 ELSE 2 END,sr.detected_at DESC LIMIT $${values.length+1} OFFSET $${values.length+2}`,
+      [...values,pagination.pageSize,(pagination.page-1)*pagination.pageSize],
+    ),
+    pool.query<{
+      detectedValue: number;
+      detected: number;
+      pending: number;
+      spoilage: number;
+      wastage: number;
+      pilferage: number;
+    }>(
+      `SELECT
+         COALESCE(sum(CASE WHEN sr.archived_at IS NULL AND sr.actual_quantity<sr.expected_quantity THEN abs(sr.variance_value) ELSE 0 END),0)::float8 "detectedValue",
+         count(*) FILTER (WHERE sr.archived_at IS NULL AND sr.status='DETECTED')::int detected,
+         count(*) FILTER (WHERE sr.archived_at IS NULL AND sr.status IN ('PENDING_REVIEW','VERIFIED'))::int pending,
+         count(*) FILTER (WHERE sr.archived_at IS NULL AND sr.classification='SPOILAGE')::int spoilage,
+         count(*) FILTER (WHERE sr.archived_at IS NULL AND sr.classification='WASTAGE')::int wastage,
+         count(*) FILTER (WHERE sr.archived_at IS NULL AND sr.classification='PILFERAGE')::int pilferage
+       FROM shrinkage_reports sr
+       JOIN branches b ON b.id=sr.branch_id
+       JOIN inventory_items ii ON ii.id=sr.inventory_item_id
+       JOIN inventory_count_items ici ON ici.id=sr.inventory_count_item_id
+       JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
+       JOIN users su ON su.id=sr.submitted_by
+       LEFT JOIN users ru ON ru.id=sr.reviewed_by
+       LEFT JOIN menu_items mi ON mi.id=sr.menu_item_id
+       ${where}`,
+      values,
+    ),
+  ]);
   const page = paginatedRows(result.rows, pagination);
-  res.json({ success: true, data: { reports: page.data, pagination: page.pagination } });
+  res.json({ success: true, data: { reports: page.data, pagination: page.pagination, metrics: aggregate.rows[0] } });
 };
 
 export const getShrinkageReport: RequestHandler = async (req, res) => {

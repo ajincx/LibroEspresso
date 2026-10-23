@@ -1,6 +1,6 @@
 import type { ApiSuccess } from "../types/auth";
 import type { DailyInventoryCountContext, InventoryCountType } from "../types/inventoryWorkflow";
-import type { CountVarianceItem, DailyPosUploadStatus, EvidenceBasis, ExpectedInventoryItem, InventoryCountSummary, OpeningInventoryBaseline, PosAnalytics, PosFieldMapping, PosFormatSetupRequest, PosHeaderInspection, PosImportPreview, PosImportReconciliation, PosImportRecord, PosInventoryDateAssessment, PosMapping, PosMappingReviewStatus, PosSource, ShrinkageAiAnalysisResult, ShrinkageClassification, ShrinkageEvidence, ShrinkageReport, StartingStockSetup, UnavailableInventoryCountItem, VarianceRecord, WorkflowNotification } from "../types/inventoryWorkflow";
+import type { CountVarianceItem, DailyPosUploadStatus, EvidenceBasis, ExpectedInventoryItem, InventoryCountSummary, OpeningInventoryBaseline, PosAnalytics, PosFieldMapping, PosFormatSetupRequest, PosHeaderInspection, PosImportPreview, PosImportReconciliation, PosImportRecord, PosInventoryDateAssessment, PosMapping, PosMappingReviewStatus, PosSource, ShrinkageAiAnalysisResult, ShrinkageClassification, ShrinkageEvidence, ShrinkageMetrics, ShrinkageReport, StartingStockSetup, UnavailableInventoryCountItem, VarianceRecord, WorkflowNotification } from "../types/inventoryWorkflow";
 import { api } from "./api";
 
 type PosPreviewSource =
@@ -64,9 +64,9 @@ export const inventoryWorkflowService = {
     return (await api.post<ApiSuccess<{ baseline: OpeningInventoryBaseline }>>("/inventory-opening-baselines/confirm", { confirmed: true, items })).data.data.baseline;
   },
   async reports(filters?: { branchId?: string; archiveScope?: "ACTIVE" | "ARCHIVED" | "ALL"; status?: string; classification?: string; inventoryItemId?: string; incidentType?: string; startDate?: string; endDate?: string }) {
-    return (await api.get<ApiSuccess<{ reports: ShrinkageReport[] }>>("/shrinkage-reports", { params: filters })).data.data.reports;
+    return (await api.get<ApiSuccess<{ reports: ShrinkageReport[]; metrics: ShrinkageMetrics; pagination: { page: number; pageSize: number; total: number; totalPages: number } }>>("/shrinkage-reports", { params: filters })).data.data;
   },
-  async variances(filters?: { branchId?: string; countDate?: string }) {
+  async variances(filters?: { branchId?: string; countDate?: string; varianceScope?: "DISCREPANCIES" | "MATCHED" | "ALL" }) {
     return (await api.get<ApiSuccess<{ variances: VarianceRecord[] }>>("/inventory-counts/variances", { params: filters })).data.data.variances;
   },
   async evidence(id: string) {
