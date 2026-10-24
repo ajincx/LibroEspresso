@@ -249,7 +249,9 @@ const helpSections: HelpSection[] = [
         page: "inventory",
         steps: [
           "Open Starting Stock from Inventory Management.",
-          "Choose the permitted branch to review its initial stock baseline.",
+          "Before operations begin, the Owner completes the global ingredient list, costs, recipes, and sales setup.",
+          "The assigned Branch Manager physically verifies every listed ingredient and enters each quantity, including zero when none is on hand.",
+          "Review all quantities and units, then confirm Starting Stock once before sales imports, purchases, movements, or inventory counts.",
           "Treat Starting Stock as the fixed starting point, not a recurring physical count.",
           "Use Inventory Overview for the changing expected balance.",
         ],

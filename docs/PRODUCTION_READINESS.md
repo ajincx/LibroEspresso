@@ -20,6 +20,10 @@ The application exposes `/health` for process liveness and `/ready` for database
 
 Run `npm run db:migrate` from `backend`. Migrations are ordered lexically by complete filename and recorded in `schema_migrations`; already applied filenames are never rerun. Existing duplicate numeric prefixes (`021`/`021a` and two `022` files) must not be renamed after deployment. Every migration runs in its own transaction and rolls back on failure.
 
+`npm run db:seed` is prohibited in production and UAT. It is guarded for `DATA_LIFECYCLE_ENV=DEVELOPMENT` with a non-production `NODE_ENV` and contains development identities and catalog fixtures. Production installation consists of migrations, approved initial-Owner provisioning, Owner verification of the global ingredient catalog and operational configuration, then physically verified Starting Stock entered once by each assigned Branch Manager. Do not insert, import, or seed inventory balances as a substitute for Starting Stock.
+
+Before enabling POS imports, purchases, movements, or counts for a new branch, verify that the ingredient catalog and branch settings are complete and that no unexplained operational balances or history exist. Each Manager must enter every assigned ingredient's physically verified quantity, including explicit zeros, and confirm Starting Stock only once. Existing databases with unexplained balances require a separate accounting review; this setup procedure does not delete, reclassify, or overwrite them.
+
 Before a migration that changes or removes stored data, create and verify a PostgreSQL backup. Stop deployment if the backup cannot be validated. If a migration fails, retain the error output, confirm the transaction rolled back, correct the migration in a new migration file when the failed version may already have reached another environment, and rerun the command.
 
 ## Backup and restore

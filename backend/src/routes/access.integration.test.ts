@@ -107,15 +107,15 @@ describe("access controls", () => {
     expect(classification.status).toBe(403);
   });
 
-  it("allows Manager branch ingredient creation while validating the submitted fields", async () => {
-    const response = await request(app)
-      .post("/api/inventory-items")
-      .set(
-        "Cookie",
-        session({ id: "manager", role: "BRANCH_MANAGER", branchId: "lipa" }),
-      )
-      .send({});
-    expect(response.status).toBe(422);
+  it("allows Owner and Manager ingredient creation while rejecting other roles", async () => {
+    const path = "/api/inventory-items";
+    const [owner, manager, staff, anonymous] = await Promise.all([
+      request(app).post(path).set("Cookie", session({ id: "owner", role: "OWNER", branchId: null })).send({}),
+      request(app).post(path).set("Cookie", session({ id: "manager", role: "BRANCH_MANAGER", branchId: "lipa" })).send({}),
+      request(app).post(path).set("Cookie", session({ id: "staff", role: "STAFF", branchId: "lipa" })).send({}),
+      request(app).post(path).send({}),
+    ]);
+    expect([owner.status, manager.status, staff.status, anonymous.status]).toEqual([422, 422, 403, 401]);
   });
 
   it("keeps branch reorder settings writable by Managers and read-only for the Owner", async () => {

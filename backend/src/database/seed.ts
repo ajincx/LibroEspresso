@@ -1,5 +1,9 @@
+import "dotenv/config";
 import bcrypt from "bcrypt";
-import { pool } from "../config/database.js";
+import { assertDevelopmentSeedEnvironment } from "./seedPolicy.js";
+
+assertDevelopmentSeedEnvironment();
+const { pool } = await import("../config/database.js");
 const branches = [["GLD", "Gulod / Main Branch", "Batangas City"], ["LPA", "Lipa", "Lipa City, Batangas"], ["VRM", "Vermosa", "Imus, Cavite"], ["TAG", "Tagaytay City", "Tagaytay City, Cavite"], ["EVO", "Evo", "Trece Martires, Cavite"]];
 const ownerPassword = process.env.SEED_OWNER_PASSWORD ?? "owner123";
 const managerPassword = process.env.SEED_MANAGER_PASSWORD ?? "manager123";
@@ -55,9 +59,5 @@ try {
     ON CONFLICT (branch_id,inventory_item_id) DO NOTHING`);
   // Official menu products and variants are loaded separately from the approved
   // client menu. Development seeds must not recreate sample products or recipes.
-  await client.query(`INSERT INTO branch_inventory_balances (branch_id,inventory_item_id,actual_quantity,as_of)
-    SELECT b.id,i.id,CASE i.unit WHEN 'g' THEN 1000 WHEN 'ml' THEN 20000 ELSE 1000 END,'2026-08-25 23:59:59+08'::timestamptz
-    FROM branches b CROSS JOIN inventory_items i
-    ON CONFLICT (branch_id,inventory_item_id) DO NOTHING`);
-  await client.query("COMMIT"); console.log("Development branches and users seeded");
+  await client.query("COMMIT"); console.log("Development branches, users, ingredients, and branch settings seeded; operational inventory balances were not created");
 } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); await pool.end(); }

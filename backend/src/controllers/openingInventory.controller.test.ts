@@ -69,6 +69,20 @@ describe("opening inventory baseline workflow", () => {
     expect(mocks.poolQuery.mock.calls.every(([, values]) => !Array.isArray(values) || !values.includes("00000000-0000-4000-8000-000000000099"))).toBe(true);
   });
 
+  it("reports a fresh branch with assigned ingredients and no operational history as ready", async () => {
+    mocks.poolQuery.mockImplementation(async (statement: unknown) => {
+      const sql = String(statement);
+      if (sql.includes("FROM branches")) return { rows: [{ id: branchId, name: "Lipa" }] };
+      if (sql.includes("FROM inventory_items")) return { rows: [{ inventoryItemId: itemId, sku: "RM-002", name: "Espresso Blend Beans", category: "Coffee", unit: "g" }] };
+      if (sql.includes("FROM inventory_opening_baselines WHERE branch_id")) return { rows: [{ baselineCount: 0, balanceCount: 0, countCount: 0, movementCount: 0, usageCount: 0 }] };
+      if (sql.includes("SELECT ob.id")) return { rows: [] };
+      throw new Error(`Unexpected query: ${sql}`);
+    });
+    const json = vi.fn();
+    await getStartingStockSetup({ user: { id: ownerId, role: "BRANCH_MANAGER", branchId }, query: {} } as never, { json } as never, vi.fn());
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ data: { setup: expect.objectContaining({ branchId, status: "READY", items: [expect.objectContaining({ inventoryItemId: itemId })] }) } }));
+  });
+
   it("confirms a complete Starting Stock atomically with canonical conversion and an explicit zero", async () => {
     mocks.clientQuery.mockImplementation(async (statement: unknown) => {
       const sql = String(statement);

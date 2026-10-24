@@ -10,10 +10,13 @@ import { ControlledActionDialog, type ControlledActionValue } from "../../compon
 import { controlledActionService } from "../../services/controlledAction.service";
 
 const emptyForm = { name: "", categoryChoice: "", otherCategory: "", unit: "", unitCost: "", reorderLevel: "", status: "ACTIVE" as const };
+export const canCreateInventoryItem=(role:string|undefined)=>role==="OWNER"||role==="BRANCH_MANAGER";
+export const canRemoveBranchInventoryItem=(role:string|undefined,itemScope:InventoryItem["itemScope"])=>role==="BRANCH_MANAGER"&&itemScope==="BRANCH";
 
 export function MasterDataPage() {
   const {user}=useAuth();
-  const canManage=user?.role==="BRANCH_MANAGER";
+  const canCreate=canCreateInventoryItem(user?.role);
+  const isManager=user?.role==="BRANCH_MANAGER";
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [form, setForm] = useState(emptyForm);
   const [open, setOpen] = useState(false);
@@ -52,12 +55,12 @@ export function MasterDataPage() {
       <div>
         <h1 className="text-xl font-bold">Inventory Master Data</h1>
         <p className="text-sm mt-1" style={{ color: "var(--app-text-muted)" }}>
-          {canManage?"Maintain ingredients created specifically for your assigned branch.":"View the inventory-item catalog used across branches."}
+          {isManager?"Maintain ingredients created specifically for your assigned branch.":"Maintain global ingredients available to all branches."}
         </p>
       </div>
       <div className="flex gap-2 flex-wrap">
         <Btn variant="outline" icon={RefreshCw} onClick={() => void load()}>Refresh</Btn>
-        {canManage&&<Btn icon={Plus} onClick={() => setOpen(true)}>Add Inventory Item</Btn>}
+        {canCreate&&<Btn icon={Plus} onClick={() => setOpen(true)}>Add Inventory Item</Btn>}
       </div>
     </div>
     <div className="flex items-center gap-2.5 px-4 py-3 rounded-xl border" style={{ borderColor: "var(--app-border)", background: "var(--app-primary-faint)", color: "var(--app-text-muted)" }}>
@@ -95,14 +98,14 @@ export function MasterDataPage() {
                 <TD right><span className="font-semibold">₱{item.unitCost.toFixed(4)}</span></TD>
                 <TD right muted>{item.reorderLevel}</TD>
                 <TD center><StatusChip status={item.status === "ACTIVE" ? "active" : "inactive"} /></TD>
-                <TD center>{canManage&&item.itemScope==="BRANCH"&&<button aria-label={`Remove ${item.name}`} className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--app-border)] text-[var(--app-danger)]" onClick={()=>{setRemoveTarget(item);setControlledValue({reason:"",verificationPin:""});}}><Trash2 size={14}/></button>}</TD>
+                <TD center>{canRemoveBranchInventoryItem(user?.role,item.itemScope)&&<button aria-label={`Remove ${item.name}`} className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--app-border)] text-[var(--app-danger)]" onClick={()=>{setRemoveTarget(item);setControlledValue({reason:"",verificationPin:""});}}><Trash2 size={14}/></button>}</TD>
               </TR>
             ))
           )}
         </tbody>
       </TableWrapper>
     </TableCard>
-    {canManage&&removeTarget&&<ControlledActionDialog title={`Remove ${removeTarget.name}?`} description="The server deletes only an entirely unused ingredient. If recipes, purchases, counts, movements, or sales usage depend on it, the item is deactivated instead." confirmLabel="Remove Ingredient" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setRemoveTarget(null)} onConfirm={()=>void remove()}/>}
+    {isManager&&removeTarget&&<ControlledActionDialog title={`Remove ${removeTarget.name}?`} description="The server deletes only an entirely unused ingredient. If recipes, purchases, counts, movements, or sales usage depend on it, the item is deactivated instead." confirmLabel="Remove Ingredient" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setRemoveTarget(null)} onConfirm={()=>void remove()}/>}
     {open && <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.5)" }}><div role="dialog" aria-modal="true" aria-labelledby="add-inventory-item-title" className="w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-2xl border p-6" style={{ background: "var(--app-surface)", borderColor: "var(--app-border)" }}><div className="flex justify-between mb-5"><div><h2 id="add-inventory-item-title" className="text-lg font-bold">Add Inventory Item</h2><p className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>The ingredient code is generated automatically. {user?.role==="OWNER"?"This item will be available to all branches.":"This item will be available only to your branch."}</p></div><button aria-label="Close inventory item form" onClick={() => setOpen(false)}><X size={18} /></button></div><div className="grid grid-cols-1 sm:grid-cols-2 gap-3"><Field label="Ingredient Name *" value={form.name} onChange={(value) => setForm((current) => ({ ...current, name: value }))} /><label className="text-sm font-medium">Category *<Select className="mt-1.5 w-full" value={form.categoryChoice} onChange={(value)=>setForm((current)=>({...current,categoryChoice:value,otherCategory:value==="__OTHER__"?current.otherCategory:""}))} options={[{value:"",label:"Select category…"},...categories.map((category)=>({value:category,label:category})),{value:"__OTHER__",label:"Others"}]}/></label>{form.categoryChoice==="__OTHER__"&&<Field label="Specify Category *" value={form.otherCategory} onChange={(value)=>setForm((current)=>({...current,otherCategory:value}))}/>}<label className="text-sm font-medium">Inventory Unit *<Select className="mt-1.5 w-full" value={form.unit} onChange={(value)=>setForm((current)=>({...current,unit:value}))} options={[{value:"",label:"Select unit…"},...units.map((unit)=>({value:unit,label:unit}))]}/></label><Field label="Unit Cost *" type="number" value={form.unitCost} onChange={(value) => setForm((current) => ({ ...current, unitCost: value }))} /><Field label="Reorder Level *" type="number" value={form.reorderLevel} onChange={(value) => setForm((current) => ({ ...current, reorderLevel: value }))} /></div><div className="flex gap-3 mt-6"><button onClick={() => setOpen(false)} className="flex-1 py-2.5 rounded-xl border" style={{ borderColor: "var(--app-border)" }}>Cancel</button><button disabled={saving} onClick={() => void create()} className="flex-1 py-2.5 rounded-xl text-white font-semibold disabled:opacity-50" style={{ background: "var(--app-primary)" }}>{saving ? "Creating…" : "Create Item"}</button></div></div></div>}
   </div>;
 }

@@ -84,6 +84,7 @@ Configure `backend/.env`:
 
 ```env
 NODE_ENV=development
+DATA_LIFECYCLE_ENV=DEVELOPMENT
 PORT=5000
 DATABASE_URL=postgresql://postgres:YOUR_POSTGRES_PASSWORD@localhost:5432/libro_cogs
 CLIENT_URL=http://localhost:5173
@@ -114,7 +115,16 @@ npm run db:migrate
 npm run db:seed
 ```
 
-The migrations create the database tables. The seed creates development branches, users, inventory definitions, menu products, and standard recipes.
+The migrations create the database tables. The seed is strictly for local development: it creates development branches, accounts, six ingredient definitions, and branch settings. It does not create menu products, recipes, Starting Stock, or operational inventory balances. The command refuses to run unless `DATA_LIFECYCLE_ENV=DEVELOPMENT` and `NODE_ENV` is not `production`.
+
+After seeding a new development database, complete setup in this order:
+
+1. The Owner verifies the global ingredient catalog, adds any missing global ingredients, and confirms costs and reorder levels.
+2. Configure products, recipes, POS sources, and mappings before importing sales.
+3. Before any counts, movements, purchases, or POS imports, each Branch Manager physically verifies every assigned ingredient and confirms Starting Stock, including explicit zero quantities.
+4. Use inventory counts and normal operational workflows after Starting Stock is established; do not seed operational quantities.
+
+For production, run migrations only. Never run `npm run db:seed`; provision the initial Owner through the approved administrative process, then perform the same Owner catalog and Manager Starting Stock steps.
 
 ### 5. Install the frontend
 
@@ -147,7 +157,7 @@ Open [http://localhost:5173](http://localhost:5173).
 
 ## Development accounts
 
-Run `npm run db:seed` before using these accounts.
+Run `npm run db:seed` only against a disposable or local development database before using these accounts.
 
 Owner:
 
@@ -234,7 +244,7 @@ cd ..\frontend
 npm ci
 ```
 
-`npm run db:seed` is mainly for first-time setup. Do not run it routinely unless development fixtures need to be restored or updated.
+`npm run db:seed` is development-only and is never part of production setup. It does not repair or reclassify existing data, and it must not be used to establish inventory quantities. On a fresh development database, Managers establish authentic Starting Stock from a physical verification after the Owner finishes the ingredient catalog.
 
 ## Group contribution workflow
 
