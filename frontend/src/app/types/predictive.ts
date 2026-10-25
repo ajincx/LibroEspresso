@@ -18,7 +18,7 @@ export interface PredictiveForecast {
   methodology: {
     historicalStart: string; historicalEnd: string; observedSalesDays: number;
     confidence: ForecastUrgency; insightSource: "GOOGLE_GEMINI" | "SYSTEM_ANALYSIS"; disclaimer: string;
-    salesMaeMethod: string; ingredientMaeMethod: string; shrinkageRateMethod: string; stockProjectionAssumption: string;
+    salesMaeMethod: string; cogsMaeMethod: string; ingredientMaeMethod: string; shrinkageRateMethod: string; stockProjectionAssumption: string;
   };
   summary: {
     forecastSales: number; demandChange: number; criticalItems: number; projectedCogs: number;
@@ -28,6 +28,10 @@ export interface PredictiveForecast {
   };
   accuracy: {
     sales: {
+      overall: ForecastAccuracySummary;
+      branches: (ForecastAccuracySummary & { branchId: string; branchName: string })[];
+    };
+    cogs: {
       overall: ForecastAccuracySummary;
       branches: (ForecastAccuracySummary & { branchId: string; branchName: string })[];
     };

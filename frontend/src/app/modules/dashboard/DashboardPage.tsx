@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { ShoppingCart, Package, Percent, TrendingDown, RefreshCw, Check, AlertTriangle, Search, BadgeDollarSign, Sparkles, ArrowRight, Pencil, Plus, Upload, Info, X } from "lucide-react";
@@ -22,6 +22,8 @@ export const DASHBOARD_INVENTORY_TARGET:Page="inventory";
 export const DASHBOARD_SHOWS_DAILY_POS_MONITORING=false;
 export const DASHBOARD_INVENTORY_ALERTS_ARE_PAGINATED=false;
 export const DASHBOARD_LATEST_POS_PAGE_SIZE=10;
+export const DASHBOARD_FOCUS_REFRESH_INTERVAL_MS=60_000;
+export const shouldRefreshDashboardOnFocus=(lastRefreshAt:number,now:number,minimumInterval=DASHBOARD_FOCUS_REFRESH_INTERVAL_MS)=>now-lastRefreshAt>=minimumInterval;
 export const dashboardGreeting = (hour:number,firstName?:string) => `${hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"}, ${firstName ?? ""} 👋`.replace(",  ", ", ");
 export const prioritizeInventoryAlerts = (items:InventoryOverviewItem[]) => [...items].filter(item=>item.status!=="HEALTHY").sort((a,b)=>ALERT_PRIORITY[b.status]-ALERT_PRIORITY[a.status] || (b.reorderLevel-b.systemStock)-(a.reorderLevel-a.systemStock) || a.name.localeCompare(b.name));
 export const stockStatusChip=(status:InventoryOverviewItem["status"])=>status==="OUT_OF_STOCK"?"out_neutral":status==="LOW_STOCK"?"low":status.toLowerCase();
@@ -229,6 +231,7 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
   const [customStart, setCustomStart] = useState(initialUserRange?.customStart ?? businessDate());
   const [customEnd, setCustomEnd] = useState(initialUserRange?.customEnd ?? businessDate());
   const [refresh, setRefresh] = useState(0);
+  const lastRefreshAt = useRef(Date.now());
   const [data, setData] = useState<{ current: PosAnalytics; previous: PosAnalytics; inventory: InventoryOverviewItem[] } | null>(null);
   const [forecast, setForecast] = useState<PredictiveForecast | null>(null);
   const [error, setError] = useState("");
@@ -270,7 +273,13 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
 
   useEffect(() => {
     const tick = window.setInterval(() => setNow(new Date()), 60000);
-    const focus = () => { setNow(new Date()); setRefresh(v => v + 1); };
+    const focus = () => {
+      const focusedAt = Date.now();
+      setNow(new Date(focusedAt));
+      if (!shouldRefreshDashboardOnFocus(lastRefreshAt.current, focusedAt)) return;
+      lastRefreshAt.current = focusedAt;
+      setRefresh(v => v + 1);
+    };
     const handleDataChanged = (event: Event) => {
       const customEvent = event as CustomEvent<{ businessDate?: string } | undefined>;
       const importedDate = customEvent.detail?.businessDate;
@@ -283,6 +292,7 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
         }
       }
       setNow(new Date());
+      lastRefreshAt.current = Date.now();
       setRefresh(v => v + 1);
     };
     window.addEventListener("focus", focus);
@@ -295,6 +305,7 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
   }, [range, today, startDate, endDate, customStart, customEnd, userSelected]);
   useEffect(() => {
     let active = true;
+    lastRefreshAt.current = Date.now();
     setData(null); setError("");
     const days = Math.round((Date.parse(endDate) - Date.parse(startDate)) / 86400000) + 1;
     const shiftMonth = (value: string) => {

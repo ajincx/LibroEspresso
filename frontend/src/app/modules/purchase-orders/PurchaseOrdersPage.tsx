@@ -19,6 +19,7 @@ const chip: Record<PurchaseOrderStatus, string> = { DRAFT: "draft", ORDERED: "or
 const statuses: (PurchaseOrderStatus | "ALL")[] = ["ALL", "DRAFT", "ORDERED", "PARTIALLY_RECEIVED", "RECEIVED", "CANCELLED"];
 const prettyStatus = (value: string) => value === "ALL" ? "All Statuses" : value.toLowerCase().replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 const testDataActionsEnabled = import.meta.env.MODE !== "production";
+const currentManilaBusinessDate = () => businessDate(new Date(), "Asia/Manila");
 export const canAuthorizePurchaseOrderTest = (role:Role,order:PurchaseOrder,enabled=true) => enabled && role==="owner" && !order.testAuthorizedAt && ["DRAFT","ORDERED","CANCELLED"].includes(order.status) && order.items.every((item)=>item.quantityReceived===0);
 export const canDeletePurchaseOrderTest = (role:Role,order:PurchaseOrder,enabled=true) => enabled && role==="owner" && order.isTestData && Boolean(order.testAuthorizedAt);
 const latestReceiptCountDate = (order: PurchaseOrder, purchaseOrderItemIds?: string[]) => {
@@ -29,7 +30,15 @@ const latestReceiptCountDate = (order: PurchaseOrder, purchaseOrderItemIds?: str
     .sort()
     .at(-1);
 };
-export const receiptDateError = (order: PurchaseOrder, receivedDate: string, purchaseOrderItemIds?: string[]) => {
+const isValidCalendarDate = (value: string) => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+};
+export const receiptDateError = (order: PurchaseOrder, receivedDate: string, purchaseOrderItemIds?: string[], currentBusinessDate = currentManilaBusinessDate()) => {
+  if (!isValidCalendarDate(receivedDate)) return "Select a valid received date.";
+  if (receivedDate > currentBusinessDate) return "Received date cannot be later than today's Asia/Manila business date.";
   if (receivedDate < order.orderDate) return "Received date cannot be before the order date.";
   const latestCountDate = latestReceiptCountDate(order, purchaseOrderItemIds);
   return latestCountDate && receivedDate <= latestCountDate
@@ -442,5 +451,5 @@ function ReceiveOrder({ order, onClose, onReceived }: { order: PurchaseOrder; on
   const latestCountDate = latestReceiptCountDate(order, selectedItemIds.length ? selectedItemIds : undefined);
   const minimumDate = [order.orderDate, latestCountDate ? dayAfter(latestCountDate) : order.orderDate].sort().at(-1)!;
   const save = async () => { const items = order.items.map((item) => ({ purchaseOrderItemId: item.id, quantityReceived: Number(quantities[item.id] ?? 0) })).filter((item) => item.quantityReceived > 0); if (!date) { setError("Select the received date."); return; } const dateError = receiptDateError(order, date, items.map((item) => item.purchaseOrderItemId)); if (dateError) { setError(dateError); return; } if (!items.length) { setError("Enter at least one received quantity."); return; } setSaving(true); setError(""); try { await operationsService.receivePurchaseOrder(order.id, receiptRequestId, date, items); toast.success("Received stock added to inventory"); onReceived(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to receive purchase order."); } finally { setSaving(false); } };
-  return <ModalShell title={`Receive ${order.poNo}`} onClose={onClose}><div className="max-w-xs"><CalendarDateField label="Received Date" value={date} min={minimumDate} onChange={setDate}/></div><div className="mt-4 space-y-3">{order.items.map((item) => <label key={item.id} className="grid grid-cols-1 sm:grid-cols-[1fr_170px] gap-2 sm:gap-3 sm:items-center text-sm"><span>{item.name} <small className="text-[var(--app-text-muted)]">({item.quantityReceived}/{item.quantityOrdered} {item.purchaseUom} received; 1 {item.purchaseUom} = {item.conversionFactor} {item.unit})</small></span><input className="field" type="number" min="0.001" max={item.quantityOrdered - item.quantityReceived} step="any" value={quantities[item.id] ?? ""} placeholder={`Max ${item.quantityOrdered - item.quantityReceived}`} onChange={(e) => setQuantities((current) => ({ ...current, [item.id]: e.target.value }))}/></label>)}</div>{error && <p className="text-sm mt-3 text-[var(--app-danger)]">{error}</p>}<div className="mt-5 flex justify-end gap-2"><Btn variant="outline" onClick={onClose}>Cancel</Btn><Btn icon={PackageCheck} disabled={saving} onClick={() => void save()}>{saving ? "Saving…" : "Confirm Receipt"}</Btn></div></ModalShell>;
+  return <ModalShell title={`Receive ${order.poNo}`} onClose={onClose}><div className="max-w-xs"><CalendarDateField label="Received Date" value={date} min={minimumDate} max={currentManilaBusinessDate()} onChange={setDate}/></div><div className="mt-4 space-y-3">{order.items.map((item) => <label key={item.id} className="grid grid-cols-1 sm:grid-cols-[1fr_170px] gap-2 sm:gap-3 sm:items-center text-sm"><span>{item.name} <small className="text-[var(--app-text-muted)]">({item.quantityReceived}/{item.quantityOrdered} {item.purchaseUom} received; 1 {item.purchaseUom} = {item.conversionFactor} {item.unit})</small></span><input className="field" type="number" min="0.001" max={item.quantityOrdered - item.quantityReceived} step="any" value={quantities[item.id] ?? ""} placeholder={`Max ${item.quantityOrdered - item.quantityReceived}`} onChange={(e) => setQuantities((current) => ({ ...current, [item.id]: e.target.value }))}/></label>)}</div>{error && <p className="text-sm mt-3 text-[var(--app-danger)]">{error}</p>}<div className="mt-5 flex justify-end gap-2"><Btn variant="outline" onClick={onClose}>Cancel</Btn><Btn icon={PackageCheck} disabled={saving} onClick={() => void save()}>{saving ? "Saving…" : "Confirm Receipt"}</Btn></div></ModalShell>;
 }

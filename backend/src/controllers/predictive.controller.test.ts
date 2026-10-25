@@ -18,6 +18,7 @@ function installDatabaseFixture(shrinkageRows: { branchId: string; branchName: s
     branchName: "Gulod / Main Branch",
     date: new Date(start + index * 86_400_000).toISOString().slice(0, 10),
     sales: 1_000,
+    cogs: 320,
   }));
   mocks.poolQuery.mockImplementation((sqlValue: unknown, params: unknown[] = []) => {
     const sql = String(sqlValue);
@@ -74,7 +75,7 @@ describe("predictive controller Gemini boundaries", () => {
     expect((findings.stockRisks as { branch: string }[]).every((risk) => risk.branch === "Gulod / Main Branch")).toBe(true);
     expect(Object.keys(findings).sort()).toEqual([
       "baselineDailySales", "confidence", "demandChangePercent", "evaluatedSalesDays", "forecastDays", "forecastEnd",
-      "forecastSales", "forecastStart", "historicalCogsRatePercent", "largestSalesError", "observedSalesDays", "salesMae", "scope", "stockRisks",
+      "forecastSales", "forecastStart", "historicalCogsRatePercent", "largestSalesError", "observedSalesDays", "salesMae", "cogsMae", "evaluatedCogsDays", "scope", "stockRisks",
       "projectedShrinkageCost", "projectedShrinkageRate", "shrinkageEligibleWeeks", "shrinkageForecastStatus", "shrinkageMaePercentagePoints",
     ].sort());
     for (const forbidden of ["password", "token", "user", "customer", "transaction", "recipe", "physicalCount", "incident", "shrinkageClassification"]) {
@@ -160,5 +161,21 @@ describe("predictive controller Gemini boundaries", () => {
       projectedShrinkageRate: 1,
     });
     expect(withShrinkageHistory.summary.projectedShrinkageCost).toBeGreaterThan(0);
+  });
+
+  it("reports COGS MAE only from earlier branch-scoped sales and recipe-cost snapshots", async () => {
+    mocks.generateGeminiInsights.mockResolvedValue(null);
+    const forecast = await buildPredictiveForecast(manager, {
+      startDate: "2026-10-02", endDate: "2026-10-31",
+    });
+
+    expect(forecast.accuracy.cogs.overall).toMatchObject({
+      evaluatedDays: 30,
+      mae: 0,
+      averageActual: 320,
+      averageForecast: 320,
+    });
+    expect(forecast.accuracy.cogs.branches).toHaveLength(1);
+    expect(forecast.methodology.cogsMaeMethod).toContain("no future records");
   });
 });

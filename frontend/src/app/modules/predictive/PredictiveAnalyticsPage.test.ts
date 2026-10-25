@@ -14,7 +14,7 @@ const forecastContext = (
   scope: { branchId: "branch-1", branchName, forecastStart: "2026-10-02", forecastEnd: "2026-10-31" },
   methodology: {
     historicalStart: "2025-10-02", historicalEnd: "2026-10-01", observedSalesDays, confidence,
-    insightSource: "SYSTEM_ANALYSIS" as const, disclaimer: "", salesMaeMethod: "", ingredientMaeMethod: "", shrinkageRateMethod: "", stockProjectionAssumption: "",
+    insightSource: "SYSTEM_ANALYSIS" as const, disclaimer: "", salesMaeMethod: "", cogsMaeMethod: "", ingredientMaeMethod: "", shrinkageRateMethod: "", stockProjectionAssumption: "",
   },
   summary: {
     forecastSales: 0, demandChange: 0, criticalItems: 0, projectedCogs: 0,
@@ -31,6 +31,13 @@ const forecastContext = (
       },
       branches: [],
     },
+    cogs: {
+      overall: {
+        evaluationStart: null, evaluationEnd: null, evaluatedDays: 0, observations: [], mae: null,
+        averageActual: null, averageForecast: null, insufficientHistory: true,
+      },
+      branches: [],
+    },
     ingredients: [],
     shrinkage: { maePercentagePoints: null, evaluatedWeeks: 0, branches: [] },
   },
@@ -44,6 +51,7 @@ describe("Predictive Analytics insight source", () => {
     expect(markup).toContain("Forecasted Sales");
     expect(markup).toContain("Forecast Shrinkage Rate");
     expect(markup).toContain("Forecast Accuracy");
+    expect(markup).toContain("COGS MAE");
     expect(markup).toContain("Ingredient Usage Forecast Evaluation");
     expect(markup).not.toContain("animate-spin");
     expect(shouldApplyPredictiveResponse(3,4)).toBe(false);

@@ -755,6 +755,12 @@ export const authorizePurchaseOrderTestCleanup: RequestHandler = async (req, res
 export const receivePurchaseOrder: RequestHandler = async (req, res) => {
   const { id } = idParams.parse(req.params);
   const input = purchaseOrderReceiveInput.parse(req.body);
+  if (input.receivedDate > manilaBusinessDate())
+    throw new AppError(
+      422,
+      "PO_RECEIPT_DATE_IN_FUTURE",
+      "Received date cannot be later than the current Asia/Manila business date",
+    );
   const branchId = requiredBranchId(req.user!);
   const client = await pool.connect();
   try {

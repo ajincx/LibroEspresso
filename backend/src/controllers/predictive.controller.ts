@@ -6,6 +6,7 @@ import {
   buildShrinkageRateForecast,
   combineBranchShrinkageRates,
   combineAccuracySummaries,
+  evaluateCogsMae,
   evaluateIngredientMae,
   evaluateSalesMae,
   projectStockAvailability,
@@ -33,7 +34,7 @@ type InventoryRow = {
   branchId: string; branchName: string; inventoryItemId: string; sku: string; name: string; unit: string;
   unitCost: number; reorderLevel: number; reorderDays: number; dailyUsage: number; outstandingQuantity: number;
 };
-type EvaluationSalesRow = { branchId: string; branchName: string; date: string; sales: number };
+type EvaluationSalesRow = { branchId: string; branchName: string; date: string; sales: number; cogs: number };
 type IngredientUsageRow = {
   branchId: string; branchName: string; inventoryItemId: string; name: string; unit: string; inventoryUnit: string; date: string; usage: number;
 };
@@ -265,12 +266,15 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
         ORDER BY cw.branch_id,cw.week_start`, shrinkageParams),
     pool.query<EvaluationSalesRow>(
       `SELECT pi.branch_id "branchId",b.name "branchName",pi.business_date::text date,
-              sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price))::float8 sales
+              sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price))::float8 sales,
+              coalesce(sum(daily_cogs.total_cogs),0)::float8 cogs
          FROM pos_imports pi
          JOIN branches b ON b.id=pi.branch_id
          JOIN pos_sources source ON source.id=pi.pos_source_id
          JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
          JOIN menu_items mi ON mi.id=psi.menu_item_id
+         LEFT JOIN LATERAL (SELECT sum(u.quantity_consumed*u.unit_cost_snapshot)::float8 total_cogs
+           FROM pos_sale_ingredient_usage u WHERE u.pos_sale_item_id=psi.id) daily_cogs ON true
         WHERE NOT pi.is_test_data AND pi.voided_at IS NULL AND pi.business_date BETWEEN $1::date AND $2::date ${evaluationBranchClause}
         GROUP BY pi.branch_id,b.name,pi.business_date
         ORDER BY pi.branch_id,pi.business_date`, evaluationParams),
@@ -305,10 +309,11 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
 
   const branchName = branchId ? scope.rows[0]?.branchName ?? "Assigned Branch" : "All Branches";
   const salesRows = salesResult.rows.map((row) => ({ ...row, sales: Number(row.sales), cogs: Number(row.cogs) }));
-  const salesGroups = new Map<string, { branchId: string; branchName: string; rows: { date: string; value: number }[] }>();
+  const salesGroups = new Map<string, { branchId: string; branchName: string; rows: { date: string; value: number }[]; financialRows: { date: string; sales: number; cogs: number }[] }>();
   evaluationSalesResult.rows.forEach((row) => {
-    const group = salesGroups.get(row.branchId) ?? { branchId: row.branchId, branchName: row.branchName, rows: [] };
+    const group = salesGroups.get(row.branchId) ?? { branchId: row.branchId, branchName: row.branchName, rows: [], financialRows: [] };
     group.rows.push({ date: row.date, value: Number(row.sales) });
+    group.financialRows.push({ date: row.date, sales: Number(row.sales), cogs: Number(row.cogs) });
     salesGroups.set(row.branchId, group);
   });
   const salesAccuracyByBranch = [...salesGroups.values()].map((group) => ({
@@ -317,6 +322,12 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
     ...evaluateSalesMae(group.rows),
   }));
   const overallSalesAccuracy = combineAccuracySummaries(salesAccuracyByBranch);
+  const cogsAccuracyByBranch = [...salesGroups.values()].map((group) => ({
+    branchId: group.branchId,
+    branchName: group.branchName,
+    ...evaluateCogsMae(group.financialRows),
+  }));
+  const overallCogsAccuracy = combineAccuracySummaries(cogsAccuracyByBranch);
 
   const ingredientGroups = new Map<string, {
     branchId: string; branchName: string; inventoryItemId: string; name: string; units: Set<string>; rows: { date: string; value: number }[];
@@ -501,6 +512,8 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
     demandChangePercent: round(demandChange), historicalCogsRatePercent: round(cogsRate * 100),
     salesMae: overallSalesAccuracy.mae,
     evaluatedSalesDays: overallSalesAccuracy.evaluatedDays,
+    cogsMae: overallCogsAccuracy.mae,
+    evaluatedCogsDays: overallCogsAccuracy.evaluatedDays,
     shrinkageForecastStatus,
     projectedShrinkageRate: projectedShrinkageRate === null ? null : round(projectedShrinkageRate, 4),
     projectedShrinkageCost: projectedShrinkageCost === null ? null : round(projectedShrinkageCost),
@@ -523,6 +536,7 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
       historicalStart: historyStart, historicalEnd: historyEnd, observedSalesDays, confidence,
       insightSource: geminiInsights ? "GOOGLE_GEMINI" : "SYSTEM_ANALYSIS",
       salesMaeMethod: "Each tested branch-day uses only sales records dated before that day; overall MAE uses all underlying branch observations.",
+      cogsMaeMethod: "Each tested branch-day forecasts sales from earlier records and applies the recipe-snapshot COGS rate observed before that day; no future records are used.",
       ingredientMaeMethod: "Each tested ingredient day uses only earlier recipe-derived usage records with the same unit; dates without recorded actual usage are not inserted as zero.",
       shrinkageRateMethod: "Uses the eight latest eligible complete branch-weeks. Each weekly verified shrinkage rate is weighted by accepted sales and recency; missing or unresolved evidence is never inserted as zero.",
       stockProjectionAssumption: "Only unreceived quantities from ordered or partially received purchase orders are considered, and they affect projected supply no earlier than their expected delivery date. Overdue expected deliveries are not assumed available.",
@@ -538,6 +552,7 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
     },
     accuracy: {
       sales: { overall: overallSalesAccuracy, branches: salesAccuracyByBranch },
+      cogs: { overall: overallCogsAccuracy, branches: cogsAccuracyByBranch },
       ingredients: ingredientAccuracy,
       shrinkage: {
         maePercentagePoints: shrinkageMaePercentagePoints === null ? null : round(shrinkageMaePercentagePoints, 4),

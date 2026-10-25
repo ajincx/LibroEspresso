@@ -47,7 +47,7 @@ export function predictiveDataSufficiency(forecast: Pick<PredictiveForecast, "sc
 
 export function PredictiveAnalyticsSkeleton({role="owner"}:{role?:Role}) {
   const summary=[["Forecasted Sales",TrendingUp],["Demand Change",Activity],["Forecast Shrinkage Rate",AlertTriangle],["Critical Items",AlertTriangle],["Projected COGS",TrendingDown],["Suggested Reorders",Package]] as const;
-  const accuracy=[["Sales MAE",Activity],["Days Evaluated",RefreshCw],["Average Actual Sales",TrendingUp],["Average Forecast Sales",Activity]] as const;
+  const accuracy=[["Sales MAE",Activity],["COGS MAE",TrendingDown],["Days Evaluated",RefreshCw],["Average Actual Sales",TrendingUp],["Average Forecast Sales",Activity]] as const;
   const columns=["Ingredient",...(role==="owner"?["Branch"]:[]),"Unit","Evaluation Period","Days","Average Actual","Average Forecast","MAE","Status"];
   return <div data-predictive-analytics-skeleton role="status" aria-label="Loading Predictive Analytics" className="space-y-5">
     <div className="predictive-kpi-grid grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6">
@@ -119,6 +119,7 @@ export function PredictiveAnalytics({
     ...Object.fromEntries(point.values.map((item) => [item.key, item.value])),
   }));
   const salesAccuracy = forecast?.accuracy.sales.overall;
+  const cogsAccuracy = forecast?.accuracy.cogs.overall;
   const dataSufficiency = forecast ? predictiveDataSufficiency(forecast) : null;
   const accuracyChartData = useMemo(() => {
     const grouped = new Map<string, { date: string; actual: number; predicted: number }>();
@@ -219,7 +220,7 @@ export function PredictiveAnalytics({
             <KPICard label="Demand Change" value={`${forecast.summary.demandChange >= 0 ? "+" : ""}${forecast.summary.demandChange.toFixed(1)}%`} sub="Against recent daily baseline" icon={Activity} color={C.green} />
             <KPICard label="Forecast Shrinkage Rate" value={shrinkageRateValue} sub={shrinkageRateSub} icon={AlertTriangle} color={C.red} />
             <KPICard label="Critical Items" value={`${forecast.summary.criticalItems} items`} sub="Estimated stock-out within 7 days" icon={AlertTriangle} color={C.red} />
-            <KPICard label="Projected COGS" value={currency(forecast.summary.projectedCogs)} sub="Based on the historical recipe COGS rate" icon={TrendingDown} color={C.amber} />
+            <KPICard label="Projected COGS" value={currency(forecast.summary.projectedCogs)} sub="Sales-driven projection using the historical recipe COGS rate" icon={TrendingDown} color={C.amber} />
             <KPICard label="Suggested Reorders" value={`${forecast.summary.recommendedReorders} items`} sub="Manager confirmation required" icon={Package} color={C.maroon} />
           </div>
 
@@ -247,6 +248,7 @@ export function PredictiveAnalytics({
             <div className="grid lg:grid-cols-5 gap-4 p-5">
               <div className="lg:col-span-2 grid grid-cols-2 gap-3">
                 <KPICard label="Sales MAE" value={salesAccuracy?.mae === null || salesAccuracy?.mae === undefined ? "Unavailable" : currency(salesAccuracy.mae)} sub={salesAccuracy?.mae === null || salesAccuracy?.mae === undefined ? "Insufficient historical data for backtesting" : "Mean Absolute Error"} icon={Activity} color={C.maroon} />
+                <KPICard label="COGS MAE" value={cogsAccuracy?.mae === null || cogsAccuracy?.mae === undefined ? "Unavailable" : currency(cogsAccuracy.mae)} sub={cogsAccuracy?.mae === null || cogsAccuracy?.mae === undefined ? "Insufficient historical data for backtesting" : "Sales-driven projection error"} icon={TrendingDown} color={C.amber} />
                 <KPICard label="Days Evaluated" value={`${salesAccuracy?.evaluatedDays ?? 0}`} sub={salesAccuracy?.evaluationStart && salesAccuracy.evaluationEnd ? `${formatDate(salesAccuracy.evaluationStart)} – ${formatDate(salesAccuracy.evaluationEnd)}` : "No historical forecasts could be evaluated yet"} icon={RefreshCw} color={C.blue} />
                 <KPICard label="Average Actual Sales" value={salesAccuracy?.averageActual === null || salesAccuracy?.averageActual === undefined ? "—" : currency(salesAccuracy.averageActual)} sub="Recorded evaluation observations" icon={TrendingUp} color={C.green} />
                 <KPICard label="Average Forecast Sales" value={salesAccuracy?.averageForecast === null || salesAccuracy?.averageForecast === undefined ? "—" : currency(salesAccuracy.averageForecast)} sub="No future records used" icon={Activity} color={C.amber} />

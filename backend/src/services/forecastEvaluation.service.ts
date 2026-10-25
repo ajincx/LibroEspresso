@@ -16,6 +16,7 @@ const clamp = (value: number, min: number, max: number) =>
 const round = (value: number, digits = 2) => Number(value.toFixed(digits));
 
 export type DailyObservation = { date: string; value: number };
+export type DailyFinancialObservation = { date: string; sales: number; cogs: number };
 
 export type WeeklyShrinkageObservation = {
   weekStart: string;
@@ -149,6 +150,45 @@ export function evaluateSalesMae(observations: DailyObservation[]): AccuracySumm
           actualValue: actual.value,
           forecastValue: forecast,
           absoluteError: Math.abs(actual.value - forecast),
+        }];
+  });
+  return summarizeAccuracy(evaluated);
+}
+
+/**
+ * Mirrors the production COGS projection for one target day: forecast sales
+ * from prior sales only, then apply the authoritative recipe-snapshot COGS
+ * rate observed before that day. Missing sales history is never replaced with
+ * an invented zero-rate forecast.
+ */
+export function forecastDailyCogs(
+  observations: DailyFinancialObservation[],
+  targetDate: string,
+): number | null {
+  const history = observations
+    .filter((row) => row.date < targetDate && row.date >= addDays(targetDate, -365))
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const forecastSales = forecastDailySales(
+    history.map((row) => ({ date: row.date, value: row.sales })),
+    targetDate,
+  );
+  const historicalSales = history.reduce((sum, row) => sum + row.sales, 0);
+  if (forecastSales === null || historicalSales <= 0) return null;
+  const historicalCogs = history.reduce((sum, row) => sum + row.cogs, 0);
+  return Math.max(0, forecastSales * historicalCogs / historicalSales);
+}
+
+export function evaluateCogsMae(observations: DailyFinancialObservation[]): AccuracySummary {
+  const sorted = [...observations].sort((a, b) => a.date.localeCompare(b.date));
+  const evaluated = sorted.slice(-30).flatMap((actual) => {
+    const forecast = forecastDailyCogs(sorted, actual.date);
+    return forecast === null
+      ? []
+      : [{
+          date: actual.date,
+          actualValue: actual.cogs,
+          forecastValue: forecast,
+          absoluteError: Math.abs(actual.cogs - forecast),
         }];
   });
   return summarizeAccuracy(evaluated);

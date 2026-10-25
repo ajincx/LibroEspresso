@@ -155,6 +155,24 @@ describe("purchase-order receipt idempotency", () => {
     expect(statements.at(-1)?.sql).toBe("ROLLBACK");
   });
 
+  it("rejects a future Manila receipt date before opening a database transaction", async () => {
+    await expect(
+      receivePurchaseOrder(request(3, requestId, "9999-12-31"), response() as never, vi.fn()),
+    ).rejects.toMatchObject({ status: 422, code: "PO_RECEIPT_DATE_IN_FUTURE" });
+
+    expect(mocks.connect).not.toHaveBeenCalled();
+    expect(mocks.writeAudit).not.toHaveBeenCalled();
+  });
+
+  it("rejects an impossible receipt date before opening a database transaction", async () => {
+    await expect(
+      receivePurchaseOrder(request(3, requestId, "2026-02-30"), response() as never, vi.fn()),
+    ).rejects.toBeDefined();
+
+    expect(mocks.connect).not.toHaveBeenCalled();
+    expect(mocks.writeAudit).not.toHaveBeenCalled();
+  });
+
   it("keeps existing receipt behavior when no physical-count baseline exists", async () => {
     const { client, statements } = clientFor({ latestPhysicalCountDate: null });
     mocks.connect.mockResolvedValue(client);

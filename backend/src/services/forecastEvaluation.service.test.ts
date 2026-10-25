@@ -4,9 +4,11 @@ import {
   calculateMae,
   combineBranchShrinkageRates,
   combineAccuracySummaries,
+  evaluateCogsMae,
   evaluateIngredientMae,
   evaluateSalesMae,
   forecastDailySales,
+  forecastDailyCogs,
   forecastWeeklyShrinkageRate,
   projectStockAvailability,
   summarizeAccuracy,
@@ -60,6 +62,35 @@ describe("forecast MAE", () => {
       { date: date(2), actualValue: 100, forecastValue: 70, absoluteError: 30 },
     ], 2);
     expect(combineAccuracySummaries([first, second]).mae).toBe(23.33);
+  });
+
+  it("backtests the same sales-driven historical COGS-rate projection without future leakage", () => {
+    const observations = series(60, () => 1_000).map((row) => ({
+      date: row.date,
+      sales: row.value,
+      cogs: 320,
+    }));
+    const target = date(50);
+    const original = forecastDailyCogs(observations, target);
+    expect(original).toBeCloseTo(320, 6);
+    expect(forecastDailyCogs([
+      ...observations,
+      { date: date(100), sales: 1, cogs: 1_000_000 },
+    ], target)).toBe(original);
+    expect(evaluateCogsMae(observations)).toMatchObject({ mae: 0, evaluatedDays: 30 });
+  });
+
+  it("does not claim COGS accuracy when sales history is insufficient", () => {
+    const observations = series(20, () => 1_000).map((row) => ({
+      date: row.date,
+      sales: row.value,
+      cogs: 320,
+    }));
+    expect(evaluateCogsMae(observations)).toMatchObject({
+      mae: null,
+      evaluatedDays: 0,
+      insufficientHistory: true,
+    });
   });
 
   it("calculates ingredient usage MAE with compatible units", () => {

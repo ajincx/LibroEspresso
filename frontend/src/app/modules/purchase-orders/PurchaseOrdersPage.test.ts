@@ -40,8 +40,14 @@ describe("purchase-order receipt date validation",()=>{
   });
 
   it("preserves the order-date rule and accepts when no count exists",()=>{
-    expect(receiptDateError(order(),"2026-09-27")).toBe("Received date cannot be before the order date.");
-    expect(receiptDateError(order(),"2026-10-01")).toBeNull();
+    expect(receiptDateError(order(),"2026-09-27",undefined,"2026-10-03")).toBe("Received date cannot be before the order date.");
+    expect(receiptDateError(order(),"2026-10-01",undefined,"2026-10-03")).toBeNull();
+  });
+
+  it("rejects impossible and future dates while accepting the current Manila date",()=>{
+    expect(receiptDateError(order(),"2026-02-30",undefined,"2026-10-03")).toBe("Select a valid received date.");
+    expect(receiptDateError(order(),"2026-10-04",undefined,"2026-10-03")).toContain("cannot be later");
+    expect(receiptDateError(order(),"2026-10-03",undefined,"2026-10-03")).toBeNull();
   });
 });
 

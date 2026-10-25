@@ -4,10 +4,11 @@ import { toast } from "sonner";
 import { operationsService } from "../services/operations.service";
 import type { IncidentReport, IncidentType, InventoryOverviewItem } from "../types/operations";
 import { Btn, CalendarDateTimeField, isModalBackdropEvent, Select } from "./ModuleUi";
-import { businessDateTime } from "../utils/businessDate";
+import { manilaBusinessDateTime, manilaDateTimeToIso, validateIncidentDateTime } from "../utils/businessDate";
 import { incidentTypeOptions } from "../utils/shrinkageTaxonomy";
 
-const localDateTimeValue = () => businessDateTime();
+const currentDateTime = () => manilaBusinessDateTime();
+export const lossRecordDateError = (value: string, now = new Date()) => validateIncidentDateTime(value, now);
 
 export function LossRecordModal({ items = [], onClose, onSaved }: {
   items?: InventoryOverviewItem[];
@@ -22,7 +23,7 @@ export function LossRecordModal({ items = [], onClose, onSaved }: {
   const [incidentType, setIncidentType] = useState<IncidentType>("SPOILAGE");
   const [inventoryItemId, setInventoryItemId] = useState("");
   const [quantity, setQuantity] = useState("");
-  const [occurredAt, setOccurredAt] = useState(localDateTimeValue);
+  const [occurredAt, setOccurredAt] = useState(currentDateTime);
   const [reason, setReason] = useState("");
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
@@ -36,11 +37,13 @@ export function LossRecordModal({ items = [], onClose, onSaved }: {
       setError("Select an item and provide a valid quantity, date, and reason.");
       return;
     }
+    const dateError = lossRecordDateError(occurredAt);
+    if (dateError) { setError(dateError); return; }
     setSaving(true); setError("");
     try {
       const incident = await operationsService.createIncident({
         inventoryItemId, incidentType, quantity: Number(quantity),
-        occurredAt: new Date(occurredAt).toISOString(), reason: reason.trim(), notes: notes.trim() || undefined,
+        occurredAt: manilaDateTimeToIso(occurredAt), reason: reason.trim(), notes: notes.trim() || undefined,
       });
       toast.success("Incident report submitted for verification");
       onSaved(incident);
@@ -64,7 +67,7 @@ export function LossRecordModal({ items = [], onClose, onSaved }: {
         </div>
 
         <div className="grid sm:grid-cols-2 gap-4">
-          <CalendarDateTimeField label="Date and Time" value={occurredAt} onChange={setOccurredAt}/>
+          <CalendarDateTimeField label="Date and Time" value={occurredAt} max={currentDateTime()} onChange={setOccurredAt}/>
           <label className="text-sm font-medium">Item / SKU<Select className="mt-1.5 w-full" value={inventoryItemId} onChange={setInventoryItemId} options={[{ value: "", label: "Select ingredient" }, ...uniqueItems.map((item) => ({ value: item.inventoryItemId, label: `${item.name} (${item.sku})` }))]}/></label>
           <label className="text-sm font-medium">Quantity<input type="number" min="0" step="any" value={quantity} onChange={(event) => setQuantity(event.target.value)} placeholder="0.00" className="field mt-1.5"/></label>
           <label className="text-sm font-medium">Unit<input value={selected?.unit ?? ""} disabled placeholder="From inventory item" className="field mt-1.5 disabled:opacity-70"/></label>
