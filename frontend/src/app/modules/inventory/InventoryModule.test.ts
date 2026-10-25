@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { branchReorderSettingsInput, canConfigureBranchReorderPolicy, canOpenClosingCount, canSetIngredientInitialStock, dailyCountShortcutDestination, dailyCountStatusLabel, inventoryAdjustmentValidationError, InventoryOverview, inventoryOverviewColumns, inventoryTabs, projectedAdjustmentStock, recordCountShortcutDestination, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, shouldShowStockOperationCards, stockOperationCards, stockOperationSelectionAfterDailySubmit, subscribeToInventoryDataChanges } from "./InventoryModule";
+import { branchReorderSettingsInput, canConfigureBranchReorderPolicy, canOpenClosingCount, canSetIngredientInitialStock, connectedProductStatusLabel, dailyCountShortcutDestination, dailyCountStatusLabel, inventoryAdjustmentValidationError, InventoryOverview, inventoryOverviewColumns, inventoryTabs, movementCategoryLabel, projectedAdjustmentStock, recordCountShortcutDestination, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, shouldShowStockOperationCards, stockOperationCards, stockOperationSelectionAfterDailySubmit, subscribeToInventoryDataChanges } from "./InventoryModule";
 import type { InventoryCountSummary } from "../../types/inventoryWorkflow";
 
 afterEach(() => vi.useRealTimers());
@@ -53,6 +53,20 @@ describe("Inventory Management terminology", () => {
   it("keeps the existing business category while removing it from Manager input",()=>{
     const item={branchId:"branch-1",inventoryItemId:"item-1",reorderCategory:"FAST",reorderLevel:10,reorderDays:5} as Parameters<typeof branchReorderSettingsInput>[0];
     expect(branchReorderSettingsInput(item,"25","7"," Verified branch threshold ")).toMatchObject({category:"FAST",reorderLevel:25,reorderDays:7,reason:"Verified branch threshold"});
+  });
+
+  it("presents automatic categories as read-only values and missing history as Insufficient Data", () => {
+    expect(movementCategoryLabel("FAST")).toBe("Fast");
+    expect(movementCategoryLabel("MEDIUM")).toBe("Medium");
+    expect(movementCategoryLabel("SLOW")).toBe("Slow");
+    expect(movementCategoryLabel(null)).toBe("Insufficient Data");
+  });
+
+  it("distinguishes active, inactive, and historical recipe connections", () => {
+    const product = { productStatus: "ACTIVE", variantStatus: "ACTIVE", branchMenuStatus: "ACTIVE", connectionStatus: "CURRENT" } as Parameters<typeof connectedProductStatusLabel>[0];
+    expect(connectedProductStatusLabel(product)).toBe("Active");
+    expect(connectedProductStatusLabel({ ...product, branchMenuStatus: "INACTIVE" })).toBe("Inactive");
+    expect(connectedProductStatusLabel({ ...product, connectionStatus: "HISTORICAL" })).toBe("Historical recipe");
   });
 
   it("hides operation cards while a workflow is open and restores them after Back",()=>{

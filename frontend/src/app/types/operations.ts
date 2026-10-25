@@ -57,6 +57,34 @@ export interface InventoryStockLedger {
   calculatedBalance: number;
   availability: "AVAILABLE" | "NO_BASELINE";
   currentExpectedStock: number;
+  movementClassification: {
+    status: "AVAILABLE" | "INSUFFICIENT_DATA";
+    category: "FAST" | "MEDIUM" | "SLOW" | null;
+    averageDailyConsumption: number | null;
+    unit: string;
+    eligibleBusinessDays: number;
+    windowDays: number;
+    windowStart: string;
+    windowEnd: string;
+    explanation: string;
+  };
+  connectedProducts: Array<{
+    menuItemId: string;
+    menuProductName: string;
+    productStatus: string;
+    branchMenuStatus: "ACTIVE" | "INACTIVE";
+    variantId: string;
+    variantName: string;
+    variantStatus: string;
+    recipeId: string;
+    recipeStatus: string;
+    recipeYield: number;
+    recipeQuantity: number;
+    recipeUnit: string;
+    consumptionPerSoldUnit: number;
+    consumptionUnit: string;
+    connectionStatus: "CURRENT" | "HISTORICAL";
+  }>;
   activities: InventoryLedgerActivity[];
 }
 

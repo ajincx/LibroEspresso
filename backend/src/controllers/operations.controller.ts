@@ -14,6 +14,7 @@ import { baseStockUnitCost, receivedStockQuantity, resolvePurchaseConversion } f
 import { lockBranchInventoryOperation } from "../services/inventoryOperationLock.service.js";
 import { assertOperationalInventoryBaselines } from "../services/inventoryBaseline.service.js";
 import { manilaBusinessDate } from "../services/businessTime.service.js";
+import { loadIngredientAnalytics } from "../services/ingredientAnalytics.service.js";
 import { AppError } from "../utils/appError.js";
 import { idParams } from "../validators/masterData.js";
 import { paginatedRows, paginationQuery } from "../validators/pagination.js";
@@ -129,7 +130,10 @@ export const getInventoryStockLedger: RequestHandler = async (req, res) => {
   const branchId = requiredBranchId(req.user!, filters.branchId);
   const item = (await loadInventoryOverviewItems(branchId, inventoryItemId))[0];
   if (!item) throw new AppError(404, "INVENTORY_ITEM_NOT_FOUND", "Inventory item not found");
-  const ledger = await loadInventoryLedger(pool, branchId, inventoryItemId, item.unit);
+  const [ledger, analytics] = await Promise.all([
+    loadInventoryLedger(pool, branchId, inventoryItemId, item.unit),
+    loadIngredientAnalytics(pool, branchId, inventoryItemId),
+  ]);
   res.json({
     success: true,
     data: {
@@ -141,6 +145,8 @@ export const getInventoryStockLedger: RequestHandler = async (req, res) => {
         name: item.name,
         unit: item.unit,
         currentExpectedStock: item.systemStock,
+        movementClassification: analytics.movement,
+        connectedProducts: analytics.connectedProducts,
         ...ledger,
       },
     },

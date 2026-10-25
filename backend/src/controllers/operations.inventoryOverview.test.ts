@@ -120,6 +120,9 @@ describe("Inventory Overview stock ledger", () => {
         { branchId: assignedBranch, inventoryItemId, id: "opening", importId: null, occurredAt: "2026-09-16T00:00:00+08:00", activityType: "STARTING_STOCK", reference: "OB-2026-00001", quantity: 5750, sourceUnit: null },
         { branchId: assignedBranch, inventoryItemId, id: "active", importId: "active", occurredAt: "2026-09-16", activityType: "POS_CONSUMPTION", reference: "Active XLSX", quantity: 696, sourceUnit: "g" },
       ] };
+      if (sql.includes('count(DISTINCT pi.business_date)')) return { rows: [{ eligibleBusinessDays: 10, windowStart: "2026-09-18", windowEnd: "2026-10-15" }] };
+      if (sql.includes("WITH window_usage")) return { rows: [{ inventoryItemId, inventoryUnit: "g", sourceUnit: "g", totalConsumption: 696, hasCurrentActiveRecipe: true }] };
+      if (sql.includes('product.id "menuItemId"')) return { rows: [] };
       if (sql.includes("FROM inventory_opening_baselines")) return { rows: [{ id: "opening", occurredAt: "2026-09-16T00:00:00+08:00", reference: "OB-2026-00001", quantity: 5750 }] };
       if (sql.includes("FROM pos_imports")) return { rows: [{ id: "active-g", importId: "active", occurredAt: "2026-09-16T12:00:00+08:00", reference: "Active XLSX", quantity: 696, sourceUnit: "g" }] };
       return { rows: [] };
@@ -134,7 +137,11 @@ describe("Inventory Overview stock ledger", () => {
     expect(mocks.query.mock.calls[0]?.[1]).toEqual([assignedBranch, inventoryItemId]);
     expect(json).toHaveBeenCalledWith(expect.objectContaining({
       success: true,
-      data: { ledger: expect.objectContaining({ startingStock: 5750, operationalPosConsumption: 696, calculatedBalance: 5054, currentExpectedStock: 5054 }) },
+      data: { ledger: expect.objectContaining({
+        startingStock: 5750, operationalPosConsumption: 696, calculatedBalance: 5054, currentExpectedStock: 5054,
+        movementClassification: expect.objectContaining({ status: "AVAILABLE", category: "FAST", unit: "g" }),
+        connectedProducts: [],
+      }) },
     }));
   });
 
@@ -148,6 +155,8 @@ describe("Inventory Overview stock ledger", () => {
         reorderLevel: 0, reorderDays: 7, lastActualQuantity: 0, lastCountAt: null, systemStock: 0,
       }] };
       if (String(statement).includes("WITH targets AS")) return { rows: [] };
+      if (String(statement).includes('count(DISTINCT pi.business_date)')) return { rows: [{ eligibleBusinessDays: 0, windowStart: "2026-09-18", windowEnd: "2026-10-15" }] };
+      if (String(statement).includes("WITH window_usage")) return { rows: [{ inventoryItemId, inventoryUnit: "g", sourceUnit: null, totalConsumption: 0, hasCurrentActiveRecipe: false }] };
       return { rows: [] };
     });
     const json = vi.fn();
@@ -161,6 +170,7 @@ describe("Inventory Overview stock ledger", () => {
     expect(json).toHaveBeenCalledWith(expect.objectContaining({
       data: { ledger: expect.objectContaining({
         branchName: "Evo", availability: "NO_BASELINE", activities: [], currentExpectedStock: 0,
+        movementClassification: expect.objectContaining({ status: "INSUFFICIENT_DATA", category: null }),
       }) },
     }));
   });
