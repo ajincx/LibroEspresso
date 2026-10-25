@@ -51,9 +51,9 @@ describe("Daily partial physical counts",()=>{
     expect(displayedPhysicalCountVariance("CLOSING",3500,null)).toBeNull();
   });
 
-  it("identifies the source date after copying the previous Closing Count",()=>{
+  it("identifies the authoritative source date after copying previous quantities",()=>{
     expect(previousClosingCopyMessage("2026-10-15")).toBe(
-      "Values copied from the Closing Count on 2026-10-15. Review and confirm them before submitting.",
+      "Values copied from the latest authoritative inventory checkpoint on 2026-10-15. Review and confirm them before submitting.",
     );
   });
 

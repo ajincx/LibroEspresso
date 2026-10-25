@@ -86,4 +86,46 @@ describe("expected inventory partial baseline availability", () => {
       code: "INVENTORY_CALCULATION_FAILED",
     });
   });
+
+  it("prefills Opening from each ingredient's latest Closing or newer Full checkpoint", async () => {
+    const expectedItem = {
+      inventoryItemId: validItem.id,
+      sku: validItem.sku,
+      itemName: validItem.name,
+      unit: validItem.unit,
+      expectedQuantity: 5100,
+    };
+    mocks.calculateExpectedInventoryBatch.mockResolvedValueOnce({ items: [expectedItem], unavailableItems: [] });
+    mocks.poolQuery.mockImplementation(async (statement: unknown) => {
+      const sql = String(statement);
+      if (sql.includes("count_type IN ('OPENING','CLOSING')")) return { rows: [] };
+      if (sql.includes("DISTINCT ON (ici.inventory_item_id)")) return { rows: [{
+        inventoryItemId: validItem.id,
+        actualQuantity: 5100,
+        countDate: "2026-10-02",
+        countType: "FULL",
+      }] };
+      if (sql.includes("SELECT EXISTS")) return { rows: [{ complete: false }] };
+      return { rows: [] };
+    });
+    const json = vi.fn();
+
+    await getExpectedInventory({
+      query: { branchId, countDate: "2026-10-03", countType: "OPENING" },
+      user: { id: "owner", role: "OWNER", branchId: null },
+    } as never, { json } as never, vi.fn());
+
+    const checkpointQuery = String(mocks.poolQuery.mock.calls.find(([sql]) => String(sql).includes("DISTINCT ON"))?.[0]);
+    expect(checkpointQuery).toContain("ic.count_type IN ('CLOSING','FULL')");
+    expect(checkpointQuery).toContain("ici.voided_at IS NULL");
+    expect(json).toHaveBeenCalledWith({
+      success: true,
+      data: expect.objectContaining({
+        countType: "OPENING",
+        previousClosingItems: [expect.objectContaining({ countType: "FULL", actualQuantity: 5100 })],
+        previousClosingDate: "2026-10-02",
+        previousClosingCountType: "FULL",
+      }),
+    });
+  });
 });

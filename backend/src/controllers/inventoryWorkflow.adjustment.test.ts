@@ -18,13 +18,14 @@ const manager={id:"00000000-0000-4000-8000-000000000004",role:"BRANCH_MANAGER",b
 const body={inventoryItemId:itemId,movementType:"APPROVED_ADJUSTMENT_DECREASE",quantity:5,unit:"g",reason:"Correct damaged stock after verification",requestId};
 
 function response(){const res={status:vi.fn(),json:vi.fn()};res.status.mockReturnValue(res);return res;}
-function client(prior:unknown[]=[], unavailableBaseline=false){
+function client(prior:unknown[]=[], unavailableBaseline=false, finalizedFull=false){
   const statements:string[]=[];
   const query=vi.fn(async(statement:unknown)=>{
     const sql=String(statement);statements.push(sql);
     if(sql.includes("adjustment_request_id=$2"))return{rows:prior};
     if(sql.includes("SELECT unit FROM inventory_items"))return{rows:[{unit:"g"}]};
     if(sql.includes("FROM inventory_items ii") && sql.includes("inventory_opening_baseline_items"))return{rows:unavailableBaseline?[{sku:"ING-99",name:"Oat Milk"}]:[]};
+    if(sql.includes("count_type='FULL'"))return{rows:finalizedFull?[{countNo:"IC-2026-00010"}]:[]};
     if(sql.includes("INSERT INTO inventory_movements"))return{rows:[{id:"movement-1",branchId,inventoryItemId:itemId,movementType:body.movementType,quantity:5,occurredAt:"2026-10-14T00:00:00Z"}]};
     return{rows:[]};
   });
@@ -78,6 +79,15 @@ describe("controlled inventory adjustments",()=>{
   it("rejects an adjustment before the ingredient baseline is effective",async()=>{
     const c=client([],true);mocks.connect.mockResolvedValue(c.value);
     await expect(createInventoryMovement({body,user:manager} as never,response() as never,vi.fn())).rejects.toMatchObject({status:409,code:"INVENTORY_BASELINE_REQUIRED"});
+    expect(c.statements.some((sql)=>sql.includes("INSERT INTO inventory_movements"))).toBe(false);
+    expect(c.statements).toContain("ROLLBACK");
+  });
+
+  it("rejects a new same-day stock adjustment after Full Physical Count",async()=>{
+    const c=client([],false,true);mocks.connect.mockResolvedValue(c.value);
+    await expect(createInventoryMovement({body,user:manager} as never,response() as never,vi.fn())).rejects.toMatchObject({
+      status:409,code:"INVENTORY_ADJUSTMENT_AFTER_FULL_COUNT",
+    });
     expect(c.statements.some((sql)=>sql.includes("INSERT INTO inventory_movements"))).toBe(false);
     expect(c.statements).toContain("ROLLBACK");
   });

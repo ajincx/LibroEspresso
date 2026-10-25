@@ -120,9 +120,9 @@ export const formatPurchaseOrderCountDate = (date: string) => new Intl.DateTimeF
 
 export function PhysicalCountRequiredNotice({ orderDate, onGoToInventoryCount }: { orderDate: string; onGoToInventoryCount: () => void }) {
   return <div className="mt-4 rounded-xl border p-4" role="alert" style={{ borderColor: C.amber, background: C.amberBg }}>
-    <p className="text-sm font-bold text-[var(--app-text)]">Physical Inventory Count Required</p>
-    <p className="mt-1 text-sm text-[var(--app-text-muted)]">No physical inventory count has been submitted for {formatPurchaseOrderCountDate(orderDate)}. Submit the physical inventory count before creating this purchase order.</p>
-    <div className="mt-3"><Btn size="sm" onClick={onGoToInventoryCount}>Go to Inventory Count</Btn></div>
+    <p className="text-sm font-bold text-[var(--app-text)]">Full Physical Count Required</p>
+    <p className="mt-1 text-sm text-[var(--app-text-muted)]">Complete today&apos;s Closing Count, then submit the Full Physical Count for {formatPurchaseOrderCountDate(orderDate)} before creating this purchase order.</p>
+    <div className="mt-3"><Btn size="sm" onClick={onGoToInventoryCount}>Go to Full Physical Count</Btn></div>
   </div>;
 }
 

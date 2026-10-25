@@ -120,7 +120,7 @@ const deleteRequest = (id=importId) => ({params:{id},body:{reason:"Reset an expl
 
 function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate" | "overlap-after-lock" | "reconciliation" | "baseline", mappingVersion?: string,
   variantRows?: Array<{id:string;menuItemId:string;name:string;status:"ACTIVE"|"INACTIVE";recipeVersionId:string|null;recipeUnits:Array<{recipeUnit:string;inventoryUnit:string}>}>,
-  sourceFormat = "CANONICAL_CSV", lateHistorical = false) {
+  sourceFormat = "CANONICAL_CSV", lateHistorical = false, finalizedType?: "CLOSING" | "FULL") {
   const queries: Array<{ sql: string; values?: unknown[] }> = [];
   let overlapChecks = 0;
   const query = vi.fn(async (statement: unknown, values?: unknown[]) => {
@@ -151,6 +151,7 @@ function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate" | "over
     if (sql.includes("FROM pos_import_approvals WHERE")) return { rows: [{id:approvalId,sourceSalesTotal:380,sourceQuantity:2}] };
     if (sql.includes("FROM pos_sources WHERE")) return { rows: [{ id: sourceId, sourceCode: "VERIFIED", displayName: "Verified POS", supportedFormat: sourceFormat }] };
     if (sql.includes("FROM pos_product_variant_mappings pm")) return { rows: [{ ...mappingRow, sourceProductCode: sourceFormat === "CANONICAL_CSV" ? "LATTE-L" : null, updatedAt: mappingVersion ?? mappingRow.updatedAt }] };
+    if (sql.includes("count_type IN ('CLOSING','FULL')")) return { rows: finalizedType ? [{ countNo: "IC-2026-00009", countType: finalizedType }] : [] };
     if (sql.includes("SELECT id FROM pos_imports")) return { rows: [] };
     if (sql.includes("FROM pos_sale_items existing")) {
       overlapChecks += 1;
@@ -698,6 +699,7 @@ describe("transactional POS import persistence", () => {
     expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_sale_items"))).toBe(true);
     expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_sale_ingredient_usage"))).toBe(true);
     expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_import_reconciliations"))).toBe(true);
+    expect(queries.some(({ sql }) => sql.includes("UPDATE pos_daily_declarations") && sql.includes("invalidated_at=now()"))).toBe(true);
     expect(queries.some(({ sql }) => sql.includes("FROM pos_import_approvals"))).toBe(false);
     expect(queries.some(({ sql }) => sql.includes("UPDATE pos_import_approvals"))).toBe(false);
     expect(queries.at(-1)?.sql).toBe("COMMIT");
@@ -718,6 +720,19 @@ describe("transactional POS import persistence", () => {
         }),
       }),
     );
+  });
+
+  it.each(["CLOSING", "FULL"] as const)("rejects an accepted import after a same-day %s checkpoint", async (countType) => {
+    const { client, queries } = createClient(undefined, undefined, undefined, "CANONICAL_CSV", false, countType);
+    mocks.connect.mockResolvedValue(client);
+
+    await expect(importPosSales(request(), response() as never, vi.fn())).rejects.toMatchObject({
+      status: 409,
+      code: "POS_IMPORT_AFTER_FINAL_COUNT",
+    });
+
+    expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_imports"))).toBe(false);
+    expect(queries.at(-1)?.sql).toBe("ROLLBACK");
   });
 
   it("rolls back every imported row when a recipe ingredient has no effective baseline", async () => {

@@ -564,18 +564,33 @@ export const getPurchaseOrder: RequestHandler = async (req, res) => {
 export const createPurchaseOrder: RequestHandler = async (req, res) => {
   const input = purchaseOrderCreateInput.parse(req.body);
   const branchId = requiredBranchId(req.user!);
+  const currentBusinessDate = manilaBusinessDate();
+  if (input.orderDate !== currentBusinessDate) {
+    throw new AppError(
+      422,
+      "PO_ORDER_DATE_CURRENT_REQUIRED",
+      `New purchase orders must use the current Manila business date (${currentBusinessDate}).`,
+    );
+  }
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await lockBranchInventoryOperation(client, branchId);
     const completedCount = await client.query(
-      `SELECT id FROM inventory_counts WHERE branch_id=$1 AND count_date=$2::date AND NOT is_test_data LIMIT 1`,
+      `SELECT ic.id FROM inventory_counts ic
+        WHERE ic.branch_id=$1 AND ic.count_date=$2::date AND ic.count_type='FULL' AND NOT ic.is_test_data
+          AND EXISTS(SELECT 1 FROM inventory_count_items valid_item
+            WHERE valid_item.inventory_count_id=ic.id AND valid_item.voided_at IS NULL)
+          AND NOT EXISTS(SELECT 1 FROM inventory_count_items invalid_item
+            WHERE invalid_item.inventory_count_id=ic.id AND invalid_item.voided_at IS NOT NULL)
+        LIMIT 1 FOR SHARE OF ic`,
       [branchId, input.orderDate],
     );
     if (!completedCount.rows[0]) {
       throw new AppError(
         409,
         "PHYSICAL_COUNT_REQUIRED",
-        `Complete the physical inventory count for ${input.orderDate} before creating a purchase order.`,
+        `Complete the Full Physical Count for ${input.orderDate} before creating this purchase order.`,
       );
     }
     const ids = input.items.map((item) => item.inventoryItemId);

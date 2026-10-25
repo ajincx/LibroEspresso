@@ -97,7 +97,7 @@ export const displayedPhysicalCountVariance = (
   : physicalCountPreviewVariance(expectedQuantity, actualQuantity);
 
 export const previousClosingCopyMessage = (countDate: string) =>
-  `Values copied from the Closing Count on ${countDate}. Review and confirm them before submitting.`;
+  `Values copied from the latest authoritative inventory checkpoint on ${countDate}. Review and confirm them before submitting.`;
 
 export const copyPreviousClosingEntries = (
   items: ExpectedInventoryItem[],

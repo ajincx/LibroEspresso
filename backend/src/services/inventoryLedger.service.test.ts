@@ -11,6 +11,19 @@ describe("inventory stock ledger", () => {
     expect(ledger.activities.map((item)=>item.reference)).toEqual(["Opening","POS","Closing"]);
     expect(ledger.calculatedBalance).toBe(85);
   });
+  it("orders a same-day Full checkpoint after Closing without replaying activity",()=>{
+    const ledger=buildInventoryLedger([
+      {id:"full",occurredAt:"2026-10-15T15:59:59+08:00",activityType:"PHYSICAL_COUNT",reference:"Full",quantity:84,dayPhase:4},
+      {id:"receipt",occurredAt:"2026-10-15T13:00:00+08:00",activityType:"RECEIPT",reference:"Receipt",quantity:5,dayPhase:2},
+      {id:"closing",occurredAt:"2026-10-15T11:00:00+08:00",activityType:"PHYSICAL_COUNT",reference:"Closing",quantity:85,dayPhase:3},
+      {id:"pos",occurredAt:"2026-10-15",activityType:"POS_CONSUMPTION",reference:"POS",quantity:20,dayPhase:2},
+      {id:"opening",occurredAt:"2026-10-15T08:00:00+08:00",activityType:"PHYSICAL_COUNT",reference:"Opening",quantity:100,dayPhase:1},
+    ]);
+    expect(ledger.activities.map((item)=>item.reference)).toEqual(["Opening","POS","Receipt","Closing","Full"]);
+    expect(ledger.activities.at(-2)).toMatchObject({reference:"Closing",quantityChange:null,runningBalance:85});
+    expect(ledger.activities.at(-1)).toMatchObject({reference:"Full",quantityChange:null,runningBalance:84});
+    expect(ledger.calculatedBalance).toBe(84);
+  });
   it("shows the approved September opening stock and active POS deduction without changing Starting Stock", () => {
     const ledger = buildInventoryLedger([
       { id: "opening", occurredAt: "2026-09-15T16:00:00.000Z", activityType: "STARTING_STOCK", reference: "OB-2026-00001", quantity: 5750 },

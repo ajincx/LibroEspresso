@@ -81,6 +81,9 @@ function transactionClient(options: { existingCounts?: Array<{ countNo: string; 
 describe("physical-count API unit normalization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.calculateExpectedInventory.mockReset();
+    mocks.calculateExpectedInventoryBatch.mockReset();
+    mocks.requiresVarianceInvestigation.mockReset();
     mocks.requiresVarianceInvestigation.mockReturnValue(false);
     mocks.calculateExpectedInventoryBatch.mockResolvedValue({
       items: [{ inventoryItemId, sku: "RM-002" }],
@@ -103,7 +106,7 @@ describe("physical-count API unit normalization", () => {
   });
 
   it("normalizes 3.864 kg to 3864 g for variance, persistence, and balance reset", async () => {
-    const client = transactionClient();
+    const client = transactionClient({ existingCounts: [{ countNo: "IC-2026-00009", countType: "CLOSING" }] });
     mocks.poolConnect.mockResolvedValue(client);
     const json = vi.fn();
     const status = vi.fn(() => ({ json }));
@@ -150,7 +153,7 @@ describe("physical-count API unit normalization", () => {
       baselineDate: "2026-09-16",
       baselineSource: "OPENING_BASELINE",
     });
-    const client = transactionClient();
+    const client = transactionClient({ existingCounts: [{ countNo: "IC-2026-00009", countType: "CLOSING" }] });
     mocks.poolConnect.mockResolvedValue(client);
     const json = vi.fn();
     const status = vi.fn(() => ({ json }));
@@ -165,7 +168,7 @@ describe("physical-count API unit normalization", () => {
   });
 
   it("rejects an incompatible entered unit and rolls back the transaction", async () => {
-    const client = transactionClient();
+    const client = transactionClient({ existingCounts: [{ countNo: "IC-2026-00009", countType: "CLOSING" }] });
     mocks.poolConnect.mockResolvedValue(client);
 
     await expect(submitInventoryCount({
@@ -222,7 +225,7 @@ describe("physical-count API unit normalization", () => {
   });
 
   it.each([
-    ["FULL" as const, transactionClient()],
+    ["FULL" as const, transactionClient({ existingCounts: [{ countNo: "IC-2026-00009", countType: "CLOSING" }] })],
     ["CLOSING" as const, transactionClient({ existingCounts: [{ countNo: "IC-2026-00009", countType: "OPENING" }], posComplete: true })],
   ])("continues creating shrinkage investigations for %s counts", async (countType, client) => {
     mocks.requiresVarianceInvestigation.mockReturnValue(true);
@@ -247,5 +250,40 @@ describe("physical-count API unit normalization", () => {
         items: [expect.objectContaining({ requiresInvestigation: true })],
       }) },
     }));
+  });
+
+  it.each([
+    ["CLOSING" as const, [], "OPENING_COUNT_REQUIRED"],
+    ["FULL" as const, [{ countNo: "IC-OPEN", countType: "OPENING" }], "CLOSING_COUNT_REQUIRED"],
+    ["CLOSING" as const, [{ countNo: "IC-OPEN", countType: "OPENING" }, { countNo: "IC-FULL", countType: "FULL" }], "CLOSING_COUNT_AFTER_FULL"],
+    ["OPENING" as const, [{ countNo: "IC-CLOSE", countType: "CLOSING" }], "OPENING_COUNT_SEQUENCE_INVALID"],
+  ])("rejects invalid same-day %s sequencing with %s", async (countType, existingCounts, code) => {
+    const client = transactionClient({ existingCounts, posComplete: true });
+    mocks.poolConnect.mockResolvedValue(client);
+
+    await expect(submitInventoryCount({
+      body: { countDate: "2026-10-03", countType, items: [{ inventoryItemId, quantity: 3700, enteredUnit: "g" }] },
+      user: { id: "manager", role: "BRANCH_MANAGER", branchId },
+    } as never, { status: vi.fn(), json: vi.fn() } as never, vi.fn())).rejects.toMatchObject({ status: 409, code });
+
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO inventory_counts"))).toBe(false);
+    expect(client.query).toHaveBeenCalledWith("ROLLBACK");
+  });
+
+  it("rejects only a duplicate of the requested count type", async () => {
+    const client = transactionClient({ existingCounts: [
+      { countNo: "IC-OPEN", countType: "OPENING" },
+      { countNo: "IC-CLOSE", countType: "CLOSING" },
+      { countNo: "IC-FULL", countType: "FULL" },
+    ] });
+    mocks.poolConnect.mockResolvedValue(client);
+
+    await expect(submitInventoryCount({
+      body: { countDate: "2026-10-03", countType: "FULL", items: [{ inventoryItemId, quantity: 3700, enteredUnit: "g" }] },
+      user: { id: "manager", role: "BRANCH_MANAGER", branchId },
+    } as never, { status: vi.fn(), json: vi.fn() } as never, vi.fn())).rejects.toMatchObject({
+      status: 409,
+      code: "INVENTORY_COUNT_DUPLICATE",
+    });
   });
 });

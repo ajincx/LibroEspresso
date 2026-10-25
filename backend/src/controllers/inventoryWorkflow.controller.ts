@@ -525,12 +525,12 @@ async function executePosImport(
     if (!preview.summary.canImport || !preview.businessDate) throw new AppError(422, "POS_IMPORT_INVALID", "POS import was not completed because the preview contains invalid or unmatched rows.");
     if (!input.expectedResolutionFingerprint || preview.resolutionFingerprint !== input.expectedResolutionFingerprint) throw new AppError(409, "POS_MAPPING_CHANGED", "POS source or product/variant mapping changed after preview. Preview the file again.");
     await lockBranchInventoryOperation(client, branchId);
-    const finalizedClosing = await client.query<{ countNo:string }>(
-      `SELECT count_no "countNo" FROM inventory_counts
-        WHERE branch_id=$1 AND count_type='CLOSING' AND NOT is_test_data AND count_date >= $2::date
+    const finalizedCheckpoint = await client.query<{ countNo:string;countType:string }>(
+      `SELECT count_no "countNo",count_type "countType" FROM inventory_counts
+        WHERE branch_id=$1 AND count_type IN ('CLOSING','FULL') AND NOT is_test_data AND count_date >= $2::date
         ORDER BY count_date,submitted_at LIMIT 1`, [branchId,preview.businessDate]);
-    if (finalizedClosing.rows[0]) {
-      throw new AppError(409,"POS_IMPORT_AFTER_CLOSING",`This sales report cannot be imported because Closing Count ${finalizedClosing.rows[0].countNo} already finalized inventory on or after ${preview.businessDate}. The submitted count and variance were not changed.`);
+    if (finalizedCheckpoint.rows[0]) {
+      throw new AppError(409,"POS_IMPORT_AFTER_FINAL_COUNT",`This sales report cannot be imported because ${finalizedCheckpoint.rows[0].countType === "FULL" ? "Full Physical" : "Closing"} Count ${finalizedCheckpoint.rows[0].countNo} already finalized inventory on or after ${preview.businessDate}. The submitted count and variance were not changed.`);
     }
     const duplicateAfterLock = await client.query(
       `SELECT 1 FROM pos_imports WHERE branch_id=$1 AND content_hash=$2 AND voided_at IS NULL LIMIT 1`,
@@ -631,14 +631,14 @@ async function executePosImport(
     const reconciliation={id:reconciliationResult.rows[0]!.id,generatedAt:reconciliationResult.rows[0]!.generatedAt,
       posSalesTotal:sourceSalesTotal,importedSalesTotal:Number(meta?.totalSales??0),posQuantity:sourceQuantity,importedQuantity:Number(meta?.unitsSold??0),
       expectedCogs:preview.simulation.estimatedCogs,generatedCogs:actualCogs,salesTotalMatches,quantityMatches,recipeConsumptionMatches,cogsMatches,branchIsolated};
+    await client.query(
+      `UPDATE pos_daily_declarations
+          SET invalidated_at=now(),invalidated_by=$3,
+              invalidation_reason='A later POS sales import was accepted for this business date.'
+        WHERE branch_id=$1 AND business_date=$2 AND invalidated_at IS NULL`,
+      [branchId,preview.businessDate,actor.id],
+    );
     if (input.confirmDayComplete) {
-      const existingDeclaration = await client.query<{ declaration:string }>(
-        `SELECT declaration FROM pos_daily_declarations
-          WHERE branch_id=$1 AND business_date=$2 AND invalidated_at IS NULL FOR UPDATE`,
-        [branchId,preview.businessDate]);
-      if (existingDeclaration.rows[0]) {
-        throw new AppError(409,"POS_DAY_ALREADY_FINALIZED","This business day already has a completed sales declaration.");
-      }
       await client.query(`INSERT INTO pos_daily_declarations
         (branch_id,business_date,declaration,notes,declared_by,pos_source_id,pos_import_id,confirmed_at)
         VALUES($1,$2,'SALES_COMPLETE','Manager confirmed the imported report covers the complete business day.',$3,$4,$5,now())`,
@@ -1375,6 +1375,19 @@ export const createInventoryMovement: RequestHandler = async (req, res) => {
       manilaBusinessDate(),
       "Inventory adjustment",
     );
+    const finalizedFull = await client.query<{ countNo:string }>(
+      `SELECT count_no "countNo" FROM inventory_counts
+        WHERE branch_id=$1 AND count_date=$2::date AND count_type='FULL' AND NOT is_test_data
+        LIMIT 1`,
+      [branchId,manilaBusinessDate()],
+    );
+    if (finalizedFull.rows[0]) {
+      throw new AppError(
+        409,
+        "INVENTORY_ADJUSTMENT_AFTER_FULL_COUNT",
+        `Inventory adjustments are closed for today because Full Physical Count ${finalizedFull.rows[0].countNo} has been submitted.`,
+      );
+    }
     if (input.movementType === "APPROVED_ADJUSTMENT_DECREASE") {
       const ledger = await loadInventoryLedger(
         client,
@@ -1460,33 +1473,46 @@ export const getExpectedInventory: RequestHandler = async (req, res) => {
         FROM inventory_counts WHERE branch_id=$1 AND count_date=$2 AND count_type IN ('OPENING','CLOSING') AND NOT is_test_data`,
       [branchId,countDate]);
   const previousClosing = countType === "OPENING" ? await pool.query<{
-    inventoryItemId: string; actualQuantity: number; countDate: string;
-  }>(`SELECT ici.inventory_item_id "inventoryItemId",COALESCE(correction.corrected_actual_quantity,ici.actual_quantity)::float8 "actualQuantity",
-            ic.count_date::text "countDate"
-        FROM inventory_counts ic JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id
+    inventoryItemId: string; actualQuantity: number; countDate: string; countType:"CLOSING"|"FULL";
+  }>(`SELECT DISTINCT ON (ici.inventory_item_id)
+            ici.inventory_item_id "inventoryItemId",COALESCE(correction.corrected_actual_quantity,ici.actual_quantity)::float8 "actualQuantity",
+            ic.count_date::text "countDate",ic.count_type "countType"
+        FROM inventory_counts ic JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id AND ici.voided_at IS NULL
         LEFT JOIN LATERAL (SELECT corrected_actual_quantity FROM inventory_count_corrections
           WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
-       WHERE ic.branch_id=$1 AND ic.count_type='CLOSING' AND ic.count_date<$2 AND NOT ic.is_test_data
-         AND ic.id=(SELECT prior.id FROM inventory_counts prior WHERE prior.branch_id=$1 AND prior.count_type='CLOSING'
-           AND prior.count_date<$2 AND NOT prior.is_test_data ORDER BY prior.count_date DESC,prior.submitted_at DESC LIMIT 1)`,
-      [branchId,countDate]) : { rows: [] as {inventoryItemId:string;actualQuantity:number;countDate:string}[] };
+       WHERE ic.branch_id=$1 AND ic.count_type IN ('CLOSING','FULL') AND ic.count_date<$2 AND NOT ic.is_test_data
+       ORDER BY ici.inventory_item_id,ic.count_date DESC,
+                CASE ic.count_type WHEN 'FULL' THEN 2 ELSE 1 END DESC,
+                COALESCE(ic.effective_at,ic.submitted_at) DESC,ic.submitted_at DESC`,
+      [branchId,countDate]) : { rows: [] as {inventoryItemId:string;actualQuantity:number;countDate:string;countType:"CLOSING"|"FULL"}[] };
   const completeness = await pool.query<{ complete: boolean }>(
     `SELECT EXISTS(
        SELECT 1 FROM pos_daily_declarations declaration
-       JOIN pos_imports imported ON imported.id=declaration.pos_import_id AND imported.branch_id=declaration.branch_id
-       JOIN pos_import_reconciliations reconciliation ON reconciliation.pos_import_id=imported.id
-        AND reconciliation.sales_total_matches AND reconciliation.quantity_matches
-        AND reconciliation.recipe_consumption_matches AND reconciliation.cogs_matches AND reconciliation.branch_isolated
-        WHERE declaration.branch_id=$1 AND declaration.business_date=$2
-          AND declaration.declaration='SALES_COMPLETE'
-          AND declaration.invalidated_at IS NULL AND imported.voided_at IS NULL
+       LEFT JOIN pos_imports imported ON imported.id=declaration.pos_import_id AND imported.branch_id=declaration.branch_id
+       LEFT JOIN pos_import_reconciliations reconciliation ON reconciliation.pos_import_id=imported.id
+        WHERE declaration.branch_id=$1 AND declaration.business_date=$2 AND declaration.invalidated_at IS NULL
+          AND (
+            (declaration.declaration='NO_SALES_CLOSED' AND declaration.pos_import_id IS NULL
+              AND NOT EXISTS(SELECT 1 FROM pos_imports active_import
+                WHERE active_import.branch_id=declaration.branch_id
+                  AND active_import.business_date=declaration.business_date
+                  AND active_import.voided_at IS NULL))
+            OR
+            (declaration.declaration='SALES_COMPLETE' AND imported.voided_at IS NULL
+              AND reconciliation.sales_total_matches AND reconciliation.quantity_matches
+              AND reconciliation.recipe_consumption_matches AND reconciliation.cogs_matches AND reconciliation.branch_isolated)
+          )
      ) "complete"`, [branchId,countDate]);
+  const previousCheckpoint = [...previousClosing.rows].sort((left,right) =>
+    right.countDate.localeCompare(left.countDate)
+      || (right.countType === "FULL" ? 1 : 0) - (left.countType === "FULL" ? 1 : 0))[0];
   res.json({ success: true, data: {
     branchId, countDate, countType, items, unavailableItems,
     openingCount: dailyCounts.rows.find((count)=>count.countType==="OPENING") ?? null,
     closingCount: dailyCounts.rows.find((count)=>count.countType==="CLOSING") ?? null,
     previousClosingItems: previousClosing.rows,
-    previousClosingDate: previousClosing.rows[0]?.countDate ?? null,
+    previousClosingDate: previousCheckpoint?.countDate ?? null,
+    previousClosingCountType: previousCheckpoint?.countType ?? null,
     posDayComplete: completeness.rows[0]?.complete === true,
   } });
 };
@@ -1559,28 +1585,45 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
         WHERE branch_id=$1 AND count_date=$2 AND NOT is_test_data FOR UPDATE`,
       [branchId, input.countDate],
     );
-    const conflicting = existingCount.rows.find((count) =>
-      count.countType === input.countType || count.countType === "FULL" || input.countType === "FULL");
-    if (conflicting) {
+    const duplicate = existingCount.rows.find((count) => count.countType === input.countType);
+    if (duplicate) {
       throw new AppError(
         409,
         "INVENTORY_COUNT_DUPLICATE",
-        `Physical count ${conflicting.countNo} already conflicts with the requested ${input.countType.toLowerCase()} count for ${input.countDate}.`,
+        `${input.countType === "FULL" ? "Full Physical" : input.countType === "OPENING" ? "Opening" : "Closing"} Count ${duplicate.countNo} has already been submitted for ${input.countDate}.`,
       );
     }
+    const opening = existingCount.rows.find((count)=>count.countType === "OPENING");
+    const closing = existingCount.rows.find((count)=>count.countType === "CLOSING");
+    const full = existingCount.rows.find((count)=>count.countType === "FULL");
+    if (input.countType === "OPENING" && (closing || full)) {
+      throw new AppError(409,"OPENING_COUNT_SEQUENCE_INVALID","Opening Count must be submitted before Closing and Full Physical Counts.");
+    }
     if (input.countType === "CLOSING") {
-      if (!existingCount.rows.some((count)=>count.countType === "OPENING")) {
+      if (full) throw new AppError(409,"CLOSING_COUNT_AFTER_FULL","Closing Count cannot be submitted after the Full Physical Count.");
+      if (!opening) {
         throw new AppError(409,"OPENING_COUNT_REQUIRED","Submit today's Opening Count before recording the Closing Count.");
       }
-      const completeDay = await client.query(`SELECT 1 FROM pos_daily_declarations declaration
-        JOIN pos_imports imported ON imported.id=declaration.pos_import_id AND imported.branch_id=declaration.branch_id
-        JOIN pos_import_reconciliations reconciliation ON reconciliation.pos_import_id=imported.id
-          AND reconciliation.sales_total_matches AND reconciliation.quantity_matches
-          AND reconciliation.recipe_consumption_matches AND reconciliation.cogs_matches AND reconciliation.branch_isolated
-        WHERE declaration.branch_id=$1 AND declaration.business_date=$2 AND declaration.declaration='SALES_COMPLETE'
-          AND declaration.invalidated_at IS NULL AND imported.voided_at IS NULL FOR UPDATE OF declaration`,
+      const completeDay = await client.query(`SELECT declaration.id FROM pos_daily_declarations declaration
+        LEFT JOIN pos_imports imported ON imported.id=declaration.pos_import_id AND imported.branch_id=declaration.branch_id
+        LEFT JOIN pos_import_reconciliations reconciliation ON reconciliation.pos_import_id=imported.id
+        WHERE declaration.branch_id=$1 AND declaration.business_date=$2 AND declaration.invalidated_at IS NULL
+          AND (
+            (declaration.declaration='NO_SALES_CLOSED' AND declaration.pos_import_id IS NULL
+              AND NOT EXISTS(SELECT 1 FROM pos_imports active_import
+                WHERE active_import.branch_id=declaration.branch_id
+                  AND active_import.business_date=declaration.business_date
+                  AND active_import.voided_at IS NULL))
+            OR
+            (declaration.declaration='SALES_COMPLETE' AND imported.voided_at IS NULL
+              AND reconciliation.sales_total_matches AND reconciliation.quantity_matches
+              AND reconciliation.recipe_consumption_matches AND reconciliation.cogs_matches AND reconciliation.branch_isolated)
+          ) FOR UPDATE OF declaration`,
         [branchId,input.countDate]);
       if (!completeDay.rows[0]) throw new AppError(409,"POS_DAY_COMPLETENESS_REQUIRED","Import and reconcile the complete end-of-day POS report, then confirm that it covers the full business day before submitting Closing Count.");
+    }
+    if (input.countType === "FULL" && !closing) {
+      throw new AppError(409,"CLOSING_COUNT_REQUIRED","Submit today's Closing Count before recording the Full Physical Count.");
     }
     const expectedSet = await calculateExpectedInventoryBatch(client,branchId,input.countDate,input.countType);
     if (input.countType === "FULL") validateCompleteInventoryCountItemSet(expectedSet,input.items.map((item)=>item.inventoryItemId));

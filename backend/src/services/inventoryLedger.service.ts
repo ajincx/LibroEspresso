@@ -163,7 +163,7 @@ export async function loadInventoryLedger(
     client.query<{ id: string; occurredAt: string; reference: string; quantity: number; dayPhase:number }>(
       `SELECT ic.id,COALESCE(ic.effective_at,(ic.count_date::timestamp + interval '1 day' - interval '1 second') AT TIME ZONE 'Asia/Manila')::text "occurredAt",
               ic.count_no reference,COALESCE(correction.corrected_actual_quantity,ici.actual_quantity)::float8 quantity,
-              CASE WHEN ic.count_type='OPENING' THEN 1 ELSE 3 END "dayPhase"
+              CASE ic.count_type WHEN 'OPENING' THEN 1 WHEN 'CLOSING' THEN 3 ELSE 4 END "dayPhase"
          FROM inventory_counts ic
          JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id AND ici.voided_at IS NULL
          LEFT JOIN LATERAL (SELECT corrected_actual_quantity FROM inventory_count_corrections
@@ -279,7 +279,7 @@ export async function loadInventoryLedgerBalances(
        SELECT ic.branch_id,ici.inventory_item_id,ic.id::text,
          COALESCE(ic.effective_at,(ic.count_date::timestamp+interval '1 day'-interval '1 second') AT TIME ZONE 'Asia/Manila')::text,
          ic.count_no,COALESCE(correction.corrected_actual_quantity,ici.actual_quantity)::float8,'PHYSICAL_COUNT',NULL::text,NULL::text,
-         CASE WHEN ic.count_type='OPENING' THEN 1 ELSE 3 END
+          CASE ic.count_type WHEN 'OPENING' THEN 1 WHEN 'CLOSING' THEN 3 ELSE 4 END
        FROM baselines b JOIN inventory_counts ic ON ic.branch_id=b."branchId" AND NOT ic.is_test_data
        JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id
          AND ici.inventory_item_id=b."inventoryItemId" AND ici.voided_at IS NULL
