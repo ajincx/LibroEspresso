@@ -23,6 +23,7 @@ import { requiresVarianceInvestigation } from "../services/varianceMateriality.s
 import { VERIFIED_SHRINKAGE_CLASSIFICATIONS_SQL } from "../services/shrinkageWorkflow.service.js";
 import { lockBranchInventoryOperation } from "../services/inventoryOperationLock.service.js";
 import { loadInventoryLedger } from "../services/inventoryLedger.service.js";
+import { assertOperationalInventoryBaselines } from "../services/inventoryBaseline.service.js";
 import { AppError } from "../utils/appError.js";
 import { idParams } from "../validators/masterData.js";
 import { destructiveActionInput } from "../validators/destructiveAction.js";
@@ -563,6 +564,20 @@ async function executePosImport(
     // --- EXPECTED INGREDIENT USAGE FORMULA ---
     // Expected Usage = Quantity Sold × Recipe Ingredient Quantity / Recipe Yield
     await createIngredientUsageSnapshots(client,importId);
+    const usageItems = await client.query<{ inventoryItemId: string }>(
+      `SELECT DISTINCT usage.inventory_item_id "inventoryItemId"
+         FROM pos_sale_ingredient_usage usage
+         JOIN pos_sale_items sale_item ON sale_item.id=usage.pos_sale_item_id
+        WHERE sale_item.pos_import_id=$1`,
+      [importId],
+    );
+    await assertOperationalInventoryBaselines(
+      client,
+      branchId,
+      usageItems.rows.map((item) => item.inventoryItemId),
+      preview.businessDate,
+      "POS import",
+    );
     const ingredientUsageMs = performance.now() - usageStartedAt;
     const inventoryDateAssessment = await assessPosImportInventoryDates(client, importId);
     const consumption = await client.query(
@@ -1353,6 +1368,13 @@ export const createInventoryMovement: RequestHandler = async (req, res) => {
         `Adjustments must be entered in the canonical inventory unit (${item.unit})`,
       );
     }
+    await assertOperationalInventoryBaselines(
+      client,
+      branchId,
+      [input.inventoryItemId],
+      manilaBusinessDate(),
+      "Inventory adjustment",
+    );
     if (input.movementType === "APPROVED_ADJUSTMENT_DECREASE") {
       const ledger = await loadInventoryLedger(
         client,

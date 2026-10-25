@@ -27,6 +27,7 @@ export interface InventoryOverviewItem {
 
 export type InventoryLedgerActivityType =
   | "STARTING_STOCK"
+  | "ITEM_INITIALIZATION"
   | "BALANCE_BASELINE"
   | "POS_CONSUMPTION"
   | "RECEIPT"

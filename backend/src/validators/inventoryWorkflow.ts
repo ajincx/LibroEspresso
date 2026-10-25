@@ -106,6 +106,13 @@ export const startingStockConfirmationInput = z.object({
     .refine((items) => new Set(items.map((item) => item.inventoryItemId)).size === items.length, "Starting Stock items must be unique"),
 });
 
+export const ingredientInitialStockInput = z.object({
+  quantity: z.number().finite().min(0),
+  enteredUnit: z.enum(["g", "kg", "ml", "L", "pc"]),
+  preOperationsConfirmed: z.boolean().default(false),
+  confirmed: z.literal(true, { error: "Physical-verification confirmation is required" }),
+});
+
 export const shrinkageInvestigationInput = z.object({
   menuItemId: z.string().uuid().optional(),
   classification: z.enum(MANAGER_CLASSIFICATIONS),

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { branchReorderSettingsInput, canConfigureBranchReorderPolicy, canOpenClosingCount, dailyCountShortcutDestination, dailyCountStatusLabel, inventoryAdjustmentValidationError, InventoryOverview, inventoryOverviewColumns, inventoryTabs, projectedAdjustmentStock, recordCountShortcutDestination, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, shouldShowStockOperationCards, stockOperationCards, stockOperationSelectionAfterDailySubmit, subscribeToInventoryDataChanges } from "./InventoryModule";
+import { branchReorderSettingsInput, canConfigureBranchReorderPolicy, canOpenClosingCount, canSetIngredientInitialStock, dailyCountShortcutDestination, dailyCountStatusLabel, inventoryAdjustmentValidationError, InventoryOverview, inventoryOverviewColumns, inventoryTabs, projectedAdjustmentStock, recordCountShortcutDestination, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, shouldShowStockOperationCards, stockOperationCards, stockOperationSelectionAfterDailySubmit, subscribeToInventoryDataChanges } from "./InventoryModule";
 import type { InventoryCountSummary } from "../../types/inventoryWorkflow";
 
 afterEach(() => vi.useRealTimers());
@@ -41,6 +41,13 @@ describe("Inventory Management terminology", () => {
   it("allows only the Branch Manager to configure branch reorder policies", () => {
     expect(canConfigureBranchReorderPolicy("owner")).toBe(false);
     expect(canConfigureBranchReorderPolicy("manager")).toBe(true);
+  });
+
+  it("allows only a Branch Manager to initialize a No Baseline ingredient", () => {
+    expect(canSetIngredientInitialStock("manager", "NO_BASELINE")).toBe(true);
+    expect(canSetIngredientInitialStock("manager", "AVAILABLE")).toBe(false);
+    expect(canSetIngredientInitialStock("owner", "NO_BASELINE")).toBe(false);
+    expect(canSetIngredientInitialStock("staff" as never, "NO_BASELINE")).toBe(false);
   });
 
   it("keeps the existing business category while removing it from Manager input",()=>{

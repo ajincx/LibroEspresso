@@ -63,6 +63,9 @@ export const inventoryWorkflowService = {
   async confirmStartingStock(items: { inventoryItemId: string; quantity: number; enteredUnit: "g" | "kg" | "ml" | "L" | "pc" }[]) {
     return (await api.post<ApiSuccess<{ baseline: OpeningInventoryBaseline }>>("/inventory-opening-baselines/confirm", { confirmed: true, items })).data.data.baseline;
   },
+  async confirmIngredientInitialStock(inventoryItemId: string, input: { quantity: number; enteredUnit: "g" | "kg" | "ml" | "L" | "pc"; preOperationsConfirmed: boolean }) {
+    return (await api.post<ApiSuccess<{ baseline: OpeningInventoryBaseline; effectiveBusinessDate: string; sameDayEffective: boolean }>>(`/inventory-opening-baselines/items/${inventoryItemId}/initialize`, { ...input, confirmed: true })).data.data;
+  },
   async reports(filters?: { branchId?: string; archiveScope?: "ACTIVE" | "ARCHIVED" | "ALL"; status?: string; classification?: string; inventoryItemId?: string; incidentType?: string; startDate?: string; endDate?: string }) {
     return (await api.get<ApiSuccess<{ reports: ShrinkageReport[]; metrics: ShrinkageMetrics; pagination: { page: number; pageSize: number; total: number; totalPages: number } }>>("/shrinkage-reports", { params: filters })).data.data;
   },

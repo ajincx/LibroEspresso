@@ -506,7 +506,7 @@ export function IngredientEditorModal({categories,onClose,onCreated}:{categories
       <Field label="Unit Cost *" type="number" value={form.unitCost} error={errors.unitCost} placeholder="0.00" onChange={(value)=>setForm((current)=>({...current,unitCost:value===""?"":Number(value)}))}/>
       <Field label="Reorder Level *" type="number" value={form.reorderLevel} error={errors.reorderLevel} placeholder="0.00" onChange={(value)=>setForm((current)=>({...current,reorderLevel:value===""?"":Number(value)}))}/>
     </div>
-    <div className="mt-5 px-4 py-3 rounded-xl text-xs leading-relaxed" style={{background:"var(--app-primary-faint)",color:"var(--app-text-muted)"}}>Initial stock remains zero. Record receiving or a physical inventory count before the ingredient is treated as available stock.</div>
+    <div className="mt-5 px-4 py-3 rounded-xl text-xs leading-relaxed" style={{background:"var(--app-primary-faint)",color:"var(--app-text-muted)"}}>A Branch Manager must physically verify an initial quantity before this ingredient can affect branch stock.</div>
     <div className="flex flex-col-reverse sm:flex-row justify-end gap-3 mt-6"><button type="button" disabled={saving} onClick={onClose} className="px-5 py-3 rounded-xl border text-sm font-semibold disabled:opacity-50" style={{borderColor:"var(--app-border)"}}>Cancel</button><button type="button" disabled={saving} onClick={()=>void save()} className="px-6 py-3 rounded-xl text-white text-sm font-semibold shadow-md disabled:opacity-50" style={{background:"var(--app-primary)"}}>{saving?"Adding…":"Add Ingredient"}</button></div>
   </Modal>;
 }

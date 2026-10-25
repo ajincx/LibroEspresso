@@ -12,6 +12,7 @@ import {
 import { configureBranchReorderPolicy } from "../services/branchInventorySettings.service.js";
 import { baseStockUnitCost, receivedStockQuantity, resolvePurchaseConversion } from "../services/purchaseUom.service.js";
 import { lockBranchInventoryOperation } from "../services/inventoryOperationLock.service.js";
+import { assertOperationalInventoryBaselines } from "../services/inventoryBaseline.service.js";
 import { manilaBusinessDate } from "../services/businessTime.service.js";
 import { AppError } from "../utils/appError.js";
 import { idParams } from "../validators/masterData.js";
@@ -851,6 +852,13 @@ export const receivePurchaseOrder: RequestHandler = async (req, res) => {
         "PO_NOT_RECEIVABLE",
         "Only ordered or partially received purchase orders can be received",
       );
+    await assertOperationalInventoryBaselines(
+      client,
+      branchId,
+      lockedItems.map((item) => item.inventoryItemId),
+      input.receivedDate,
+      "Purchase-order receiving",
+    );
     for (const item of lockedItems) {
       if (item.quantityReceived > item.remaining)
         throw new AppError(

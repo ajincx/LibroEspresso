@@ -47,6 +47,7 @@ function clientFor(options?: {
   remaining?: number;
   priorReceipt?: { inventoryItemId: string; quantity: number; receivedDate: string }[];
   latestPhysicalCountDate?: string | null;
+  unavailableBaseline?: boolean;
 }) {
   const statements: { sql: string; values?: unknown[] }[] = [];
   const client = {
@@ -78,6 +79,9 @@ function clientFor(options?: {
       }
       if (sql.includes("FROM inventory_counts")) {
         return { rows: [{ countDate: options?.latestPhysicalCountDate ?? null }] };
+      }
+      if (sql.includes("FROM inventory_items ii") && sql.includes("inventory_opening_baseline_items")) {
+        return { rows: options?.unavailableBaseline ? [{ sku: "ING-99", name: "Oat Milk" }] : [] };
       }
       if (sql.includes("RETURNING updated_at")) {
         return { rows: [{ updatedAt: new Date("2026-10-01T00:00:00Z") }] };
@@ -201,5 +205,18 @@ describe("purchase-order receipt idempotency", () => {
     expect(statements.some(({ sql }) => sql.includes("INSERT INTO inventory_movements"))).toBe(false);
     expect(statements.at(-1)?.sql).toBe("ROLLBACK");
     expect(mocks.writeAudit).not.toHaveBeenCalled();
+  });
+
+  it("atomically rejects receiving an ingredient before its initial stock is effective", async () => {
+    const { client, statements } = clientFor({ unavailableBaseline: true });
+    mocks.connect.mockResolvedValue(client);
+
+    await expect(
+      receivePurchaseOrder(request(3), response() as never, vi.fn()),
+    ).rejects.toMatchObject({ status: 409, code: "INVENTORY_BASELINE_REQUIRED" });
+
+    expect(statements.some(({ sql }) => sql.includes("SET quantity_received=quantity_received+$2"))).toBe(false);
+    expect(statements.some(({ sql }) => sql.includes("INSERT INTO inventory_movements"))).toBe(false);
+    expect(statements.at(-1)?.sql).toBe("ROLLBACK");
   });
 });

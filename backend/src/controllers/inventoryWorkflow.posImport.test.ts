@@ -118,7 +118,7 @@ function response() {
 
 const deleteRequest = (id=importId) => ({params:{id},body:{reason:"Reset an explicitly authorized development fixture",verificationPin:"12345"},user:{id:"owner-1",role:"OWNER",branchId:null}}) as never;
 
-function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate" | "overlap-after-lock" | "reconciliation", mappingVersion?: string,
+function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate" | "overlap-after-lock" | "reconciliation" | "baseline", mappingVersion?: string,
   variantRows?: Array<{id:string;menuItemId:string;name:string;status:"ACTIVE"|"INACTIVE";recipeVersionId:string|null;recipeUnits:Array<{recipeUnit:string;inventoryUnit:string}>}>,
   sourceFormat = "CANONICAL_CSV", lateHistorical = false) {
   const queries: Array<{ sql: string; values?: unknown[] }> = [];
@@ -170,6 +170,10 @@ function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate" | "over
     if (sql.includes("INSERT INTO pos_sale_ingredient_usage")) {
       if (failAt === "usage") throw new Error("usage generation failed");
       return { rows: [] };
+    }
+    if (sql.trimStart().startsWith("SELECT DISTINCT usage.inventory_item_id")) return { rows: [{ inventoryItemId: "ingredient-1" }] };
+    if (sql.includes("FROM inventory_items ii") && sql.includes("inventory_opening_baseline_items")) {
+      return { rows: failAt === "baseline" ? [{ sku: "BEANS", name: "Coffee Beans" }] : [] };
     }
     if (sql.includes('max(ic.count_date)::text "latestBaselineDate"')) {
       return { rows: [{ latestBaselineDate: lateHistorical ? "2026-10-02" : null }] };
@@ -714,6 +718,22 @@ describe("transactional POS import persistence", () => {
         }),
       }),
     );
+  });
+
+  it("rolls back every imported row when a recipe ingredient has no effective baseline", async () => {
+    const { client, queries } = createClient("baseline");
+    mocks.connect.mockResolvedValue(client);
+
+    await expect(importPosSales(request(), response() as never, vi.fn())).rejects.toMatchObject({
+      status: 409,
+      code: "INVENTORY_BASELINE_REQUIRED",
+    });
+
+    expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_sale_items"))).toBe(true);
+    expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_sale_ingredient_usage"))).toBe(true);
+    expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_import_reconciliations"))).toBe(false);
+    expect(queries.some(({ sql }) => sql === "ROLLBACK")).toBe(true);
+    expect(queries.some(({ sql }) => sql === "COMMIT")).toBe(false);
   });
 
   it("flags a late historical import for count reconciliation without changing current inventory", async () => {

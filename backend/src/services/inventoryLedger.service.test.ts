@@ -22,6 +22,15 @@ describe("inventory stock ledger", () => {
     expect(ledger.activities.map((activity) => activity.runningBalance)).toEqual([5750, 5054]);
   });
 
+  it("uses Ingredient Initial Stock as the first authoritative checkpoint", () => {
+    const ledger = buildInventoryLedger([
+      { id: "initial", occurredAt: "2026-10-25T00:00:00+08:00", activityType: "ITEM_INITIALIZATION", reference: "OB-2026-00099", quantity: 0 },
+      { id: "receipt", occurredAt: "2026-10-25T12:00:00+08:00", activityType: "RECEIPT", reference: "PO-99", quantity: 10 },
+    ]);
+    expect(ledger).toMatchObject({ availability: "AVAILABLE", startingStock: 0, calculatedBalance: 10 });
+    expect(ledger.activities.map((activity) => activity.activityType)).toEqual(["ITEM_INITIALIZATION", "RECEIPT"]);
+  });
+
   it("treats a physical count as a verified balance reset, not a movement", () => {
     const ledger = buildInventoryLedger([
       { id: "opening", occurredAt: "2026-09-15T16:00:00.000Z", activityType: "STARTING_STOCK", reference: "OB-1", quantity: 5750 },

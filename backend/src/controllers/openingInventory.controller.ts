@@ -1,5 +1,6 @@
 import type { RequestHandler } from "express";
 import type { PoolClient } from "pg";
+import { z } from "zod";
 import { pool } from "../config/database.js";
 import { env } from "../config/env.js";
 import { getEffectiveBranchId } from "../services/branchScope.js";
@@ -7,10 +8,10 @@ import { writeAudit } from "../services/audit.service.js";
 import { lockBranchInventoryOperation } from "../services/inventoryOperationLock.service.js";
 import { normalizePhysicalCountQuantity } from "../services/physicalCountUnit.service.js";
 import { AppError } from "../utils/appError.js";
-import { openingInventoryBaselineBatchInput, openingInventoryBaselineFilters, startingStockConfirmationInput } from "../validators/inventoryWorkflow.js";
+import { ingredientInitialStockInput, openingInventoryBaselineBatchInput, openingInventoryBaselineFilters, startingStockConfirmationInput } from "../validators/inventoryWorkflow.js";
 
 const baselineSelection = `SELECT ob.id,ob.baseline_no "baselineNo",ob.branch_id "branchId",b.name "branchName",
-  ob.effective_at::text "effectiveAt",ob.designation,ob.notes,ob.created_at::text "createdAt",
+  ob.effective_at::text "effectiveAt",ob.designation,ob.designated_inventory_item_id "designatedInventoryItemId",ob.notes,ob.created_at::text "createdAt",
   concat_ws(' ',u.first_name,u.last_name) "createdBy",
   COALESCE(json_agg(json_build_object('id',obi.id,'inventoryItemId',ii.id,'sku',ii.sku,'name',ii.name,
     'quantity',obi.quantity::float8,'unit',obi.unit) ORDER BY ii.name) FILTER (WHERE obi.id IS NOT NULL),'[]') items
@@ -52,9 +53,9 @@ async function loadInitializationEvidence(db: InventoryDb, branchId: string) {
   return result.rows[0] ?? { baselineCount: 0, balanceCount: 0, countCount: 0, movementCount: 0, usageCount: 0 };
 }
 
-async function loadLatestBaseline(db: InventoryDb, branchId: string) {
+async function loadStartingStockBaseline(db: InventoryDb, branchId: string) {
   const result = await db.query(
-    `${baselineSelection} WHERE ob.branch_id=$1
+    `${baselineSelection} WHERE ob.branch_id=$1 AND ob.designation='STARTING_STOCK'
      GROUP BY ob.id,b.name,u.first_name,u.last_name
      ORDER BY ob.effective_at DESC LIMIT 1`,
     [branchId],
@@ -87,7 +88,7 @@ export const getStartingStockSetup: RequestHandler = async (req, res) => {
   const [items, evidence, baseline] = await Promise.all([
     pool.query(operationalItemsSql, [branchId]),
     loadInitializationEvidence(pool, branchId),
-    loadLatestBaseline(pool, branchId),
+    loadStartingStockBaseline(pool, branchId),
   ]);
   const status = baseline ? "INITIALIZED" : evidence.baselineCount || evidence.balanceCount || evidence.countCount || evidence.movementCount || evidence.usageCount ? "BLOCKED" : "READY";
   res.json({ success: true, data: { setup: {
@@ -155,11 +156,153 @@ export const confirmStartingStock: RequestHandler = async (req, res) => {
       { branchId, itemCount: normalizedItems.length, explicitZeroCount: normalizedItems.filter((item) => item.quantity === 0).length },
       client,
     );
-    const baseline = await loadLatestBaseline(client, branchId);
+    const baseline = await loadStartingStockBaseline(client, branchId);
     await client.query("COMMIT");
     res.status(201).json({ success: true, data: { baseline } });
   } catch (error) {
     await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
+export const confirmIngredientInitialStock: RequestHandler = async (req, res) => {
+  const input = ingredientInitialStockInput.parse(req.body);
+  const inventoryItemId = z.string().uuid().parse(req.params.inventoryItemId);
+  const branchId = getEffectiveBranchId(req.user!);
+  if (!branchId) throw new AppError(403, "BRANCH_NOT_ASSIGNED", "No branch is assigned to this account");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await lockBranchInventoryOperation(client, branchId);
+
+    const target = await client.query<{
+      sku: string;
+      name: string;
+      unit: string;
+      branchName: string;
+      startingStockEstablished: boolean;
+    }>(
+      `SELECT ii.sku,ii.name,ii.unit,b.name "branchName",
+              EXISTS (SELECT 1 FROM inventory_opening_baselines baseline
+                       WHERE baseline.branch_id=b.id AND baseline.designation='STARTING_STOCK') "startingStockEstablished"
+         FROM inventory_items ii CROSS JOIN branches b
+        WHERE ii.id=$1 AND b.id=$2 AND ii.status='ACTIVE' AND b.status='ACTIVE'
+          AND (ii.item_scope='GLOBAL' OR ii.origin_branch_id=b.id)
+        FOR UPDATE OF ii,b`,
+      [inventoryItemId, branchId],
+    );
+    const item = target.rows[0];
+    if (!item) throw new AppError(404, "INVENTORY_ITEM_NOT_FOUND", "Active ingredient not found for this branch");
+    if (!item.startingStockEstablished) {
+      throw new AppError(409, "STARTING_STOCK_REQUIRED", "Confirm the branch Starting Stock before initializing ingredients introduced later.");
+    }
+
+    const history = await client.query<{
+      baseline: boolean;
+      balance: boolean;
+      count: boolean;
+      movement: boolean;
+      consumption: boolean;
+    }>(
+      `SELECT
+        EXISTS (SELECT 1 FROM inventory_opening_baseline_items baseline_item
+          JOIN inventory_opening_baselines baseline ON baseline.id=baseline_item.opening_baseline_id
+          WHERE baseline.branch_id=$1 AND baseline_item.inventory_item_id=$2) baseline,
+        EXISTS (SELECT 1 FROM branch_inventory_balances balance
+          WHERE balance.branch_id=$1 AND balance.inventory_item_id=$2 AND NOT balance.is_test_data) balance,
+        EXISTS (SELECT 1 FROM inventory_count_items count_item
+          JOIN inventory_counts count_record ON count_record.id=count_item.inventory_count_id
+          WHERE count_record.branch_id=$1 AND count_item.inventory_item_id=$2
+            AND NOT count_record.is_test_data AND count_item.voided_at IS NULL) count,
+        EXISTS (SELECT 1 FROM inventory_movements movement
+          WHERE movement.branch_id=$1 AND movement.inventory_item_id=$2 AND NOT movement.is_test_data) movement,
+        EXISTS (SELECT 1 FROM pos_sale_ingredient_usage usage
+          JOIN pos_sale_items sale_item ON sale_item.id=usage.pos_sale_item_id
+          JOIN pos_imports import_record ON import_record.id=sale_item.pos_import_id
+          WHERE import_record.branch_id=$1 AND usage.inventory_item_id=$2
+            AND NOT import_record.is_test_data AND import_record.voided_at IS NULL) consumption`,
+      [branchId, inventoryItemId],
+    );
+    const evidence = history.rows[0]!;
+    if (evidence.baseline || evidence.balance || evidence.count || evidence.movement || evidence.consumption) {
+      throw new AppError(
+        409,
+        "ITEM_INITIALIZATION_RECONCILIATION_REQUIRED",
+        "This ingredient already has inventory activity and cannot be initialized automatically. Review its receipts, adjustments, sales usage, and counts before establishing a verified balance.",
+      );
+    }
+
+    let quantity: number;
+    try {
+      quantity = normalizePhysicalCountQuantity({
+        quantity: input.quantity,
+        enteredUnit: input.enteredUnit,
+        canonicalUnit: item.unit,
+      });
+    } catch (error) {
+      throw new AppError(422, "ITEM_INITIALIZATION_UNIT_INCOMPATIBLE", error instanceof Error ? error.message : "Invalid initial-stock unit");
+    }
+
+    const clock = await client.query<{ today: string; nextDate: string }>(
+      `SELECT (now() AT TIME ZONE 'Asia/Manila')::date::text today,
+              ((now() AT TIME ZONE 'Asia/Manila')::date+1)::text "nextDate"`,
+    );
+    const today = clock.rows[0]!.today;
+    const started = await client.query<{ started: boolean }>(
+      `SELECT (
+        EXISTS (SELECT 1 FROM inventory_counts count_record
+          WHERE count_record.branch_id=$1 AND count_record.count_date=$2::date AND NOT count_record.is_test_data)
+        OR EXISTS (SELECT 1 FROM pos_imports import_record
+          WHERE import_record.branch_id=$1 AND import_record.business_date=$2::date
+            AND NOT import_record.is_test_data AND import_record.voided_at IS NULL)
+        OR EXISTS (SELECT 1 FROM inventory_movements movement
+          WHERE movement.branch_id=$1 AND (movement.occurred_at AT TIME ZONE 'Asia/Manila')::date=$2::date
+            AND NOT movement.is_test_data)
+      ) started`,
+      [branchId, today],
+    );
+    const sameDayEffective = input.preOperationsConfirmed && started.rows[0]?.started !== true;
+    const effectiveBusinessDate = sameDayEffective ? today : clock.rows[0]!.nextDate;
+
+    const created = await client.query<{ id: string }>(
+      `INSERT INTO inventory_opening_baselines
+        (baseline_no,branch_id,effective_at,designation,designated_inventory_item_id,notes,created_by)
+       VALUES (concat('OB-',to_char(now() AT TIME ZONE 'Asia/Manila','YYYY'),'-',
+                      lpad(nextval('inventory_opening_baseline_no_seq')::text,5,'0')),
+               $1,$2::date::timestamp AT TIME ZONE 'Asia/Manila','ITEM_INITIALIZATION',$3,$4,$5)
+       RETURNING id`,
+      [branchId, effectiveBusinessDate, inventoryItemId, `Physically verified initial stock for ${item.sku} at ${item.branchName}.`, req.user!.id],
+    );
+    const baselineId = created.rows[0]!.id;
+    await client.query(
+      `INSERT INTO inventory_opening_baseline_items
+        (opening_baseline_id,inventory_item_id,quantity,unit)
+       VALUES ($1,$2,$3,$4)`,
+      [baselineId, inventoryItemId, quantity, item.unit],
+    );
+    await writeAudit(
+      req.user!,
+      "CONFIRM_INGREDIENT_INITIAL_STOCK",
+      "INVENTORY_OPENING_BASELINE",
+      baselineId,
+      `Confirmed initial stock for ${item.sku} at ${item.branchName}`,
+      { branchId, inventoryItemId, quantity, unit: item.unit, effectiveBusinessDate, sameDayEffective, explicitZero: quantity === 0 },
+      client,
+    );
+    const baseline = await client.query(
+      `${baselineSelection} WHERE ob.id=$1
+       GROUP BY ob.id,b.name,u.first_name,u.last_name`,
+      [baselineId],
+    );
+    await client.query("COMMIT");
+    res.status(201).json({ success: true, data: { baseline: baseline.rows[0], effectiveBusinessDate, sameDayEffective } });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    if ((error as { code?: string }).code === "23505") {
+      throw new AppError(409, "ITEM_INITIALIZATION_EXISTS", "Initial stock has already been established for this ingredient and branch.");
+    }
     throw error;
   } finally {
     client.release();

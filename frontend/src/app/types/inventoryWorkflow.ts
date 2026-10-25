@@ -27,7 +27,8 @@ export interface OpeningInventoryBaseline {
   branchId: string;
   branchName: string;
   effectiveAt: string;
-  designation: "UAT_OPENING" | "STARTING_STOCK";
+  designation: "UAT_OPENING" | "STARTING_STOCK" | "ITEM_INITIALIZATION";
+  designatedInventoryItemId?: string | null;
   notes: string;
   createdAt: string;
   createdBy: string;

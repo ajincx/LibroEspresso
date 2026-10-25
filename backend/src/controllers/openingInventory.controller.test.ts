@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => ({ clientQuery: vi.fn(), poolQuery: vi.fn(), rele
 vi.mock("../config/database.js", () => ({ pool: { connect: vi.fn(async () => ({ query: mocks.clientQuery, release: mocks.release })), query: mocks.poolQuery } }));
 vi.mock("../services/audit.service.js", () => ({ writeAudit: mocks.writeAudit }));
 
-import { confirmStartingStock, createOpeningInventoryBaseline, getStartingStockSetup, listOpeningInventoryBaselines } from "./openingInventory.controller.js";
+import { confirmIngredientInitialStock, confirmStartingStock, createOpeningInventoryBaseline, getStartingStockSetup, listOpeningInventoryBaselines } from "./openingInventory.controller.js";
 
 const ownerId = "00000000-0000-4000-8000-000000000001";
 const branchId = "00000000-0000-4000-8000-000000000002";
@@ -138,5 +138,76 @@ describe("opening inventory baseline workflow", () => {
     await expect(confirmStartingStock({ user: { id: ownerId, role: "BRANCH_MANAGER", branchId }, body: { confirmed: true, items: [{ inventoryItemId: itemId, quantity: 5750, enteredUnit: "g" }] } } as never, {} as never, vi.fn())).rejects.toThrow("audit unavailable");
     expect(mocks.clientQuery).toHaveBeenCalledWith("ROLLBACK");
     expect(mocks.clientQuery).not.toHaveBeenCalledWith("COMMIT");
+  });
+
+  it("confirms explicit-zero ingredient initial stock for today only after pre-operations verification", async () => {
+    mocks.clientQuery.mockImplementation(async (statement: unknown) => {
+      const sql = String(statement);
+      if (["BEGIN", "COMMIT"].includes(sql) || sql.includes("pg_advisory_xact_lock")) return { rows: [] };
+      if (sql.includes('"startingStockEstablished"')) return { rows: [{ sku: "ING-99", name: "Oat Milk", unit: "ml", branchName: "Lipa", startingStockEstablished: true }] };
+      if (sql.includes("EXISTS (SELECT 1 FROM inventory_opening_baseline_items")) return { rows: [{ baseline: false, balance: false, count: false, movement: false, consumption: false }] };
+      if (sql.includes('::date::text today')) return { rows: [{ today: "2026-10-25", nextDate: "2026-10-26" }] };
+      if (sql.includes(") started")) return { rows: [{ started: false }] };
+      if (sql.includes("INSERT INTO inventory_opening_baselines")) return { rows: [{ id: "00000000-0000-4000-8000-000000000009" }] };
+      if (sql.includes("INSERT INTO inventory_opening_baseline_items")) return { rows: [] };
+      if (sql.includes("SELECT ob.id")) return { rows: [{ id: "00000000-0000-4000-8000-000000000009", designation: "ITEM_INITIALIZATION", items: [] }] };
+      throw new Error(`Unexpected query: ${sql}`);
+    });
+    const status = vi.fn().mockReturnThis(); const json = vi.fn();
+    await confirmIngredientInitialStock({ user: { id: ownerId, role: "BRANCH_MANAGER", branchId }, params: { inventoryItemId: itemId }, body: { confirmed: true, quantity: 0, enteredUnit: "L", preOperationsConfirmed: true } } as never, { status, json } as never, vi.fn());
+    const headerInsert = mocks.clientQuery.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO inventory_opening_baselines"));
+    const itemInsert = mocks.clientQuery.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO inventory_opening_baseline_items"));
+    expect(headerInsert?.[1]).toEqual([branchId, "2026-10-25", itemId, expect.any(String), ownerId]);
+    expect(itemInsert?.[1]).toEqual([expect.any(String), itemId, 0, "ml"]);
+    expect(mocks.writeAudit).toHaveBeenCalledWith(expect.anything(), "CONFIRM_INGREDIENT_INITIAL_STOCK", "INVENTORY_OPENING_BASELINE", expect.any(String), expect.any(String), expect.objectContaining({ branchId, inventoryItemId: itemId, explicitZero: true, sameDayEffective: true }), expect.anything());
+    expect(status).toHaveBeenCalledWith(201);
+  });
+
+  it("uses the next business date when branch operations already started", async () => {
+    mocks.clientQuery.mockImplementation(async (statement: unknown) => {
+      const sql = String(statement);
+      if (["BEGIN", "COMMIT"].includes(sql) || sql.includes("pg_advisory_xact_lock")) return { rows: [] };
+      if (sql.includes('"startingStockEstablished"')) return { rows: [{ sku: "ING-99", name: "Oat Milk", unit: "ml", branchName: "Lipa", startingStockEstablished: true }] };
+      if (sql.includes("EXISTS (SELECT 1 FROM inventory_opening_baseline_items")) return { rows: [{ baseline: false, balance: false, count: false, movement: false, consumption: false }] };
+      if (sql.includes('::date::text today')) return { rows: [{ today: "2026-10-25", nextDate: "2026-10-26" }] };
+      if (sql.includes(") started")) return { rows: [{ started: true }] };
+      if (sql.includes("INSERT INTO inventory_opening_baselines")) return { rows: [{ id: "00000000-0000-4000-8000-000000000009" }] };
+      if (sql.includes("INSERT INTO inventory_opening_baseline_items")) return { rows: [] };
+      if (sql.includes("SELECT ob.id")) return { rows: [{ id: "00000000-0000-4000-8000-000000000009", designation: "ITEM_INITIALIZATION", items: [] }] };
+      throw new Error(`Unexpected query: ${sql}`);
+    });
+    const status = vi.fn().mockReturnThis(); const json = vi.fn();
+    await confirmIngredientInitialStock({ user: { id: ownerId, role: "BRANCH_MANAGER", branchId }, params: { inventoryItemId: itemId }, body: { confirmed: true, quantity: 2, enteredUnit: "L", preOperationsConfirmed: true } } as never, { status, json } as never, vi.fn());
+    const headerInsert = mocks.clientQuery.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO inventory_opening_baselines"));
+    const itemInsert = mocks.clientQuery.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO inventory_opening_baseline_items"));
+    expect(headerInsert?.[1]).toEqual([branchId, "2026-10-26", itemId, expect.any(String), ownerId]);
+    expect(itemInsert?.[1]).toEqual([expect.any(String), itemId, 2000, "ml"]);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ effectiveBusinessDate: "2026-10-26", sameDayEffective: false }) }));
+  });
+
+  it("rejects prior authoritative item activity without inserting an initialization", async () => {
+    mocks.clientQuery.mockImplementation(async (statement: unknown) => {
+      const sql = String(statement);
+      if (["BEGIN", "ROLLBACK"].includes(sql) || sql.includes("pg_advisory_xact_lock")) return { rows: [] };
+      if (sql.includes('"startingStockEstablished"')) return { rows: [{ sku: "ING-99", name: "Oat Milk", unit: "ml", branchName: "Lipa", startingStockEstablished: true }] };
+      if (sql.includes("EXISTS (SELECT 1 FROM inventory_opening_baseline_items")) return { rows: [{ baseline: false, balance: false, count: false, movement: true, consumption: false }] };
+      throw new Error(`Unexpected query: ${sql}`);
+    });
+    await expect(confirmIngredientInitialStock({ user: { id: ownerId, role: "BRANCH_MANAGER", branchId }, params: { inventoryItemId: itemId }, body: { confirmed: true, quantity: 2, enteredUnit: "L", preOperationsConfirmed: false } } as never, {} as never, vi.fn())).rejects.toMatchObject({ code: "ITEM_INITIALIZATION_RECONCILIATION_REQUIRED" });
+    expect(mocks.clientQuery.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO inventory_opening_baselines"))).toBe(false);
+    expect(mocks.clientQuery).toHaveBeenCalledWith("ROLLBACK");
+  });
+
+  it("rejects an ingredient that is not available to the Manager's branch", async () => {
+    mocks.clientQuery.mockImplementation(async (statement: unknown) => {
+      const sql = String(statement);
+      if (["BEGIN", "ROLLBACK"].includes(sql) || sql.includes("pg_advisory_xact_lock")) return { rows: [] };
+      if (sql.includes('"startingStockEstablished"')) return { rows: [] };
+      throw new Error(`Unexpected query: ${sql}`);
+    });
+
+    await expect(confirmIngredientInitialStock({ user: { id: ownerId, role: "BRANCH_MANAGER", branchId }, params: { inventoryItemId: itemId }, body: { confirmed: true, quantity: 2, enteredUnit: "L", preOperationsConfirmed: false } } as never, {} as never, vi.fn())).rejects.toMatchObject({ code: "INVENTORY_ITEM_NOT_FOUND" });
+    expect(mocks.clientQuery.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO inventory_opening_baselines"))).toBe(false);
+    expect(mocks.clientQuery).toHaveBeenCalledWith("ROLLBACK");
   });
 });

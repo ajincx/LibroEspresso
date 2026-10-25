@@ -12,6 +12,8 @@ import type { InventoryHealthStatus, InventoryOverviewItem, InventoryStockLedger
 import type { Page, Role } from "../../types/navigation";
 import { formatAppCurrency } from "../../utils/appPreferences";
 import { businessDate } from "../../utils/businessDate";
+import { compatibleUnits, type MeasurementUnit } from "../../utils/units";
+import { toast } from "sonner";
 
 const InventoryCountPage = lazy(() => import("./InventoryCountPage").then((module) => ({ default: module.InventoryCountPage })));
 const supportPages = () => import("./InventorySupportPages");
@@ -26,6 +28,7 @@ const formatLedgerDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value)
   : new Date(value).toLocaleString("en-PH");
 const ledgerLabels: Record<InventoryLedgerActivityType, string> = {
   STARTING_STOCK: "Starting Stock",
+  ITEM_INITIALIZATION: "Ingredient Initial Stock",
   BALANCE_BASELINE: "Inventory Balance Baseline",
   POS_CONSUMPTION: "POS Consumption",
   RECEIPT: "Stock Receipt",
@@ -41,6 +44,7 @@ export function inventoryOverviewColumns(role: Role) {
 }
 
 export const canConfigureBranchReorderPolicy = (role: Role) => role === "manager";
+export const canSetIngredientInitialStock = (role: Role, baselineAvailability: InventoryOverviewItem["baselineAvailability"]) => role === "manager" && baselineAvailability === "NO_BASELINE";
 
 export function subscribeToInventoryDataChanges(
   refresh: () => void,
@@ -71,6 +75,7 @@ export function InventoryOverview({ role, scopeBranchId = "ALL", onDailyStockCou
   const [status, setStatus] = useState<InventoryHealthStatus | "ALL">("ALL");
   const [branchId, setBranchId] = useState(scopeBranchId);
   const [settingsItem, setSettingsItem] = useState<InventoryOverviewItem | null>(null);
+  const [initialStockItem, setInitialStockItem] = useState<InventoryOverviewItem | null>(null);
   const [detailsItem, setDetailsItem] = useState<InventoryOverviewItem | null>(null);
   const [dataRefreshVersion, setDataRefreshVersion] = useState(0);
   const [dailyShortcutLoading, setDailyShortcutLoading] = useState(false);
@@ -138,13 +143,72 @@ export function InventoryOverview({ role, scopeBranchId = "ALL", onDailyStockCou
           {!loading && filtered.length === 0 && <TableEmptyRow colSpan={inventoryOverviewColumns(role).length} title="No inventory records found" subtitle="Try changing the filters or record a physical count." />}
           {!loading && filtered.map((item) => <TR key={`${item.branchId}-${item.inventoryItemId}`}>
             <TD mono muted>{item.sku}</TD><TD><span className="font-medium">{item.name}</span></TD>{role === "owner" && <TD muted>{item.branchName}</TD>}
-            <TD right>{item.baselineAvailability === "NO_BASELINE" ? "No Baseline" : item.systemStock.toLocaleString("en-PH")}</TD><TD muted>{item.unit}</TD><TD right muted>{peso(item.unitCost)}</TD><TD right>{item.baselineAvailability === "NO_BASELINE" ? "—" : peso(item.inventoryValue)}</TD><TD right muted>{item.reorderLevel.toLocaleString("en-PH")}</TD><TD><StatusChip status={chips[item.status]}/></TD><TD muted>{item.lastCountAt ? new Date(item.lastCountAt).toLocaleString("en-PH") : "No count yet"}</TD><TD><div className="flex items-center gap-2 whitespace-nowrap"><Btn variant="outline" size="sm" icon={Eye} onClick={() => setDetailsItem(item)}>View Details</Btn>{canConfigureBranchReorderPolicy(role) && <DropdownMenu><DropdownMenuTrigger asChild><button type="button" aria-label={`More actions for ${item.name}`} className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-muted)]"><MoreHorizontal size={16}/></button></DropdownMenuTrigger><DropdownMenuContent align="end" className="min-w-52 border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text)]"><DropdownMenuItem onSelect={() => setSettingsItem(item)}><SlidersHorizontal/>Reorder settings</DropdownMenuItem></DropdownMenuContent></DropdownMenu>}</div></TD>
+            <TD right>{item.baselineAvailability === "NO_BASELINE" ? "No Baseline" : item.systemStock.toLocaleString("en-PH")}</TD><TD muted>{item.unit}</TD><TD right muted>{peso(item.unitCost)}</TD><TD right>{item.baselineAvailability === "NO_BASELINE" ? "—" : peso(item.inventoryValue)}</TD><TD right muted>{item.reorderLevel.toLocaleString("en-PH")}</TD><TD><StatusChip status={chips[item.status]}/></TD><TD muted>{item.lastCountAt ? new Date(item.lastCountAt).toLocaleString("en-PH") : "No count yet"}</TD><TD><div className="flex items-center gap-2 whitespace-nowrap"><Btn variant="outline" size="sm" icon={Eye} onClick={() => setDetailsItem(item)}>View Details</Btn>{canConfigureBranchReorderPolicy(role) && <DropdownMenu><DropdownMenuTrigger asChild><button type="button" aria-label={`More actions for ${item.name}`} className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-muted)]"><MoreHorizontal size={16}/></button></DropdownMenuTrigger><DropdownMenuContent align="end" className="min-w-52 border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text)]">{canSetIngredientInitialStock(role, item.baselineAvailability) && <DropdownMenuItem onSelect={() => setInitialStockItem(item)}><PackageOpen/>Set Initial Quantity</DropdownMenuItem>}<DropdownMenuItem onSelect={() => setSettingsItem(item)}><SlidersHorizontal/>Reorder settings</DropdownMenuItem></DropdownMenuContent></DropdownMenu>}</div></TD>
           </TR>)}
         </tbody>
       </TableWrapper>
     </TableCard>
     {detailsItem && <StockLedgerModal item={detailsItem} refreshVersion={dataRefreshVersion} onClose={() => setDetailsItem(null)}/>}
     {settingsItem && <BranchInventorySettingsModal item={settingsItem} onClose={() => setSettingsItem(null)} onSaved={() => { setSettingsItem(null); void load(); }}/>}
+    {initialStockItem && (
+      <IngredientInitialStockModal
+        item={initialStockItem}
+        onClose={() => setInitialStockItem(null)}
+        onSaved={() => {
+          setInitialStockItem(null);
+          void load();
+        }}
+      />
+    )}
+  </div>;
+}
+
+function IngredientInitialStockModal({ item, onClose, onSaved }: { item: InventoryOverviewItem; onClose: () => void; onSaved: () => void }) {
+  const availableUnits = compatibleUnits(item.unit);
+  const [quantity, setQuantity] = useState("");
+  const [enteredUnit, setEnteredUnit] = useState<MeasurementUnit>(availableUnits[0] ?? "pc");
+  const [physicallyVerified, setPhysicallyVerified] = useState(false);
+  const [preOperationsConfirmed, setPreOperationsConfirmed] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const save = async () => {
+    const numericQuantity = Number(quantity);
+    if (quantity.trim() === "" || !Number.isFinite(numericQuantity) || numericQuantity < 0) {
+      setError("Enter the physically verified quantity. Enter 0 only when none is on hand.");
+      return;
+    }
+    if (!physicallyVerified) {
+      setError("Confirm that this quantity was physically verified.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const result = await inventoryWorkflowService.confirmIngredientInitialStock(item.inventoryItemId, {
+        quantity: numericQuantity,
+        enteredUnit,
+        preOperationsConfirmed,
+      });
+      toast.success(`Initial stock confirmed for ${result.effectiveBusinessDate}${result.sameDayEffective ? "" : " (next business date)"}`);
+      onSaved();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to confirm initial stock.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>
+    <section role="dialog" aria-modal="true" aria-labelledby="ingredient-initial-stock-title" className="w-full max-w-xl rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-6 shadow-2xl">
+      <div className="flex items-start justify-between gap-4"><div><h2 id="ingredient-initial-stock-title" className="text-lg font-bold">Set Initial Quantity</h2><p className="mt-1 text-sm text-[var(--app-text-muted)]">{item.name} · {item.branchName}</p></div><button type="button" aria-label="Close initial quantity" disabled={saving} onClick={onClose}><X size={18}/></button></div>
+      <div className="mt-5 rounded-xl border border-[var(--app-border)] bg-[var(--app-primary-faint)] p-4 text-sm text-[var(--app-text-muted)]">Physically verify the quantity available at the start of the business date. Enter 0 only when none is on hand. This one-time checkpoint cannot be replaced.</div>
+      <div className="mt-5 grid gap-4 sm:grid-cols-2"><label className="text-sm font-medium">Initial quantity<input className="field mt-1.5 w-full" type="number" min="0" step="any" value={quantity} onChange={(event) => setQuantity(event.target.value)} placeholder="Blank is not entered"/></label><label className="text-sm font-medium">Measurement unit<Select className="mt-1.5 w-full" value={enteredUnit} onChange={(value) => setEnteredUnit(value as MeasurementUnit)} options={availableUnits.map((unit) => ({ value: unit, label: unit === "ml" ? "mL" : unit === "pc" ? "pcs" : unit }))}/></label></div>
+      <label className="mt-5 flex items-start gap-3 text-sm"><input className="mt-1" type="checkbox" checked={physicallyVerified} onChange={(event) => setPhysicallyVerified(event.target.checked)}/><span>I physically verified this quantity for this branch.</span></label>
+      <label className="mt-3 flex items-start gap-3 text-sm"><input className="mt-1" type="checkbox" checked={preOperationsConfirmed} onChange={(event) => setPreOperationsConfirmed(event.target.checked)}/><span>No sales, counts, receipts, or adjustments have started today. Use today only if this is a start-of-day verification; otherwise Libro will use the next business date.</span></label>
+      {error && <p role="alert" className="mt-4 text-sm text-[var(--app-danger)]">{error}</p>}
+      <div className="mt-6 flex justify-end gap-2"><Btn variant="outline" disabled={saving} onClick={onClose}>Cancel</Btn><Btn disabled={saving} onClick={() => void save()}>{saving ? "Confirming…" : "Confirm Initial Quantity"}</Btn></div>
+    </section>
   </div>;
 }
 

@@ -3,6 +3,7 @@ import { convertQuantity } from "./unitConversion.service.js";
 
 export type InventoryLedgerActivityType =
   | "STARTING_STOCK"
+  | "ITEM_INITIALIZATION"
   | "BALANCE_BASELINE"
   | "POS_CONSUMPTION"
   | "RECEIPT"
@@ -33,6 +34,7 @@ export type InventoryLedgerTarget = {
 
 const activityPriority: Record<InventoryLedgerActivityType, number> = {
   STARTING_STOCK: 0,
+  ITEM_INITIALIZATION: 0,
   BALANCE_BASELINE: 0,
   POS_CONSUMPTION: 1,
   RECEIPT: 1,
@@ -54,6 +56,7 @@ export function buildInventoryLedger(rawActivities: RawLedgerActivity[]) {
   });
   const firstBaselineIndex = sortedActivities.findIndex((activity) =>
     activity.activityType === "STARTING_STOCK"
+    || activity.activityType === "ITEM_INITIALIZATION"
       || activity.activityType === "BALANCE_BASELINE"
       || activity.activityType === "PHYSICAL_COUNT",
   );
@@ -61,7 +64,7 @@ export function buildInventoryLedger(rawActivities: RawLedgerActivity[]) {
   let runningBalance = 0;
   const ledger = activities.map<InventoryLedgerActivity>((activity) => {
     let quantityChange: number | null;
-    if (activity.activityType === "STARTING_STOCK" || activity.activityType === "BALANCE_BASELINE") {
+    if (activity.activityType === "STARTING_STOCK" || activity.activityType === "ITEM_INITIALIZATION" || activity.activityType === "BALANCE_BASELINE") {
       runningBalance = activity.quantity;
       quantityChange = activity.quantity;
     } else if (activity.activityType === "PHYSICAL_COUNT") {
@@ -78,7 +81,7 @@ export function buildInventoryLedger(rawActivities: RawLedgerActivity[]) {
   return {
     activities: ledger,
     availability: firstBaselineIndex < 0 ? "NO_BASELINE" as const : "AVAILABLE" as const,
-    startingStock: ledger.find((activity) => activity.activityType === "STARTING_STOCK")?.quantity ?? null,
+    startingStock: ledger.find((activity) => activity.activityType === "STARTING_STOCK" || activity.activityType === "ITEM_INITIALIZATION")?.quantity ?? null,
     operationalPosConsumption: ledger
       .filter((activity) => activity.activityType === "POS_CONSUMPTION")
       .reduce((sum, activity) => sum + activity.quantity, 0),
@@ -95,11 +98,12 @@ export async function loadInventoryLedger(
   inventoryItemId: string,
   canonicalUnit: string,
 ) {
-  const opening = await client.query<{ id: string; occurredAt: string; reference: string; quantity: number }>(
-    `SELECT ob.id,ob.effective_at::text "occurredAt",ob.baseline_no reference,obi.quantity::float8 quantity
+  const opening = await client.query<{ id: string; occurredAt: string; reference: string; quantity: number; designation: string }>(
+    `SELECT ob.id,ob.effective_at::text "occurredAt",ob.baseline_no reference,obi.quantity::float8 quantity,ob.designation
        FROM inventory_opening_baselines ob
        JOIN inventory_opening_baseline_items obi ON obi.opening_baseline_id=ob.id
       WHERE ob.branch_id=$1 AND obi.inventory_item_id=$2
+        AND ob.effective_at<=now()
       ORDER BY ob.effective_at,ob.id
       LIMIT 1`,
     [branchId, inventoryItemId],
@@ -180,7 +184,7 @@ export async function loadInventoryLedger(
   }
 
   return buildInventoryLedger([
-    ...opening.rows.map((row) => ({ ...row, activityType: "STARTING_STOCK" as const })),
+    ...opening.rows.map((row) => ({ ...row, activityType: row.designation === "ITEM_INITIALIZATION" ? "ITEM_INITIALIZATION" as const : "STARTING_STOCK" as const })),
     ...fallback.rows.map((row) => ({ ...row, activityType: "BALANCE_BASELINE" as const })),
     ...posByImport.values(),
     ...movements.rows,
@@ -211,17 +215,19 @@ export async function loadInventoryLedgerBalances(
          coalesce(opening.id::text,balance.id) id,
          coalesce(opening."occurredAt",balance."occurredAt",'1970-01-01T00:00:00.000Z') "occurredAt",
          coalesce(opening."baselineDate",balance."baselineDate",'1970-01-01') "baselineDate",
-         coalesce(opening.reference,balance.reference) reference,
+          coalesce(opening.reference,balance.reference) reference,
          coalesce(opening.quantity,balance.quantity)::float8 quantity,
-         CASE WHEN opening.id IS NOT NULL THEN 'OPENING' ELSE 'BALANCE' END mode
+          CASE WHEN opening.id IS NOT NULL THEN 'OPENING' ELSE 'BALANCE' END mode,
+          opening.designation
        FROM targets target
        LEFT JOIN LATERAL (
          SELECT ob.id,ob.effective_at::text "occurredAt",
            (ob.effective_at AT TIME ZONE 'Asia/Manila')::date::text "baselineDate",
-           ob.baseline_no reference,obi.quantity::float8 quantity
+            ob.baseline_no reference,obi.quantity::float8 quantity,ob.designation
          FROM inventory_opening_baselines ob
          JOIN inventory_opening_baseline_items obi ON obi.opening_baseline_id=ob.id
-         WHERE ob.branch_id=target."branchId" AND obi.inventory_item_id=target."inventoryItemId"
+          WHERE ob.branch_id=target."branchId" AND obi.inventory_item_id=target."inventoryItemId"
+            AND ob.effective_at<=now()
          ORDER BY ob.effective_at,ob.id LIMIT 1
        ) opening ON true
        LEFT JOIN LATERAL (
@@ -242,7 +248,9 @@ export async function loadInventoryLedgerBalances(
        ) balance ON true
      ), activity_rows AS (
        SELECT b."branchId",b."inventoryItemId",b.id,b."occurredAt",b.reference,b.quantity,
-         CASE WHEN b.mode='OPENING' THEN 'STARTING_STOCK' ELSE 'BALANCE_BASELINE' END "activityType",
+          CASE WHEN b.mode='BALANCE' THEN 'BALANCE_BASELINE'
+               WHEN b.designation='ITEM_INITIALIZATION' THEN 'ITEM_INITIALIZATION'
+               ELSE 'STARTING_STOCK' END "activityType",
          NULL::text "sourceUnit",NULL::text "importId",0 "dayPhase"
        FROM baselines b WHERE b.id IS NOT NULL
        UNION ALL

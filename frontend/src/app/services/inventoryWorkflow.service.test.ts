@@ -245,4 +245,16 @@ describe("opening inventory baseline API workflow", () => {
     await expect(inventoryWorkflowService.confirmStartingStock(items)).resolves.toBe(baseline);
     expect(post).toHaveBeenCalledWith("/inventory-opening-baselines/confirm", { confirmed: true, items });
   });
+
+  it("confirms a physically verified Ingredient Initial Stock quantity without inventing zero", async () => {
+    const data = { baseline: { id: "baseline-2", designation: "ITEM_INITIALIZATION", items: [] }, effectiveBusinessDate: "2026-10-26", sameDayEffective: false };
+    const post = vi.spyOn(api, "post").mockResolvedValue({ data: { success: true, data } });
+    await expect(inventoryWorkflowService.confirmIngredientInitialStock("item-1", { quantity: 0, enteredUnit: "L", preOperationsConfirmed: false })).resolves.toBe(data);
+    expect(post).toHaveBeenCalledWith("/inventory-opening-baselines/items/item-1/initialize", {
+      quantity: 0,
+      enteredUnit: "L",
+      preOperationsConfirmed: false,
+      confirmed: true,
+    });
+  });
 });
