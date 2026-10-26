@@ -44,6 +44,7 @@ import {
   branchesAvailableForFormatAssignment,
   destinationPosSourceForQuickAssign,
   quickAssignPosSourceInput,
+  resolveQuickAssignSource,
   suggestPosField,
   suggestedPosFieldMapping,
   summarizeDailyPosStatuses,
@@ -384,6 +385,28 @@ describe("POS System and Mapping Setup UX workflow", () => {
     expect(quickAssignPosSourceInput(branches[1]!,"CANONICAL_CSV","ABC123")).toEqual({sourceCode:"POS_branch2_ABC123",displayName:"Lipa POS",supportedFormat:"CANONICAL_CSV",branchId:"branch-2",status:"INACTIVE"});
     expect(destinationPosSourceForQuickAssign(sources as never,"branch-1","CANONICAL_CSV")).toBe(sources[0]);
     expect(destinationPosSourceForQuickAssign(sources as never,"branch-2","CANONICAL_CSV")).toBeNull();
+  });
+
+  it("resolves one or identical approved mapping sets without an arbitrary branch choice",()=>{
+    const sourceA={id:"source-a",branchId:"branch-a",hasActiveMappings:true} as never;
+    const sourceB={id:"source-b",branchId:"branch-b",hasActiveMappings:true} as never;
+    const mapping=(id:string,branchId:string|null,variantId="variant-1")=>({id,posSourceId:"source",branchId,sourceProductName:"Café Latte",sourceProductCode:"LATTE",menuItemVariantId:variantId,status:"ACTIVE",reviewStatus:"APPROVED"}) as never;
+    expect(resolveQuickAssignSource([sourceA],{"source-a":[mapping("mapping-a",null)]})).toMatchObject({status:"RESOLVED",source:sourceA});
+    expect(resolveQuickAssignSource([sourceB,sourceA],{
+      "source-a":[mapping("mapping-a",null)],
+      "source-b":[mapping("mapping-b",null)],
+    })).toMatchObject({status:"RESOLVED",source:sourceA,sources:[sourceB,sourceA]});
+  });
+
+  it("requires an explicit source only when approved mapping sets conflict",()=>{
+    const sourceA={id:"source-a",branchId:"branch-a",hasActiveMappings:true} as never;
+    const sourceB={id:"source-b",branchId:"branch-b",hasActiveMappings:true} as never;
+    const mapping=(id:string,variantId:string)=>({id,posSourceId:"source",branchId:null,sourceProductName:"Latte",sourceProductCode:"LATTE",menuItemVariantId:variantId,status:"ACTIVE",reviewStatus:"APPROVED"}) as never;
+    expect(resolveQuickAssignSource([sourceA,sourceB],{
+      "source-a":[mapping("mapping-a","variant-a")],
+      "source-b":[mapping("mapping-b","variant-b")],
+    })).toEqual({status:"CONFLICT",sources:[sourceA,sourceB]});
+    expect(resolveQuickAssignSource([sourceA],{"source-a":[]})).toEqual({status:"NONE",sources:[]});
   });
 
   it("confirms the exact pending mapping count before bulk approval",()=>{

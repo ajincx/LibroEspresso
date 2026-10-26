@@ -4,12 +4,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks=vi.hoisted(()=>({
   posSources:vi.fn(),posFormatSetupRequests:vi.fn(),posMappings:vi.fn(),configure:vi.fn(),reject:vi.fn(),
+  createPosSource:vi.fn(),copyPosMappings:vi.fn(),updatePosSource:vi.fn(),
   menuProducts:vi.fn(),branches:vi.fn(),
 }));
 
 vi.mock("../../services/inventoryWorkflow.service",()=>({inventoryWorkflowService:{
   posSources:mocks.posSources,posFormatSetupRequests:mocks.posFormatSetupRequests,posMappings:mocks.posMappings,
-  configurePosFormatRequest:mocks.configure,rejectPosFormatRequest:mocks.reject,
+  configurePosFormatRequest:mocks.configure,rejectPosFormatRequest:mocks.reject,createPosSource:mocks.createPosSource,
+  copyPosMappings:mocks.copyPosMappings,updatePosSource:mocks.updatePosSource,
 }}));
 vi.mock("../../services/masterData.service",()=>({masterDataService:{menuProducts:mocks.menuProducts,branches:mocks.branches}}));
 vi.mock("sonner",()=>({toast:{success:vi.fn(),error:vi.fn()}}));
@@ -59,6 +61,9 @@ describe("Pending POS format request workflow",()=>{
     mocks.branches.mockResolvedValue([]);
     mocks.configure.mockResolvedValue({requestId:"request-1",status:"COMPLETED",imported:true});
     mocks.reject.mockResolvedValue({requestId:"request-2",status:"REJECTED"});
+    mocks.updatePosSource.mockResolvedValue(sources[0]);
+    mocks.createPosSource.mockResolvedValue({...sources[0],id:"target-source",branchId:"target-branch",branchName:"Target Branch",displayName:"Target POS"});
+    mocks.copyPosMappings.mockResolvedValue({copied:1,skipped:0,incompatible:0,eligible:1,incompatibleMappings:[]});
   });
 
   it("opens the matching request, preserves isolated drafts, and configures only the selected request",async()=>{
@@ -105,5 +110,29 @@ describe("Pending POS format request workflow",()=>{
     await act(async()=>button(root,"Reject Request",1).props.onClick());
     expect(mocks.reject).toHaveBeenCalledWith("request-2","Incorrect export layout.");
     expect(nodeText(root)).toContain("Pending Format Requests");
+  });
+
+  it("keeps format and branch controls together and manages a selected POS source",async()=>{
+    let renderer:ReactTestRenderer;
+    await act(async()=>{renderer=create(<PosMappingSetup/>);});
+    const root=renderer!.root;
+    await act(async()=>button(root,"Open POS Setup").props.onClick());
+    await act(async()=>select(root,"Select File Format").props.onChange({target:{value:"CUSTOM_TABULAR_XLSX"}}));
+
+    const controlRow=root.findAllByType("div").find(candidate=>String(candidate.props.className).includes("md:grid-cols-2")&&candidate.findAllByType("select").some(item=>item.props["aria-label"]==="Select File Format"));
+    expect(controlRow?.findAllByType("select").map(item=>item.props["aria-label"])).toEqual(expect.arrayContaining(["Select File Format","Assign to Branch"]));
+    expect(nodeText(root)).toContain("Branches Using This File Format");
+    expect(nodeText(root)).toContain("INACTIVE");
+    expect(nodeText(root)).not.toContain("Copy Product Mappings From");
+
+    await act(async()=>button(root,"View / Manage POS",0).props.onClick());
+    const nameInput=root.findAllByType("input").find(candidate=>candidate.props["aria-label"]==="Edit POS System Name");
+    if(!nameInput)throw new Error("POS name editor was not rendered");
+    await act(async()=>nameInput.props.onChange({target:{value:"Gulod Counter POS"}}));
+    await act(async()=>button(root,"Save Name").props.onClick());
+    expect(mocks.updatePosSource).toHaveBeenCalledWith("source-request-1",{displayName:"Gulod Counter POS"});
+    expect(nodeText(root)).toContain("Assigned Branch:");
+    expect(nodeText(root)).toContain("Source Status:");
+    expect(nodeText(root)).toContain("Format verification has not been recorded.");
   });
 });

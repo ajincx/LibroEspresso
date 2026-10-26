@@ -348,6 +348,31 @@ export const quickAssignPosSourceInput=(branch:Pick<Branch,"id"|"name">,format:P
   status:"INACTIVE" as const,
 });
 
+const quickAssignMappingSignature=(mappings:PosMapping[])=>JSON.stringify(mappings
+  .filter(mapping=>mapping.status==="ACTIVE"&&mapping.reviewStatus==="APPROVED")
+  .map(mapping=>[
+    mapping.branchId?"BRANCH":"GLOBAL",
+    mapping.sourceProductCode?.trim().toLowerCase()??`name:${mapping.sourceProductName.trim().toLowerCase().replace(/\s+/g," ")}`,
+    mapping.menuItemVariantId,
+  ])
+  .sort((left,right)=>JSON.stringify(left).localeCompare(JSON.stringify(right))));
+
+export type QuickAssignSourceResolution =
+  | {status:"NONE";sources:[]}
+  | {status:"RESOLVED";source:PosSource;sources:PosSource[]}
+  | {status:"CONFLICT";sources:PosSource[]};
+
+export const resolveQuickAssignSource=(
+  sources:PosSource[],
+  mappingsBySource:Record<string,PosMapping[]>,
+):QuickAssignSourceResolution=>{
+  const eligible=sources.filter(source=>source.hasActiveMappings&&quickAssignMappingSignature(mappingsBySource[source.id]??[])!=="[]");
+  if(eligible.length===0)return {status:"NONE",sources:[]};
+  const signatures=new Set(eligible.map(source=>quickAssignMappingSignature(mappingsBySource[source.id]??[])));
+  if(signatures.size>1)return {status:"CONFLICT",sources:eligible};
+  return {status:"RESOLVED",source:[...eligible].sort((left,right)=>left.id.localeCompare(right.id))[0]!,sources:eligible};
+};
+
 export function ApproveAllMappingsDialog({count,busy,onCancel,onConfirm}:{count:number;busy:boolean;onCancel:()=>void;onConfirm:()=>void}) {
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-labelledby="approve-all-mappings-title">
     <div className="w-full max-w-md rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-6 shadow-2xl">
@@ -434,6 +459,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "", initialF
   const [sourceBranchId, setSourceBranchId] = useState("");
   const [assignBranchId, setAssignBranchId] = useState("");
   const [copyFromSourceId,setCopyFromSourceId]=useState("");
+  const [quickAssignConflictSources,setQuickAssignConflictSources]=useState<PosSource[]>([]);
   const [quickAssignResult,setQuickAssignResult]=useState<null|{copied:number;skipped:number;incompatible:number;incompatibleMappings:Array<{sourceProductName:string;sourceProductCode:string|null;reason:string}>;targetSourceId:string}>(null);
   const [approveAllOpen,setApproveAllOpen]=useState(false);
   const [confirmQuickAssignOpen,setConfirmQuickAssignOpen]=useState(false);
@@ -447,6 +473,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "", initialF
   const [sourceFormatConfirmed, setSourceFormatConfirmed] = useState(false);
   const [mappingInspection,setMappingInspection]=useState<PosHeaderInspection|null>(null);
   const [mappingFile,setMappingFile]=useState<File|null>(null);
+  const [managedSourceName,setManagedSourceName]=useState("");
   const [fieldMapping,setFieldMapping]=useState<PosFieldMapping>({productName:"",quantitySold:"",transactionId:"",businessDate:"",status:"",unitPrice:"",salesAmount:""});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -514,6 +541,36 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "", initialF
     setBusy(true);setError("");
     try{const inspected=await inventoryWorkflowService.inspectPosHeaders(selectedSource.id,mappingFile);setMappingInspection(inspected);setFieldMapping(inspected.mapping??{productName:"",quantitySold:"",transactionId:"",businessDate:"",status:"",unitPrice:"",salesAmount:""});}
     catch(reason){setError(reason instanceof Error?reason.message:"Unable to inspect spreadsheet headers.");}
+    finally{setBusy(false);}
+  };
+  useEffect(()=>{setManagedSourceName(selectedSource?.displayName??"");},[selectedSource?.id,selectedSource?.displayName]);
+
+  const quickAssign=async()=>{
+    if(!selectedSetupFormat)return;
+    const branch=branches.find(candidate=>candidate.id===assignBranchId);
+    if(!branch){setError("Select a valid destination branch.");return;}
+    setBusy(true);setError("");setQuickAssignResult(null);
+    try{
+      const eligibleSources=sameFormatSources.filter(source=>source.branchId!==branch.id&&source.hasActiveMappings);
+      let source=quickAssignSource;
+      if(!source){
+        const mappingEntries=await Promise.all(eligibleSources.map(async candidate=>[candidate.id,await inventoryWorkflowService.posMappings(candidate.id,"APPROVED")] as const));
+        const resolution=resolveQuickAssignSource(eligibleSources,Object.fromEntries(mappingEntries));
+        if(resolution.status==="NONE")throw new Error("No approved product mappings are available for this file format. Complete product mapping setup first.");
+        if(resolution.status==="CONFLICT"){
+          setQuickAssignConflictSources(resolution.sources);
+          throw new Error("Approved mappings differ between POS sources using this format. Select the intended source to continue safely.");
+        }
+        source=resolution.source;
+      }
+      let target=destinationPosSourceForQuickAssign(sources,branch.id,selectedSetupFormat);
+      if(!target)target=await inventoryWorkflowService.createPosSource(quickAssignPosSourceInput(branch,selectedSetupFormat,Date.now().toString(36).toUpperCase()));
+      const result=await inventoryWorkflowService.copyPosMappings(source.id,target.id);
+      setQuickAssignResult({...result,targetSourceId:target.id});setSourceId(target.id);setMappingFilter("PENDING");setQuickAssignConflictSources([]);setCopyFromSourceId("");
+      setFormatSetupResult(`${branch.name} was assigned to ${formatPosSourceFormatName(selectedSetupFormat)}. Copied mappings require Owner approval.`);
+      await refresh();
+      setMappings(await inventoryWorkflowService.posMappings(target.id,"PENDING"));
+    }catch(reason){setError(reason instanceof Error?reason.message:"Unable to assign this POS format.");}
     finally{setBusy(false);}
   };
 
@@ -599,26 +656,17 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "", initialF
           Tell Libro how to read the columns from this POS.
         </p>
 
-        <div className="mt-4 flex flex-wrap items-center gap-3">
-          <label className="text-xs font-semibold text-[var(--app-text-muted)]">Select File Format:</label>
-          <Select aria-label="Select File Format" className="w-full min-w-0 sm:w-auto sm:min-w-[280px]" value={selectedSetupFormat} onChange={value => { setSelectedSetupFormat(value as PosSource["supportedFormat"]|""); setSourceId(""); setSelectedFormatRequest(null); setFormatSetupResult(""); setSourceFormatConfirmed(false); setAssignBranchId(""); setMappingInspection(null); setMappingFile(null); }} options={[{value:"",label:"Select file format"},...POS_SOURCE_FORMAT_OPTIONS]}/>
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <div><label className="mb-1 block text-xs font-semibold text-[var(--app-text-muted)]">Select File Format</label><Select aria-label="Select File Format" value={selectedSetupFormat} onChange={value => { setSelectedSetupFormat(value as PosSource["supportedFormat"]|""); setSourceId(""); setSelectedFormatRequest(null); setFormatSetupResult(""); setSourceFormatConfirmed(false); setAssignBranchId(""); setCopyFromSourceId(""); setQuickAssignConflictSources([]); setQuickAssignResult(null); setMappingInspection(null); setMappingFile(null); }} options={[{value:"",label:"Select file format"},...POS_SOURCE_FORMAT_OPTIONS]}/></div>
+          <div><label className="mb-1 block text-xs font-semibold text-[var(--app-text-muted)]">Assign to Branch</label><Select aria-label="Assign to Branch" value={assignBranchId} onChange={value=>{setAssignBranchId(value);setCopyFromSourceId("");setQuickAssignConflictSources([]);setQuickAssignResult(null);}} options={[{value:"",label:"Select destination branch"},...(selectedSetupFormat?branchesAvailableForFormatAssignment(branches,sources,selectedSetupFormat):branches).map(branch=>({value:branch.id,label:branch.name}))]}/></div>
         </div>
 
         {selectedSetupFormat&&<section aria-label="Branches using selected POS format" className="mt-4 rounded-xl border p-4" style={{borderColor:C.border}}>
-          <div><h5 className="flex items-center gap-1.5 text-sm font-semibold"><Building2 size={15} className="text-blue-600"/>Branches Using This File Format</h5><p className="mt-1 text-xs text-[var(--app-text-muted)]">Select an approved source mapping set and a destination branch. Quick Assign never activates the destination or approves copied mappings.</p></div>
-          <div className="mt-3 flex flex-wrap gap-2">{sameFormatSources.length===0?<p className="text-xs text-[var(--app-text-muted)]">No branches are assigned to this file format.</p>:sameFormatSources.map(source=><button type="button" key={source.id} onClick={()=>{setSourceId(source.id);setSelectedFormatRequest(null);setFormatSetupResult("");setSourceFormatConfirmed(false);setMappingInspection(null);setMappingFile(null);}} className="inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-xs transition-colors hover:bg-[var(--app-surface-muted)]" style={{borderColor:source.id===sourceId?C.maroon:C.border}}><CheckCircle size={13} className={posSourceReadiness(source)==="Ready"?"text-emerald-600":"text-amber-500"}/><span><strong className="block">{source.branchName}</strong><span className="text-[var(--app-text-muted)]">{source.displayName} · {posSourceReadiness(source)}</span></span></button>)}</div>
-          <div className="mt-4 grid gap-3 md:grid-cols-[1fr_1fr_auto]">
-            <div><label className="mb-1 block text-xs font-semibold text-[var(--app-text-muted)]">Copy Product Mappings From</label><Select small aria-label="Copy Product Mappings From" value={copyFromSourceId} onChange={value=>{setCopyFromSourceId(value);setAssignBranchId("");setQuickAssignResult(null);}} options={[{value:"",label:"Select source branch / POS"},...sameFormatSources.filter(source=>source.hasActiveMappings).map(source=>({value:source.id,label:`${source.branchName} — ${source.displayName}`}))]}/></div>
-            <div><label className="mb-1 block text-xs font-semibold text-[var(--app-text-muted)]">Assign to Branch</label><Select small aria-label="Assign to Branch" value={assignBranchId} onChange={value=>{setAssignBranchId(value);setQuickAssignResult(null);}} options={[{value:"",label:"Select destination branch"},...branches.filter(branch=>branch.id!==quickAssignSource?.branchId).map(branch=>({value:branch.id,label:branch.name}))]}/></div>
-            <div className="flex items-end"><Btn size="sm" disabled={busy||!quickAssignSource||!assignBranchId} onClick={()=>void run(async()=>{
-              if(!quickAssignSource)throw new Error("Select a source POS with approved mappings.");
-              const branch=branches.find(candidate=>candidate.id===assignBranchId);
-              if(!branch)throw new Error("Select a valid destination branch.");
-              let target=destinationPosSourceForQuickAssign(sources,branch.id,selectedSetupFormat);
-              if(!target)target=await inventoryWorkflowService.createPosSource(quickAssignPosSourceInput(branch,selectedSetupFormat,Date.now().toString(36).toUpperCase()));
-              const result=await inventoryWorkflowService.copyPosMappings(quickAssignSource.id,target.id);
-              setQuickAssignResult({...result,targetSourceId:target.id});setSourceId(target.id);setMappingFilter("PENDING");setFormatSetupResult(`${branch.name} was assigned to ${formatPosSourceFormatName(selectedSetupFormat)}. Copied mappings require Owner approval.`);
-            })}>Quick Assign</Btn></div>
+          <div><h5 className="flex items-center gap-1.5 text-sm font-semibold"><Building2 size={15} className="text-blue-600"/>Branches Using This File Format</h5><p className="mt-1 text-xs text-[var(--app-text-muted)]">Review each branch's POS source and readiness. Quick Assign copies approved compatible mappings into a pending review and never activates them automatically.</p></div>
+          <div className="mt-3 grid gap-2 md:grid-cols-2">{sameFormatSources.length===0?<p className="text-xs text-[var(--app-text-muted)]">No branches are assigned to this file format.</p>:sameFormatSources.map(source=><article key={source.id} className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-xs" style={{borderColor:source.id===sourceId?C.maroon:C.border}}><span className="inline-flex min-w-0 items-center gap-2"><CheckCircle size={13} className={posSourceReadiness(source)==="Ready"?"shrink-0 text-emerald-600":"shrink-0 text-amber-500"}/><span className="min-w-0"><strong className="block truncate">{source.branchName}</strong><span className="block truncate text-[var(--app-text-muted)]">{source.displayName} · {source.status} · {posSourceReadiness(source)}</span></span></span><Btn size="sm" variant="outline" onClick={()=>{setSourceId(source.id);setSelectedFormatRequest(null);setFormatSetupResult("");setSourceFormatConfirmed(false);setMappingInspection(null);setMappingFile(null);}}>View / Manage POS</Btn></article>)}</div>
+          <div className="mt-4 flex flex-wrap items-end gap-3">
+            {quickAssignConflictSources.length>0&&<div className="min-w-[280px] flex-1"><label className="mb-1 block text-xs font-semibold text-[var(--app-warning)]">Choose mapping source to resolve conflict</label><Select small aria-label="Choose Mapping Source" value={copyFromSourceId} onChange={value=>{setCopyFromSourceId(value);setQuickAssignResult(null);}} options={[{value:"",label:"Select the intended POS source"},...quickAssignConflictSources.map(source=>({value:source.id,label:`${source.branchName} — ${source.displayName}`}))]}/></div>}
+            <Btn size="sm" disabled={busy||!assignBranchId||(quickAssignConflictSources.length>0&&!copyFromSourceId)} onClick={()=>void quickAssign()}>Quick Assign</Btn>
           </div>
           {quickAssignResult&&<div role="status" className="mt-4 rounded-xl border p-3" style={{borderColor:C.border}}><div className="mb-3 text-xs"><strong className="block text-sm">Review Quick Assign</strong><span className="text-[var(--app-text-muted)]">Destination: {selectedSource?.branchName??"Selected branch"} · Format: {formatPosSourceFormatName(selectedSetupFormat)}</span></div><div className="grid grid-cols-3 gap-2 text-center text-xs"><div><strong className="block text-lg">{quickAssignResult.copied}</strong>Mappings Copied</div><div><strong className="block text-lg">{quickAssignResult.skipped}</strong>Mappings Skipped</div><div><strong className="block text-lg">{pendingMappingCount}</strong>Pending Approval</div></div>{quickAssignResult.incompatible>0&&<div className="mt-3 rounded-lg bg-[var(--app-warning-bg)] p-2 text-xs"><strong>{quickAssignResult.incompatible} incompatible mapping{quickAssignResult.incompatible===1?"":"s"} require manual correction.</strong><ul className="mt-1 list-disc pl-5">{quickAssignResult.incompatibleMappings.map((item,index)=><li key={`${item.sourceProductCode??item.sourceProductName}-${index}`}>{item.sourceProductName}{item.sourceProductCode?` (${item.sourceProductCode})`:""}: {item.reason}</li>)}</ul></div>}<div className="mt-4 flex justify-end"><Btn disabled={busy||pendingMappingCount===0} onClick={()=>setConfirmQuickAssignOpen(true)}>Confirm &amp; Activate</Btn></div></div>}
         </section>}
@@ -635,13 +683,18 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "", initialF
                 <div>
                   <h5 className="font-bold text-[var(--app-text)] flex items-center gap-2">
                     <ShieldCheck size={16} className="text-emerald-600" />
-                    POS System Status
+                    Manage POS Source
                   </h5>
-                  <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-xs sm:grid-cols-4">
-                    <div><span className="text-[var(--app-text-muted)]">POS System Name:</span> <strong className="block text-[var(--app-text)]">{selectedSource.displayName}</strong></div>
+                  <div className="mt-3 flex flex-wrap items-end gap-2">
+                    <label className="min-w-[240px] flex-1 text-xs font-semibold text-[var(--app-text-muted)]">POS System Name<input aria-label="Edit POS System Name" value={managedSourceName} maxLength={160} onChange={event=>setManagedSourceName(event.target.value)} className="mt-1 w-full rounded-lg border bg-[var(--app-surface)] p-2 text-[var(--app-text)]"/></label>
+                    <Btn size="sm" variant="outline" disabled={busy||managedSourceName.trim().length<2||managedSourceName.trim()===selectedSource.displayName} onClick={()=>void run(()=>inventoryWorkflowService.updatePosSource(selectedSource.id,{displayName:managedSourceName.trim()}))}>Save Name</Btn>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-xs sm:grid-cols-3">
                     <div><span className="text-[var(--app-text-muted)]">Format:</span> <strong className="block text-[var(--app-text)]">{formatPosSourceFormatName(selectedSource.supportedFormat)}</strong></div>
                     <div><span className="text-[var(--app-text-muted)]">Assigned Branch:</span> <strong className="block text-[var(--app-text)]">{selectedSource.branchName}</strong></div>
+                    <div><span className="text-[var(--app-text-muted)]">Source Status:</span> <strong className="block text-[var(--app-text)]">{selectedSource.status}</strong></div>
                   </div>
+                  <p className="mt-2 text-xs text-[var(--app-text-muted)]">{selectedSource.formatVerifiedAt?`Format verified${selectedSource.formatVerifiedByName?` by ${selectedSource.formatVerifiedByName}`:""} on ${formatAppDate(selectedSource.formatVerifiedAt)}.`:"Format verification has not been recorded."}</p>
                 </div>
                 <StatusChip status={posSourceReadiness(selectedSource)}/>
               </div>
