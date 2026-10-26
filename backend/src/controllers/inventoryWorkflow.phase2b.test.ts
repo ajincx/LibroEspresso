@@ -41,8 +41,8 @@ describe("Phase 2B shrinkage aggregates", () => {
     expect(aggregateSql).not.toContain("LIMIT");
     expect(aggregateSql).toContain("sr.branch_id=$1");
     expect(aggregateSql).toContain("sr.status=$2");
-    expect(aggregateSql).toContain("sr.detected_at >= $3::date");
-    expect(aggregateSql).toContain("sr.detected_at < ($4::date + interval '1 day')");
+    expect(aggregateSql).toContain("ic.count_date >= $3::date");
+    expect(aggregateSql).toContain("ic.count_date <= $4::date");
     expect(aggregateParams).toEqual([managerBranchId, "DETECTED", "2026-10-01", "2026-10-20"]);
     expect(json).toHaveBeenCalledWith({
       success: true,
@@ -95,6 +95,19 @@ describe("Phase 2B variance visibility", () => {
     expect(sql).toContain('settings.variance_tolerance_quantity');
     expect(sql).toContain('settings.variance_tolerance_percent');
     expect(sql).toContain('"requiresInvestigation"');
+  });
+
+  it("returns authoritative count and count-item identifiers for anomaly traceability", async () => {
+    mocks.query.mockImplementation(async (sql?: string) => {
+      if (typeof sql === "string" && sql.includes("COALESCE(sum(CASE")) return { rows: [{ detectedValue: 0, detected: 0, pending: 0, spoilage: 0, wastage: 0, pilferage: 0 }] };
+      return { rows: [] };
+    });
+    await listShrinkageReports({ query: {}, user: manager } as never, { json: vi.fn() } as never, vi.fn());
+
+    const [sql] = mocks.query.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain('ic.id "inventoryCountId"');
+    expect(sql).toContain('ic.count_no "countNo"');
+    expect(sql).toContain('ici.id "inventoryCountItemId"');
   });
 
   it("surfaces material historical shortages with no authoritative investigation without creating records", async () => {

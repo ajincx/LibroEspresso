@@ -2393,7 +2393,8 @@ const shrinkageSelection = `SELECT sr.id,sr.report_no "reportNo",sr.status,sr.cl
   CASE WHEN sr.actual_quantity>sr.expected_quantity THEN abs(sr.variance_value)
        WHEN sr.actual_quantity<sr.expected_quantity THEN -abs(sr.variance_value) ELSE 0 END::float8 "varianceValue",sr.unit,
   CASE WHEN sr.expected_quantity > 0 THEN (((sr.actual_quantity-sr.expected_quantity) / sr.expected_quantity) * 100)::float8 ELSE NULL END "variancePercentage",
-  ic.count_date::text "countDate",sr.detected_at "detectedAt",sr.investigated_at "investigatedAt",sr.submitted_at "submittedAt",sr.reviewed_at "reviewedAt",sr.archived_at "archivedAt",b.id "branchId",b.name "branchName",ii.id "inventoryItemId",ii.sku,ii.name "inventoryItemName",
+  ic.id "inventoryCountId",ic.count_no "countNo",ici.id "inventoryCountItemId",ic.count_date::text "countDate",
+  sr.detected_at "detectedAt",sr.investigated_at "investigatedAt",sr.submitted_at "submittedAt",sr.reviewed_at "reviewedAt",sr.archived_at "archivedAt",b.id "branchId",b.name "branchName",ii.id "inventoryItemId",ii.sku,ii.name "inventoryItemName",
   mi.id "menuItemId",mi.name "menuItemName",concat(su.first_name,' ',su.last_name) "managerName",concat(ru.first_name,' ',ru.last_name) "reviewedByName"
   FROM shrinkage_reports sr JOIN branches b ON b.id=sr.branch_id JOIN inventory_items ii ON ii.id=sr.inventory_item_id
   JOIN inventory_count_items ici ON ici.id=sr.inventory_count_item_id JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
@@ -2426,11 +2427,11 @@ export const listShrinkageReports: RequestHandler = async (req, res) => {
   }
   if (filters.startDate) {
     values.push(filters.startDate);
-    clauses.push(`sr.detected_at >= $${values.length}::date`);
+    clauses.push(`ic.count_date >= $${values.length}::date`);
   }
   if (filters.endDate) {
     values.push(filters.endDate);
-    clauses.push(`sr.detected_at < ($${values.length}::date + interval '1 day')`);
+    clauses.push(`ic.count_date <= $${values.length}::date`);
   }
   if (filters.incidentType) {
     values.push(filters.incidentType);

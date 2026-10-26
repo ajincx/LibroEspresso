@@ -184,7 +184,7 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
       }
     >
       <TableWrapper minWidth={900}>
-        <THead cols={["Case No.", "Detected", ...(owner ? ["Branch"] : []), "Inventory Item", "Classification", "System Variance", "Status", "Investigated", "Action"]} />
+        <THead cols={["Case No.", "Count Date", ...(owner ? ["Branch"] : []), "Inventory Item", "Classification", "System Variance", "Status", "Investigated", "Action"]} />
         <tbody>
           {loading ? (
             <TableLoadingRow colSpan={owner ? 9 : 8} label="Loading system-detected anomalies…" />
@@ -196,7 +196,7 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
             reports.map((report) => (
               <TR key={report.id}>
                 <TD mono><span className="font-semibold text-[var(--app-primary)]">{report.reportNo}</span></TD>
-                <TD muted>{formatDate(report.detectedAt)}</TD>
+                <TD muted><div>{formatAppDate(report.countDate)}</div><div className="mt-0.5 text-[10px] font-mono">{report.countNo}</div></TD>
                 {owner && <TD muted><span className="font-medium text-[var(--app-text)]">{report.branchName}</span></TD>}
                 <TD>
                   <div className="font-semibold text-sm text-[var(--app-text)]">{report.inventoryItemName}</div>
@@ -229,7 +229,7 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
     <ShrinkageIncidentReports owner={owner} branchId={branchId} />
 
     {selected && <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.5)" }}><div role="dialog" aria-modal="true" aria-labelledby="shrinkage-investigation-title" className="w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6 rounded-2xl border" style={{ background: "var(--app-surface)", borderColor: "var(--app-border)" }}>
-      <div className="flex justify-between mb-5"><div><h2 id="shrinkage-investigation-title" className="text-lg font-bold">{selected.reportNo}</h2><p className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>{selected.branchName} · {selected.inventoryItemName}</p>{selected.archivedAt && <p className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>Archived on {formatDate(selected.archivedAt)}</p>}</div><button aria-label="Close shrinkage investigation" onClick={() => setSelected(null)}><X size={18} /></button></div>
+      <div className="flex justify-between mb-5"><div><h2 id="shrinkage-investigation-title" className="text-lg font-bold">{selected.reportNo}</h2><p className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>{selected.branchName} · {selected.inventoryItemName} · {selected.countNo}</p>{selected.archivedAt && <p className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>Archived on {formatDate(selected.archivedAt)}</p>}</div><button aria-label="Close shrinkage investigation" onClick={() => setSelected(null)}><X size={18} /></button></div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">{[["Expected",`${selected.expectedQuantity.toFixed(2)}${selected.unit}`],["Actual",`${selected.actualQuantity.toFixed(2)}${selected.unit}`],["Variance",`${selected.varianceQuantity > 0 ? "+" : ""}${selected.varianceQuantity.toFixed(2)}${selected.unit}`],["Variance Value",`${selected.varianceValue > 0 ? "+" : ""}₱${selected.varianceValue.toFixed(2)}`]].map(([label,value]) => <div key={label} className="p-3 rounded-xl" style={{ background: "var(--app-bg)" }}><div className="text-[10px] uppercase" style={{ color: "var(--app-text-faint)" }}>{label}</div><div className="font-bold mt-1">{value}</div></div>)}</div>
       <div className="p-3 rounded-xl mb-4 flex gap-3" style={{ background: "var(--app-warning-bg)" }}><AlertTriangle size={18} style={{ color: "var(--app-warning)" }} /><p className="text-xs" style={{ color: "var(--app-text-muted)" }}>These quantities were calculated from connected inventory records and cannot be edited in the investigation.</p></div>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4"><Detail label="Variance Percentage" value={selected.variancePercentage == null ? "Not available" : `${selected.variancePercentage.toFixed(2)}%`} /><Detail label="Count Date" value={formatDate(selected.countDate)} /><Detail label="Tolerance Status" value="Above tolerance — investigation required" /></div>

@@ -384,6 +384,9 @@ export interface ShrinkageReport {
   id: string;
   archivedAt?: string | null;
   reportNo: string;
+  inventoryCountId: string;
+  inventoryCountItemId: string;
+  countNo: string;
   branchId: string;
   branchName: string;
   inventoryItemId: string;
