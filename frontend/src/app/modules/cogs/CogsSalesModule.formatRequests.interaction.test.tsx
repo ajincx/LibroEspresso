@@ -112,15 +112,17 @@ describe("Pending POS format request workflow",()=>{
     expect(nodeText(root)).toContain("Pending Format Requests");
   });
 
-  it("keeps format and branch controls together and manages a selected POS source",async()=>{
+  it("groups branch assignment with Quick Assign and manages a selected POS source",async()=>{
     let renderer:ReactTestRenderer;
     await act(async()=>{renderer=create(<PosMappingSetup/>);});
     const root=renderer!.root;
     await act(async()=>button(root,"Open POS Setup").props.onClick());
     await act(async()=>select(root,"Select File Format").props.onChange({target:{value:"CUSTOM_TABULAR_XLSX"}}));
 
-    const controlRow=root.findAllByType("div").find(candidate=>String(candidate.props.className).includes("md:grid-cols-2")&&candidate.findAllByType("select").some(item=>item.props["aria-label"]==="Select File Format"));
-    expect(controlRow?.findAllByType("select").map(item=>item.props["aria-label"])).toEqual(expect.arrayContaining(["Select File Format","Assign to Branch"]));
+    const quickAssignControls=root.findAllByType("div").find(candidate=>candidate.props["aria-label"]==="Quick Assign controls");
+    expect(quickAssignControls?.findAllByType("select").map(item=>item.props["aria-label"])).toEqual(["Assign to Branch"]);
+    expect(quickAssignControls?.findAllByType("button").map(nodeText)).toContain("Quick Assign");
+    expect(nodeText(root)).toContain("Register and configure a new POS system for a branch.");
     expect(nodeText(root)).toContain("Branches Using This File Format");
     expect(nodeText(root)).toContain("INACTIVE");
     expect(nodeText(root)).not.toContain("Copy Product Mappings From");
