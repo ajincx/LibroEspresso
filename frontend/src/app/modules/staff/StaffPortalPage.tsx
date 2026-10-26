@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Bell,
-  ChevronRight,
   Coffee,
+  Eye,
   FileText,
   LogOut,
   MessageCircle,
@@ -12,6 +12,7 @@ import {
   Sun,
   UserRound,
 } from "lucide-react";
+import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { useAuth } from "../../contexts/AuthContext";
 import { operationsService } from "../../services/operations.service";
@@ -72,67 +73,7 @@ function ReportRows({
         </p>
       </div>
     );
-  return (
-    <div className="divide-y divide-[var(--app-border)]">
-      {reports.map((report) => (
-        <button
-          key={report.id}
-          type="button"
-          onClick={() => onSelect(report)}
-          className="group block w-full rounded-2xl px-2 py-4 text-left transition-colors hover:bg-[var(--app-surface-muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
-          aria-label={`View ${report.status.toLowerCase()} incident report details`}
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="truncate text-sm font-semibold">
-                {report.productName ?? report.inventoryItemName}
-              </p>
-              <p className="mt-1 text-xs text-[var(--app-text-muted)]">
-                {reportLabel(report.incidentType)} · {report.quantity}{" "}
-                {report.unit} · {formatAppDate(report.occurredAt, true)}
-              </p>
-              <p className="mt-1 truncate text-xs text-[var(--app-text-faint)]">
-                {report.reason}
-              </p>
-            </div>
-            <span
-              className="shrink-0 rounded-full px-2.5 py-1 text-[10px] font-bold"
-              style={{
-                color:
-                  report.status === "VERIFIED"
-                    ? "#2E8B57"
-                    : report.status === "REJECTED"
-                      ? "#D9534F"
-                      : "#9A6700",
-                background:
-                  report.status === "VERIFIED"
-                    ? "rgba(46,139,87,.1)"
-                    : report.status === "REJECTED"
-                      ? "rgba(217,83,79,.1)"
-                      : "rgba(217,158,35,.12)",
-              }}
-            >
-              {report.isLate && report.status === "PENDING" ? "LATE REQUEST" : report.status}
-            </span>
-            <ChevronRight
-              size={17}
-              className="mt-0.5 shrink-0 text-[var(--app-text-faint)] transition-transform group-hover:translate-x-0.5"
-            />
-          </div>
-          {report.managerComment && (
-            <div className="mt-3 rounded-xl bg-[var(--app-primary-subtle)] px-3 py-2.5">
-              <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--app-primary)]">
-                Manager Comment
-              </p>
-              <p className="mt-1 whitespace-pre-wrap text-xs text-[var(--app-text-muted)]">
-                {report.managerComment}
-              </p>
-            </div>
-          )}
-        </button>
-      ))}
-    </div>
-  );
+  return <div className="overflow-x-auto"><table className="w-full min-w-[720px] text-left text-sm"><thead><tr className="border-b border-[var(--app-border)] text-xs uppercase tracking-wide text-[var(--app-text-muted)]"><th className="px-3 py-3">Date &amp; Time</th><th className="px-3 py-3">Incident</th><th className="px-3 py-3">Affected Item</th><th className="px-3 py-3">Status</th><th className="px-3 py-3 text-center">Action</th></tr></thead><tbody>{reports.map((report)=><tr key={report.id} className="border-b border-[var(--app-border)] last:border-0"><td className="whitespace-nowrap px-3 py-3 text-xs text-[var(--app-text-muted)]">{formatAppDate(report.occurredAt,true)}</td><td className="px-3 py-3"><p className="font-semibold">{reportLabel(report.incidentType)}</p><p className="mt-1 max-w-64 truncate text-xs text-[var(--app-text-muted)]">{report.reason}</p></td><td className="px-3 py-3"><p className="font-medium">{report.productName??report.inventoryItemName}</p><p className="mt-1 text-xs text-[var(--app-text-muted)]">{report.quantity} {report.unit}</p></td><td className="px-3 py-3"><span className="rounded-full bg-[var(--app-surface-muted)] px-2.5 py-1 text-[10px] font-bold">{report.isLate&&report.status==="PENDING"?"LATE REQUEST":report.status}</span></td><td className="px-3 py-3 text-center"><button type="button" onClick={()=>onSelect(report)} className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] px-2.5 py-1.5 text-xs font-semibold text-[var(--app-primary)]" aria-label={`View ${report.status.toLowerCase()} incident report details`}><Eye size={14}/>View</button></td></tr>)}</tbody></table></div>;
 }
 export function StaffPortalPage({
   unreadCount,
@@ -145,6 +86,7 @@ export function StaffPortalPage({
   onThemeToggle,
 }: Props) {
   const { user } = useAuth();
+  const [searchParams,setSearchParams]=useSearchParams();
   const [tab, setTab] = useState<StaffTab>("home");
   const [reports, setReports] = useState<IncidentReport[]>([]);
   const [options, setOptions] = useState<IncidentItemOption[]>([]);
@@ -185,6 +127,20 @@ export function StaffPortalPage({
     const refresh = window.setInterval(() => void load(true), 10000);
     return () => window.clearInterval(refresh);
   }, [load]);
+  useEffect(() => {
+    const incidentId = searchParams.get("incidentId");
+    if (!incidentId || loading) return;
+    const report = reports.find((item) => item.id === incidentId);
+    if (report) {
+      setTab("reports");
+      setSelectedReport(report);
+    } else {
+      toast.info("This incident report is unavailable or outside your access.");
+    }
+    const next = new URLSearchParams(searchParams);
+    next.delete("incidentId");
+    setSearchParams(next, { replace: true });
+  }, [loading, reports, searchParams, setSearchParams]);
   const visibleReports = useMemo(
     () =>
       reportStatus === "ALL"

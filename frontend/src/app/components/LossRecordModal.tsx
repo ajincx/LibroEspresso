@@ -4,8 +4,9 @@ import { toast } from "sonner";
 import { operationsService } from "../services/operations.service";
 import type { IncidentReport, IncidentType, InventoryOverviewItem } from "../types/operations";
 import { Btn, CalendarDateTimeField, isModalBackdropEvent, Select } from "./ModuleUi";
-import { manilaBusinessDateTime, manilaDateTimeToIso, validateIncidentDateTime } from "../utils/businessDate";
+import { businessDate, manilaBusinessDateTime, manilaDateTimeToIso, validateIncidentDateTime } from "../utils/businessDate";
 import { incidentTypeOptions } from "../utils/shrinkageTaxonomy";
+import { compatibleUnits, type MeasurementUnit } from "../utils/units";
 
 const currentDateTime = () => manilaBusinessDateTime();
 export const lossRecordDateError = (value: string, now = new Date()) => validateIncidentDateTime(value, now);
@@ -20,11 +21,13 @@ export function LossRecordModal({ items = [], onClose, onSaved }: {
     if (items.length) { setAvailableItems(items); return; }
     void operationsService.inventoryOverview().then(setAvailableItems).catch(() => setAvailableItems([]));
   }, [items]);
-  const [incidentType, setIncidentType] = useState<IncidentType>("SPOILAGE");
+  const [incidentType, setIncidentType] = useState<IncidentType | "">("");
   const [inventoryItemId, setInventoryItemId] = useState("");
   const [quantity, setQuantity] = useState("");
+  const [enteredUnit, setEnteredUnit] = useState<MeasurementUnit | "">("");
   const [occurredAt, setOccurredAt] = useState(currentDateTime);
   const [reason, setReason] = useState("");
+  const [lateReportingReason, setLateReportingReason] = useState("");
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -33,8 +36,8 @@ export function LossRecordModal({ items = [], onClose, onSaved }: {
   const estimatedValue = selected ? Number(quantity || 0) * selected.unitCost : 0;
 
   const save = async () => {
-    if (!inventoryItemId || !(Number(quantity) > 0) || !occurredAt || reason.trim().length < 3) {
-      setError("Select an item and provide a valid quantity, date, and reason.");
+    if (!incidentType || !inventoryItemId || !(Number(quantity) > 0) || !enteredUnit || !occurredAt || reason.trim().length < 3) {
+      setError("Select an incident type and item, then provide a valid quantity, unit, date, and reason.");
       return;
     }
     const dateError = lossRecordDateError(occurredAt);
@@ -42,8 +45,8 @@ export function LossRecordModal({ items = [], onClose, onSaved }: {
     setSaving(true); setError("");
     try {
       const incident = await operationsService.createIncident({
-        inventoryItemId, incidentType, quantity: Number(quantity),
-        occurredAt: manilaDateTimeToIso(occurredAt), reason: reason.trim(), notes: notes.trim() || undefined,
+        items:[{inventoryItemId,quantity:Number(quantity),enteredUnit}], incidentType,
+        occurredAt: manilaDateTimeToIso(occurredAt), lateReportingReason: occurredAt.slice(0,10)<businessDate(new Date(),"Asia/Manila")?lateReportingReason.trim():undefined, reason: reason.trim(), notes: notes.trim() || undefined,
       });
       toast.success("Incident report submitted for verification");
       onSaved(incident);
@@ -60,17 +63,14 @@ export function LossRecordModal({ items = [], onClose, onSaved }: {
           <button autoFocus onClick={onClose} className="w-8 h-8 rounded-lg flex items-center justify-center bg-[var(--app-surface-muted)] text-[var(--app-text-muted)]" aria-label="Close"><X size={15}/></button>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-1 p-1 rounded-xl border mb-5 border-[var(--app-border)]">
-          {incidentTypeOptions.map(({ value: type, label }) => <button key={type} type="button" onClick={() => setIncidentType(type)}
-            className="px-2 py-2 rounded-lg text-[11px] font-semibold transition-colors"
-            style={{ background: incidentType === type ? "var(--app-primary)" : "transparent", color: incidentType === type ? "#fff" : "var(--app-text-muted)" }}>{label}</button>)}
-        </div>
+        <label className="mb-5 block text-sm font-medium">Incident Type<Select className="mt-1.5 w-full" value={incidentType} onChange={(value)=>setIncidentType(value as IncidentType|"")} options={[{value:"",label:"Select Incident Type"},...incidentTypeOptions]}/></label>
 
         <div className="grid sm:grid-cols-2 gap-4">
           <CalendarDateTimeField label="Date and Time" value={occurredAt} max={currentDateTime()} onChange={setOccurredAt}/>
-          <label className="text-sm font-medium">Item / SKU<Select className="mt-1.5 w-full" value={inventoryItemId} onChange={setInventoryItemId} options={[{ value: "", label: "Select ingredient" }, ...uniqueItems.map((item) => ({ value: item.inventoryItemId, label: `${item.name} (${item.sku})` }))]}/></label>
+          <label className="text-sm font-medium">Item / SKU<Select className="mt-1.5 w-full" value={inventoryItemId} onChange={(value)=>{setInventoryItemId(value);setEnteredUnit((availableItems.find((item)=>item.inventoryItemId===value)?.unit??"") as MeasurementUnit|"");}} options={[{ value: "", label: "Select ingredient" }, ...uniqueItems.map((item) => ({ value: item.inventoryItemId, label: `${item.name} (${item.sku})` }))]}/></label>
           <label className="text-sm font-medium">Quantity<input type="number" min="0" step="any" value={quantity} onChange={(event) => setQuantity(event.target.value)} placeholder="0.00" className="field mt-1.5"/></label>
-          <label className="text-sm font-medium">Unit<input value={selected?.unit ?? ""} disabled placeholder="From inventory item" className="field mt-1.5 disabled:opacity-70"/></label>
+          <label className="text-sm font-medium">Unit<Select className="mt-1.5 w-full" value={enteredUnit} disabled={!selected} onChange={(value)=>setEnteredUnit(value as MeasurementUnit)} options={(selected?compatibleUnits(selected.unit):[]).map((unit)=>({value:unit,label:unit}))}/></label>
+          {occurredAt.slice(0,10)<businessDate(new Date(),"Asia/Manila")&&<label className="sm:col-span-2 text-sm font-medium">Reason for Late Reporting<textarea rows={2} minLength={10} maxLength={1000} value={lateReportingReason} onChange={(event)=>setLateReportingReason(event.target.value)} placeholder="Explain why this report is late (at least 10 characters)" className="field mt-1.5 resize-none"/></label>}
           <label className="sm:col-span-2 text-sm font-medium">Reason<textarea rows={2} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Describe what happened" className="field mt-1.5 resize-none"/></label>
           <label className="sm:col-span-2 text-sm font-medium">Additional notes (optional)<textarea rows={2} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Additional context or corrective action" className="field mt-1.5 resize-none"/></label>
         </div>

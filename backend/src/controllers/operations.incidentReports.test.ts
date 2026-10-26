@@ -7,7 +7,7 @@ vi.mock("../services/audit.service.js",()=>({writeAudit:mocks.writeAudit}));
 import { assertIncidentOccurredAtNotFuture, createIncidentReport, linkIncidentToInvestigation, reviewIncidentReport } from "./operations.controller.js";
 
 const ids=["00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000002","00000000-0000-4000-8000-000000000003"];
-const request=(items=ids.map((inventoryItemId,index)=>({inventoryItemId,quantity:[500,1000,50][index]})))=>({body:{items,incidentType:"SPILLAGE",occurredAt:"2026-10-02T02:30:00.000Z",reason:"Staff accidentally spilled several ingredients during preparation."},user:{id:"00000000-0000-4000-8000-000000000010",role:"STAFF",branchId:"00000000-0000-4000-8000-000000000020"}} as never);
+const request=(items:Array<{inventoryItemId:string;quantity:number;enteredUnit?:string}>=ids.map((inventoryItemId,index)=>({inventoryItemId,quantity:[500,1000,1][index]??1,enteredUnit:index===2?"kg":undefined})))=>({body:{items,incidentType:"SPILLAGE",occurredAt:"2026-10-02T02:30:00.000Z",lateReportingReason:"Submitted after the documented shift review.",reason:"Staff accidentally spilled several ingredients during preparation."},user:{id:"00000000-0000-4000-8000-000000000010",role:"STAFF",branchId:"00000000-0000-4000-8000-000000000020"}} as never);
 
 describe("multi-item incident creation",()=>{
   beforeEach(()=>{vi.clearAllMocks();mocks.clientQuery.mockImplementation(async(statement:unknown)=>{const sql=String(statement);if(sql.includes("SELECT id,name,unit FROM inventory_items"))return{rows:ids.map((id,index)=>({id,name:["Strawberry Syrup","Whole Milk","Salt"][index],unit:["ml","ml","g"][index]}))};if(sql.includes("INSERT INTO incident_reports"))return{rows:[{id:"00000000-0000-4000-8000-000000000099"}]};return{rows:[]};});mocks.poolQuery.mockResolvedValue({rows:[{id:"00000000-0000-4000-8000-000000000099",items:[]}]});});
@@ -17,6 +17,7 @@ describe("multi-item incident creation",()=>{
     const sql=mocks.clientQuery.mock.calls.map(([statement])=>String(statement));
     expect(sql.filter((value)=>value.includes("INSERT INTO incident_reports ("))).toHaveLength(1);
     expect(sql.filter((value)=>value.includes("INSERT INTO incident_report_items"))).toHaveLength(3);
+    expect(mocks.clientQuery.mock.calls.filter(([statement])=>String(statement).includes("INSERT INTO incident_report_items")).at(-1)?.[1]).toEqual([expect.any(String),ids[2],1000]);
     expect(sql.filter((value)=>value.includes("INSERT INTO notifications"))).toHaveLength(1);
     expect(sql.findIndex((value)=>value.includes("pg_advisory_xact_lock"))).toBeLessThan(sql.findIndex((value)=>value.includes("INSERT INTO incident_reports (")));
     expect(mocks.writeAudit).toHaveBeenCalledTimes(1);

@@ -266,12 +266,7 @@ export const applyPurchaseOrderLifecycle: RequestHandler = async (req, res) => {
     await lockBranchInventoryOperation(client, scope.rows[0].branchId);
     const found = await client.query<{ poNo: string; branchId: string; status: string; isTestData: boolean; reversedAt: string | null }>(`SELECT po_no "poNo",branch_id "branchId",status,is_test_data "isTestData",reversed_at::text "reversedAt" FROM purchase_orders WHERE id=$1 FOR UPDATE`, [id]);
     const order = found.rows[0]; if (!order) throw new AppError(404, "PURCHASE_ORDER_NOT_FOUND", "Purchase order not found"); assertBranchAccess(req.user!, order.branchId);
-    if (input.action === "DELETE") {
-      if (order.status !== "DRAFT") throw new AppError(409, "PO_DELETE_REQUIRES_DRAFT", "Only a draft purchase order can be deleted");
-      const received = await client.query(`SELECT 1 FROM purchase_order_items WHERE purchase_order_id=$1 AND quantity_received>0 LIMIT 1`, [id]);
-      if (received.rows[0]) throw new AppError(409, "PO_DELETE_HAS_RECEIPTS", "A purchase order with received quantity cannot be deleted");
-      await client.query(`DELETE FROM purchase_orders WHERE id=$1`, [id]);
-    } else if (input.action === "CANCEL") {
+    if (input.action === "CANCEL") {
       if (!["DRAFT", "ORDERED"].includes(order.status)) throw new AppError(409, "PO_CANCEL_STATE_INVALID", "Only a draft or ordered purchase order can be cancelled");
       await client.query(`UPDATE purchase_orders SET status='CANCELLED',updated_at=now() WHERE id=$1`, [id]);
     } else {
@@ -285,7 +280,7 @@ export const applyPurchaseOrderLifecycle: RequestHandler = async (req, res) => {
       await client.query(`UPDATE purchase_orders SET status='CANCELLED',reversed_at=now(),reversed_by=$2,reversal_reason=$3,updated_at=now() WHERE id=$1`, [id, req.user!.id, input.reason]);
     }
     await writeDestructiveActionAudit(req.user!, { module: "PURCHASE_ORDER", action: input.action, recordId: id, reason: input.reason }, `${input.action.toLowerCase()} action applied to ${order.poNo}`, { branchId: order.branchId, priorStatus: order.status }, client);
-    await client.query("COMMIT"); res.json({ success: true, data: { id, action: input.action === "DELETE" ? "DELETED" : input.action === "CANCEL" ? "CANCELLED" : "REVERSED" } });
+    await client.query("COMMIT"); res.json({ success: true, data: { id, action: input.action === "CANCEL" ? "CANCELLED" : "REVERSED" } });
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 };
 

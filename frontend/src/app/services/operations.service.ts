@@ -78,7 +78,7 @@ export const operationsService = {
     ).data.data;
   },
   async createIncident(input: {
-    items?: { inventoryItemId: string; quantity: number }[];
+    items?: { inventoryItemId: string; quantity: number; enteredUnit?: "g" | "kg" | "ml" | "L" | "pc" }[];
     inventoryItemId?: string;
     quantity?: number;
     productId?: string;
@@ -87,6 +87,7 @@ export const operationsService = {
     incidentType: IncidentType;
     otherIncidentType?: string;
     occurredAt: string;
+    lateReportingReason?: string;
     reason: string;
     notes?: string;
     photoUrl?: string;

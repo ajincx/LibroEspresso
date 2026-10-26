@@ -83,6 +83,20 @@ describe("opening inventory baseline workflow", () => {
     expect(json).toHaveBeenCalledWith(expect.objectContaining({ data: { setup: expect.objectContaining({ branchId, status: "READY", items: [expect.objectContaining({ inventoryItemId: itemId })] }) } }));
   });
 
+  it("recognizes a legacy UAT opening checkpoint as completed Starting Stock",async()=>{
+    mocks.poolQuery.mockImplementation(async(statement:unknown)=>{
+      const sql=String(statement);
+      if(sql.includes("FROM branches"))return{rows:[{id:branchId,name:"Gulod / Main Branch"}]};
+      if(sql.includes("FROM inventory_items"))return{rows:[{inventoryItemId:itemId,sku:"RM-002",name:"Espresso Blend Beans",category:"Coffee",unit:"g"}]};
+      if(sql.includes("FROM inventory_opening_baselines WHERE branch_id"))return{rows:[{baselineCount:1,balanceCount:0,countCount:0,movementCount:0,usageCount:0}]};
+      if(sql.includes("SELECT ob.id")){expect(sql).toContain("'UAT_OPENING'");return{rows:[{id:"00000000-0000-4000-8000-000000000004",designation:"UAT_OPENING",items:[]}]};}
+      throw new Error(`Unexpected query: ${sql}`);
+    });
+    const json=vi.fn();
+    await getStartingStockSetup({user:{id:ownerId,role:"BRANCH_MANAGER",branchId},query:{}} as never,{json} as never,vi.fn());
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({data:{setup:expect.objectContaining({status:"INITIALIZED",baseline:expect.objectContaining({designation:"UAT_OPENING"})})}}));
+  });
+
   it("confirms a complete Starting Stock atomically with canonical conversion and an explicit zero", async () => {
     mocks.clientQuery.mockImplementation(async (statement: unknown) => {
       const sql = String(statement);

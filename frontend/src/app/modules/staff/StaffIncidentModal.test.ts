@@ -78,7 +78,7 @@ describe("Staff incident ingredient/product filtering",()=>{
   it("supports a unique multi-item payload and filters products by every ingredient",()=>{
     const drafts=[{inventoryItemId:"coffee",quantity:"18"},{inventoryItemId:"caramel",quantity:"15"}];
     expect(validAffectedItems(drafts)).toBe(true);
-    expect(affectedItemsPayload(drafts)).toEqual([{inventoryItemId:"coffee",quantity:18},{inventoryItemId:"caramel",quantity:15}]);
+    expect(affectedItemsPayload(drafts)).toEqual([{inventoryItemId:"coffee",quantity:18,enteredUnit:undefined},{inventoryItemId:"caramel",quantity:15,enteredUnit:undefined}]);
     expect(incidentProductsForIngredients(products,["coffee","caramel"]).map((item)=>item.variantId)).toEqual(["salted-small","salted-large"]);
     expect(validAffectedItems([...drafts,{inventoryItemId:"coffee",quantity:"1"}])).toBe(false);
     expect(validAffectedItems([{inventoryItemId:"coffee",quantity:"0"}])).toBe(false);
@@ -93,8 +93,9 @@ describe("Staff incident ingredient/product filtering",()=>{
     expect(markup).toContain("overflow-x-hidden");
     expect(markup).toContain("shrink-0 items-center justify-end");
     expect(markup).toContain("lg:max-w-4xl");
-    expect(markup).toContain("lg:grid-cols-[minmax(20rem,1fr)_minmax(8rem,10rem)_6rem_2.75rem]");
-    expect(markup).toContain("grid-cols-[minmax(0,1fr)_5rem_2.75rem]");
+    expect(markup).toContain("Select Incident Type");
+    expect(markup).toContain("lg:grid-cols-[minmax(20rem,1fr)_minmax(8rem,10rem)_7rem_2.75rem]");
+    expect(markup).toContain("grid-cols-[minmax(0,1fr)_5rem_5rem_2.75rem]");
     expect(markup).toContain("mt-5 flex w-full min-w-0 flex-col gap-5");
     expect(markup).toContain("max-w-full cursor-pointer");
   });

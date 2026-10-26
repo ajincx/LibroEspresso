@@ -192,6 +192,13 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
     finally { setLoading(false); }
   }, [role]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    const orderId=searchParams.get("orderId");
+    if(!orderId||loading)return;
+    const order=orders.find((candidate)=>candidate.id===orderId);
+    if(order)setSelected(order);else toast.info("This purchase order is unavailable or outside your access.");
+    const next=new URLSearchParams(searchParams);next.delete("orderId");setSearchParams(next,{replace:true});
+  },[loading,orders,searchParams,setSearchParams]);
   useEffect(() => { if (role === "owner") setBranchId(scopeBranchId); }, [role, scopeBranchId]);
   const filtered = useMemo(() => orders.filter((order) => {
     const q = search.trim().toLowerCase();
@@ -203,8 +210,8 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
     try { await operationsService.updatePurchaseOrderStatus(order.id, next); toast.success("Purchase order marked as ordered"); setSelected(null); await load(); }
     catch (cause) { toast.error(cause instanceof Error ? cause.message : "Unable to update purchase order."); }
   };
-  const lifecycleAction=(order:PurchaseOrder):"DELETE"|"CANCEL"|"REVERSE"|null=>order.status==="DRAFT"?"DELETE":order.status==="ORDERED"?"CANCEL":order.status==="PARTIALLY_RECEIVED"||order.status==="RECEIVED"?"REVERSE":null;
-  const applyLifecycle=async()=>{if(!lifecycleTarget)return;const action=lifecycleAction(lifecycleTarget);if(!action)return;setControlledBusy(true);try{await controlledActionService.purchaseOrderLifecycle(lifecycleTarget.id,action,controlledValue);toast.success(action==="DELETE"?"Draft purchase order deleted":action==="CANCEL"?"Purchase order cancelled":"Receipt reversed with compensating stock movements");setLifecycleTarget(null);setSelected(null);setControlledValue({reason:"",verificationPin:""});await load();}catch(cause){toast.error(cause instanceof Error?cause.message:"Unable to apply purchase order action");}finally{setControlledBusy(false);}};
+  const lifecycleAction=(order:PurchaseOrder):"CANCEL"|"REVERSE"|null=>order.status==="DRAFT"||order.status==="ORDERED"?"CANCEL":order.status==="PARTIALLY_RECEIVED"||order.status==="RECEIVED"?"REVERSE":null;
+  const applyLifecycle=async()=>{if(!lifecycleTarget)return;const action=lifecycleAction(lifecycleTarget);if(!action)return;setControlledBusy(true);try{await controlledActionService.purchaseOrderLifecycle(lifecycleTarget.id,action,controlledValue);toast.success(action==="CANCEL"?"Purchase order cancelled":"Receipt reversed with compensating stock movements");setLifecycleTarget(null);setSelected(null);setControlledValue({reason:"",verificationPin:""});await load();}catch(cause){toast.error(cause instanceof Error?cause.message:"Unable to apply purchase order action");}finally{setControlledBusy(false);}};
   const authorizeTestOrder=async()=>{
     if(!authorizeTestTarget||testActionReason.trim().length<10)return;
     setTestActionBusy(true);
@@ -267,7 +274,7 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
               </button>
               {canAuthorizePurchaseOrderTest(role,order,testDataActionsEnabled)&&<button className="p-2 rounded-lg hover:bg-[var(--app-surface-muted)] text-[var(--app-warning)] transition-colors" aria-label={`Authorize ${order.poNo} as test data`} onClick={()=>{setAuthorizeTestTarget(order);setTestActionReason("");}}><ShieldCheck size={15}/></button>}
               {canDeletePurchaseOrderTest(role,order,testDataActionsEnabled)&&<button className="p-2 rounded-lg hover:bg-[var(--app-danger-bg)] text-[var(--app-danger)] transition-colors" aria-label={`Delete test purchase order ${order.poNo}`} onClick={()=>{setDeleteTestTarget(order);setTestActionReason("");}}><Trash2 size={15}/></button>}
-              {role==="manager"&&lifecycleAction(order)&&<button className="p-2 rounded-lg hover:bg-[var(--app-danger-bg)] text-[var(--app-danger)] transition-colors" aria-label={`${lifecycleAction(order)} ${order.poNo}`} onClick={()=>{setLifecycleTarget(order);setControlledValue({reason:"",verificationPin:""});}}><Trash2 size={15}/></button>}
+              {role==="manager"&&lifecycleAction(order)&&<button className="ml-1 inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] px-2.5 py-1.5 text-xs font-semibold text-[var(--app-danger)] transition-colors hover:bg-[var(--app-danger-bg)]" aria-label={`${lifecycleAction(order)} ${order.poNo}`} onClick={()=>{setLifecycleTarget(order);setControlledValue({reason:"",verificationPin:""});}}>{lifecycleAction(order)==="CANCEL"?"Cancel":"Reverse"}</button>}
             </TD>
           </TR>)}
         </tbody>
@@ -300,12 +307,14 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
     />}
     {authorizeTestTarget&&<TestPurchaseOrderDialog mode="authorize" order={authorizeTestTarget} reason={testActionReason} busy={testActionBusy} onReasonChange={setTestActionReason} onClose={()=>{if(!testActionBusy){setAuthorizeTestTarget(null);setTestActionReason("");}}} onConfirm={()=>void authorizeTestOrder()}/>}
     {deleteTestTarget&&<TestPurchaseOrderDialog mode="delete" order={deleteTestTarget} reason={testActionReason} busy={testActionBusy} onReasonChange={setTestActionReason} onClose={()=>{if(!testActionBusy){setDeleteTestTarget(null);setTestActionReason("");}}} onConfirm={()=>void deleteTestOrder()}/>}
-    {role==="manager"&&lifecycleTarget&&lifecycleAction(lifecycleTarget)&&<ControlledActionDialog title={`${lifecycleAction(lifecycleTarget)==="DELETE"?"Delete draft":lifecycleAction(lifecycleTarget)==="CANCEL"?"Cancel order":"Reverse received order"} ${lifecycleTarget.poNo}?`} description={lifecycleAction(lifecycleTarget)==="REVERSE"?"Received quantities are preserved in the PO history and offset with approved decrease movements. A later physical count blocks reversal.":"Only the appropriate current PO state can use this action; the server rechecks received quantities and dependencies."} confirmLabel={lifecycleAction(lifecycleTarget)==="DELETE"?"Delete Draft":lifecycleAction(lifecycleTarget)==="CANCEL"?"Cancel Order":"Reverse Receipt"} value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setLifecycleTarget(null)} onConfirm={()=>void applyLifecycle()}/>}
+    {role==="manager"&&lifecycleTarget&&lifecycleAction(lifecycleTarget)&&(
+      <ControlledActionDialog title={`${lifecycleAction(lifecycleTarget)==="CANCEL"?"Cancel order":"Reverse received order"} ${lifecycleTarget.poNo}?`} description={lifecycleAction(lifecycleTarget)==="REVERSE"?"Received quantities are preserved in the PO history and offset with approved decrease movements. A later physical count blocks reversal.":"The purchase order remains in history. The server rechecks received quantities and dependencies."} confirmLabel={lifecycleAction(lifecycleTarget)==="CANCEL"?"Cancel Order":"Reverse Receipt"} value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setLifecycleTarget(null)} onConfirm={()=>void applyLifecycle()}/>
+    )}
   </div>;
 }
 
-function ModalShell({ title, onClose, children, dismissOnBackdrop=true }: { title: string; onClose: () => void; children: React.ReactNode; dismissOnBackdrop?: boolean }) {
-  return <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.45)" }} onMouseDown={(event)=>{if(dismissOnBackdrop&&event.target===event.currentTarget)onClose();}}><div role="dialog" aria-modal="true" aria-label={title} className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-2xl border p-6" style={{ background: C.surface, borderColor: C.border }}><div className="flex items-center justify-between mb-5"><h2 className="text-lg font-bold">{title}</h2><button onClick={onClose} className="p-2 rounded-lg bg-[var(--app-surface-muted)]" aria-label="Close"><X size={15}/></button></div>{children}</div></div>;
+function ModalShell({ title, onClose, children, dismissOnBackdrop=true, wide=false }: { title: string; onClose: () => void; children: React.ReactNode; dismissOnBackdrop?: boolean; wide?: boolean }) {
+  return <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4" style={{ background: "rgba(0,0,0,.45)" }} onMouseDown={(event)=>{if(dismissOnBackdrop&&event.target===event.currentTarget)onClose();}}><div role="dialog" aria-modal="true" aria-label={title} className={`w-full ${wide?"max-w-6xl":"max-w-3xl"} max-h-[92vh] overflow-y-auto rounded-2xl border p-4 sm:p-6`} style={{ background: C.surface, borderColor: C.border }}><div className="flex items-center justify-between mb-5"><h2 className="text-lg font-bold">{title}</h2><button onClick={onClose} className="p-2 rounded-lg bg-[var(--app-surface-muted)]" aria-label="Close"><X size={15}/></button></div>{children}</div></div>;
 }
 
 export function TestPurchaseOrderDialog({mode,order,reason,busy,onReasonChange,onClose,onConfirm}:{mode:"authorize"|"delete";order:PurchaseOrder;reason:string;busy:boolean;onReasonChange:(value:string)=>void;onClose:()=>void;onConfirm:()=>void}) {
@@ -383,18 +392,18 @@ function CreatePurchaseOrder({
     }
     finally { setSaving(false); }
   };
-  return <ModalShell title="New Purchase Order" onClose={onClose}><div className="grid sm:grid-cols-3 gap-4">
-    <label className="sm:col-span-3 text-sm font-medium">Supplier Name<Select className="mt-1.5 w-full" value={supplierChoice} onChange={setSupplierChoice} options={[{value:"",label:"Select supplier"},...suppliers.map((name)=>({value:name,label:name})),{value:"__OTHER__",label:"Others"}]} searchable searchPlaceholder="Search suppliers…"/></label>
-    {supplierChoice === "__OTHER__" && <label className="sm:col-span-3 text-sm font-medium">Specify Supplier<input className="field mt-1.5" value={otherSupplier} onChange={(e) => setOtherSupplier(e.target.value)} placeholder="Enter supplier name" maxLength={160}/></label>}
+  return <ModalShell title="New Purchase Order" onClose={onClose} wide><div className="grid gap-4 sm:grid-cols-2">
+    <label className="sm:col-span-2 text-sm font-medium">Supplier Name<Select className="mt-1.5 w-full" value={supplierChoice} onChange={setSupplierChoice} options={[{value:"",label:"Select supplier"},...suppliers.map((name)=>({value:name,label:name})),{value:"__OTHER__",label:"Others"}]} searchable searchPlaceholder="Search suppliers…"/></label>
+    {supplierChoice === "__OTHER__" && <label className="sm:col-span-2 text-sm font-medium">Specify Supplier<input className="field mt-1.5" value={otherSupplier} onChange={(e) => setOtherSupplier(e.target.value)} placeholder="Enter supplier name" maxLength={160}/></label>}
     <CalendarDateField label="Order Date" value={orderDate} onChange={setOrderDate}/>
     <CalendarDateField label="Expected Delivery" value={expectedDeliveryDate} min={orderDate} onChange={setExpectedDeliveryDate}/>
-    <label className="text-sm font-medium">Notes<input className="field mt-1.5" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional"/></label>
+    <label className="sm:col-span-2 text-sm font-medium">Notes<input className="field mt-1.5" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional"/></label>
   </div><div className="mt-4 space-y-1 rounded-xl border px-4 py-3 text-xs" style={{ borderColor:C.amber,background:C.amberBg,color:C.secondary }}><p>A valid Full Physical Count from the selected Order Date&apos;s Monday-Sunday week must exist before this PO can be created.</p><p className="font-medium text-[var(--app-text)]">{PURCHASE_ORDER_STOCK_TIMING_GUIDANCE}</p></div><div className="mt-5 space-y-3">
     {rows.map((row, index) => {
       const stockItem=inventory.find((candidate)=>candidate.id===row.inventoryItemId);
       const purchaseUnits=stockItem?.unit==="g"||stockItem?.unit==="kg"?["g","kg"]:stockItem?.unit==="ml"||stockItem?.unit==="L"?["ml","L"]:["pc"];
       const convertedQuantity=stockItem?convertedPurchaseQuantity(row.quantityOrdered,row.purchaseUom,stockItem.unit):null;
-      return <div className="grid grid-cols-1 gap-3 rounded-xl border border-[var(--app-border)] p-3 md:grid-cols-[minmax(180px,1fr)_110px_100px_130px_150px_36px]" key={index}>
+      return <div className="grid min-w-0 grid-cols-1 gap-3 rounded-xl border border-[var(--app-border)] p-3 xl:grid-cols-[minmax(220px,1fr)_110px_100px_130px_170px_44px] xl:items-end" key={index}>
         <label className="block text-xs font-medium text-[var(--app-text-muted)]">Ingredient<Select className="mt-1.5 min-w-0" value={row.inventoryItemId} onChange={(value) => { if(value==="__NEW__"){setIngredientTarget(index);return;} const item=inventory.find((candidate)=>candidate.id===value);update(index,{inventoryItemId:value,unitCost:item?String(item.unitCost):row.unitCost,purchaseUom:item?.unit??"g",conversionFactor:"1"}); }} options={[{ value: "", label: "Select ingredient" }, ...inventory.filter((item)=>item.status==="ACTIVE").map((item) => ({ value: item.id, label: `${item.name} (${item.unit})` })),{value:"__NEW__",label:"+ New Ingredient"}]} searchable searchPlaceholder="Search ingredients…"/></label>
         <label className="block text-xs font-medium text-[var(--app-text-muted)]">Purchase Quantity<input aria-label="Purchase quantity" className="field mt-1.5" type="number" min="0.001" step="any" value={row.quantityOrdered} placeholder="Quantity" onChange={(e) => update(index, { quantityOrdered: e.target.value })}/></label>
         <label className="block text-xs font-medium text-[var(--app-text-muted)]">Purchase Unit<Select className="mt-1.5" aria-label="Purchase unit" value={row.purchaseUom} onChange={(value)=>update(index,{purchaseUom:value,conversionFactor:String(standardPurchaseConversionFactor(value,stockItem?.unit??value)??"")})} options={purchaseUnits.map((unit)=>({value:unit,label:unit}))}/></label>

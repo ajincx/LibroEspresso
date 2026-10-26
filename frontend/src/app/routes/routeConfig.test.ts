@@ -93,6 +93,21 @@ describe("Route and Role Security Configuration", () => {
       expect(notificationDestination({ entityType: "MENU_ITEM", entityId: "product-1" }, "OWNER")).toEqual({ path: "/cogs/menu-recipes" });
     });
 
+    it.each([
+      ["MESSAGE","message-1","OWNER",{messageTargetId:"message-1"}],
+      ["MENU_ITEM","product-1","OWNER",{path:"/cogs/menu-recipes"}],
+      ["POS_FORMAT_SETUP_REQUEST","request-1","OWNER",{path:"/sales?formatRequestId=request-1"}],
+      ["POS_IMPORT_APPROVAL","import-1","BRANCH_MANAGER",{path:"/sales"}],
+      ["POS_IMPORT","import-1","BRANCH_MANAGER",{path:"/sales"}],
+      ["POS_SOURCE","source-1","OWNER",{path:"/sales?configureMapping=source-1"}],
+      ["INCIDENT_REPORT","incident-1","BRANCH_MANAGER",{path:"/shrinkage?incidentId=incident-1"}],
+      ["INCIDENT_REPORT","incident-1","STAFF",{path:"/dashboard?incidentId=incident-1"}],
+      ["SHRINKAGE_REPORT","report-1","OWNER",{path:"/shrinkage?reportId=report-1"}],
+      ["PURCHASE_ORDER","order-1","BRANCH_MANAGER",{path:"/purchase-orders?orderId=order-1"}],
+    ] as const)("maps %s for %s",(entityType,entityId,role,destination)=>{
+      expect(notificationDestination({entityType,entityId},role)).toEqual(destination);
+    });
+
     it("returns safe messages for missing and permission-denied targets", () => {
       expect(notificationDestination({ entityType: "POS_FORMAT_SETUP_REQUEST", entityId: null }, "OWNER")).toHaveProperty("message");
       expect(notificationDestination({ entityType: "POS_FORMAT_SETUP_REQUEST", entityId: "request-1" }, "STAFF")).toHaveProperty("message");

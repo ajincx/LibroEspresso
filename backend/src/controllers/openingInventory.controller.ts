@@ -55,7 +55,7 @@ async function loadInitializationEvidence(db: InventoryDb, branchId: string) {
 
 async function loadStartingStockBaseline(db: InventoryDb, branchId: string) {
   const result = await db.query(
-    `${baselineSelection} WHERE ob.branch_id=$1 AND ob.designation='STARTING_STOCK'
+    `${baselineSelection} WHERE ob.branch_id=$1 AND ob.designation IN ('STARTING_STOCK','UAT_OPENING')
      GROUP BY ob.id,b.name,u.first_name,u.last_name
      ORDER BY ob.effective_at DESC LIMIT 1`,
     [branchId],
@@ -64,7 +64,7 @@ async function loadStartingStockBaseline(db: InventoryDb, branchId: string) {
 }
 
 function blockedStartingStockMessage(evidence: Awaited<ReturnType<typeof loadInitializationEvidence>>) {
-  if (evidence.baselineCount > 0) return "Starting Stock is already established for this branch and is available below in read-only mode.";
+  if (evidence.baselineCount > 0) return "An opening inventory checkpoint already exists for this branch and is available below in read-only mode.";
   return "This branch already has inventory history, so Starting Stock cannot be added safely. Continue normal operations with Physical Counts, or ask an administrator to review the branch history.";
 }
 

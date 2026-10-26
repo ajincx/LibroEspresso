@@ -120,7 +120,7 @@ describe("Pending POS format request workflow",()=>{
     await act(async()=>select(root,"Select File Format").props.onChange({target:{value:"CUSTOM_TABULAR_XLSX"}}));
 
     const quickAssignControls=root.findAllByType("div").find(candidate=>candidate.props["aria-label"]==="Quick Assign controls");
-    expect(quickAssignControls?.findAllByType("select").map(item=>item.props["aria-label"])).toEqual(["Assign to Branch"]);
+    expect(quickAssignControls?.findAllByType("select").map(item=>item.props["aria-label"])).toEqual(["Select File Format","Assign to Branch"]);
     expect(quickAssignControls?.findAllByType("button").map(nodeText)).toContain("Quick Assign");
     expect(nodeText(root)).toContain("Register and configure a new POS system for a branch.");
     expect(nodeText(root)).toContain("Branches Using This File Format");

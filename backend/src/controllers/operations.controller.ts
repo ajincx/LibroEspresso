@@ -15,6 +15,7 @@ import { lockBranchInventoryOperation } from "../services/inventoryOperationLock
 import { assertOperationalInventoryBaselines } from "../services/inventoryBaseline.service.js";
 import { manilaBusinessDate } from "../services/businessTime.service.js";
 import { loadIngredientAnalytics } from "../services/ingredientAnalytics.service.js";
+import { normalizePhysicalCountQuantity } from "../services/physicalCountUnit.service.js";
 import { AppError } from "../utils/appError.js";
 import { idParams } from "../validators/masterData.js";
 import { paginatedRows, paginationQuery } from "../validators/pagination.js";
@@ -297,6 +298,26 @@ export const createIncidentReport: RequestHandler = async (req, res) => {
     );
     if (foundItems.rows.length !== itemIds.length)
       throw new AppError(422, "INVENTORY_ITEM_INVALID", "Select only active inventory items available to this branch");
+    const itemById = new Map(foundItems.rows.map((item) => [item.id, item]));
+    const normalizedItems = input.items.map((item) => {
+      const inventoryItem = itemById.get(item.inventoryItemId)!;
+      try {
+        return {
+          ...item,
+          enteredQuantity: item.quantity,
+          enteredUnit: item.enteredUnit ?? inventoryItem.unit,
+          quantity: normalizePhysicalCountQuantity({ quantity: item.quantity, enteredUnit: item.enteredUnit ?? inventoryItem.unit, canonicalUnit: inventoryItem.unit }),
+        };
+      } catch {
+        throw new AppError(422, "INCIDENT_UNIT_INCOMPATIBLE", `${item.enteredUnit ?? inventoryItem.unit} cannot be converted to ${inventoryItem.unit} for ${inventoryItem.name}`);
+      }
+    });
+    const incidentBusinessDate = manilaBusinessDate(new Date(input.occurredAt));
+    const todayBusinessDate = manilaBusinessDate();
+    const submittedLate = incidentBusinessDate < todayBusinessDate;
+    if (submittedLate && (!input.lateReportingReason || input.lateReportingReason.trim().length < 10)) {
+      throw new AppError(422, "LATE_INCIDENT_REASON_REQUIRED", "Provide at least 10 characters explaining why this incident is being reported late.");
+    }
 
     let productId = input.productId ?? null;
     if (input.productVariantId) {
@@ -334,14 +355,17 @@ export const createIncidentReport: RequestHandler = async (req, res) => {
       if (!report.rows[0]) throw new AppError(422, "SHRINKAGE_REPORT_INVALID", "The selected variance does not match this branch and inventory item");
     }
 
-    const first = input.items[0]!;
+    const first = normalizedItems[0]!;
+    const notes = submittedLate
+      ? [`Reason for late reporting: ${input.lateReportingReason!.trim()}`, input.notes?.trim()].filter(Boolean).join("\n\n")
+      : input.notes ?? null;
     const inserted = await client.query<{ id: string }>(
       `INSERT INTO incident_reports (submitted_by,branch_id,inventory_item_id,menu_item_id,menu_item_variant_id,shrinkage_report_id,incident_type,other_incident_type,quantity,occurred_at,reason,notes,photo_url)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
-      [req.user!.id,branchId,first.inventoryItemId,productId,input.productVariantId??null,input.shrinkageReportId??null,input.incidentType,input.otherIncidentType??null,first.quantity,input.occurredAt,input.reason,input.notes??null,input.photoUrl??null],
+      [req.user!.id,branchId,first.inventoryItemId,productId,input.productVariantId??null,input.shrinkageReportId??null,input.incidentType,input.otherIncidentType??null,first.quantity,input.occurredAt,input.reason,notes,input.photoUrl??null],
     );
     incidentId = inserted.rows[0]!.id;
-    for (const affected of input.items) {
+    for (const affected of normalizedItems) {
       await client.query(
         `INSERT INTO incident_report_items (incident_report_id,inventory_item_id,quantity,unit)
          SELECT $1,ii.id,$3,ii.unit FROM inventory_items ii WHERE ii.id=$2`,
@@ -357,6 +381,8 @@ export const createIncidentReport: RequestHandler = async (req, res) => {
     }
     await writeAudit(req.user!,"CREATE_INCIDENT_REPORT","INCIDENT_REPORT",incidentId,`Recorded ${input.incidentType.toLowerCase()} incident`,{
       branchId,itemCount:input.items.length,inventoryItemIds:itemIds,productId,productVariantId:input.productVariantId??null,incidentType:input.incidentType,otherIncidentType:input.otherIncidentType??null,
+      submittedLate, lateReportingReason: input.lateReportingReason ?? null,
+      enteredItems: normalizedItems.map(({ inventoryItemId, enteredQuantity, enteredUnit }) => ({ inventoryItemId, enteredQuantity, enteredUnit })),
     },client);
     if (req.user!.role === "STAFF") {
       const itemSummary = foundItems.rows.map((item) => item.name).join(", ");

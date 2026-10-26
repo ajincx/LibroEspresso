@@ -369,7 +369,7 @@ const stockOperationIcons = { starting: PackageOpen, daily: SunMoon, full: Clipb
 export const shouldShowStockOperationCards = (selected: StockOperationId | null) => selected === null;
 export const dailyCountStatusLabel = (count: DailyInventoryCountContext["openingCount"] | DailyInventoryCountContext["closingCount"]) => count ? "Recorded" : "Pending";
 export const canOpenClosingCount = (context: DailyInventoryCountContext | null) => Boolean(context?.openingCount && context.posDayComplete);
-export const startingStockOperationStatus = (setup: StartingStockSetup | null) => setup?.status === "INITIALIZED" ? "Completed" : "Setup Required";
+export const startingStockOperationStatus = (setup: StartingStockSetup | null) => setup?.status === "INITIALIZED" || (setup?.status === "BLOCKED" && Boolean(setup.baseline)) ? "Completed" : "Setup Required";
 export const closingCountOperationStatus = (context: DailyInventoryCountContext | null) => context?.closingCount
   ? "Recorded"
   : canOpenClosingCount(context) ? "Ready to Record" : "Not Yet Available";

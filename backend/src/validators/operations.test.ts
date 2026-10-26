@@ -83,6 +83,13 @@ describe("Staff incident validation", () => {
     expect(()=>incidentCreateInput.parse({...common,items:[{inventoryItemId:base.inventoryItemId,quantity:1},{inventoryItemId:base.inventoryItemId,quantity:2}]})).toThrow("Affected inventory items must be unique");
     expect(()=>incidentCreateInput.parse({...common,items:[{inventoryItemId:base.inventoryItemId,quantity:0}]})).toThrow();
   });
+
+  it("accepts compatible entered units and validates late-report explanations",()=>{
+    const parsed=incidentCreateInput.parse({...base,incidentType:"SPILLAGE",items:[{inventoryItemId:base.inventoryItemId,quantity:1,enteredUnit:"kg"}],lateReportingReason:"Reported after the shift ended"});
+    expect(parsed.items[0]).toEqual({inventoryItemId:base.inventoryItemId,quantity:1,enteredUnit:"kg"});
+    expect(parsed.lateReportingReason).toBe("Reported after the shift ended");
+    expect(()=>incidentCreateInput.parse({...base,incidentType:"SPILLAGE",lateReportingReason:"short"})).toThrow();
+  });
 });
 
 describe("branch inventory settings validation", () => {

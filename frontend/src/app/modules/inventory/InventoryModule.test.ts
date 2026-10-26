@@ -89,6 +89,7 @@ describe("Inventory Management terminology", () => {
     const daily={countType:"OPENING" as const,openingCount:null,closingCount:null,previousClosingItems:[],previousClosingDate:null,posDayComplete:false};
     expect(startingStockOperationStatus(null)).toBe("Setup Required");
     expect(startingStockOperationStatus({status:"INITIALIZED"} as never)).toBe("Completed");
+    expect(startingStockOperationStatus({status:"BLOCKED",baseline:{id:"legacy-uat"}} as never)).toBe("Completed");
     expect(dailyCountStatusLabel(null)).toBe("Pending");
     expect(closingCountOperationStatus(daily)).toBe("Not Yet Available");
     expect(closingCountOperationStatus({...daily,openingCount:{id:"opening",countNo:"IC-O",countType:"OPENING",submittedAt:"now"},posDayComplete:true})).toBe("Ready to Record");

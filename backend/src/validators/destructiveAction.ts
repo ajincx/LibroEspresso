@@ -16,5 +16,5 @@ export const incidentLifecycleInput = destructiveActionInput.extend({
 });
 
 export const purchaseOrderLifecycleInput = destructiveActionInput.extend({
-  action: z.enum(["DELETE", "CANCEL", "REVERSE"]),
+  action: z.enum(["CANCEL", "REVERSE"]),
 });

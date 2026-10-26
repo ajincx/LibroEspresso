@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, Archive, CheckCircle, Eye, RefreshCw, SearchCheck, ShieldCheck, Sparkles, X } from "lucide-react";
+import { AlertTriangle, CheckCircle, Eye, RefreshCw, SearchCheck, ShieldCheck, Sparkles, X } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { useAuth } from "../../contexts/AuthContext";
@@ -13,8 +13,6 @@ import { ShrinkageIncidentReports } from "./ShrinkageIncidentReports";
 import { CalendarDateField, Select, SkeletonBlock, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, TableLoadingRow } from "../../components/ModuleUi";
 import { formatAppDate } from "../../utils/appPreferences";
 import { classificationLabel, evidenceBasisOptions, incidentTypeLabel, incidentTypeOptions, managerClassificationOptions } from "../../utils/shrinkageTaxonomy";
-import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
-import { controlledActionService } from "../../services/controlledAction.service";
 const formatDate = (value: string | null) => value ? formatAppDate(value, true) : "—";
 
 const emptyMetrics: ShrinkageMetrics = { detectedValue: 0, detected: 0, pending: 0, spoilage: 0, wastage: 0, pilferage: 0 };
@@ -57,9 +55,6 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [archiveTarget,setArchiveTarget]=useState<ShrinkageReport|null>(null);
-  const [controlledValue,setControlledValue]=useState<ControlledActionValue>({reason:"",verificationPin:""});
-  const [controlledBusy,setControlledBusy]=useState(false);
 
   const load = async () => {
     setLoading(true); setError("");
@@ -108,7 +103,6 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
       .finally(() => setAiLoading(false));
   };
 
-  const archiveReport=async()=>{if(!archiveTarget)return;setControlledBusy(true);try{await controlledActionService.archiveShrinkage(archiveTarget.id,controlledValue);toast.success("Anomaly case archived; its history remains in the audit trail");setArchiveTarget(null);setControlledValue({reason:"",verificationPin:""});await load();}catch(reason){toast.error(reason instanceof Error?reason.message:"Unable to archive anomaly");}finally{setControlledBusy(false);}};
 
   const submitInvestigation = async () => {
     if (!selected || !investigation.classification || investigation.explanation.trim().length < 10) return;
@@ -163,8 +157,8 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
     </section>}
 
     <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">{[
-      ["Detected Value", `₱${metrics.detectedValue.toLocaleString("en-PH", { maximumFractionDigits: 2 })}`], ["Needs Investigation", String(metrics.detected)], ["Pending Final Verification", String(metrics.pending)], ["Spoilage", String(metrics.spoilage)], ["Wastage", String(metrics.wastage)], ["Verified Pilferage", String(metrics.pilferage)],
-    ].map(([label, value], index) => <div key={label} className="p-4 rounded-2xl border" style={{ borderColor: !loading && ((index === 1 && metrics.detected) || (index === 2 && metrics.pending)) ? "var(--app-warning)" : "var(--app-border)", background: "var(--app-surface)" }} aria-busy={loading}><div className="text-[10px] uppercase tracking-wider" style={{ color: "var(--app-text-faint)" }}>{label}</div>{loading ? <SkeletonBlock w="68%" h={24} className="mt-1.5"/> : <div className="text-xl font-bold mt-1.5" style={{ color: index === 0 ? "var(--app-primary)" : "var(--app-text)" }}>{value}</div>}</div>)}</div>
+      ["Estimated Inventory Loss (₱)", `₱${metrics.detectedValue.toLocaleString("en-PH", { maximumFractionDigits: 2 })}`], ["Needs Investigation", String(metrics.detected)], ["Pending Final Verification", String(metrics.pending)], ["Spoilage", String(metrics.spoilage)], ["Wastage", String(metrics.wastage)], ["Verified Pilferage", String(metrics.pilferage)],
+    ].map(([label, value], index) => <div key={label} title={index===0?"Estimated monetary value of qualifying active shortages. Verified shrinkage is reported separately after investigation.":undefined} className="p-4 rounded-2xl border" style={{ borderColor: !loading && ((index === 1 && metrics.detected) || (index === 2 && metrics.pending)) ? "var(--app-warning)" : "var(--app-border)", background: "var(--app-surface)" }} aria-busy={loading}><div className="text-[10px] uppercase tracking-wider" style={{ color: "var(--app-text-faint)" }}>{label}</div>{loading ? <SkeletonBlock w="68%" h={24} className="mt-1.5"/> : <div className="text-xl font-bold mt-1.5" style={{ color: index === 0 ? "var(--app-primary)" : "var(--app-text)" }}>{value}</div>}</div>)}</div>
 
     <TableCard
       title="System-Detected Anomaly Cases"
@@ -223,7 +217,6 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
                   >
                     <Eye size={15} />
                   </button>
-                  {!owner&&!report.archivedAt&&<button type="button" title="Archive anomaly" aria-label={`Archive case ${report.reportNo}`} onClick={()=>{setArchiveTarget(report);setControlledValue({reason:"",verificationPin:""});}} className="p-2 rounded-lg border border-[var(--app-border)] text-[var(--app-danger)]"><Archive size={15}/></button>}
                   </div>
                 </TD>
               </TR>
@@ -232,7 +225,6 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
         </tbody>
       </TableWrapper>
     </TableCard>
-    {!owner&&archiveTarget&&<ControlledActionDialog title={`Archive ${archiveTarget.reportNo}?`} description="This dismisses the case from active anomaly monitoring without deleting the physical count, variance, evidence, or investigation history." confirmLabel="Archive Case" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setArchiveTarget(null)} onConfirm={()=>void archiveReport()}/>}
 
     <ShrinkageIncidentReports owner={owner} branchId={branchId} />
 

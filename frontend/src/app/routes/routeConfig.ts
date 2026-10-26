@@ -36,7 +36,10 @@ export function notificationDestination(
 ): NotificationDestination {
   const id = notification.entityId ? encodeURIComponent(notification.entityId) : null;
   if (notification.entityType === "MESSAGE") return { messageTargetId: notification.entityId };
-  if (role === "STAFF") return { message: "This notification target is not available with Staff access." };
+  if (role === "STAFF") {
+    if (notification.entityType === "INCIDENT_REPORT") return id ? { path: `/dashboard?incidentId=${id}` } : { message: "This incident report is no longer available." };
+    return { message: "This notification target is not available with Staff access." };
+  }
   if (notification.entityType === "MENU_ITEM") return { path: "/cogs/menu-recipes" };
   if (notification.entityType === "POS_FORMAT_SETUP_REQUEST") {
     if (role !== "OWNER") return { path: "/sales" };
@@ -44,11 +47,12 @@ export function notificationDestination(
       ? { path: `/sales?formatRequestId=${id}` }
       : { message: "This POS format setup request is no longer available." };
   }
-  if (notification.entityType === "POS_IMPORT" || notification.entityType === "POS_IMPORT_APPROVAL" || notification.entityType === "POS_SOURCE") {
+  if (notification.entityType === "POS_SOURCE") return { path: id ? `/sales?configureMapping=${id}` : "/sales" };
+  if (notification.entityType === "POS_IMPORT" || notification.entityType === "POS_IMPORT_APPROVAL") {
     return { path: "/sales" };
   }
   if (notification.entityType === "INCIDENT_REPORT") return { path: id ? `/shrinkage?incidentId=${id}` : "/shrinkage" };
   if (notification.entityType === "SHRINKAGE_REPORT") return { path: id ? `/shrinkage?reportId=${id}` : "/shrinkage" };
-  if (notification.entityType === "PURCHASE_ORDER") return { path: "/purchase-orders" };
+  if (notification.entityType === "PURCHASE_ORDER") return { path: id ? `/purchase-orders?orderId=${id}` : "/purchase-orders" };
   return { message: "This notification target is no longer available or you do not have access." };
 }

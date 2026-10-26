@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowDown, ArrowUp, Ban, Eye, GitCompare, RefreshCw, Search } from "lucide-react";
-import { toast } from "sonner";
+import { AlertTriangle, ArrowDown, ArrowUp, Eye, GitCompare, RefreshCw, Search, X } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router";
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useAuth } from "../../contexts/AuthContext";
@@ -11,8 +10,6 @@ import type { Branch } from "../../types/masterData";
 import { CalendarDateField, Select, SearchInput, SkeletonBlock, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, TableLoadingRow, StatusBadge } from "../../components/ModuleUi";
 import { formatAppDate } from "../../utils/appPreferences";
 import { classificationLabel } from "../../utils/shrinkageTaxonomy";
-import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
-import { controlledActionService } from "../../services/controlledAction.service";
 
 type DisplayStatus =
   | "MATCHED"
@@ -65,9 +62,7 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
   const [status, setStatus] = useState<DisplayStatus | "">("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [voidTarget,setVoidTarget]=useState<VarianceRecord|null>(null);
-  const [controlledValue,setControlledValue]=useState<ControlledActionValue>({reason:"",verificationPin:""});
-  const [controlledBusy,setControlledBusy]=useState(false);
+  const [detailTarget,setDetailTarget]=useState<VarianceRecord|null>(null);
 
   const load = async () => {
     setLoading(true); setError("");
@@ -97,7 +92,6 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
     actual: record.actualQuantity,
   })), [filtered]);
 
-  const voidRecord=async()=>{if(!voidTarget)return;setControlledBusy(true);try{await controlledActionService.voidVariance(voidTarget.countItemId,controlledValue);toast.success("Variance voided; the original count history was preserved");setVoidTarget(null);setControlledValue({reason:"",verificationPin:""});await load();}catch(reason){toast.error(reason instanceof Error?reason.message:"Unable to void variance");}finally{setControlledBusy(false);}};
 
   return <div className="p-4 md:p-6 space-y-5">
     <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4"><div><h1 className="text-xl font-bold">Variance &amp; Discrepancies</h1><p className="text-sm mt-1" style={{ color: "var(--app-text-muted)" }}>System-calculated comparison of submitted physical counts and expected inventory (Actual − Expected). Negative values indicate shortages.</p></div><div className="flex gap-2 flex-wrap">
@@ -225,21 +219,7 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
                 <TD muted>{varianceClassificationLabel(record)}</TD>
                 <TD center><VarianceStatus status={displayStatus(record)} /></TD>
                 <TD center>
-                  <div className="flex justify-center gap-1">{record.anomalyId ? (
-                    <button
-                      type="button"
-                      onClick={() => navigate(`/shrinkage?reportId=${record.anomalyId}`)}
-                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-opacity hover:opacity-85"
-                      style={{
-                        color: "var(--app-primary)",
-                        background: "var(--app-primary-subtle)",
-                      }}
-                    >
-                      <Eye size={14}/>{record.anomalyArchivedAt ? "View Archived Case" : record.anomalyStatus === "DETECTED" && !owner ? "Investigate" : "View Case"}
-                    </button>
-                  ) : (
-                    <span className="max-w-32 text-right text-[11px] leading-4 text-[var(--app-text-muted)]">{varianceWithoutInvestigationLabel(record)}</span>
-                  )}{!owner&&<button type="button" title="Void variance" aria-label={`Void variance ${record.countNo} ${record.itemName}`} onClick={()=>{setVoidTarget(record);setControlledValue({reason:"",verificationPin:""});}} className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--app-border)] text-[var(--app-danger)]"><Ban size={14}/></button>}</div>
+                  <button type="button" onClick={() => record.anomalyId ? navigate(`/shrinkage?reportId=${record.anomalyId}`) : setDetailTarget(record)} className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] px-2.5 py-1.5 text-xs font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-muted)]"><Eye size={14}/>View</button>
                 </TD>
               </TR>
             ))
@@ -247,7 +227,7 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
         </tbody>
       </TableWrapper>
     </TableCard>
-    {!owner&&voidTarget&&<ControlledActionDialog title={`Void ${voidTarget.itemName} variance?`} description="The variance and linked anomaly are retained for audit but removed from active discrepancy and shrinkage views. This does not alter the submitted physical count values." confirmLabel="Void Variance" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setVoidTarget(null)} onConfirm={()=>void voidRecord()}/>}
+    {detailTarget&&<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" onMouseDown={(event)=>{if(event.target===event.currentTarget)setDetailTarget(null);}}><div role="dialog" aria-modal="true" aria-label="Variance details" className="w-full max-w-lg rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5"><div className="flex items-start justify-between gap-4"><div><h2 className="font-bold">{detailTarget.itemName}</h2><p className="mt-1 text-xs text-[var(--app-text-muted)]">{detailTarget.countNo} · {formatAppDate(detailTarget.countDate)}</p></div><button aria-label="Close variance details" onClick={()=>setDetailTarget(null)}><X size={18}/></button></div><dl className="mt-5 grid grid-cols-2 gap-4 text-sm"><div><dt className="text-xs text-[var(--app-text-muted)]">Expected</dt><dd className="font-semibold">{detailTarget.expectedQuantity} {detailTarget.unit}</dd></div><div><dt className="text-xs text-[var(--app-text-muted)]">Actual</dt><dd className="font-semibold">{detailTarget.actualQuantity} {detailTarget.unit}</dd></div><div><dt className="text-xs text-[var(--app-text-muted)]">Signed variance</dt><dd className="font-semibold">{detailTarget.varianceQuantity>0?"+":""}{detailTarget.varianceQuantity} {detailTarget.unit}</dd></div><div><dt className="text-xs text-[var(--app-text-muted)]">Investigation</dt><dd className="font-semibold">{varianceWithoutInvestigationLabel(detailTarget)}</dd></div></dl></div></div>}
   </div>;
 }
 

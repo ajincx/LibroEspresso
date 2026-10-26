@@ -31,6 +31,7 @@ export const incidentFilters = z.object({
 const incidentItemInput = z.object({
   inventoryItemId: z.string().uuid(),
   quantity: z.coerce.number().finite().positive(),
+  enteredUnit: z.enum(["g", "kg", "ml", "L", "pc"]).optional(),
 });
 
 export const incidentCreateInput = z.object({
@@ -46,6 +47,7 @@ export const incidentCreateInput = z.object({
   incidentType: z.enum(STAFF_INCIDENT_TYPES),
   otherIncidentType: z.string().trim().min(1, "Please specify the incident type.").max(120).nullish(),
   occurredAt: z.iso.datetime(),
+  lateReportingReason: z.string().trim().min(10).max(1000).optional(),
   reason: z.string().trim().min(3).max(1000),
   notes: z.string().trim().max(3000).optional(),
   photoUrl: z
