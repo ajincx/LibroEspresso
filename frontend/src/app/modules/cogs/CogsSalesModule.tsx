@@ -1,7 +1,7 @@
 import React, { lazy, Suspense, useEffect, useState } from "react";
-import { ShoppingCart, Package, TrendingDown, Search, X, Upload, Check, Coffee, CheckCircle, TrendingUp, DollarSign, GitCompare, BarChart2, Hash, Percent, Trash2, Building2, Layers, GitBranch, ArrowRight, Copy, Eye, Info, ShieldCheck } from "lucide-react";
+import { Search, X, Upload, Check, Coffee, CheckCircle, TrendingUp, DollarSign, BarChart2, Percent, Trash2, Building2, Layers, GitBranch, Eye, Info, ShieldCheck } from "lucide-react";
 import { Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart } from "recharts";
-import { C, CalendarDateField, DashboardRange, DashboardComparison, dashboardPeriodLabel, formatPeso, isModalBackdropEvent, StatusChip, KPICard, Card, SectionHeader, Btn, SearchInput, Select, DashboardFilters, THead, TR, TD, Pagination, ChartTip, ModuleTabSwitcher, AnimatedTabPanel, SkeletonBlock, TableCard, TableWrapper, TableEmptyRow, TableLoadingRow } from "../../components/ModuleUi";
+import { C, DashboardRange, DashboardComparison, dashboardPeriodLabel, formatPeso, isModalBackdropEvent, StatusChip, KPICard, Card, SectionHeader, Btn, SearchInput, Select, DashboardFilters, THead, TR, TD, Pagination, ChartTip, ModuleTabSwitcher, AnimatedTabPanel, SkeletonBlock, TableCard, TableWrapper, TableEmptyRow, TableLoadingRow } from "../../components/ModuleUi";
 import { toast } from "sonner";
 import type { Page, Role } from "../../types/navigation";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
@@ -11,10 +11,10 @@ import { ControlledActionDialog } from "../../components/ControlledActionDialog"
 import type { DailyPosUploadStatus, PosAnalytics, PosFieldMapping, PosFormatSetupRequest, PosHeaderInspection, PosImportRecord, PosMapping, PosMappingReviewStatus, PosSource } from "../../types/inventoryWorkflow";
 import type { Branch, MenuProduct } from "../../types/masterData";
 import { useAuth } from "../../contexts/AuthContext";
-import { addDateDays, businessDate, periodDates, adjustRangeForAutomaticImport } from "../../utils/businessDate";
+import { businessDate, periodDates, adjustRangeForAutomaticImport } from "../../utils/businessDate";
 import { formatAppDate } from "../../utils/appPreferences";
 import { useSearchParams } from "react-router";
-import { excludedInvalidRowCount } from "./posImportPresentation";
+import { excludedInvalidRowCount, posSourceReadiness } from "./posImportPresentation";
 import { PosImportModal } from "./PosImportModal";
 
 export const SalesPosImportModal = PosImportModal;
@@ -58,8 +58,8 @@ export function PosImportActions({
   const canDelete = canDeletePosImport(role, record);
   return (
     <div className="flex justify-center gap-2">
-      <button type="button" aria-label={`View details ${record.sourceFilename}`} onClick={onView} className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] px-2 py-1 text-xs font-semibold">
-        <Eye size={14}/> View Details
+      <button type="button" aria-label={`View ${record.sourceFilename}`} onClick={onView} className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] px-2 py-1 text-xs font-semibold">
+        <Eye size={14}/> View
       </button>
       {canAuthorize && (
         <button
@@ -99,16 +99,12 @@ export const dailyPosStatusLabel = (status:DailyPosUploadStatus["status"]) => ({
   NO_SALES_CLOSED:"No Sales / Closed",POS_SOURCE_NOT_CONFIGURED:"POS Source Not Configured",
 })[status];
 export const DAILY_POS_MONITORING_COLUMNS=["Branch","Business Date","Upload Status","Uploaded File","Uploaded By","Uploaded Date / Time"] as const;
-export type DailyPosMonitoringMode="current"|"history";
-export function dailyPosMonitoringView(mode:DailyPosMonitoringMode,currentBusinessDate:string,historyBusinessDate:string){
-  const businessDate=mode==="current"?currentBusinessDate:historyBusinessDate;
+export function dailyPosMonitoringView(businessDate:string){
   return {
     businessDate,
     startDate:businessDate,
     endDate:businessDate,
-    showDateFilter:mode==="history",
-    title:mode==="history"?"Daily Upload Monitoring — History":"Daily Upload Monitoring",
-    actionLabel:mode==="history"?"Back to Current":"View History",
+    title:"Daily Upload Monitoring",
   } as const;
 }
 export type DailyPosBranchSummary=Pick<DailyPosUploadStatus,"branchId"|"branchName"|"businessDate"|"status"|"sourceFilename"|"uploadedBy"|"importedAt"|"closed">&{requiredSourceCount:number;completedSourceCount:number};
@@ -172,9 +168,9 @@ export function PosMappingActions({mapping,busy,canApprove,reviewNote,onEdit,onR
   mapping:PosMapping;busy:boolean;canApprove:boolean;reviewNote:string;onEdit:()=>void;
   onReview:(status:PosMappingReviewStatus)=>void;onDeactivate:()=>void;
 }) {
-  if(mapping.reviewStatus==="APPROVED") return <div className="flex flex-wrap items-center gap-2"><span className="font-semibold" style={{color:C.green}}>Approved</span>{mapping.status==="ACTIVE"?<button type="button" disabled={busy} className="rounded-lg border px-2 py-1" onClick={onDeactivate}>Deactivate</button>:<span style={{color:C.secondary}}>Deactivated</span>}</div>;
+  if(mapping.reviewStatus==="APPROVED") return <div className="flex flex-wrap items-center gap-2"><span className="font-semibold" style={{color:C.green}}>Approved</span>{mapping.status==="ACTIVE"?<button type="button" disabled={busy} className="rounded-lg border border-[var(--app-danger)] px-3 py-1.5 font-semibold text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)] disabled:opacity-40" onClick={onDeactivate}>Deactivate Mapping</button>:<span style={{color:C.secondary}}>Deactivated</span>}</div>;
   if(mapping.reviewStatus==="REJECTED"||mapping.reviewStatus==="AMBIGUOUS") return <button type="button" disabled={busy} className="rounded-lg border px-2 py-1" onClick={()=>onReview("PENDING")}>Return to Pending</button>;
-  return <div className="flex flex-wrap gap-1">{canEditPosMapping(mapping)&&<button type="button" disabled={busy} className="rounded-lg border px-2 py-1" onClick={onEdit}>Edit Mapping</button>}<button type="button" disabled={busy||!canApprove} className="rounded-lg border px-2 py-1 disabled:opacity-40" onClick={()=>onReview("APPROVED")}>Approve</button><button type="button" disabled={busy||!reviewNote.trim()} className="rounded-lg border px-2 py-1 disabled:opacity-40" onClick={()=>onReview("REJECTED")}>Reject</button><button type="button" disabled={busy||!reviewNote.trim()} className="rounded-lg border px-2 py-1 disabled:opacity-40" onClick={()=>onReview("AMBIGUOUS")}>Ambiguous</button></div>;
+  return <div className="flex flex-wrap gap-2">{canEditPosMapping(mapping)&&<button type="button" disabled={busy} className="rounded-lg border px-2.5 py-1.5" onClick={onEdit}>Edit Mapping</button>}<button type="button" disabled={busy||!canApprove} className="rounded-lg bg-[var(--app-success)] px-3 py-1.5 font-semibold text-white disabled:opacity-40" onClick={()=>onReview("APPROVED")}>Approve Mapping</button><button type="button" disabled={busy||!reviewNote.trim()} className="rounded-lg border px-2.5 py-1.5 disabled:opacity-40" onClick={()=>onReview("REJECTED")}>Reject</button><button type="button" disabled={busy||!reviewNote.trim()} className="rounded-lg border px-2.5 py-1.5 disabled:opacity-40" onClick={()=>onReview("AMBIGUOUS")}>Ambiguous</button></div>;
 }
 
 export function PosImportDeleteDialog({target,deleting,reason,verificationPin="",onReasonChange,onPinChange=()=>undefined,onCancel,onConfirm}:{target:PosImportRecord;deleting:boolean;reason:string;verificationPin?:string;onReasonChange:(value:string)=>void;onPinChange?:(value:string)=>void;onCancel:()=>void;onConfirm:()=>void}) {
@@ -332,12 +328,46 @@ export const formatPosSourceFormatName = (format: PosSource["supportedFormat"]) 
 const formatPosSourceOptionFormatName=(format:PosSource["supportedFormat"])=>
   formatPosSourceFormatName(format).replace("Libro Espresso - ","Libro Espresso ");
 
-export const formatPosSourceOptionLabel=(source:Pick<PosSource,"displayName"|"branchName"|"supportedFormat"|"status">)=>{
+export const formatPosSourceOptionLabel=(source:Pick<PosSource,"displayName"|"branchName"|"supportedFormat"|"status"|"formatVerifiedAt"|"fieldMapping"|"hasActiveMappings"|"hasPendingMappings">)=>{
   const cleanedName=source.displayName.replace(/\s*(?:[-·|]\s*)?(?:transaction summary xlsx|summary items sold(?: xls)?|canonical csv|summary items|transaction summary|xlsx|xls|csv)$/i,"").trim()||source.displayName;
   const branchPosName=`${source.branchName.replace(/\s*\/\s*/g," ").replace(/\s+Branch$/i,"").trim()} POS`;
   const posName=/^Libro POS$/i.test(cleanedName)?branchPosName:cleanedName;
-  return `${posName} - ${formatPosSourceOptionFormatName(source.supportedFormat)} - ${source.status==="ACTIVE"?"Ready":"Not Active"}`;
+  return `${posName} - ${formatPosSourceOptionFormatName(source.supportedFormat)} - ${posSourceReadiness(source)}`;
 };
+
+export const branchesAvailableForFormatAssignment=(branches:Branch[],sources:PosSource[],format:PosSource["supportedFormat"])=>
+  branches.filter(branch=>!sources.some(source=>source.branchId===branch.id&&source.supportedFormat===format));
+export const destinationPosSourceForQuickAssign=(sources:PosSource[],branchId:string,format:PosSource["supportedFormat"])=>
+  sources.find(source=>source.branchId===branchId&&source.supportedFormat===format)??null;
+
+export const quickAssignPosSourceInput=(branch:Pick<Branch,"id"|"name">,format:PosSource["supportedFormat"],suffix:string)=>({
+  sourceCode:`POS_${branch.id.replaceAll("-","").slice(0,8)}_${suffix}`,
+  displayName:`${branch.name.replace(/\s+Branch$/i,"").trim()} POS`,
+  supportedFormat:format,
+  branchId:branch.id,
+  status:"INACTIVE" as const,
+});
+
+export function ApproveAllMappingsDialog({count,busy,onCancel,onConfirm}:{count:number;busy:boolean;onCancel:()=>void;onConfirm:()=>void}) {
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-labelledby="approve-all-mappings-title">
+    <div className="w-full max-w-md rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-6 shadow-2xl">
+      <h2 id="approve-all-mappings-title" className="text-lg font-bold">Approve all pending mappings?</h2>
+      <p className="mt-2 text-sm text-[var(--app-text-muted)]">This will revalidate and approve {count} pending mapping{count===1?"":"s"} together. If any mapping is invalid, none will be approved.</p>
+      <div className="mt-6 flex justify-end gap-2"><Btn variant="outline" disabled={busy} onClick={onCancel}>Cancel</Btn><Btn disabled={busy} onClick={onConfirm}>{busy?"Approving…":`Approve All (${count})`}</Btn></div>
+    </div>
+  </div>;
+}
+
+export function ConfirmAndActivatePosDialog({destination,format,count,busy,onCancel,onConfirm}:{destination:string;format:string;count:number;busy:boolean;onCancel:()=>void;onConfirm:()=>void}) {
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-labelledby="confirm-pos-activation-title">
+    <div className="w-full max-w-md rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-6 shadow-2xl">
+      <h2 id="confirm-pos-activation-title" className="text-lg font-bold">Confirm and activate this POS?</h2>
+      <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm"><dt className="text-[var(--app-text-muted)]">Destination</dt><dd className="font-semibold">{destination}</dd><dt className="text-[var(--app-text-muted)]">Format</dt><dd className="font-semibold">{format}</dd><dt className="text-[var(--app-text-muted)]">Mappings</dt><dd className="font-semibold">{count} pending</dd></dl>
+      <p className="mt-3 text-sm text-[var(--app-text-muted)]">Libro will revalidate the format and every mapping, approve them together, and activate this POS. If any check fails, nothing will change.</p>
+      <div className="mt-6 flex justify-end gap-2"><Btn variant="outline" disabled={busy} onClick={onCancel}>Cancel</Btn><Btn disabled={busy} onClick={onConfirm}>{busy?"Confirming…":"Confirm & Activate"}</Btn></div>
+    </div>
+  </div>;
+}
 
 const EMPTY_POS_FIELD_MAPPING: PosFieldMapping = {productName:"",quantitySold:"",transactionId:"",businessDate:"",status:"",unitPrice:"",salesAmount:""};
 export const POS_IMPORT_FIELD_OPTIONS: Array<{value:keyof PosFieldMapping;label:string;required:boolean}> = [
@@ -376,34 +406,40 @@ export function assignPosHeader(mapping:PosFieldMapping,header:string,field:keyo
 }
 
 export const pendingPosFormatRequests=(requests:PosFormatSetupRequest[])=>requests.filter(request=>request.status==="PENDING"||request.status==="BLOCKED");
+export const requestedPosFormatRequest=(requests:PosFormatSetupRequest[],requestId:string)=>
+  pendingPosFormatRequests(requests).find((request)=>request.id===requestId)??null;
 
-export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role?: Role | string; initialSourceId?: string } = {}) {
+export function PosMappingSetup({ role = "owner", initialSourceId = "", initialFormatRequestId = "" }: { role?: Role | string; initialSourceId?: string; initialFormatRequestId?: string } = {}) {
   const [deleteSourceTarget, setDeleteSourceTarget] = useState<PosSource | null>(null);
   const [deleteSourceValue, setDeleteSourceValue] = useState({ reason: "", verificationPin: "" });
   const [deletingSource, setDeletingSource] = useState(false);
-  const [open, setOpen] = useState(Boolean(initialSourceId));
+  const [open, setOpen] = useState(Boolean(initialSourceId||initialFormatRequestId));
   const [sources, setSources] = useState<PosSource[]>([]);
   const [mappings, setMappings] = useState<PosMapping[]>([]);
   const [products, setProducts] = useState<MenuProduct[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [formatRequests,setFormatRequests]=useState<PosFormatSetupRequest[]>([]);
+  const [formatRequestsLoaded,setFormatRequestsLoaded]=useState(false);
+  const [handledInitialFormatRequestId,setHandledInitialFormatRequestId]=useState("");
   const [selectedFormatRequest,setSelectedFormatRequest]=useState<PosFormatSetupRequest|null>(null);
   const [rejectFormatRequestTarget,setRejectFormatRequestTarget]=useState<PosFormatSetupRequest|null>(null);
   const [formatRequestRejectionReason,setFormatRequestRejectionReason]=useState("");
   const [formatSetupResult,setFormatSetupResult]=useState("");
   const [sourceId, setSourceId] = useState(initialSourceId);
+  const [selectedSetupFormat,setSelectedSetupFormat]=useState<PosSource["supportedFormat"]|"">("");
   const [sourceName, setSourceName] = useState("");
   const [sourceFormat, setSourceFormat] = useState<PosSource["supportedFormat"]>("SUMMARY_ITEMS_SOLD_LEGACY_XLS");
   const [sourceBranchId, setSourceBranchId] = useState("");
-  const [showAssignBranch, setShowAssignBranch] = useState(false);
   const [assignBranchId, setAssignBranchId] = useState("");
+  const [copyFromSourceId,setCopyFromSourceId]=useState("");
+  const [quickAssignResult,setQuickAssignResult]=useState<null|{copied:number;skipped:number;incompatible:number;incompatibleMappings:Array<{sourceProductName:string;sourceProductCode:string|null;reason:string}>;targetSourceId:string}>(null);
+  const [approveAllOpen,setApproveAllOpen]=useState(false);
+  const [confirmQuickAssignOpen,setConfirmQuickAssignOpen]=useState(false);
   const [posName, setPosName] = useState("");
   const [posCode, setPosCode] = useState("");
   const [variantId, setVariantId] = useState("");
   const [branchId, setBranchId] = useState("");
   const [mappingFilter, setMappingFilter] = useState<"ALL" | PosMappingReviewStatus>("ALL");
-  const [copyFromSourceId, setCopyFromSourceId] = useState("");
-  const [copyResult, setCopyResult] = useState<{ copied:number;skipped:number;eligible:number } | null>(null);
   const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
   const [editMapping,setEditMapping]=useState<PosMapping|null>(null);
   const [sourceFormatConfirmed, setSourceFormatConfirmed] = useState(false);
@@ -419,14 +455,19 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
   useEffect(() => {
     if (!open) return;
     void Promise.all([inventoryWorkflowService.posSources(), masterDataService.menuProducts(), masterDataService.branches(),inventoryWorkflowService.posFormatSetupRequests()])
-      .then(([nextSources, nextProducts, nextBranches,nextRequests]) => { setSources(nextSources); setProducts(nextProducts); setBranches(nextBranches); setFormatRequests(nextRequests); })
-      .catch(() => setError("Unable to load POS mapping setup."));
+      .then(([nextSources, nextProducts, nextBranches,nextRequests]) => { setSources(nextSources); setProducts(nextProducts); setBranches(nextBranches); setFormatRequests(nextRequests); setFormatRequestsLoaded(true); })
+      .catch(() => { setFormatRequestsLoaded(true); setError("Unable to load POS mapping setup."); });
   }, [open]);
   useEffect(() => {
     if (!initialSourceId) return;
     setOpen(true);
     setSourceId(initialSourceId);
   }, [initialSourceId]);
+  useEffect(()=>{
+    if(!sourceId)return;
+    const source=sources.find(candidate=>candidate.id===sourceId);
+    if(source)setSelectedSetupFormat(source.supportedFormat);
+  },[sourceId,sources]);
   useEffect(() => {
     if (!sourceId) { setMappings([]); return; }
     void inventoryWorkflowService.posMappings(sourceId, mappingFilter === "ALL" ? undefined : mappingFilter).then(setMappings).catch(() => setError("Unable to load mappings."));
@@ -441,23 +482,30 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
   const selectedVariant = products.flatMap((product) => product.variants).find((variant) => variant.id === variantId);
 
   // Group current and historical source configurations by their assigned branch.
-  const sourcesByBranch = branches.map((b) => ({
-    branch: b,
-    sources: sources.filter((s) => s.branchId === b.id),
-  }));
-
-  // Find other branches using the same format as selectedSource (Scenario A)
-  const sameFormatSources = selectedSource
-    ? sources.filter((s) => s.supportedFormat === selectedSource.supportedFormat)
+  const sameFormatSources = selectedSetupFormat
+    ? sources.filter((source) => source.supportedFormat === selectedSetupFormat)
     : [];
+  const quickAssignSource=sameFormatSources.find(source=>source.id===copyFromSourceId)??null;
+  const pendingMappingCount=mappings.filter(mapping=>mapping.reviewStatus==="PENDING").length;
+  const reviewingQuickAssign=quickAssignResult?.targetSourceId===sourceId;
   const mappingComplete = [fieldMapping.productName,fieldMapping.quantitySold,fieldMapping.transactionId,fieldMapping.businessDate,fieldMapping.status,fieldMapping.unitPrice].every(Boolean);
   const pendingFormatRequests=pendingPosFormatRequests(formatRequests);
   const openFormatRequest=(request:PosFormatSetupRequest)=>{
     setSelectedFormatRequest(request);setSourceId(request.posSourceId);setFormatSetupResult("");
+    const source=sources.find(candidate=>candidate.id===request.posSourceId);
+    if(source)setSelectedSetupFormat(source.supportedFormat);
     setMappingInspection({worksheet:request.worksheet,headerRow:request.headerRow,headers:request.headers,mapping:null});
     const saved=sources.find(source=>source.id===request.posSourceId)?.fieldMapping;
     setFieldMapping(saved??suggestedPosFieldMapping(request.headers));
   };
+  useEffect(()=>{
+    if(!initialFormatRequestId||!formatRequestsLoaded||handledInitialFormatRequestId===initialFormatRequestId)return;
+    setHandledInitialFormatRequestId(initialFormatRequestId);
+    setOpen(true);
+    const request=requestedPosFormatRequest(formatRequests,initialFormatRequestId);
+    if(!request){setError("This POS format setup request is no longer pending or is unavailable.");return;}
+    openFormatRequest(request);
+  },[formatRequests,formatRequestsLoaded,handledInitialFormatRequestId,initialFormatRequestId,sources]);
   const inspectMappingFile=async()=>{
     if(!selectedSource||!mappingFile)return;
     setBusy(true);setError("");
@@ -537,11 +585,30 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
         </p>
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
-          <label className="text-xs font-semibold text-[var(--app-text-muted)]">Select POS System:</label>
-          <Select aria-label="Source to review" className="w-full min-w-0 sm:w-auto sm:min-w-[280px]" value={sourceId} onChange={value => { setSourceId(value); setSelectedFormatRequest(null); setFormatSetupResult(""); setSourceFormatConfirmed(false); setShowAssignBranch(false); setMappingInspection(null); setMappingFile(null); }} options={[{value:"",label:"Select POS system to configure"},...sources.map(source=>({value:source.id,label:formatPosSourceOptionLabel(source)}))]} searchable searchPlaceholder="Select POS system to configure"/>
+          <label className="text-xs font-semibold text-[var(--app-text-muted)]">Select File Format:</label>
+          <Select aria-label="Select File Format" className="w-full min-w-0 sm:w-auto sm:min-w-[280px]" value={selectedSetupFormat} onChange={value => { setSelectedSetupFormat(value as PosSource["supportedFormat"]|""); setSourceId(""); setSelectedFormatRequest(null); setFormatSetupResult(""); setSourceFormatConfirmed(false); setAssignBranchId(""); setMappingInspection(null); setMappingFile(null); }} options={[{value:"",label:"Select file format"},...POS_SOURCE_FORMAT_OPTIONS]}/>
         </div>
 
-        {selectedSource && (
+        {selectedSetupFormat&&<section aria-label="Branches using selected POS format" className="mt-4 rounded-xl border p-4" style={{borderColor:C.border}}>
+          <div><h5 className="flex items-center gap-1.5 text-sm font-semibold"><Building2 size={15} className="text-blue-600"/>Branches Using This File Format</h5><p className="mt-1 text-xs text-[var(--app-text-muted)]">Select an approved source mapping set and a destination branch. Quick Assign never activates the destination or approves copied mappings.</p></div>
+          <div className="mt-3 flex flex-wrap gap-2">{sameFormatSources.length===0?<p className="text-xs text-[var(--app-text-muted)]">No branches are assigned to this file format.</p>:sameFormatSources.map(source=><button type="button" key={source.id} onClick={()=>{setSourceId(source.id);setSelectedFormatRequest(null);setFormatSetupResult("");setSourceFormatConfirmed(false);setMappingInspection(null);setMappingFile(null);}} className="inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-xs transition-colors hover:bg-[var(--app-surface-muted)]" style={{borderColor:source.id===sourceId?C.maroon:C.border}}><CheckCircle size={13} className={posSourceReadiness(source)==="Ready"?"text-emerald-600":"text-amber-500"}/><span><strong className="block">{source.branchName}</strong><span className="text-[var(--app-text-muted)]">{source.displayName} · {posSourceReadiness(source)}</span></span></button>)}</div>
+          <div className="mt-4 grid gap-3 md:grid-cols-[1fr_1fr_auto]">
+            <div><label className="mb-1 block text-xs font-semibold text-[var(--app-text-muted)]">Copy Product Mappings From</label><Select small aria-label="Copy Product Mappings From" value={copyFromSourceId} onChange={value=>{setCopyFromSourceId(value);setAssignBranchId("");setQuickAssignResult(null);}} options={[{value:"",label:"Select source branch / POS"},...sameFormatSources.filter(source=>source.hasActiveMappings).map(source=>({value:source.id,label:`${source.branchName} — ${source.displayName}`}))]}/></div>
+            <div><label className="mb-1 block text-xs font-semibold text-[var(--app-text-muted)]">Assign to Branch</label><Select small aria-label="Assign to Branch" value={assignBranchId} onChange={value=>{setAssignBranchId(value);setQuickAssignResult(null);}} options={[{value:"",label:"Select destination branch"},...branches.filter(branch=>branch.id!==quickAssignSource?.branchId).map(branch=>({value:branch.id,label:branch.name}))]}/></div>
+            <div className="flex items-end"><Btn size="sm" disabled={busy||!quickAssignSource||!assignBranchId} onClick={()=>void run(async()=>{
+              if(!quickAssignSource)throw new Error("Select a source POS with approved mappings.");
+              const branch=branches.find(candidate=>candidate.id===assignBranchId);
+              if(!branch)throw new Error("Select a valid destination branch.");
+              let target=destinationPosSourceForQuickAssign(sources,branch.id,selectedSetupFormat);
+              if(!target)target=await inventoryWorkflowService.createPosSource(quickAssignPosSourceInput(branch,selectedSetupFormat,Date.now().toString(36).toUpperCase()));
+              const result=await inventoryWorkflowService.copyPosMappings(quickAssignSource.id,target.id);
+              setQuickAssignResult({...result,targetSourceId:target.id});setSourceId(target.id);setMappingFilter("PENDING");setFormatSetupResult(`${branch.name} was assigned to ${formatPosSourceFormatName(selectedSetupFormat)}. Copied mappings require Owner approval.`);
+            })}>Quick Assign</Btn></div>
+          </div>
+          {quickAssignResult&&<div role="status" className="mt-4 rounded-xl border p-3" style={{borderColor:C.border}}><div className="mb-3 text-xs"><strong className="block text-sm">Review Quick Assign</strong><span className="text-[var(--app-text-muted)]">Destination: {selectedSource?.branchName??"Selected branch"} · Format: {formatPosSourceFormatName(selectedSetupFormat)}</span></div><div className="grid grid-cols-3 gap-2 text-center text-xs"><div><strong className="block text-lg">{quickAssignResult.copied}</strong>Mappings Copied</div><div><strong className="block text-lg">{quickAssignResult.skipped}</strong>Mappings Skipped</div><div><strong className="block text-lg">{pendingMappingCount}</strong>Pending Approval</div></div>{quickAssignResult.incompatible>0&&<div className="mt-3 rounded-lg bg-[var(--app-warning-bg)] p-2 text-xs"><strong>{quickAssignResult.incompatible} incompatible mapping{quickAssignResult.incompatible===1?"":"s"} require manual correction.</strong><ul className="mt-1 list-disc pl-5">{quickAssignResult.incompatibleMappings.map((item,index)=><li key={`${item.sourceProductCode??item.sourceProductName}-${index}`}>{item.sourceProductName}{item.sourceProductCode?` (${item.sourceProductCode})`:""}: {item.reason}</li>)}</ul></div>}<div className="mt-4 flex justify-end"><Btn disabled={busy||pendingMappingCount===0} onClick={()=>setConfirmQuickAssignOpen(true)}>Confirm &amp; Activate</Btn></div></div>}
+        </section>}
+
+        {selectedSource && selectedSource.supportedFormat===selectedSetupFormat && (
           <div className="mt-4 space-y-4">
             {selectedFormatRequest&&mappingInspection&&<section aria-label="Requested POS format mapping" className="rounded-xl border p-4" style={{borderColor:C.maroon}}>
               <div className="flex flex-wrap items-start justify-between gap-3"><div><h5 className="font-bold">Uploaded Format Request</h5><p className="mt-1 text-xs text-[var(--app-text-muted)]">{selectedFormatRequest.branchName} · Requested by {selectedFormatRequest.requestedByName} · {selectedFormatRequest.sourceFilename}</p></div><StatusChip status={selectedFormatRequest.status}/></div>
@@ -569,7 +636,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
                     <div><span className="text-[var(--app-text-muted)]">Assigned Branch:</span> <strong className="block text-[var(--app-text)]">{selectedSource.branchName}</strong></div>
                   </div>
                 </div>
-                <StatusChip status={selectedSource.status}/>
+                <StatusChip status={posSourceReadiness(selectedSource)}/>
               </div>
 
               <div className="mt-4 border-t pt-3" style={{ borderColor: C.border }}>
@@ -611,7 +678,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
                 ) : (
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <p className="text-xs font-medium" style={{ color: C.green }}>
-                      Format verified{selectedSource.formatVerifiedByName ? ` by ${selectedSource.formatVerifiedByName}` : ""}{selectedSource.formatVerifiedAt ? ` on ${formatAppDate(selectedSource.formatVerifiedAt)}` : ""}.
+                      {selectedSource.formatVerifiedAt?`Format verified${selectedSource.formatVerifiedByName ? ` by ${selectedSource.formatVerifiedByName}` : ""} on ${formatAppDate(selectedSource.formatVerifiedAt)}.`:"Format verification has not been recorded."} {posSourceReadiness(selectedSource)==="Ready"?"Approved product mappings are available.":posSourceReadiness(selectedSource)==="Pending Approval"?"Product mappings are pending Owner approval.":"Product mapping setup is still required."}
                     </p>
                     <button type="button" disabled={busy} className="rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors hover:bg-[var(--app-danger-bg)] hover:text-[var(--app-danger)]" onClick={() => void run(() => inventoryWorkflowService.updatePosSource(selectedSource.id, { status: "INACTIVE" }))}>
                       Deactivate POS system
@@ -621,62 +688,6 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
               </div>
             </section>
 
-            {/* Branch Deployment & Multi-POS Overview (Scenarios A & B) */}
-            <div className="rounded-xl border p-4 bg-[var(--app-surface)]" style={{ borderColor: C.border }}>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h5 className="font-semibold text-xs text-[var(--app-text)] flex items-center gap-1.5">
-                    <Building2 size={14} className="text-blue-600" />
-                    Other Branches Using This File Format
-                  </h5>
-                  <p className="text-xs text-[var(--app-text-muted)]">
-                    Branches using the {formatPosSourceFormatName(selectedSource.supportedFormat)} format:
-                  </p>
-                </div>
-                {!showAssignBranch && (
-                  <button type="button" disabled={busy} className="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-colors hover:bg-[var(--app-surface-muted)]" onClick={() => setShowAssignBranch(true)}>
-                    <ArrowRight size={13} />
-                    Assign this format to another branch
-                  </button>
-                )}
-              </div>
-
-              <div className="mt-2.5 flex flex-wrap gap-2">
-                {sameFormatSources.map((s) => (
-                  <span key={s.id} className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium bg-[var(--app-surface-muted)]" style={{ borderColor: C.border }}>
-                    <CheckCircle size={12} className={s.status === "ACTIVE" ? "text-emerald-600" : "text-amber-500"} />
-                    <strong>{s.branchName}</strong>: {s.displayName}
-                  </span>
-                ))}
-              </div>
-
-              {showAssignBranch && (
-                <div className="mt-3 rounded-lg border border-dashed border-blue-300 bg-blue-50/40 p-3 dark:border-blue-800 dark:bg-blue-950/20">
-                  <p className="text-xs font-semibold text-blue-900 dark:text-blue-200">
-                    Deploy <strong>{formatPosSourceFormatName(selectedSource.supportedFormat)}</strong> to another branch:
-                  </p>
-                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                    <Select small aria-label="Target Branch to Assign" value={assignBranchId} onChange={setAssignBranchId} options={[{value:"",label:"Select target branch…"},...branches.filter(branch=>branch.id!==selectedSource.branchId).map(branch=>({value:branch.id,label:branch.name}))]}/>
-                    <div className="flex gap-2">
-                      <button type="button" disabled={busy || !assignBranchId} className="rounded-lg px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40" style={{ background: C.maroon }} onClick={() => void run(async () => {
-                        const created = await inventoryWorkflowService.createPosSource({
-                          sourceCode: `POS_${assignBranchId.replaceAll("-","").slice(0,8)}_${Date.now().toString(36).toUpperCase()}`,
-                          displayName: `${selectedSource.displayName} (${branches.find(b => b.id === assignBranchId)?.name ?? "Branch"})`,
-                          supportedFormat: selectedSource.supportedFormat,
-                          branchId: assignBranchId,
-                        });
-                        setShowAssignBranch(false);
-                        setAssignBranchId("");
-                        setSourceId(created.id);
-                      })}>
-                        Create & Assign
-                      </button>
-                      <button type="button" className="rounded-lg border px-2 py-1.5 text-xs font-medium" onClick={() => setShowAssignBranch(false)}>Cancel</button>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
           </div>
         )}
       </div>
@@ -690,18 +701,6 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
         <p className="mt-1 text-xs text-[var(--app-text-muted)]">
           Match POS product names and codes to approved Libro menu items and recipes. A mapping may apply to all branches or one specific branch.
         </p>
-
-        {/* Copy Mappings Utility */}
-        <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border p-3 bg-[var(--app-surface-muted)]" style={{borderColor:C.border}}>
-          <Copy size={15} className="text-[var(--app-text-muted)] shrink-0" />
-          <span className="text-xs font-semibold text-[var(--app-text-muted)]">Quick Copy:</span>
-          <Select small className="w-full min-w-0 sm:w-auto sm:min-w-[280px]" aria-label="Copy mappings from source" value={copyFromSourceId} onChange={value=>{setCopyFromSourceId(value);setCopyResult(null);}} options={[{value:"",label:"Copy approved mappings from another POS system"},...sources.filter(source=>source.id!==sourceId).map(source=>({value:source.id,label:formatPosSourceOptionLabel(source)}))]} searchable searchPlaceholder="Search POS systems…"/>
-          <button type="button" disabled={busy||!copyFromSourceId} className="rounded-lg border px-2.5 py-1.5 text-xs font-semibold disabled:opacity-50 hover:bg-[var(--app-surface)]" onClick={()=>void run(async()=>{const result=await inventoryWorkflowService.copyPosMappings(copyFromSourceId,sourceId);setCopyResult(result);})}>
-            Copy as pending
-          </button>
-          <span className="text-xs text-[var(--app-text-muted)]">Copied mappings remain inactive until Owner review.</span>
-          {copyResult&&<span role="status" className="w-full text-xs font-semibold" style={{color:C.green}}>{copyResult.copied} copied · {copyResult.skipped} skipped as already present · {copyResult.eligible} eligible</span>}
-        </div>
 
         {/* Add Product Mapping Form */}
         <div className="mt-4 rounded-xl border p-4 bg-[var(--app-surface)]" style={{ borderColor: C.border }}>
@@ -741,8 +740,9 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
               </button>
             ))}
           </div>
-          <span className="text-xs text-[var(--app-text-muted)]">Showing {mappings.length} {mappingFilter === "ALL" ? "" : mappingFilter.toLowerCase()} mapping(s)</span>
+          <div className="flex items-center gap-2"><span className="text-xs text-[var(--app-text-muted)]">Showing {mappings.length} {mappingFilter === "ALL" ? "" : mappingFilter.toLowerCase()} mapping(s)</span>{pendingMappingCount>0&&!reviewingQuickAssign&&<Btn size="sm" disabled={busy||selectedSource?.status!=="ACTIVE"||!selectedSource?.formatVerifiedAt} onClick={()=>setApproveAllOpen(true)}>Approve All</Btn>}</div>
         </div>
+        {pendingMappingCount>0&&selectedSource?.status!=="ACTIVE"&&!reviewingQuickAssign&&<p className="mt-2 text-xs text-[var(--app-text-muted)]">Activate and verify this POS source before approving its pending mappings. Approval does not activate the source automatically.</p>}
 
         {/* Mappings Table with Scenario C Branch Scope Highlighting */}
         {mappings.length === 0 ? (
@@ -828,6 +828,9 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "" }: { role
       </div>}
     </div>}
 
+    {approveAllOpen&&<ApproveAllMappingsDialog count={pendingMappingCount} busy={busy} onCancel={()=>setApproveAllOpen(false)} onConfirm={()=>void run(async()=>{await inventoryWorkflowService.approveAllPosMappings(sourceId);setApproveAllOpen(false);setQuickAssignResult(null);})}/>}
+    {confirmQuickAssignOpen&&selectedSource&&<ConfirmAndActivatePosDialog destination={`${selectedSource.branchName} — ${selectedSource.displayName}`} format={formatPosSourceFormatName(selectedSource.supportedFormat)} count={pendingMappingCount} busy={busy} onCancel={()=>setConfirmQuickAssignOpen(false)} onConfirm={()=>void run(async()=>{const result=await inventoryWorkflowService.confirmAndActivatePosMappings(selectedSource.id,selectedSource.supportedFormat);setConfirmQuickAssignOpen(false);setQuickAssignResult(null);setFormatSetupResult(`POS activated. ${result.approved} product mapping${result.approved===1?"":"s"} approved.`);})}/>}
+
     {editMapping && <PosMappingEditDialog
       key={editMapping.id}
       mapping={editMapping}
@@ -895,8 +898,6 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
   const [posHistoryPage, setPosHistoryPage] = useState(1);
   const [posHistoryTotal, setPosHistoryTotal] = useState(0);
   const [historyRefresh, setHistoryRefresh] = useState(0);
-  const [monitoringMode,setMonitoringMode]=useState<DailyPosMonitoringMode>("current");
-  const [monitoringHistoryDate,setMonitoringHistoryDate]=useState(addDateDays(localToday,-1));
   const [dailyPosStatuses,setDailyPosStatuses]=useState<DailyPosUploadStatus[]>([]);
   const [dailyPosLoading,setDailyPosLoading]=useState(false);
   const [dailyPosError,setDailyPosError]=useState("");
@@ -927,7 +928,6 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
   const [customStart, setCustomStart] = useState(initialRange.customStart);
   const [customEnd, setCustomEnd] = useState(initialRange.customEnd);
   const periodLabel = dashboardPeriodLabel(range, customStart, customEnd);
-  const comparisonLabel = comparison === "previous" ? "previous period" : "last month";
   const branchLabel = !isOwner ? (user?.branch?.name ?? "Assigned Branch") : posBranchFilter;
   const branchId = isOwner ? branches.find((branch) => branch.name === posBranchFilter)?.id : user?.branch?.id;
 
@@ -1005,15 +1005,15 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
     if(tab!=="import_history")return;
     let cancelled=false;
     const branchId=isOwner?branches.find((branch)=>branch.name===posBranchFilter)?.id:undefined;
-    const monitoringView=dailyPosMonitoringView(monitoringMode,localToday,monitoringHistoryDate);
+    const monitoringView=dailyPosMonitoringView(localToday);
     setDailyPosLoading(true);setDailyPosError("");
     void inventoryWorkflowService.dailyPosStatus({startDate:monitoringView.startDate,endDate:monitoringView.endDate,branchId})
       .then((result)=>{if(!cancelled)setDailyPosStatuses(result.statuses);})
       .catch((reason)=>{if(!cancelled){setDailyPosStatuses([]);setDailyPosError(reason instanceof Error?reason.message:"Unable to load daily upload monitoring.");}})
       .finally(()=>{if(!cancelled)setDailyPosLoading(false);});
     return()=>{cancelled=true;};
-  },[branches,historyRefresh,localToday,monitoringHistoryDate,monitoringMode,posBranchFilter,effectiveRole,isOwner,tab]);
-  const monitoringView=dailyPosMonitoringView(monitoringMode,localToday,monitoringHistoryDate);
+  },[branches,historyRefresh,localToday,posBranchFilter,effectiveRole,isOwner,tab]);
+  const monitoringView=dailyPosMonitoringView(localToday);
   const visibleDailyStatuses=summarizeDailyPosStatuses(dailyPosStatuses);
   const productCategories = [...new Set((analytics?.products ?? []).map((product) => product.category))];
   const visibleProducts = (analytics?.products ?? []).filter((product) => {
@@ -1091,15 +1091,8 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
           </>
         } />
 
-      {isOwner && <PosMappingSetup role={effectiveRole} initialSourceId={searchParams.get("configureMapping") ?? ""} />}
+      {isOwner && <PosMappingSetup role={effectiveRole} initialSourceId={searchParams.get("configureMapping") ?? ""} initialFormatRequestId={searchParams.get("formatRequestId") ?? ""} />}
       {!isOwner && searchParams.get("configureMapping") && <p role="alert" className="rounded-xl border p-3 text-sm" style={{borderColor:C.amber,background:C.amberBg}}>POS column mapping is Owner-only. Ask an Owner to open this mapping request.</p>}
-
-      <div className="sales-kpi-grid grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <KPICard loading={analyticsLoading} label="Total Sales" value={formatPeso(analytics?.summary.sales ?? 0)} sub={periodLabel} icon={ShoppingCart} color={C.maroon} comparisonLabel={comparisonLabel} />
-        <KPICard loading={analyticsLoading} label="Recipe COGS" value={formatPeso(analytics?.summary.theoreticalCogs ?? 0)} sub="Based on saved ingredient costs" icon={Package} color={C.amber} comparisonLabel={comparisonLabel} />
-        <KPICard loading={analyticsLoading} label="Gross Profit" value={formatPeso(analytics?.summary.grossProfit ?? 0)} sub={`${(analytics?.summary.grossMargin ?? 0).toFixed(1)}% margin`} icon={TrendingUp} color={C.green} comparisonLabel={comparisonLabel} />
-        <KPICard loading={analyticsLoading} label="Units Sold" value={(analytics?.summary.unitsSold ?? 0).toLocaleString()} sub={`${analytics?.summary.importCount ?? 0} POS import(s)`} icon={Hash} color={C.blue} comparisonLabel={comparisonLabel} />
-      </div>
 
       <div className="sales-section-tabs flex max-w-full gap-1 overflow-x-auto border-b" style={{ borderColor: C.border }}>
         {["overview", "products", "import_history"].map(t => (
@@ -1196,11 +1189,9 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
       {tab === DAILY_POS_MONITORING_LOCATION && (<div className="space-y-4">
         <section aria-label="Daily Upload Monitoring" className="rounded-2xl border p-4" style={{borderColor:C.border,background:C.surface}}>
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div><h3 className="font-semibold" style={{color:C.primary}}>{monitoringView.title}</h3><p className="mt-1 text-xs" style={{color:C.secondary}}>{monitoringMode==="current"?"Current business-date upload status for each monitored branch.":"Historical upload status based on the selected business date."}</p></div>
+            <div><h3 className="font-semibold" style={{color:C.primary}}>{monitoringView.title}</h3><p className="mt-1 text-xs" style={{color:C.secondary}}>Current business-date upload status for each monitored branch.</p></div>
             <div className="flex flex-wrap gap-2">
               {isOwner && <Select ariaLabel="Monitoring branch" options={["All Branches", ...branches.map((branch) => branch.name)]} value={posBranchFilter} onChange={value=>{setPosBranchFilter(value);setPosHistoryPage(1);}} />}
-              {monitoringView.showDateFilter&&<CalendarDateField label="Date" value={monitoringHistoryDate} max={addDateDays(localToday,-1)} onChange={(value)=>value&&setMonitoringHistoryDate(value)}/>}
-              <Btn variant="outline" onClick={()=>setMonitoringMode((mode)=>mode==="current"?"history":"current")}>{monitoringView.actionLabel}</Btn>
             </div>
           </div>
           {dailyPosError&&<p role="alert" className="mt-3 text-sm" style={{color:C.red}}>{dailyPosError}</p>}
@@ -1306,6 +1297,15 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
 // ─── Inventory Overview ────────────────────────────────────────────────────────
 
 // ─── COGS Analysis ─────────────────────────────────────────────────────────────
+export function CogsOverviewKpis({ loading, summary }: { loading: boolean; summary: PosAnalytics["summary"] | null | undefined }) {
+  return <div className="cogs-kpi-grid grid gap-4">
+    <KPICard loading={loading} label="Total Sales" value={formatPeso(summary?.sales ?? 0)} sub={`${summary?.unitsSold ?? 0} units sold`} icon={DollarSign} color={C.blue} />
+    <KPICard loading={loading} label="Total COGS" value={formatPeso(summary?.totalCogs ?? 0)} sub="Sum of recipe-based product COGS" icon={BarChart2} color={C.amber} />
+    <KPICard loading={loading} label="Gross Profit" value={formatPeso(summary?.grossProfit ?? 0)} sub="Total Sales less Total COGS" icon={TrendingUp} color={C.green} />
+    <KPICard loading={loading} label="Gross Margin" value={`${(summary?.grossMargin ?? 0).toFixed(1)}%`} sub="Gross Profit ÷ Sales × 100" icon={Percent} color={C.maroon} />
+  </div>;
+}
+
 function COGSAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role | string; scopeBranchName?: string }) {
   const { user } = useAuth();
   const isOwner = isOwnerRole(role) || user?.role === "OWNER";
@@ -1424,14 +1424,7 @@ function COGSAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role |
           </>
         } />
 
-      <div className="cogs-kpi-grid grid gap-4">
-        <KPICard loading={loading} label="Total Sales" value={formatPeso(summary?.sales ?? 0)} sub={`${summary?.unitsSold ?? 0} units sold`} icon={DollarSign} color={C.blue} />
-        <KPICard loading={loading} label="Total COGS" value={formatPeso(summary?.totalCogs ?? 0)} sub="Sum of recipe-based product COGS" icon={BarChart2} color={C.amber} />
-        <KPICard loading={loading} label="Gross Profit" value={formatPeso(summary?.grossProfit ?? 0)} sub="Total Sales less Total COGS" icon={TrendingUp} color={C.green} />
-        <KPICard loading={loading} label="Gross Margin" value={`${(summary?.grossMargin ?? 0).toFixed(1)}%`} sub="Gross Profit ÷ Sales × 100" icon={Percent} color={C.maroon} />
-          <KPICard loading={loading} label="Detected Shortage" value={formatPeso(summary?.detectedShortageValue ?? 0)} sub="Inventory shortage awaiting or under review" icon={TrendingDown} color={C.red} />
-          <KPICard loading={loading} label="Verified Shrinkage" value={formatPeso(summary?.verifiedShrinkageCost ?? 0)} sub="Verified shrinkage causes only" icon={GitCompare} color={C.red} />
-      </div>
+      <CogsOverviewKpis loading={loading} summary={summary}/>
 
       <div className="cogs-analysis-grid grid grid-cols-3 gap-5">
         <Card className="col-span-2" padding={false}>

@@ -2,8 +2,8 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { PosSource } from "../../types/inventoryWorkflow";
-import { activePosSourcesForBranch, canValidatePosImport, hasInvalidCsvEncoding, isSupportedPosFilename, MANAGER_POS_FORMAT_REQUEST_MESSAGE, POS_FORMAT_REQUEST_SENT_MESSAGE, PosImportModal, PosSourceField, resolvedPosSourceId } from "./PosImportModal";
-import { PosMappingRecoveryNotice } from "./posImportPresentation";
+import { activePosSourcesForBranch, canValidatePosImport, hasInvalidCsvEncoding, isSupportedPosFilename, managerPosSourceLabel, MANAGER_POS_FORMAT_REQUEST_MESSAGE, POS_FORMAT_REQUEST_SENT_MESSAGE, PosImportModal, PosSourceField, resolvedPosSourceId } from "./PosImportModal";
+import { posSourceReadiness, PosMappingRecoveryNotice } from "./posImportPresentation";
 
 const source = (id: string, branchId: string, displayName: string, status: PosSource["status"] = "ACTIVE"): PosSource => ({
   id,
@@ -15,7 +15,9 @@ const source = (id: string, branchId: string, displayName: string, status: PosSo
   fieldMapping: null,
   status,
   formatVerifiedBy: null,
-  formatVerifiedAt: null,
+  formatVerifiedAt: status === "ACTIVE" ? "2026-10-01T00:00:00Z" : null,
+  hasActiveMappings: status === "ACTIVE",
+  hasPendingMappings: false,
 });
 
 describe("Import POS Sales source selection", () => {
@@ -60,10 +62,26 @@ describe("Import POS Sales source selection", () => {
     const markup = renderToStaticMarkup(<PosSourceField sources={sources} sourceId={resolvedPosSourceId(sources, "")} loading={false} onChange={vi.fn()} />);
 
     expect(markup).toContain("<span>POS Source: </span>");
-    expect(markup).toContain("<strong style=\"color:var(--app-primary)\">Libro POS Transaction Summary XLSX</strong>");
+    expect(markup).toContain("<strong style=\"color:var(--app-primary)\">Libro POS - Libro Espresso XLSX - Ready</strong>");
     expect(markup).not.toContain("<select");
     expect(resolvedPosSourceId(sources, "")).toBe("gulod-source");
     expect(canValidatePosImport(true, false, "gulod-source", sources)).toBe(true);
+  });
+
+  it("derives current Manager labels from every configured format without obsolete suffixes", () => {
+    const configuredSource = source("lipa-source", "lipa", "Lipa POS Summary Items Sold");
+    expect(managerPosSourceLabel({ ...configuredSource, supportedFormat: "SUMMARY_ITEMS_SOLD_LEGACY_XLS" })).toBe("Lipa POS - Libro Espresso XLS - Ready");
+    expect(managerPosSourceLabel({ ...configuredSource, supportedFormat: "TRANSACTION_SUMMARY_XLSX" })).toBe("Lipa POS - Libro Espresso XLSX - Ready");
+    expect(managerPosSourceLabel({ ...configuredSource, supportedFormat: "CANONICAL_CSV" })).toBe("Lipa POS - Libro Espresso CSV - Ready");
+    expect(managerPosSourceLabel({ ...configuredSource, supportedFormat: "CUSTOM_TABULAR_XLSX", fieldMapping: {productName:"Item",quantitySold:"Qty",transactionId:"OR",businessDate:"Date",status:"Status",unitPrice:"Price"} })).toBe("Lipa POS - Custom Mapped Spreadsheet - Ready");
+  });
+
+  it("distinguishes inactive, setup-required, pending-approval, and ready sources",()=>{
+    const base=source("source","gulod","Gulod POS");
+    expect(posSourceReadiness({...base,status:"INACTIVE"})).toBe("Inactive");
+    expect(posSourceReadiness({...base,formatVerifiedAt:null,hasActiveMappings:false})).toBe("Setup Required");
+    expect(posSourceReadiness({...base,hasActiveMappings:false,hasPendingMappings:true})).toBe("Pending Approval");
+    expect(posSourceReadiness(base)).toBe("Ready");
   });
 
   it("uses the shared reduced-motion skeleton while branch POS sources load", () => {
@@ -82,6 +100,8 @@ describe("Import POS Sales source selection", () => {
     expect(markup).toContain("Select active POS source");
     expect(markup).toContain("Source A");
     expect(markup).toContain("Source B");
+    expect(markup).toContain('value="source-a"');
+    expect(markup).toContain('value="source-b"');
     expect(resolvedPosSourceId(sources, "")).toBe("");
   });
 

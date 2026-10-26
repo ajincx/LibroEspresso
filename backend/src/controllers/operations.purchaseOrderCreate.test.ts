@@ -35,14 +35,14 @@ function response() {
   return value;
 }
 
-function transactionClient(hasQualifyingFull: boolean) {
+function transactionClient(hasQualifyingFull: boolean, fullDate = "2026-10-23") {
   const statements: Array<{ sql: string; values?: unknown[] }> = [];
   const client = {
     query: vi.fn(async (statement: unknown, values?: unknown[]) => {
       const sql = String(statement);
       statements.push({ sql, values });
-      if (sql.includes("SELECT ic.id FROM inventory_counts")) {
-        return { rows: hasQualifyingFull ? [{ id: "full-count-1" }] : [] };
+      if (sql.includes("SELECT ic.id,ic.count_no") && sql.includes("FROM inventory_counts")) {
+        return { rows: hasQualifyingFull ? [{ id: "full-count-1", countNo: "IC-FULL-1", countDate: fullDate }] : [] };
       }
       if (sql.includes("SELECT id,unit FROM inventory_items")) return { rows: [{ id: inventoryItemId, unit: "g" }] };
       if (sql.includes("nextval('purchase_order_number_seq')")) return { rows: [{ poNo: "PO-2026-00001" }] };
@@ -75,15 +75,18 @@ describe("purchase-order Full Physical Count prerequisite", () => {
     await expect(createPurchaseOrder(request() as never, response() as never, vi.fn()))
       .rejects.toMatchObject({ status: 409, code: "PHYSICAL_COUNT_REQUIRED" });
 
-    const guard = statements.find(({ sql }) => sql.includes("SELECT ic.id FROM inventory_counts"));
+    const guard = statements.find(({ sql }) => sql.includes("SELECT ic.id,ic.count_no") && sql.includes("FROM inventory_counts"));
     expect(guard?.sql).toContain("ic.count_type='FULL'");
+    expect(guard?.sql).toContain("date_trunc('week',$2::date)");
+    expect(guard?.sql).toContain("ic.count_date<=$2::date");
+    expect(guard?.sql).toContain("ORDER BY ic.count_date DESC");
     expect(guard?.sql).toContain("invalid_item.voided_at IS NOT NULL");
     expect(guard?.values).toEqual([branchId, "2026-10-25"]);
     expect(statements.some(({ sql }) => sql.includes("INSERT INTO purchase_orders"))).toBe(false);
     expect(statements.at(-1)?.sql).toBe("ROLLBACK");
   });
 
-  it.each(["DRAFT", "ORDERED"] as const)("allows a same-day valid Full Count for a %s PO", async (status) => {
+  it.each(["DRAFT", "ORDERED"] as const)("allows the latest valid Full Count from earlier in the same week for a %s PO", async (status) => {
     const { client, statements } = transactionClient(true);
     mocks.connect.mockResolvedValue(client);
 
@@ -98,7 +101,13 @@ describe("purchase-order Full Physical Count prerequisite", () => {
       "PURCHASE_ORDER",
       "purchase-order-1",
       "Created PO-2026-00001",
-      { branchId, status },
+      {
+        branchId,
+        status,
+        verificationFullCountId: "full-count-1",
+        verificationFullCountNo: "IC-FULL-1",
+        verificationFullCountDate: "2026-10-23",
+      },
       client,
     );
   });

@@ -1,5 +1,5 @@
 ﻿import { describe, expect, it } from "vitest";
-import { isPageAllowed, ownerOnlyPages, managerOnlyPages, pageFromPath, pagePaths, type AppPage } from "./routeConfig";
+import { isPageAllowed, notificationDestination, ownerOnlyPages, managerOnlyPages, pageFromPath, pagePaths, type AppPage } from "./routeConfig";
 
 describe("Route and Role Security Configuration", () => {
   it("defines paths for all essential application pages", () => {
@@ -77,6 +77,26 @@ describe("Route and Role Security Configuration", () => {
     it("falls back to dashboard for root or unrecognized paths", () => {
       expect(pageFromPath("/")).toBe("dashboard");
       expect(pageFromPath("/some/unknown/route")).toBe("dashboard");
+    });
+  });
+
+  describe("notification destinations", () => {
+    it("opens an Owner POS format setup request in Sales Analysis", () => {
+      expect(notificationDestination({ entityType: "POS_FORMAT_SETUP_REQUEST", entityId: "request-1" }, "OWNER"))
+        .toEqual({ path: "/sales?formatRequestId=request-1" });
+    });
+
+    it("keeps supported notification entities in their existing modules", () => {
+      expect(notificationDestination({ entityType: "POS_IMPORT", entityId: "import-1" }, "BRANCH_MANAGER")).toEqual({ path: "/sales" });
+      expect(notificationDestination({ entityType: "INCIDENT_REPORT", entityId: "incident-1" }, "BRANCH_MANAGER")).toEqual({ path: "/shrinkage?incidentId=incident-1" });
+      expect(notificationDestination({ entityType: "SHRINKAGE_REPORT", entityId: "report-1" }, "OWNER")).toEqual({ path: "/shrinkage?reportId=report-1" });
+      expect(notificationDestination({ entityType: "MENU_ITEM", entityId: "product-1" }, "OWNER")).toEqual({ path: "/cogs/menu-recipes" });
+    });
+
+    it("returns safe messages for missing and permission-denied targets", () => {
+      expect(notificationDestination({ entityType: "POS_FORMAT_SETUP_REQUEST", entityId: null }, "OWNER")).toHaveProperty("message");
+      expect(notificationDestination({ entityType: "POS_FORMAT_SETUP_REQUEST", entityId: "request-1" }, "STAFF")).toHaveProperty("message");
+      expect(notificationDestination({ entityType: "UNKNOWN", entityId: "missing" }, "OWNER")).toHaveProperty("message");
     });
   });
 });

@@ -26,4 +26,9 @@ describe("inventory variance materiality", () => {
     expect(classifyShortageVariance(100, -4, tolerance)).toBe("SIGNIFICANT");
     expect(classifyShortageVariance(100, 10, tolerance)).toBe("IMMATERIAL");
   });
+
+  it("keeps the historical Caramel Syrup discrepancy visible but below investigation tolerance", () => {
+    expect(requiresVarianceInvestigation(20_000, -0.02, tolerance)).toBe(false);
+    expect(requiresVarianceInvestigation(20_000, -401, tolerance)).toBe(true);
+  });
 });

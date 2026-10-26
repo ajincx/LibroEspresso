@@ -6,9 +6,9 @@ const MenuRecipesPage = lazy(() => import("./MenuRecipesPage").then((module) => 
 const loadOperationalPages = () => import("../inventory/InventorySupportPages");
 const ExpectedInventoryPage = lazy(() => loadOperationalPages().then((module) => ({ default: module.ExpectedInventoryPage })));
 
-const tabs = [
+export const menuRecipeTabs = [
   { id: "recipes", label: "Menu & Standard Recipes" },
-  { id: "usage", label: "Ingredient Usage" },
+  { id: "usage", label: "Ingredient Consumption" },
 ] as const;
 
 export function MenuRecipeManagementModule({ role, initialTab = "recipes" }: {
@@ -19,7 +19,7 @@ export function MenuRecipeManagementModule({ role, initialTab = "recipes" }: {
   useEffect(() => setActiveTab(initialTab), [initialTab]);
 
   return <div>
-    <ModuleTabSwitcher tabs={tabs} active={activeTab} onChange={setActiveTab}/>
+    <ModuleTabSwitcher tabs={menuRecipeTabs} active={activeTab} onChange={setActiveTab}/>
     <AnimatedTabPanel panelKey={activeTab}>
       {activeTab === "recipes" ? <MenuRecipesPage/> : <ExpectedInventoryPage role={role} view="usage"/>}
     </AnimatedTabPanel>

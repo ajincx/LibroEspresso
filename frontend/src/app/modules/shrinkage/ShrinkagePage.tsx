@@ -18,6 +18,13 @@ import { controlledActionService } from "../../services/controlledAction.service
 const formatDate = (value: string | null) => value ? formatAppDate(value, true) : "—";
 
 const emptyMetrics: ShrinkageMetrics = { detectedValue: 0, detected: 0, pending: 0, spoilage: 0, wastage: 0, pilferage: 0 };
+export const SHRINKAGE_STATUS_FILTER_OPTIONS: Array<{ value: ShrinkageStatus | ""; label: string }> = [
+  { value: "", label: "All Statuses" },
+  { value: "DETECTED", label: "Needs Investigation" },
+  { value: "VERIFIED", label: "Verified" },
+  { value: "PENDING_REVIEW", label: "Pending Review" },
+  { value: "REVIEWED", label: "Reviewed" },
+];
 
 export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string }) {
   const { user } = useAuth();
@@ -156,9 +163,7 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
       }
       toolbar={
         <>
-          <div className="flex items-center gap-1 p-1 rounded-xl border" style={{ borderColor: "var(--app-border)", background: "var(--app-bg)" }}>{[
-            { value: "", label: "All" }, { value: "DETECTED", label: "Needs Investigation" }, { value: "VERIFIED", label: "Verified" }, { value: "PENDING_REVIEW", label: "Pending Review" }, { value: "REVIEWED", label: "Reviewed" },
-          ].map((option) => <button key={option.value || "all"} onClick={() => setStatus(option.value as ShrinkageStatus | "")} className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors" style={{ background: status === option.value ? "var(--app-primary)" : "transparent", color: status === option.value ? "#fff" : "var(--app-text-muted)" }}>{option.label}</button>)}</div>
+          <Select value={status} onChange={(value) => setStatus(value as ShrinkageStatus | "")} options={SHRINKAGE_STATUS_FILTER_OPTIONS}/>
           <Select value={archiveScope} onChange={(value) => setArchiveScope(value as "ACTIVE" | "ARCHIVED" | "ALL")} options={[{ value: "ACTIVE", label: "Active Cases" }, { value: "ARCHIVED", label: "Archived Cases" }, { value: "ALL", label: "All Records" }]}/>
           {owner && <Select value={branchId} onChange={setBranchId} options={[{ value: "", label: "All Branches" }, ...branches.map((branch) => ({ value: branch.id, label: branch.name }))]}/>}
           <Select value={classification} onChange={(value) => setClassification(value as ShrinkageClassification | "")} options={[{ value: "", label: "All Classifications" }, ...managerClassificationOptions.map((option) => ({ value: option.value, label: option.label }))]}/>

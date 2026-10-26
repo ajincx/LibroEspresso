@@ -36,7 +36,7 @@ const branchId = "11111111-1111-4111-8111-111111111111";
 const inventoryItemId = "22222222-2222-4222-8222-222222222222";
 const countId = "33333333-3333-4333-8333-333333333333";
 
-function transactionClient(options: { existingCounts?: Array<{ countNo: string; countType: string }>; posComplete?: boolean } = {}) {
+function transactionClient(options: { existingCounts?: Array<{ countNo: string; countType: string }>; posComplete?: boolean; weeklyFullCount?: number } = {}) {
   const query = vi.fn(async (sql: string, params?: unknown[]) => {
     if (sql.includes("FROM calculation_settings")) {
       return { rows: [{ absoluteTolerance: 1, relativeTolerance: 2 }] };
@@ -46,6 +46,9 @@ function transactionClient(options: { existingCounts?: Array<{ countNo: string; 
     }
     if (sql.includes("FROM pos_daily_declarations")) {
       return { rowCount: options.posComplete ? 1 : 0, rows: options.posComplete ? [{ complete: true }] : [] };
+    }
+    if (sql.includes('count(*)::int "count"') && sql.includes("ic.count_type='FULL'")) {
+      return { rows: [{ count: options.weeklyFullCount ?? 0 }] };
     }
     if (sql.includes("nextval('inventory_count_number_seq')")) {
       return { rows: [{ countNo: "IC-2026-00010" }] };
@@ -285,5 +288,49 @@ describe("physical-count API unit normalization", () => {
       status: 409,
       code: "INVENTORY_COUNT_DUPLICATE",
     });
+  });
+
+  it("rejects the fourth valid Full Count in the same Manila Monday-Sunday week", async () => {
+    const client = transactionClient({
+      existingCounts: [{ countNo: "IC-CLOSE", countType: "CLOSING" }],
+      weeklyFullCount: 3,
+    });
+    mocks.poolConnect.mockResolvedValue(client);
+
+    await expect(submitInventoryCount({
+      body: { countDate: "2026-10-23", countType: "FULL", items: [{ inventoryItemId, quantity: 3700, enteredUnit: "g" }] },
+      user: { id: "manager", role: "BRANCH_MANAGER", branchId },
+    } as never, { status: vi.fn(), json: vi.fn() } as never, vi.fn())).rejects.toMatchObject({
+      status: 409,
+      code: "FULL_COUNT_WEEKLY_LIMIT_REACHED",
+    });
+
+    const guard = client.query.mock.calls.find(([sql]) => String(sql).includes('count(*)::int "count"'));
+    expect(String(guard?.[0])).toContain("date_trunc('week',$2::date)");
+    expect(String(guard?.[0])).toContain("invalid_item.voided_at IS NOT NULL");
+    expect(guard?.[1]).toEqual([branchId,"2026-10-23"]);
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO inventory_counts"))).toBe(false);
+    expect(client.query).toHaveBeenCalledWith("ROLLBACK");
+  });
+
+  it("allows the third valid Full Count and checks the new week independently", async () => {
+    const third = transactionClient({ existingCounts: [{ countNo: "IC-CLOSE", countType: "CLOSING" }], weeklyFullCount: 2 });
+    mocks.poolConnect.mockResolvedValueOnce(third);
+    const json = vi.fn();
+    const status = vi.fn(() => ({ json }));
+
+    await submitInventoryCount({
+      body: { countDate: "2026-10-25", countType: "FULL", items: [{ inventoryItemId, quantity: 3864, enteredUnit: "g" }] },
+      user: { id: "manager", role: "BRANCH_MANAGER", branchId },
+    } as never, { status } as never, vi.fn());
+    expect(third.query).toHaveBeenCalledWith("COMMIT");
+
+    const nextWeek = transactionClient({ existingCounts: [{ countNo: "IC-CLOSE-2", countType: "CLOSING" }], weeklyFullCount: 0 });
+    mocks.poolConnect.mockResolvedValueOnce(nextWeek);
+    await submitInventoryCount({
+      body: { countDate: "2026-10-26", countType: "FULL", items: [{ inventoryItemId, quantity: 3864, enteredUnit: "g" }] },
+      user: { id: "manager", role: "BRANCH_MANAGER", branchId },
+    } as never, { status } as never, vi.fn());
+    expect(nextWeek.query).toHaveBeenCalledWith("COMMIT");
   });
 });

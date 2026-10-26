@@ -1,10 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { attachPendingRecipeDrafts,canManageMenuCategories,CategoryLabel,categoryDescription,ingredientSetsMatch,initializePendingRecipeDrafts,isControlledTestProductRetirement,isValidRecipeQuantity,marginTextClass,MenuProductsSkeleton,normalizeRecipeQuantityInput,recipeIngredientExists,removeRecipeIngredientRow,selectInitialZeroQuantity,updatePendingRecipeDraftRow,variantMarginRate,type RecipeDraft } from "./MenuRecipesPage";
+import { attachPendingRecipeDrafts,canManageMenuCategories,CategoryLabel,categoryDescription,ingredientSetsMatch,initializePendingRecipeDrafts,isControlledTestProductRetirement,isValidRecipeQuantity,MAX_MENU_PRODUCT_PRICE_PHP,menuSellingPriceValidationError,marginTextClass,MenuProductsSkeleton,normalizeRecipeQuantityInput,productNameValidationError,recipeIngredientExists,removeRecipeIngredientRow,selectInitialZeroQuantity,updatePendingRecipeDraftRow,variantMarginRate,type RecipeDraft } from "./MenuRecipesPage";
+import { menuRecipeTabs } from "./MenuRecipeManagementModule";
 import type { MenuCategory, MenuProduct } from "../../types/masterData";
 
 describe("Menu category guidance and permissions",()=>{
+  it("uses the approved Ingredient Consumption title",()=>{
+    expect(menuRecipeTabs.find(tab=>tab.id==="usage")?.label).toBe("Ingredient Consumption");
+  });
   it("uses the shared table skeleton while menu products load",()=>{
     const markup=renderToStaticMarkup(createElement(MenuProductsSkeleton));
     expect(markup).toContain("data-menu-products-skeleton");
@@ -46,6 +50,13 @@ describe("Menu Products & Recipes margin presentation",()=>{
   });
   it("shows unavailable margin without a recipe, not a zero-cost margin",()=>{expect(variantMarginRate(149,null)).toBeNull();expect(marginTextClass(null)).toContain("text-muted");});
   it("calculates each configured variant margin using its selling price",()=>{expect(variantMarginRate(149,16.96)).toBeCloseTo((149-16.96)/149*100);expect(variantMarginRate(189,16.96)).toBeCloseTo((189-16.96)/189*100);});
+});
+
+describe("Menu product input validation",()=>{
+  it.each(["12345"," 987 ","Coffee\u0007Latte"])("rejects invalid product names: %j",(name)=>expect(productNameValidationError(name)).not.toBe(""));
+  it.each(["Café Latte","Iced Coffee 16oz","2-in-1 Coffee","Cookies & Cream"])("accepts legitimate café product names: %s",(name)=>expect(productNameValidationError(name)).toBe(""));
+  it.each(["",0,-1,Number.NaN,Number.POSITIVE_INFINITY,149.999,MAX_MENU_PRODUCT_PRICE_PHP+0.01] as const)("rejects invalid prices: %s",(price)=>expect(menuSellingPriceValidationError(price)).not.toBe(""));
+  it.each([1,149,149.95,MAX_MENU_PRODUCT_PRICE_PHP])("accepts valid prices: %s",(price)=>expect(menuSellingPriceValidationError(price)).toBe(""));
 });
 
 describe("Menu Products & Recipes ingredient rows",()=>{

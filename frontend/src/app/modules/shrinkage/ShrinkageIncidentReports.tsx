@@ -80,16 +80,16 @@ export function ShrinkageIncidentReports({ owner, branchId }: { owner: boolean; 
                 <TD>{(report.items?.length??0)>1?`${report.items!.length} affected items`:report.items?.[0]?.name??report.inventoryItemName}</TD>
                 <TD right muted>{(report.items?.length??0)>1?"See details":`${report.items?.[0]?.quantity??report.quantity} ${report.items?.[0]?.unit??report.unit}`}</TD>
                 <TD center><StatusChip status={report.isLate && report.status === "PENDING" ? "late_request" : report.status.toLowerCase()} /></TD>
-                <TD right>
-                  <div className="flex justify-end gap-1">
+                <TD center>
+                  <div className="flex justify-center gap-1">
                   <button
                     type="button"
                     onClick={() => setSelected(report)}
-                    className="p-2 rounded-lg hover:bg-[var(--app-surface-muted)] transition-colors text-[var(--app-text-muted)] hover:text-[var(--app-primary)]"
+                    className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] px-2.5 py-1.5 text-xs font-semibold text-[var(--app-primary)] transition-colors hover:bg-[var(--app-surface-muted)]"
                     title="View incident"
                     aria-label="View incident details"
                   >
-                    <Eye size={15} />
+                    <Eye size={15} /> View
                   </button>
                   {!owner&&<button type="button" onClick={()=>{setArchiveTarget(report);setControlledValue({reason:"",verificationPin:""});}} className="p-2 rounded-lg border border-[var(--app-border)] text-[var(--app-danger)]" title="Archive incident" aria-label="Archive incident"><Archive size={15}/></button>}
                   </div>

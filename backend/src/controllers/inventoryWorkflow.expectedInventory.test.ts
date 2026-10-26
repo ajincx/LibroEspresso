@@ -50,6 +50,9 @@ describe("expected inventory partial baseline availability", () => {
         availability: "NO_BASELINE",
       }],
     });
+    mocks.poolQuery.mockImplementation(async (statement: unknown) => String(statement).includes('count(*)::int "count"')
+      ? { rows: [{ count: 0 }] }
+      : { rows: [] });
     const json = vi.fn();
 
     await getExpectedInventory({
@@ -70,8 +73,39 @@ describe("expected inventory partial baseline availability", () => {
           unit: noBaselineItem.unit,
           availability: "NO_BASELINE",
         }],
+        countType: "FULL",
+        closingCount: null,
+        fullCount: null,
+        sameDayClosingItems: [],
+        weeklyFullCount: 0,
+        weeklyFullLimit: 3,
       },
     });
+  });
+
+  it("returns corrected same-day Closing quantities for Full Count prefill", async () => {
+    const expectedItem = { inventoryItemId: validItem.id, sku: validItem.sku, itemName: validItem.name, unit: "g", expectedQuantity: 5000 };
+    mocks.calculateExpectedInventoryBatch.mockResolvedValueOnce({ items: [expectedItem], unavailableItems: [] });
+    mocks.poolQuery.mockImplementation(async (statement: unknown) => {
+      const sql = String(statement);
+      if (sql.includes("count_type IN ('CLOSING','FULL')")) return { rows: [{ id: "closing-1", countNo: "IC-CLOSE", countType: "CLOSING", submittedAt: "2026-10-23T10:00:00Z" }] };
+      if (sql.includes("ici.inventory_count_id=$1")) return { rows: [{ inventoryItemId: validItem.id, actualQuantity: 4980 }] };
+      if (sql.includes('count(*)::int "count"')) return { rows: [{ count: 2 }] };
+      return { rows: [] };
+    });
+    const json = vi.fn();
+
+    await getExpectedInventory({
+      query: { branchId, countDate: "2026-10-23", countType: "FULL" },
+      user: { id: "owner", role: "OWNER", branchId: null },
+    } as never, { json } as never, vi.fn());
+
+    expect(json).toHaveBeenCalledWith({ success: true, data: expect.objectContaining({
+      closingCount: expect.objectContaining({ id: "closing-1" }),
+      sameDayClosingItems: [{ inventoryItemId: validItem.id, actualQuantity: 4980 }],
+      weeklyFullCount: 2,
+      weeklyFullLimit: 3,
+    }) });
   });
 
   it("does not hide unexpected calculation failures", async () => {

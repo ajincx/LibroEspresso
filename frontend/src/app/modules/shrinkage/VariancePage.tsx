@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowDown, ArrowUp, Ban, GitCompare, RefreshCw, Search } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, Ban, Eye, GitCompare, RefreshCw, Search } from "lucide-react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router";
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -35,6 +35,13 @@ export function displayStatus(record: VarianceRecord): DisplayStatus {
 
 export function varianceScopeForStatus(status: DisplayStatus | "") {
   return status === "MATCHED" ? "MATCHED" as const : "DISCREPANCIES" as const;
+}
+
+export function varianceWithoutInvestigationLabel(record: Pick<VarianceRecord, "varianceQuantity" | "anomalyId">) {
+  if (record.anomalyId) return "Investigation available";
+  if (Math.abs(record.varianceQuantity) <= 0.0001) return "Matched — no investigation";
+  if (record.varianceQuantity > 0) return "Excess — no shortage investigation";
+  return "Within tolerance — no investigation";
 }
 
 export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string }) {
@@ -208,21 +215,21 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
                 <TD right><span className="font-semibold">{record.varianceValue > 0 ? "+" : ""}₱{record.varianceValue.toFixed(2)}</span></TD>
                 <TD muted>{classificationLabel(record.classification)}</TD>
                 <TD center><VarianceStatus status={displayStatus(record)} /></TD>
-                <TD right>
-                  <div className="flex justify-end gap-1">{record.anomalyId ? (
+                <TD center>
+                  <div className="flex justify-center gap-1">{record.anomalyId ? (
                     <button
                       type="button"
                       onClick={() => navigate(`/shrinkage?reportId=${record.anomalyId}`)}
-                      className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-opacity hover:opacity-85"
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-opacity hover:opacity-85"
                       style={{
                         color: "var(--app-primary)",
                         background: "var(--app-primary-subtle)",
                       }}
                     >
-                      {record.anomalyStatus === "DETECTED" && !owner ? "Investigate" : "View"}
+                      <Eye size={14}/>{record.anomalyStatus === "DETECTED" && !owner ? "Investigate" : "View"}
                     </button>
                   ) : (
-                    <span className="text-xs text-[var(--app-text-faint)]">—</span>
+                    <span className="max-w-32 text-right text-[11px] leading-4 text-[var(--app-text-muted)]">{varianceWithoutInvestigationLabel(record)}</span>
                   )}{!owner&&<button type="button" title="Void variance" aria-label={`Void variance ${record.countNo} ${record.itemName}`} onClick={()=>{setVoidTarget(record);setControlledValue({reason:"",verificationPin:""});}} className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--app-border)] text-[var(--app-danger)]"><Ban size={14}/></button>}</div>
                 </TD>
               </TR>

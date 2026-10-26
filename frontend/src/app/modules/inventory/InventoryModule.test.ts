@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { branchReorderSettingsInput, canConfigureBranchReorderPolicy, canOpenClosingCount, canSetIngredientInitialStock, connectedProductStatusLabel, dailyCountShortcutDestination, dailyCountStatusLabel, inventoryAdjustmentValidationError, InventoryOverview, inventoryOverviewColumns, inventoryTabs, movementCategoryLabel, projectedAdjustmentStock, recordCountShortcutDestination, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, shouldShowStockOperationCards, stockOperationCards, stockOperationSelectionAfterDailySubmit, subscribeToInventoryDataChanges } from "./InventoryModule";
+import { branchReorderSettingsInput, canConfigureBranchReorderPolicy, canOpenClosingCount, canSetIngredientInitialStock, closingCountOperationStatus, connectedProductStatusLabel, dailyCountShortcutDestination, dailyCountStatusLabel, fullCountOperationStatus, inventoryAdjustmentValidationError, InventoryOverview, inventoryOverviewColumns, inventoryTabs, movementCategoryLabel, projectedAdjustmentStock, recordCountShortcutDestination, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, shouldShowStockOperationCards, startingStockOperationStatus, stockOperationCards, stockOperationSelectionAfterDailySubmit, subscribeToInventoryDataChanges } from "./InventoryModule";
 import type { InventoryCountSummary } from "../../types/inventoryWorkflow";
 
 afterEach(() => vi.useRealTimers());
@@ -78,11 +78,24 @@ describe("Inventory Management terminology", () => {
 
   it("uses saved daily-count state and enforces Closing prerequisites",()=>{
     const context={countType:"OPENING" as const,openingCount:{id:"opening-1",countNo:"IC-1",countType:"OPENING" as const,submittedAt:"2026-10-16T00:00:00Z"},closingCount:null,previousClosingItems:[],previousClosingDate:null,posDayComplete:true};
-    expect(dailyCountStatusLabel(null)).toBe("--");
+    expect(dailyCountStatusLabel(null)).toBe("Pending");
     expect(dailyCountStatusLabel(context.openingCount)).toBe("Recorded");
     expect(canOpenClosingCount(context)).toBe(true);
     expect(canOpenClosingCount({...context,posDayComplete:false})).toBe(false);
     expect(canOpenClosingCount({...context,openingCount:null})).toBe(false);
+  });
+
+  it("uses the approved operation-specific status labels",()=>{
+    const daily={countType:"OPENING" as const,openingCount:null,closingCount:null,previousClosingItems:[],previousClosingDate:null,posDayComplete:false};
+    expect(startingStockOperationStatus(null)).toBe("Setup Required");
+    expect(startingStockOperationStatus({status:"INITIALIZED"} as never)).toBe("Completed");
+    expect(dailyCountStatusLabel(null)).toBe("Pending");
+    expect(closingCountOperationStatus(daily)).toBe("Not Yet Available");
+    expect(closingCountOperationStatus({...daily,openingCount:{id:"opening",countNo:"IC-O",countType:"OPENING",submittedAt:"now"},posDayComplete:true})).toBe("Ready to Record");
+    expect(fullCountOperationStatus({countType:"FULL",closingCount:null,fullCount:null,sameDayClosingItems:[],weeklyFullCount:0,weeklyFullLimit:3})).toBe("Closing Required");
+    expect(fullCountOperationStatus({countType:"FULL",closingCount:{id:"closing",countNo:"IC-C",countType:"CLOSING",submittedAt:"now"},fullCount:null,sameDayClosingItems:[],weeklyFullCount:2,weeklyFullLimit:3})).toBe("Ready to Record");
+    expect(fullCountOperationStatus({countType:"FULL",closingCount:{id:"closing",countNo:"IC-C",countType:"CLOSING",submittedAt:"now"},fullCount:null,sameDayClosingItems:[],weeklyFullCount:3,weeklyFullLimit:3})).toBe("Weekly Limit Reached");
+    expect(fullCountOperationStatus({countType:"FULL",closingCount:{id:"closing",countNo:"IC-C",countType:"CLOSING",submittedAt:"now"},fullCount:{id:"full",countNo:"IC-F",countType:"FULL",submittedAt:"now"},sameDayClosingItems:[],weeklyFullCount:3,weeklyFullLimit:3})).toBe("Recorded");
   });
 
   it("does not render a duplicate Record Stock Count action in Inventory Overview", () => {

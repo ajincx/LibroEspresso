@@ -1,5 +1,5 @@
 import type { ApiSuccess } from "../types/auth";
-import type { DailyInventoryCountContext, InventoryCountType } from "../types/inventoryWorkflow";
+import type { InventoryCountContext, InventoryCountType } from "../types/inventoryWorkflow";
 import type { CountVarianceItem, DailyPosUploadStatus, EvidenceBasis, ExpectedInventoryItem, InventoryCountSummary, OpeningInventoryBaseline, PosAnalytics, PosFieldMapping, PosFormatSetupRequest, PosHeaderInspection, PosImportPreview, PosImportReconciliation, PosImportRecord, PosInventoryDateAssessment, PosMapping, PosMappingReviewStatus, PosSource, ShrinkageAiAnalysisResult, ShrinkageClassification, ShrinkageEvidence, ShrinkageMetrics, ShrinkageReport, StartingStockSetup, UnavailableInventoryCountItem, VarianceRecord, WorkflowNotification } from "../types/inventoryWorkflow";
 import { api } from "./api";
 
@@ -21,7 +21,7 @@ function excelHeaders(sourceFilename: string, posSourceId?: string, expectedCont
 
 export const inventoryWorkflowService = {
   async expected(countDate: string, branchId?: string, countType:InventoryCountType="FULL") {
-    return (await api.get<ApiSuccess<{ branchId: string; countDate: string; items: ExpectedInventoryItem[]; unavailableItems: UnavailableInventoryCountItem[] } & DailyInventoryCountContext>>("/inventory-counts/expected", { params: countType==="FULL"?{countDate,branchId}:{ countDate, branchId, countType } })).data.data;
+    return (await api.get<ApiSuccess<{ branchId: string; countDate: string; items: ExpectedInventoryItem[]; unavailableItems: UnavailableInventoryCountItem[] } & InventoryCountContext>>("/inventory-counts/expected", { params: countType==="FULL"?{countDate,branchId}:{ countDate, branchId, countType } })).data.data;
   },
   async submitCount(countDate: string, items: { inventoryItemId: string; quantity: number; enteredUnit: "g" | "kg" | "ml" | "L" | "pc" }[], countType:InventoryCountType="FULL") {
     return (await api.post<ApiSuccess<{ count: { id: string; countNo: string; branchId: string; countDate: string; countType:InventoryCountType; items: CountVarianceItem[] } }>>("/inventory-counts", countType==="FULL"?{countDate,items}:{ countDate, countType, items })).data.data.count;
@@ -133,7 +133,13 @@ export const inventoryWorkflowService = {
     return (await api.post<ApiSuccess<{ id: string }>>("/pos-sales/mappings", input)).data.data;
   },
   async copyPosMappings(sourcePosSourceId: string, targetPosSourceId: string) {
-    return (await api.post<ApiSuccess<{ copied: number; skipped: number; eligible: number }>>("/pos-sales/mappings/copy", { sourcePosSourceId, targetPosSourceId })).data.data;
+    return (await api.post<ApiSuccess<{ copied: number; skipped: number; incompatible: number; eligible: number; incompatibleMappings: Array<{sourceProductName:string;sourceProductCode:string|null;reason:string}> }>>("/pos-sales/mappings/copy", { sourcePosSourceId, targetPosSourceId })).data.data;
+  },
+  async approveAllPosMappings(posSourceId: string) {
+    return (await api.post<ApiSuccess<{ posSourceId: string; approved: number }>>(`/pos-sales/mappings/approve-all/${posSourceId}`)).data.data;
+  },
+  async confirmAndActivatePosMappings(posSourceId: string, confirmedSupportedFormat: PosSource["supportedFormat"]) {
+    return (await api.post<ApiSuccess<{ posSourceId: string; approved: number; status: "ACTIVE"; readiness: "Ready" }>>(`/pos-sales/mappings/confirm-and-activate/${posSourceId}`, { confirmedSupportedFormat })).data.data;
   },
   async reviewPosMapping(id: string, reviewStatus: PosMappingReviewStatus, reviewComment?: string) {
     return (await api.patch<ApiSuccess<{ id: string; status: string; reviewStatus: PosMappingReviewStatus }>>(`/pos-sales/mappings/${id}`, { reviewStatus, ...(reviewComment?.trim() ? { reviewComment: reviewComment.trim() } : {}) })).data.data;

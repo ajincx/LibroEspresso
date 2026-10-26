@@ -25,7 +25,7 @@ suite("final inventory and purchase-order PostgreSQL workflow", () => {
 
   const manager = (id: string, branchId: string) => ({ id, role: "BRANCH_MANAGER", branchId } as const);
 
-  async function createBranchFixture(label: string) {
+  async function createBranchFixture(label: string, baselineReferenceDate = businessDate) {
     const branchId = crypto.randomUUID();
     const managerId = crypto.randomUUID();
     const baselineId = crypto.randomUUID();
@@ -46,7 +46,7 @@ suite("final inventory and purchase-order PostgreSQL workflow", () => {
     await pool.query(
       `INSERT INTO inventory_opening_baselines(id,baseline_no,branch_id,effective_at,designation,notes,created_by)
        VALUES($1,$2,$3,$4::date - interval '1 day','STARTING_STOCK','Disposable final workflow baseline',$5)`,
-      [baselineId, `OB-${label}`, branchId, businessDate, managerId],
+      [baselineId, `OB-${label}`, branchId, baselineReferenceDate, managerId],
     );
     await pool.query(
       `INSERT INTO inventory_opening_baseline_items(opening_baseline_id,inventory_item_id,quantity,unit)
@@ -56,14 +56,40 @@ suite("final inventory and purchase-order PostgreSQL workflow", () => {
     return { branchId, managerId };
   }
 
-  async function submitCount(branchId: string, managerId: string, countType: "OPENING" | "CLOSING" | "FULL", quantity: number) {
+  async function submitCount(branchId: string, managerId: string, countType: "OPENING" | "CLOSING" | "FULL", quantity: number, countDate = businessDate) {
     const result = jsonResponse();
     await submitInventoryCount({
-      body: { countDate: businessDate, countType, items: [{ inventoryItemId, quantity, enteredUnit: inventoryUnit }] },
+      body: { countDate, countType, items: [{ inventoryItemId, quantity, enteredUnit: inventoryUnit }] },
       user: manager(managerId, branchId),
     } as never, result.response as never, () => {});
     expect(result.state.status).toBe(201);
     return result.state.body as { data: { count: { id: string; items: Array<{ varianceQuantity: number }> } } };
+  }
+
+  async function insertCountCheckpoint(branchId: string, managerId: string, countDate: string, countType: "CLOSING" | "FULL") {
+    const count = await pool.query<{ id: string }>(
+      `INSERT INTO inventory_counts(count_no,branch_id,count_date,submitted_by,count_type,effective_at)
+       VALUES($1,$2,$3,$4,$5::varchar(10),CASE WHEN $5::varchar(10)='FULL' THEN NULL ELSE $3::date + time '20:00' END) RETURNING id`,
+      [`IC-E2E-${crypto.randomUUID().slice(0, 8)}`,branchId,countDate,managerId,countType],
+    );
+    await pool.query(
+      `INSERT INTO inventory_count_items(inventory_count_id,inventory_item_id,previous_actual_quantity,stock_received,
+         expected_consumption,approved_adjustments,expected_quantity,actual_quantity,variance_quantity,variance_value,unit)
+       VALUES($1,$2,5000,0,0,0,5000,5000,0,0,$3)`,
+      [count.rows[0]!.id,inventoryItemId,inventoryUnit],
+    );
+  }
+
+  function dateOffset(date: string, offset: number) {
+    const value = new Date(`${date}T12:00:00+08:00`);
+    value.setUTCDate(value.getUTCDate() + offset);
+    return value.toISOString().slice(0,10);
+  }
+
+  function mondayOfPreviousCompletedWeek(date: string) {
+    const value = new Date(`${date}T12:00:00+08:00`);
+    const isoDay = value.getUTCDay() === 0 ? 7 : value.getUTCDay();
+    return dateOffset(date,-isoDay-6);
   }
 
   async function addAcceptedSales(branchId: string, managerId: string, label: string) {
@@ -145,12 +171,14 @@ suite("final inventory and purchase-order PostgreSQL workflow", () => {
     const next = new Date(`${businessDate}T12:00:00+08:00`);
     next.setUTCDate(next.getUTCDate() + 1);
     deliveryDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Manila", year: "numeric", month: "2-digit", day: "2-digit" }).format(next);
-    const item = (await pool.query<{ id: string; unit: string; unitCost: number }>(
-      `SELECT id,unit,unit_cost::float8 "unitCost" FROM inventory_items WHERE status='ACTIVE' ORDER BY (unit='g') DESC,sku LIMIT 1`,
-    )).rows[0]!;
-    inventoryItemId = item.id;
-    inventoryUnit = item.unit;
-    unitCost = item.unitCost;
+    inventoryItemId = "00000000-0000-4000-8000-00000000f301";
+    inventoryUnit = "g";
+    unitCost = 0.02;
+    await pool.query(
+      `INSERT INTO inventory_items(id,sku,name,category,unit,unit_cost,reorder_level,status,item_scope,origin_branch_id)
+       VALUES($1,'E2E-PHASE3-ITEM','Disposable Phase 3 Ingredient','Test Fixture',$2,$3,0,'ACTIVE','GLOBAL',NULL)`,
+      [inventoryItemId, inventoryUnit, unitCost],
+    );
   });
 
   afterAll(async () => {
@@ -220,5 +248,41 @@ suite("final inventory and purchase-order PostgreSQL workflow", () => {
       [fixture.branchId],
     );
     expect(result.rows[0]).toEqual({ full: 1, purchaseOrders: 1 });
+  });
+
+  it("serializes concurrent Full submissions and permits at most three valid counts in a calendar week", async () => {
+    const monday = mondayOfPreviousCompletedWeek(businessDate);
+    const fixture = await createBranchFixture(`WEEK-${crypto.randomUUID().slice(0, 8)}`, monday);
+    await insertCountCheckpoint(fixture.branchId,fixture.managerId,monday,"FULL");
+    await insertCountCheckpoint(fixture.branchId,fixture.managerId,dateOffset(monday,1),"FULL");
+    await insertCountCheckpoint(fixture.branchId,fixture.managerId,dateOffset(monday,2),"CLOSING");
+    await insertCountCheckpoint(fixture.branchId,fixture.managerId,dateOffset(monday,3),"CLOSING");
+
+    const results = await Promise.allSettled([
+      submitCount(fixture.branchId,fixture.managerId,"FULL",5000,dateOffset(monday,2)),
+      submitCount(fixture.branchId,fixture.managerId,"FULL",5000,dateOffset(monday,3)),
+    ]);
+    expect(results.filter((result)=>result.status==="fulfilled")).toHaveLength(1);
+    const rejected=results.find((result)=>result.status==="rejected");
+    expect(rejected?.status).toBe("rejected");
+    if(rejected?.status==="rejected") expect(rejected.reason).toMatchObject({code:"FULL_COUNT_WEEKLY_LIMIT_REACHED"});
+
+    const count = await pool.query<{ count: number }>(
+      `SELECT count(*)::int count FROM inventory_counts
+        WHERE branch_id=$1 AND count_type='FULL' AND count_date BETWEEN $2::date AND $2::date+6`,
+      [fixture.branchId,monday],
+    );
+    expect(count.rows[0]?.count).toBe(3);
+
+    await insertCountCheckpoint(fixture.branchId,fixture.managerId,businessDate,"CLOSING");
+    await submitCount(fixture.branchId,fixture.managerId,"FULL",5000,businessDate);
+    const nextWeekCount = await pool.query<{ count: number }>(
+      `SELECT count(*)::int count FROM inventory_counts
+        WHERE branch_id=$1 AND count_type='FULL'
+          AND count_date>=date_trunc('week',$2::date)::date
+          AND count_date<(date_trunc('week',$2::date)::date+7)`,
+      [fixture.branchId,businessDate],
+    );
+    expect(nextWeekCount.rows[0]?.count).toBe(1);
   });
 });

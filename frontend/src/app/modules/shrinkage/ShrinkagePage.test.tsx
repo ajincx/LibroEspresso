@@ -1,7 +1,19 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { ShrinkageAiAnalysisPanel } from "./ShrinkagePage";
+import { SHRINKAGE_STATUS_FILTER_OPTIONS, ShrinkageAiAnalysisPanel } from "./ShrinkagePage";
+
+describe("System-Detected Anomaly filters", () => {
+  it("consolidates every existing status into one dropdown option set", () => {
+    expect(SHRINKAGE_STATUS_FILTER_OPTIONS).toEqual([
+      { value: "", label: "All Statuses" },
+      { value: "DETECTED", label: "Needs Investigation" },
+      { value: "VERIFIED", label: "Verified" },
+      { value: "PENDING_REVIEW", label: "Pending Review" },
+      { value: "REVIEWED", label: "Reviewed" },
+    ]);
+  });
+});
 
 describe("AI-Assisted Shrinkage Analysis presentation", () => {
   it("shows content-shaped skeletons while analysis is generated", () => {

@@ -11,6 +11,7 @@ import {
   DASHBOARD_FOCUS_REFRESH_INTERVAL_MS,
   DASHBOARD_SHOWS_DAILY_POS_MONITORING,
   DashboardAnalyticsSkeleton,
+  DashboardManagerActions,
   DashboardPosImportModal,
   DEFAULT_DASHBOARD_RANGE,
   STORAGE_KEY_DASHBOARD_USER_RANGE,
@@ -18,6 +19,8 @@ import {
   ForecastContentSkeleton,
   ForecastReplenishmentPanel,
   GrossMarginInfoDialog,
+  InventoryAlertActions,
+  ProductSalesRankingChart,
   adjustRangeForImport,
   clearDashboardUserRange,
   dashboardGreeting,
@@ -25,6 +28,7 @@ import {
   getEffectiveDashboardBranchId,
   inventoryValueColor,
   prioritizeInventoryAlerts,
+  rankDashboardProductSales,
   readDashboardUserRange,
   recordStockCountUrl,
   saveDashboardUserRange,
@@ -92,17 +96,41 @@ describe("dashboard presentation helpers",()=>{
     expect(markup).toContain("Record Stock Count");
     expect(markup).toContain("Today");
   });
+  it("keeps the main purchase request action and removes the duplicate inventory-alert reorder action",()=>{
+    const primaryActions=renderToStaticMarkup(React.createElement(DashboardManagerActions,{onRecordCount:()=>undefined,onImportSales:()=>undefined,onCreatePurchaseRequest:()=>undefined}));
+    const alertActions=renderToStaticMarkup(React.createElement(InventoryAlertActions,{onViewAll:()=>undefined}));
+    expect(primaryActions).toContain("Import Sales");
+    expect(primaryActions).toContain("Create Purchase Request");
+    expect(alertActions).toContain("View All Inventory");
+    expect(alertActions).not.toContain("Create Reorder PO");
+  });
   it("matches the Dashboard layout with six KPI, chart, and table loading placeholders",()=>{
     const markup=renderToStaticMarkup(React.createElement(DashboardAnalyticsSkeleton));
     expect(markup).toContain("data-dashboard-analytics-skeleton");
     expect(markup.match(/data-dashboard-kpi-skeleton/g)).toHaveLength(6);
     expect(markup).toContain("dashboard-kpis");
     expect(markup).toContain("Total Sales");
-    expect(markup).toContain("Sales &amp; Recipe COGS");
+    expect(markup).toContain("Highest &amp; Lowest-Selling Menu Products");
+    expect(markup).not.toContain("Sales &amp; Recipe COGS");
     expect(markup).toContain("Inventory Alerts");
     expect(markup).toContain("xl:col-span-2");
     expect(markup).toContain("Loading branch records");
     expect(markup).toContain("motion-reduce:animate-none");
+  });
+  it("ranks highest and lowest products by quantity with deterministic zero-sales handling",()=>{
+    const products=[
+      {id:"1",name:"Americano",unitsSold:12},{id:"2",name:"Latte",unitsSold:30},{id:"3",name:"Tea",unitsSold:0},
+      {id:"4",name:"Mocha",unitsSold:18},{id:"5",name:"Cocoa",unitsSold:4},{id:"6",name:"Espresso",unitsSold:20},
+    ];
+    expect(rankDashboardProductSales(products).highest.map(({name})=>name)).toEqual(["Latte","Espresso","Mocha","Americano","Cocoa"]);
+    expect(rankDashboardProductSales(products).lowest.map(({name})=>name)).toEqual(["Tea","Cocoa","Americano","Mocha","Espresso"]);
+  });
+  it("shows honest empty and zero-sales product ranking states",()=>{
+    const empty=renderToStaticMarkup(React.createElement(ProductSalesRankingChart,{products:[]}));
+    const zero=renderToStaticMarkup(React.createElement(ProductSalesRankingChart,{products:[{id:"1",name:"Tea",unitsSold:0}]}));
+    expect(empty).toContain("No active menu products are available");
+    expect(zero).toContain("No accepted sales were recorded");
+    expect(zero).toContain("Tea");
   });
   it("routes Record Stock Count into Inventory Management with the current branch and date",()=>{
     expect(recordStockCountUrl("branch-2","2026-10-13")).toBe("/inventory?tab=counts&countIntent=record&countDate=2026-10-13&branchId=branch-2");

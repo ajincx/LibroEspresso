@@ -1156,7 +1156,7 @@ export const getPosAnalytics: RequestHandler = async (req, res) => {
     ? `AND pi.branch_id=$${params.push(branchId)}`
     : "";
 
-  const [scope, summary, trends, products, ingredients, variance, verifiedCauses] =
+  const [scope, summary, trends, products, productSalesRanking, ingredients, variance, verifiedCauses] =
     await Promise.all([
       branchId
         ? pool.query<{ branchName: string }>(
@@ -1208,6 +1208,28 @@ export const getPosAnalytics: RequestHandler = async (req, res) => {
            JOIN line_costs lc ON lc.id=psi.id
           WHERE ${OPERATIONAL_POS_IMPORT_CONDITION} AND pi.business_date BETWEEN $1::date AND $2::date ${branchClause}
           GROUP BY mi.id ORDER BY sales DESC`,
+        params,
+      ),
+      pool.query(
+        `WITH catalog AS (
+           SELECT mi.id,mi.name
+             FROM menu_items mi
+            WHERE mi.status='ACTIVE' AND mi.approval_status='APPROVED'
+              AND EXISTS (
+                SELECT 1 FROM menu_item_branches mib JOIN branches branch ON branch.id=mib.branch_id
+                 WHERE mib.menu_item_id=mi.id AND mib.availability_status='APPROVED' AND mib.is_active=true
+                   AND branch.status='ACTIVE' ${branchId ? "AND mib.branch_id=$3" : ""}
+              )
+         ), sold AS (
+           SELECT psi.menu_item_id,sum(psi.quantity_sold)::float8 "unitsSold"
+             FROM pos_imports pi ${OPERATIONAL_POS_SOURCE_JOIN}
+             JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
+            WHERE ${OPERATIONAL_POS_IMPORT_CONDITION} AND pi.business_date BETWEEN $1::date AND $2::date ${branchClause}
+            GROUP BY psi.menu_item_id
+         )
+         SELECT catalog.id,catalog.name,coalesce(sold."unitsSold",0)::float8 "unitsSold"
+           FROM catalog LEFT JOIN sold ON sold.menu_item_id=catalog.id
+          ORDER BY "unitsSold" DESC,catalog.name`,
         params,
       ),
       pool.query(
@@ -1301,6 +1323,7 @@ export const getPosAnalytics: RequestHandler = async (req, res) => {
       },
       trends: trends.rows,
       products: products.rows,
+      productSalesRanking: productSalesRanking.rows,
       ingredients: ingredients.rows,
       shrinkageCauses,
     },
@@ -1465,7 +1488,42 @@ export const getExpectedInventory: RequestHandler = async (req, res) => {
   const countType = parsedType.data;
   const { items, unavailableItems } = await calculateExpectedInventoryBatch(pool, branchId, countDate, countType);
   if (countType === "FULL") {
-    return res.json({ success: true, data: { branchId, countDate, items, unavailableItems } });
+    const sameDayCounts = await pool.query<{
+      id: string; countNo: string; countType: "CLOSING" | "FULL"; submittedAt: string;
+    }>(`SELECT id,count_no "countNo",count_type "countType",submitted_at "submittedAt"
+          FROM inventory_counts
+         WHERE branch_id=$1 AND count_date=$2 AND count_type IN ('CLOSING','FULL') AND NOT is_test_data`,
+      [branchId,countDate]);
+    const closingCount = sameDayCounts.rows.find((count) => count.countType === "CLOSING") ?? null;
+    const closingItems = closingCount ? await pool.query<{ inventoryItemId: string; actualQuantity: number }>(
+      `SELECT ici.inventory_item_id "inventoryItemId",
+              COALESCE(correction.corrected_actual_quantity,ici.actual_quantity)::float8 "actualQuantity"
+         FROM inventory_count_items ici
+         LEFT JOIN LATERAL (SELECT corrected_actual_quantity FROM inventory_count_corrections
+           WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
+        WHERE ici.inventory_count_id=$1 AND ici.voided_at IS NULL`,
+      [closingCount.id],
+    ) : { rows: [] as { inventoryItemId: string; actualQuantity: number }[] };
+    const weeklyFullCounts = await pool.query<{ count: number }>(
+      `SELECT count(*)::int "count"
+         FROM inventory_counts ic
+        WHERE ic.branch_id=$1 AND ic.count_type='FULL' AND NOT ic.is_test_data
+          AND ic.count_date>=date_trunc('week',$2::date)::date
+          AND ic.count_date<(date_trunc('week',$2::date)::date + 7)
+          AND EXISTS(SELECT 1 FROM inventory_count_items valid_item
+            WHERE valid_item.inventory_count_id=ic.id AND valid_item.voided_at IS NULL)
+          AND NOT EXISTS(SELECT 1 FROM inventory_count_items invalid_item
+            WHERE invalid_item.inventory_count_id=ic.id AND invalid_item.voided_at IS NOT NULL)`,
+      [branchId,countDate],
+    );
+    return res.json({ success: true, data: {
+      branchId, countDate, countType, items, unavailableItems,
+      closingCount,
+      fullCount: sameDayCounts.rows.find((count) => count.countType === "FULL") ?? null,
+      sameDayClosingItems: closingItems.rows,
+      weeklyFullCount: Number(weeklyFullCounts.rows[0]?.count ?? 0),
+      weeklyFullLimit: 3,
+    } });
   }
   const dailyCounts = await pool.query<{
     id: string; countNo: string; countType: "OPENING" | "CLOSING"; submittedAt: string;
@@ -1624,6 +1682,27 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
     }
     if (input.countType === "FULL" && !closing) {
       throw new AppError(409,"CLOSING_COUNT_REQUIRED","Submit today's Closing Count before recording the Full Physical Count.");
+    }
+    if (input.countType === "FULL") {
+      const weeklyFullCounts = await client.query<{ count: number }>(
+        `SELECT count(*)::int "count"
+           FROM inventory_counts ic
+          WHERE ic.branch_id=$1 AND ic.count_type='FULL' AND NOT ic.is_test_data
+            AND ic.count_date>=date_trunc('week',$2::date)::date
+            AND ic.count_date<(date_trunc('week',$2::date)::date + 7)
+            AND EXISTS(SELECT 1 FROM inventory_count_items valid_item
+              WHERE valid_item.inventory_count_id=ic.id AND valid_item.voided_at IS NULL)
+            AND NOT EXISTS(SELECT 1 FROM inventory_count_items invalid_item
+              WHERE invalid_item.inventory_count_id=ic.id AND invalid_item.voided_at IS NOT NULL)`,
+        [branchId,input.countDate],
+      );
+      if (Number(weeklyFullCounts.rows[0]?.count ?? 0) >= 3) {
+        throw new AppError(
+          409,
+          "FULL_COUNT_WEEKLY_LIMIT_REACHED",
+          "This branch has already submitted three valid Full Physical Counts in the selected Monday-Sunday business week.",
+        );
+      }
     }
     const expectedSet = await calculateExpectedInventoryBatch(client,branchId,input.countDate,input.countType);
     if (input.countType === "FULL") validateCompleteInventoryCountItemSet(expectedSet,input.items.map((item)=>item.inventoryItemId));

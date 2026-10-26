@@ -12,10 +12,13 @@ vi.mock("../config/database.js", () => ({
 vi.mock("../services/audit.service.js", () => ({ writeAudit: mocks.writeAudit }));
 
 import {
+  approveAllPendingPosMappings,
+  confirmAndActivatePosMappings,
   copyApprovedGlobalPosMappings,
   createPosMapping,
   createPosSource,
   deactivateApprovedPosMapping,
+  listPosSources,
   revisePendingPosMapping,
   savePosSourceFieldMapping,
   updatePosMapping,
@@ -42,6 +45,17 @@ beforeEach(() => {
 });
 
 describe("POS source review metadata", () => {
+  it("returns approved-active and pending mapping flags for readiness presentation",async()=>{
+    mocks.poolQuery.mockResolvedValue({rows:[],rowCount:0});
+    const res=response();
+    await listPosSources({user:{id:ownerId,role:"OWNER",branchId:null}} as never,res as never,vi.fn());
+    const sql=String(mocks.poolQuery.mock.calls[0]?.[0]);
+    expect(sql).toContain("pm.status='ACTIVE' AND pm.review_status='APPROVED'");
+    expect(sql).toContain('"hasActiveMappings"');
+    expect(sql).toContain("pm.status='INACTIVE' AND pm.review_status='PENDING'");
+    expect(sql).toContain('"hasPendingMappings"');
+  });
+
   it("saves a validated custom spreadsheet mapping transactionally with an audit entry", async () => {
     const mapping = {
       productName: "Item Name", quantitySold: "Qty", transactionId: "Receipt No",
@@ -292,14 +306,22 @@ const revisionRequest = {
 } as never;
 
 describe("pending POS mapping revision", () => {
-  it("copies only reviewed global mappings as inactive Pending records in one transaction", async () => {
+  it("copies eligible approved mappings as inactive Pending records and reports skips and incompatibilities", async () => {
     const targetSourceId="88888888-8888-4888-8888-888888888888";
     const calls:Array<{sql:string;values?:unknown[]}>=[];
     const client={query:vi.fn(async(statement:unknown,values?:unknown[])=>{
       const sql=String(statement);calls.push({sql,values});
-      if(sql.includes("FROM pos_sources")&&sql.includes("FOR UPDATE")) return {rows:[{id:sourceId,sourceCode:"LEGACY"},{id:targetSourceId,sourceCode:"TRANSACTION"}],rowCount:2};
-      if(sql.includes("count(*)::int count")) return {rows:[{count:3}],rowCount:1};
-      if(sql.includes("INSERT INTO pos_product_variant_mappings")) return {rows:[{id:"map-1"},{id:"map-2"}],rowCount:2};
+      if(sql.includes("FROM pos_sources")&&sql.includes("FOR UPDATE")) return {rows:[
+        {id:sourceId,sourceCode:"LEGACY",branchId,"supportedFormat":"SUMMARY_ITEMS_SOLD_LEGACY_XLS"},
+        {id:targetSourceId,sourceCode:"TRANSACTION",branchId:"99999999-9999-4999-8999-999999999999",supportedFormat:"SUMMARY_ITEMS_SOLD_LEGACY_XLS"},
+      ],rowCount:2};
+      if(sql.includes("FROM pos_product_variant_mappings original")) return {rows:[
+        {sourceProductName:"Latte",sourceProductCode:"LAT",normalizedSourceProductName:"latte",menuItemVariantId:variantId,sourceBranchScoped:false,targetAvailable:true,recipeAvailable:true},
+        {sourceProductName:"Mocha",sourceProductCode:"MOC",normalizedSourceProductName:"mocha",menuItemVariantId:variantId,sourceBranchScoped:false,targetAvailable:true,recipeAvailable:true},
+        {sourceProductName:"Local Special",sourceProductCode:null,normalizedSourceProductName:"local special",menuItemVariantId:variantId,sourceBranchScoped:true,targetAvailable:false,recipeAvailable:true},
+      ],rowCount:3};
+      if(sql.includes("SELECT id FROM pos_product_variant_mappings")&&values?.[2]==="MOC") return {rows:[{id:"existing"}],rowCount:1};
+      if(sql.includes("INSERT INTO pos_product_variant_mappings")) return {rows:[],rowCount:1};
       return {rows:[],rowCount:0};
     }),release:vi.fn()};
     mocks.connect.mockResolvedValue(client);
@@ -308,13 +330,91 @@ describe("pending POS mapping revision", () => {
     const insert=calls.find(({sql})=>sql.includes("INSERT INTO pos_product_variant_mappings"));
     expect(calls[0]?.sql).toBe("BEGIN ISOLATION LEVEL SERIALIZABLE");
     expect(insert?.sql).toContain("'INACTIVE','PENDING'");
-    expect(insert?.sql).toContain("original.branch_id IS NULL");
-    expect(insert?.sql).toContain("original.status='ACTIVE' AND original.review_status='APPROVED'");
-    expect(insert?.values).toEqual([sourceId,targetSourceId,"Copied from LEGACY — pending review"]);
+    expect(calls.find(({sql})=>sql.includes("FROM pos_product_variant_mappings original"))?.sql).toContain("original.status='ACTIVE' AND original.review_status='APPROVED'");
+    expect(insert?.values).toEqual([targetSourceId,null,"Latte","LAT",variantId,"Copied from LEGACY — pending review"]);
     expect(res.status).toHaveBeenCalledWith(201);
-    expect(res.json).toHaveBeenCalledWith({success:true,data:{copied:2,skipped:1,eligible:3}});
-    expect(mocks.writeAudit).toHaveBeenCalledWith(expect.anything(),"COPY_POS_MAPPINGS","POS_SOURCE",targetSourceId,expect.any(String),expect.objectContaining({copied:2,skipped:1}),client);
+    expect(res.json).toHaveBeenCalledWith({success:true,data:{copied:1,skipped:1,incompatible:1,eligible:3,incompatibleMappings:[expect.objectContaining({sourceProductName:"Local Special"})]}});
+    expect(mocks.writeAudit).toHaveBeenCalledWith(expect.anything(),"COPY_POS_MAPPINGS","POS_SOURCE",targetSourceId,expect.any(String),expect.objectContaining({copied:1,skipped:1,incompatible:1}),client);
     expect(calls.at(-1)?.sql).toBe("COMMIT");
+  });
+
+  it("approves every valid pending mapping atomically and records each audit event",async()=>{
+    const mappingIds=["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"];
+    const calls:Array<{sql:string;values?:unknown[]}>=[];
+    const client={query:vi.fn(async(statement:unknown,values?:unknown[])=>{const sql=String(statement);calls.push({sql,values});
+      if(sql.includes("FROM pos_sources")&&sql.includes("FOR UPDATE"))return {rows:[{status:"ACTIVE",formatVerifiedAt:"2026-10-01"}],rowCount:1};
+      if(sql.includes("FOR UPDATE OF pm"))return {rows:mappingIds.map((id,index)=>({id,branchId:null,sourceProductCode:`P${index}`,normalizedSourceProductName:`p${index}`,targetAvailable:true,recipeAvailable:true})),rowCount:2};
+      return {rows:[],rowCount:sql.includes("UPDATE pos_product_variant_mappings")?2:0};
+    }),release:vi.fn()};
+    mocks.connect.mockResolvedValue(client);const res=response();
+    await approveAllPendingPosMappings({params:{id:sourceId},user:{id:ownerId,role:"OWNER",branchId:null}} as never,res as never,vi.fn());
+    expect(calls[0]?.sql).toBe("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    expect(calls.find(({sql})=>sql.includes("UPDATE pos_product_variant_mappings"))?.values).toEqual([mappingIds,ownerId]);
+    expect(mocks.writeAudit).toHaveBeenCalledTimes(2);
+    expect(res.json).toHaveBeenCalledWith({success:true,data:{posSourceId:sourceId,approved:2}});
+    expect(calls.at(-1)?.sql).toBe("COMMIT");
+  });
+
+  it("rolls back the entire bulk approval when one pending mapping has no valid recipe",async()=>{
+    const client={query:vi.fn(async(statement:unknown)=>{const sql=String(statement);
+      if(sql.includes("FROM pos_sources")&&sql.includes("FOR UPDATE"))return {rows:[{status:"ACTIVE",formatVerifiedAt:"2026-10-01"}],rowCount:1};
+      if(sql.includes("FOR UPDATE OF pm"))return {rows:[{id:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",branchId:null,sourceProductCode:"P1",normalizedSourceProductName:"p1",targetAvailable:true,recipeAvailable:false}],rowCount:1};
+      return {rows:[],rowCount:0};
+    }),release:vi.fn()};mocks.connect.mockResolvedValue(client);
+    await expect(approveAllPendingPosMappings({params:{id:sourceId},user:{id:ownerId,role:"OWNER",branchId:null}} as never,response() as never,vi.fn())).rejects.toMatchObject({code:"POS_MAPPING_RECIPE_REQUIRED"});
+    expect(client.query.mock.calls.some(([sql])=>String(sql).includes("UPDATE pos_product_variant_mappings"))).toBe(false);
+    expect(client.query.mock.calls.at(-1)?.[0]).toBe("ROLLBACK");
+  });
+
+  it("verifies the format, approves every mapping, and activates the destination atomically",async()=>{
+    const mappingIds=["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"];
+    const calls:Array<{sql:string;values?:unknown[]}>=[];
+    const client={query:vi.fn(async(statement:unknown,values?:unknown[])=>{const sql=String(statement);calls.push({sql,values});
+      if(sql.includes('SELECT branch_id "branchId" FROM pos_sources')&&!sql.includes("FOR UPDATE"))return {rows:[{branchId}],rowCount:1};
+      if(sql.includes("FROM pos_sources WHERE id=$1 FOR UPDATE"))return {rows:[{branchId,displayName:"Lipa POS",sourceCode:"LIPA",status:"INACTIVE",supportedFormat:format,fieldMapping:null}],rowCount:1};
+      if(sql.includes("FROM branches"))return {rows:[{id:branchId}],rowCount:1};
+      if(sql.includes("status='ACTIVE' AND id<>$2"))return {rows:[],rowCount:0};
+      if(sql.includes("FOR UPDATE OF pm"))return {rows:mappingIds.map((id,index)=>({id,branchId:null,sourceProductCode:`P${index}`,normalizedSourceProductName:`p${index}`,targetAvailable:true,recipeAvailable:true})),rowCount:2};
+      return {rows:[],rowCount:sql.startsWith("UPDATE")?2:0};
+    }),release:vi.fn()};
+    mocks.connect.mockResolvedValue(client);const res=response();
+    await confirmAndActivatePosMappings({params:{id:sourceId},body:{confirmedSupportedFormat:format},user:{id:ownerId,role:"OWNER",branchId:null}} as never,res as never,vi.fn());
+    expect(calls[0]?.sql).toBe("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    expect(calls.some(({sql})=>sql.includes("pg_advisory_xact_lock"))).toBe(true);
+    const sourceUpdateIndex=calls.findIndex(({sql})=>sql.includes("UPDATE pos_sources SET status='ACTIVE'"));
+    const mappingUpdateIndex=calls.findIndex(({sql})=>sql.includes("UPDATE pos_product_variant_mappings SET status='ACTIVE'"));
+    expect(sourceUpdateIndex).toBeGreaterThan(calls.findIndex(({sql})=>sql.includes("FOR UPDATE OF pm")));
+    expect(mappingUpdateIndex).toBeGreaterThan(sourceUpdateIndex);
+    expect(mocks.writeAudit.mock.calls.map((call)=>call[1])).toEqual(["VERIFY_POS_SOURCE_FORMAT","REVIEW_POS_MAPPING","REVIEW_POS_MAPPING","ACTIVATE_POS_SOURCE"]);
+    expect(res.json).toHaveBeenCalledWith({success:true,data:{posSourceId:sourceId,approved:2,status:"ACTIVE",readiness:"Ready"}});
+    expect(calls.at(-1)?.sql).toBe("COMMIT");
+  });
+
+  it("rolls back confirmation before activation when a mapping is invalid",async()=>{
+    const client={query:vi.fn(async(statement:unknown)=>{const sql=String(statement);
+      if(sql.includes('SELECT branch_id "branchId" FROM pos_sources')&&!sql.includes("FOR UPDATE"))return {rows:[{branchId}],rowCount:1};
+      if(sql.includes("FROM pos_sources WHERE id=$1 FOR UPDATE"))return {rows:[{branchId,displayName:"Lipa POS",sourceCode:"LIPA",status:"INACTIVE",supportedFormat:format,fieldMapping:null}],rowCount:1};
+      if(sql.includes("FROM branches"))return {rows:[{id:branchId}],rowCount:1};
+      if(sql.includes("status='ACTIVE' AND id<>$2"))return {rows:[],rowCount:0};
+      if(sql.includes("FOR UPDATE OF pm"))return {rows:[{id:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",branchId:null,sourceProductCode:"P1",normalizedSourceProductName:"p1",targetAvailable:true,recipeAvailable:false}],rowCount:1};
+      return {rows:[],rowCount:0};
+    }),release:vi.fn()};mocks.connect.mockResolvedValue(client);
+    await expect(confirmAndActivatePosMappings({params:{id:sourceId},body:{confirmedSupportedFormat:format},user:{id:ownerId,role:"OWNER",branchId:null}} as never,response() as never,vi.fn())).rejects.toMatchObject({code:"POS_MAPPING_RECIPE_REQUIRED"});
+    expect(client.query.mock.calls.some(([sql])=>String(sql).startsWith("UPDATE pos_sources"))).toBe(false);
+    expect(client.query.mock.calls.at(-1)?.[0]).toBe("ROLLBACK");
+  });
+
+  it("does not replace another active branch POS source during confirmation",async()=>{
+    const client={query:vi.fn(async(statement:unknown)=>{const sql=String(statement);
+      if(sql.includes('SELECT branch_id "branchId" FROM pos_sources')&&!sql.includes("FOR UPDATE"))return {rows:[{branchId}],rowCount:1};
+      if(sql.includes("FROM pos_sources WHERE id=$1 FOR UPDATE"))return {rows:[{branchId,displayName:"Lipa POS",sourceCode:"LIPA",status:"INACTIVE",supportedFormat:format,fieldMapping:null}],rowCount:1};
+      if(sql.includes("FROM branches"))return {rows:[{id:branchId}],rowCount:1};
+      if(sql.includes("status='ACTIVE' AND id<>$2"))return {rows:[{id:"cccccccc-cccc-4ccc-8ccc-cccccccccccc"}],rowCount:1};
+      return {rows:[],rowCount:0};
+    }),release:vi.fn()};mocks.connect.mockResolvedValue(client);
+    await expect(confirmAndActivatePosMappings({params:{id:sourceId},body:{confirmedSupportedFormat:format},user:{id:ownerId,role:"OWNER",branchId:null}} as never,response() as never,vi.fn())).rejects.toMatchObject({code:"POS_SOURCE_ACTIVE_BRANCH_CONFLICT"});
+    expect(client.query.mock.calls.some(([sql])=>String(sql).startsWith("UPDATE"))).toBe(false);
+    expect(client.query.mock.calls.at(-1)?.[0]).toBe("ROLLBACK");
   });
 
   it("lets the Owner revise a Pending mapping and resets review metadata to Pending", async () => {

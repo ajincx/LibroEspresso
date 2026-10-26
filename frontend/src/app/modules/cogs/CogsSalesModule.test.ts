@@ -6,6 +6,7 @@ import {
   DAILY_POS_MONITORING_LOCATION,
   DAILY_POS_MONITORING_IS_PAGINATED,
   DAILY_POS_MONITORING_COLUMNS,
+  CogsOverviewKpis,
   OWNER_POS_IMPORT_HISTORY_COLUMNS,
   PosImportActions,
   PosImportDetailsDialog,
@@ -16,6 +17,8 @@ import {
   PosMappingActions,
   PosMappingEditDialog,
   PosMappingSetup,
+  ApproveAllMappingsDialog,
+  ConfirmAndActivatePosDialog,
   SalesPosImportModal,
   STORAGE_KEY_COGS_USER_RANGE,
   canApprovePosMapping,
@@ -34,15 +37,34 @@ import {
   pendingPosFormatRequests,
   POS_SOURCE_FORMAT_OPTIONS,
   readCogsUserRange,
+  requestedPosFormatRequest,
   saveCogsUserRange,
   POS_IMPORT_FIELD_OPTIONS,
   assignPosHeader,
+  branchesAvailableForFormatAssignment,
+  destinationPosSourceForQuickAssign,
+  quickAssignPosSourceInput,
   suggestPosField,
   suggestedPosFieldMapping,
   summarizeDailyPosStatuses,
 } from "./CogsSalesModule";
 import { PosImportModal } from "./PosImportModal";
 import { adjustRangeForImport } from "../../utils/businessDate";
+
+describe("COGS Overview KPI scope", () => {
+  it("keeps financial COGS KPIs and excludes inventory shrinkage KPIs", () => {
+    const markup = renderToStaticMarkup(React.createElement(CogsOverviewKpis, { loading: false, summary: {
+      sales: 1000, theoreticalCogs: 400, totalCogs: 400, detectedShortageValue: 25, verifiedShrinkageCost: 10,
+      shrinkageCost: 10, shrinkageRate: 1, adjustedCogs: 400, grossProfit: 600, grossMargin: 60, unitsSold: 8, importCount: 1,
+    } }));
+    expect(markup).toContain("Total Sales");
+    expect(markup).toContain("Total COGS");
+    expect(markup).toContain("Gross Profit");
+    expect(markup).toContain("Gross Margin");
+    expect(markup).not.toContain("Detected Shortage");
+    expect(markup).not.toContain("Verified Shrinkage");
+  });
+});
 import type { DailyPosUploadStatus, PosFormatSetupRequest, PosImportRecord, PosMapping } from "../../types/inventoryWorkflow";
 import type { MenuProduct } from "../../types/masterData";
 import { deduplicatePosValidationIssues, excludedInvalidRowCount, PosMappingRecoveryNotice, requiresPosMappingRecovery, UNCONFIGURED_POS_LAYOUT_MESSAGE } from "./posImportPresentation";
@@ -75,6 +97,9 @@ describe("POS import recovery and details presentation", () => {
     expect(validMarkup).toContain("Reject Request");
     const requests=[formatRequest("PENDING"),formatRequest("BLOCKED"),formatRequest("COMPLETED"),formatRequest("REJECTED")];
     expect(pendingPosFormatRequests(requests).map(request=>request.status)).toEqual(["PENDING","BLOCKED"]);
+    expect(requestedPosFormatRequest(requests,"request-PENDING")?.status).toBe("PENDING");
+    expect(requestedPosFormatRequest(requests,"request-COMPLETED")).toBeNull();
+    expect(requestedPosFormatRequest(requests,"missing")).toBeNull();
   });
 
   it("suggests only deterministic importer-supported field aliases", () => {
@@ -174,17 +199,15 @@ describe("POS Import History controls",()=>{
   });
 
   it("uses only the current business date in the default monitoring mode",()=>{
-    expect(dailyPosMonitoringView("current","2026-10-01","2026-09-16")).toEqual({
-      businessDate:"2026-10-01",startDate:"2026-10-01",endDate:"2026-10-01",showDateFilter:false,
-      title:"Daily Upload Monitoring",actionLabel:"View History",
+    expect(dailyPosMonitoringView("2026-10-01")).toEqual({
+      businessDate:"2026-10-01",startDate:"2026-10-01",endDate:"2026-10-01",
+      title:"Daily Upload Monitoring",
     });
   });
 
-  it("uses the selected business date and exposes the date filter in history mode",()=>{
-    expect(dailyPosMonitoringView("history","2026-10-01","2026-09-16")).toEqual({
-      businessDate:"2026-09-16",startDate:"2026-09-16",endDate:"2026-09-16",showDateFilter:true,
-      title:"Daily Upload Monitoring — History",actionLabel:"Back to Current",
-    });
+  it("keeps Daily Upload Monitoring focused on the current day without a redundant history action",()=>{
+    expect(dailyPosMonitoringView("2026-10-01")).not.toHaveProperty("actionLabel");
+    expect(dailyPosMonitoringView("2026-10-01")).not.toHaveProperty("showDateFilter");
   });
   it("uses backend lifecycle permissions for Owner cleanup controls",()=>{
     expect(canDeletePosImport("owner",{canCleanup:true})).toBe(true);
@@ -225,20 +248,20 @@ describe("POS Import History controls",()=>{
     const prodMarkup = renderToStaticMarkup(
       React.createElement(PosImportActions, { role: "owner", record: prodImport })
     );
-    expect(prodMarkup).toContain("View details POS.09.16.2026.xlsx");
+    expect(prodMarkup).toContain("View POS.09.16.2026.xlsx");
     expect(prodMarkup).not.toContain("lucide-trash-2");
 
     // Scenario 3: Branch Manager never sees Delete button even if canCleanup flag were true
     const managerMarkup = renderToStaticMarkup(
       React.createElement(PosImportActions, { role: "manager", record: devImport })
     );
-    expect(managerMarkup).toContain("View details POS.09.16.2026.xlsx");
+    expect(managerMarkup).toContain("View POS.09.16.2026.xlsx");
     expect(managerMarkup).not.toContain("lucide-trash-2");
 
     const managerUpperMarkup = renderToStaticMarkup(
       React.createElement(PosImportActions, { role: "BRANCH_MANAGER", record: devImport })
     );
-    expect(managerUpperMarkup).toContain("View details POS.09.16.2026.xlsx");
+    expect(managerUpperMarkup).toContain("View POS.09.16.2026.xlsx");
     expect(managerUpperMarkup).not.toContain("lucide-trash-2");
 
     // Scenario 4: Owner user, UAT environment, canAuthorizeCleanup: true
@@ -350,15 +373,42 @@ describe("POS System and Mapping Setup UX workflow", () => {
   });
 
   it("formats POS system choices with a concise format and readable status",()=>{
-    expect(formatPosSourceOptionLabel({displayName:"Evo POS Transaction Summary XLSX",branchName:"Evo",supportedFormat:"TRANSACTION_SUMMARY_XLSX",status:"ACTIVE"})).toBe("Evo POS - Libro Espresso XLSX - Ready");
-    expect(formatPosSourceOptionLabel({displayName:"Libro POS Summary Items Sold",branchName:"Gulod / Main Branch",supportedFormat:"SUMMARY_ITEMS_SOLD_LEGACY_XLS",status:"INACTIVE"})).toBe("Gulod Main POS - Libro Espresso XLS - Not Active");
+    expect(formatPosSourceOptionLabel({displayName:"Evo POS Transaction Summary XLSX",branchName:"Evo",supportedFormat:"TRANSACTION_SUMMARY_XLSX",status:"ACTIVE",formatVerifiedAt:"2026-10-01",fieldMapping:null,hasActiveMappings:true,hasPendingMappings:false})).toBe("Evo POS - Libro Espresso XLSX - Ready");
+    expect(formatPosSourceOptionLabel({displayName:"Libro POS Summary Items Sold",branchName:"Gulod / Main Branch",supportedFormat:"SUMMARY_ITEMS_SOLD_LEGACY_XLS",status:"INACTIVE",formatVerifiedAt:null,fieldMapping:null,hasActiveMappings:false,hasPendingMappings:false})).toBe("Gulod Main POS - Libro Espresso XLS - Inactive");
+  });
+
+  it("assigns a selected format only to unassigned branches and keeps the source inactive",()=>{
+    const branches=[{id:"branch-1",name:"Main Branch"},{id:"branch-2",name:"Lipa Branch"}] as never[];
+    const sources=[{branchId:"branch-1",supportedFormat:"CANONICAL_CSV"}] as never[];
+    expect(branchesAvailableForFormatAssignment(branches,sources,"CANONICAL_CSV").map(branch=>branch.id)).toEqual(["branch-2"]);
+    expect(quickAssignPosSourceInput(branches[1]!,"CANONICAL_CSV","ABC123")).toEqual({sourceCode:"POS_branch2_ABC123",displayName:"Lipa POS",supportedFormat:"CANONICAL_CSV",branchId:"branch-2",status:"INACTIVE"});
+    expect(destinationPosSourceForQuickAssign(sources as never,"branch-1","CANONICAL_CSV")).toBe(sources[0]);
+    expect(destinationPosSourceForQuickAssign(sources as never,"branch-2","CANONICAL_CSV")).toBeNull();
+  });
+
+  it("confirms the exact pending mapping count before bulk approval",()=>{
+    const markup=renderToStaticMarkup(React.createElement(ApproveAllMappingsDialog,{count:3,busy:false,onCancel:()=>undefined,onConfirm:()=>undefined}));
+    expect(markup).toContain("Approve all pending mappings?");
+    expect(markup).toContain("approve 3 pending mappings together");
+    expect(markup).toContain("Approve All (3)");
+  });
+
+  it("summarizes destination, format, mapping count, and atomic activation",()=>{
+    const markup=renderToStaticMarkup(React.createElement(ConfirmAndActivatePosDialog,{destination:"Lipa Branch — Lipa POS",format:"Libro Espresso - XLS",count:25,busy:false,onCancel:()=>undefined,onConfirm:()=>undefined}));
+    expect(markup).toContain("Confirm and activate this POS?");
+    expect(markup).toContain("Lipa Branch — Lipa POS");
+    expect(markup).toContain("Libro Espresso - XLS");
+    expect(markup).toContain("25 pending");
+    expect(markup).toContain("Confirm &amp; Activate");
+    expect(markup).toContain("If any check fails, nothing will change");
   });
 
   it("uses the shared modern Select controls throughout the expanded setup workflow",()=>{
     const markup=renderToStaticMarkup(React.createElement(PosMappingSetup as React.ComponentType<{initialSourceId?:string}>,{initialSourceId:"source-1"}));
     expect(markup).toContain("custom-select-trigger");
     expect(markup).toContain("Libro Espresso - XLS");
-    expect(markup).toContain("Select POS system to configure");
+    expect(markup).toContain("Select File Format");
+    expect(markup).not.toContain("Quick Copy");
     expect(markup).not.toContain("<select");
   });
 

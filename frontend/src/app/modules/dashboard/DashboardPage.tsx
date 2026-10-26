@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
-import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, CartesianGrid, Cell, LabelList, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { ShoppingCart, Package, Percent, TrendingDown, RefreshCw, Check, AlertTriangle, Search, BadgeDollarSign, Sparkles, ArrowRight, Pencil, Plus, Upload, Info, X } from "lucide-react";
 import { Card, Btn, KPICard, DashboardFilters, StatusChip, SearchInput, Select, SkeletonBlock, C, isModalBackdropEvent, type DashboardRange, type DashboardComparison } from "../../components/ModuleUi";
 import { useAuth } from "../../contexts/AuthContext";
@@ -28,6 +28,22 @@ export const dashboardGreeting = (hour:number,firstName?:string) => `${hour < 12
 export const prioritizeInventoryAlerts = (items:InventoryOverviewItem[]) => [...items].filter(item=>item.status!=="HEALTHY").sort((a,b)=>ALERT_PRIORITY[b.status]-ALERT_PRIORITY[a.status] || (b.reorderLevel-b.systemStock)-(a.reorderLevel-a.systemStock) || a.name.localeCompare(b.name));
 export const stockStatusChip=(status:InventoryOverviewItem["status"])=>status==="OUT_OF_STOCK"?"out_neutral":status==="LOW_STOCK"?"low":status.toLowerCase();
 export const inventoryValueColor=(value:number)=>value<0?C.red:"var(--app-text)";
+type ProductSalesRow = PosAnalytics["productSalesRanking"][number];
+export function rankDashboardProductSales(products: ProductSalesRow[]) {
+  const descending = [...products].sort((left, right) => right.unitsSold - left.unitsSold || left.name.localeCompare(right.name));
+  const ascending = [...products].sort((left, right) => left.unitsSold - right.unitsSold || left.name.localeCompare(right.name));
+  return { highest: descending.slice(0, 5), lowest: ascending.slice(0, 5) };
+}
+
+function ProductRankingBars({ title, products, color }: { title: string; products: ProductSalesRow[]; color: string }) {
+  return <div className="min-w-0"><h3 className="text-xs font-bold uppercase tracking-wide text-[var(--app-text-muted)]">{title}</h3><ul className="sr-only">{products.map((product)=><li key={product.id}>{product.name}: {product.unitsSold.toLocaleString()} units sold</li>)}</ul><div className="mt-2 h-56"><ResponsiveContainer width="100%" height="100%"><BarChart data={products} layout="vertical" margin={{left:8,right:34}}><CartesianGrid strokeDasharray="3 3" horizontal={false}/><XAxis type="number" allowDecimals={false} tick={{fontSize:10}}/><YAxis type="category" dataKey="name" width={118} tick={{fontSize:10}}/><Tooltip formatter={(value)=>[`${Number(value).toLocaleString()} units`,"Quantity sold"]} contentStyle={{borderRadius:12,borderColor:"var(--app-border)"}}/><Bar dataKey="unitsSold" name="Quantity sold" fill={color} radius={[0,8,8,0]} maxBarSize={28}><LabelList dataKey="unitsSold" position="right" formatter={(value:unknown)=>Number(value).toLocaleString()}/></Bar></BarChart></ResponsiveContainer></div></div>;
+}
+
+export function ProductSalesRankingChart({ products }: { products: ProductSalesRow[] }) {
+  const ranked = rankDashboardProductSales(products);
+  const hasSales = products.some((product) => product.unitsSold > 0);
+  return <Card className="min-w-0 xl:col-span-2"><h2 className="font-semibold">Highest &amp; Lowest-Selling Menu Products</h2><p className="mt-1 text-xs text-[var(--app-text-muted)]">Quantity sold from accepted sales for the selected branch and date range.</p>{products.length === 0 ? <p className="py-12 text-sm text-[var(--app-text-muted)]">No active menu products are available for this branch scope.</p> : <>{!hasSales&&<p className="mt-4 rounded-xl bg-[var(--app-surface-muted)] p-3 text-sm text-[var(--app-text-muted)]">No accepted sales were recorded for this period. Active products are shown with zero quantity.</p>}<div className="mt-4 grid gap-5 md:grid-cols-2"><ProductRankingBars title="Top 5 highest-selling" products={ranked.highest} color={C.maroon}/><ProductRankingBars title="Top 5 lowest-selling" products={ranked.lowest} color={C.amber}/></div></>}</Card>;
+}
 export function recordStockCountUrl(branchId: string | undefined, countDate = businessDate()) {
   const params = new URLSearchParams({ tab: "counts", countIntent: "record", countDate });
   if (branchId && branchId !== "ALL") params.set("branchId", branchId);
@@ -95,6 +111,18 @@ export function DashboardToolbar({ actions, filters }:{ actions?:ReactNode;filte
   </div>;
 }
 
+export function DashboardManagerActions({ onRecordCount, onImportSales, onCreatePurchaseRequest }: {
+  onRecordCount: () => void;
+  onImportSales: () => void;
+  onCreatePurchaseRequest: () => void;
+}) {
+  return <><Btn icon={Pencil} onClick={onRecordCount}>Record Stock Count</Btn><Btn icon={Upload} variant="outline" onClick={onImportSales}>Import Sales</Btn><Btn icon={Plus} variant="outline" onClick={onCreatePurchaseRequest}>Create Purchase Request</Btn></>;
+}
+
+export function InventoryAlertActions({ onViewAll }: { onViewAll: () => void }) {
+  return <div className="flex items-center gap-2 flex-wrap"><Btn variant="outline" size="sm" onClick={onViewAll} className="hover:border-[var(--app-primary)]">View All Inventory</Btn></div>;
+}
+
 function DashboardChartSkeleton({ title, description, fullWidth = false }: { title:string;description?:string;fullWidth?: boolean }) {
   return <Card className={fullWidth ? "min-w-0 xl:col-span-2" : "min-w-0"}>
     <h2 className="font-semibold">{title}</h2>
@@ -119,7 +147,7 @@ export function DashboardAnalyticsSkeleton({role="owner"}:{role?:Role}) {
       {kpis.map(([label,icon,sub])=><div key={label} data-dashboard-kpi-skeleton><KPICard loading label={label} value="" sub={sub} icon={icon}/></div>)}
     </div>
     <div className="grid gap-5 xl:grid-cols-2">
-      <DashboardChartSkeleton title="Sales & Recipe COGS" fullWidth/>
+      <DashboardChartSkeleton title="Highest & Lowest-Selling Menu Products" fullWidth/>
       <DashboardChartSkeleton title="Inventory Health Distribution" description="Live item counts from the selected branch scope."/>
       <DashboardChartSkeleton title="Verified Shrinkage Causes" description="Reviewed legitimate shrinkage cost by final classification."/>
     </div>
@@ -382,7 +410,7 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
       <div className="flex gap-2"><Btn variant="outline" icon={RefreshCw} onClick={() => setRefresh(v => v+1)}>Refresh</Btn></div>
     </div>
     <DashboardToolbar
-      actions={role === "manager" ? <><Btn icon={Pencil} onClick={() => navigate(recordStockCountUrl(branchId, today))}>Record Stock Count</Btn><Btn icon={Upload} variant="outline" onClick={() => setImportOpen(true)}>Import Sales</Btn><Btn icon={Plus} variant="outline" onClick={() => createOrder()}>Create Purchase Request</Btn></> : undefined}
+      actions={role === "manager" ? <DashboardManagerActions onRecordCount={() => navigate(recordStockCountUrl(branchId, today))} onImportSales={() => setImportOpen(true)} onCreatePurchaseRequest={() => createOrder()}/> : undefined}
       filters={<DashboardFilters
         range={range}
         comparison={comparison}
@@ -420,7 +448,7 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
       </div>
       {totals.importCount === 0 && <p className="text-sm text-[var(--app-text-muted)]">No POS sales were imported for this branch and period. No sales values are shown.</p>}
       <div className="grid xl:grid-cols-2 gap-5">
-        <Card className="min-w-0 xl:col-span-2"><h2 className="font-semibold mb-3">Sales & Recipe COGS</h2>{data.current.trends.length ? <div className="h-64 min-w-0"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data.current.trends}><CartesianGrid strokeDasharray="3 3" vertical={false}/><XAxis dataKey="date" tick={{fontSize:10}}/><YAxis tick={{fontSize:10}}/><Tooltip formatter={v=>money(Number(v))} contentStyle={{borderRadius:12, borderColor:"var(--app-border)"}}/><Area type="monotone" dataKey="sales" name="Sales" stroke={C.maroon} strokeWidth={2.5} fill={C.softMaroonBg}/><Area type="monotone" dataKey="cogs" name="Recipe COGS" stroke={C.amber} strokeWidth={2.5} fill={C.amberBg}/></AreaChart></ResponsiveContainer></div> : <p className="py-12 text-sm">No sales records for this period.</p>}</Card>
+        <ProductSalesRankingChart products={data.current.productSalesRanking ?? []}/>
         <Card><h2 className="font-semibold">Inventory Health Distribution</h2><p className="text-xs mb-2 text-[var(--app-text-muted)]">Live item counts from the selected branch scope.</p>{inventoryHealth.length ? <div className="h-64"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={inventoryHealth} dataKey="value" nameKey="name" innerRadius={52} outerRadius={82} paddingAngle={3} cornerRadius={7} stroke="var(--app-surface)" strokeWidth={3}>{inventoryHealth.map((item) => <Cell key={item.key} fill={item.color}/>)}</Pie><Tooltip formatter={(value,name)=>[`${Number(value)} item${Number(value) === 1 ? "" : "s"}`,name]} contentStyle={{borderRadius:12, borderColor:"var(--app-border)"}}/><Legend iconType="circle" iconSize={8}/></PieChart></ResponsiveContainer></div> : <p className="py-12 text-sm">No inventory records are available for this branch scope.</p>}</Card>
         <Card><h2 className="font-semibold mb-1">Verified Shrinkage Causes</h2><p className="text-xs mb-3 text-[var(--app-text-muted)]">Reviewed legitimate shrinkage cost by final classification.</p>{classifications.length ? <div className="h-64"><ResponsiveContainer width="100%" height="100%"><BarChart data={classifications}><CartesianGrid strokeDasharray="3 3" vertical={false}/><XAxis dataKey="name" tick={{fontSize:10}}/><YAxis tick={{fontSize:10}}/><Tooltip formatter={v=>money(Number(v))} contentStyle={{borderRadius:12, borderColor:"var(--app-border)"}}/><Bar dataKey="value" name="Verified shrinkage cost" fill={C.maroon} radius={[8,8,2,2]} maxBarSize={64}/></BarChart></ResponsiveContainer></div> : <p className="py-12 text-sm">No verified shrinkage causes for this period.</p>}</Card>
       </div>
@@ -448,37 +476,7 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
                 Current stock position compared against branch reorder levels
               </p>
             </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <Btn
-                variant="outline"
-                size="sm"
-                onClick={() => onNavigate(DASHBOARD_INVENTORY_TARGET)}
-                className="hover:border-[var(--app-primary)]"
-              >
-                View All Inventory
-              </Btn>
-              {role === "manager" && alerts.length > 0 && (
-                <Btn
-                  size="sm"
-                  onClick={() => {
-                    const highestShortfall = [...alerts].sort(
-                      (a, b) => (b.reorderLevel - b.systemStock) - (a.reorderLevel - a.systemStock),
-                    )[0];
-                    const params = new URLSearchParams({ create: "1" });
-                    if (highestShortfall) {
-                      params.set("ingredientId", highestShortfall.inventoryItemId);
-                      params.set(
-                        "quantity",
-                        String(Math.max(1, Math.ceil(highestShortfall.reorderLevel * 2 - highestShortfall.systemStock))),
-                      );
-                    }
-                    navigate(`/purchase-orders?${params.toString()}`);
-                  }}
-                >
-                  Create Reorder PO
-                </Btn>
-              )}
-            </div>
+            <InventoryAlertActions onViewAll={() => onNavigate(DASHBOARD_INVENTORY_TARGET)}/>
           </div>
 
           {alerts.length > 0 && (

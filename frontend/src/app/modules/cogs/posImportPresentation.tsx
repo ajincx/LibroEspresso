@@ -1,4 +1,14 @@
-import type { PosImportPreview, PosImportRecord } from "../../types/inventoryWorkflow";
+import type { PosImportPreview, PosImportRecord, PosSource } from "../../types/inventoryWorkflow";
+
+export type PosReadiness = "Inactive" | "Setup Required" | "Pending Approval" | "Ready";
+
+export function posSourceReadiness(source: Pick<PosSource, "status" | "supportedFormat" | "formatVerifiedAt" | "fieldMapping" | "hasActiveMappings" | "hasPendingMappings">): PosReadiness {
+  if (source.status !== "ACTIVE") return "Inactive";
+  if (!source.formatVerifiedAt || (source.supportedFormat === "CUSTOM_TABULAR_XLSX" && !source.fieldMapping)) return "Setup Required";
+  if (!source.hasActiveMappings && source.hasPendingMappings) return "Pending Approval";
+  if (!source.hasActiveMappings) return "Setup Required";
+  return "Ready";
+}
 
 export const UNCONFIGURED_POS_LAYOUT_MESSAGE =
   "This workbook uses an unconfigured column layout. Configure its spreadsheet columns for this POS source, then preview it again.";

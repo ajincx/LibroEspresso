@@ -7,7 +7,7 @@ import { masterDataService } from "../../services/masterData.service";
 import { operationsService } from "../../services/operations.service";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
 import type { Branch } from "../../types/masterData";
-import type { DailyInventoryCountContext, InventoryCountSummary } from "../../types/inventoryWorkflow";
+import type { DailyInventoryCountContext, FullInventoryCountContext, InventoryCountSummary, StartingStockSetup } from "../../types/inventoryWorkflow";
 import type { InventoryHealthStatus, InventoryOverviewItem, InventoryStockLedger, InventoryLedgerActivityType } from "../../types/operations";
 import type { Page, Role } from "../../types/navigation";
 import { formatAppCurrency } from "../../utils/appPreferences";
@@ -115,6 +115,7 @@ export function InventoryOverview({ role, scopeBranchId = "ALL", onDailyStockCou
     setDailyShortcutLoading(true); setError("");
     try {
       const context = await inventoryWorkflowService.expected(businessDate(), scopeBranchId === "ALL" ? undefined : scopeBranchId, "OPENING");
+      if(context.countType==="FULL") throw new Error("Unable to resolve today's Daily Stock Count state.");
       onDailyStockCount?.(dailyCountShortcutDestination(context).countType);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to open today's Daily Stock Count."); }
     finally { setDailyShortcutLoading(false); }
@@ -152,7 +153,7 @@ export function InventoryOverview({ role, scopeBranchId = "ALL", onDailyStockCou
           {!loading && filtered.length === 0 && <TableEmptyRow colSpan={inventoryOverviewColumns(role).length} title="No inventory records found" subtitle="Try changing the filters or record a physical count." />}
           {!loading && filtered.map((item) => <TR key={`${item.branchId}-${item.inventoryItemId}`}>
             <TD mono muted>{item.sku}</TD><TD><span className="font-medium">{item.name}</span></TD>{role === "owner" && <TD muted>{item.branchName}</TD>}
-            <TD right>{item.baselineAvailability === "NO_BASELINE" ? "No Baseline" : item.systemStock.toLocaleString("en-PH")}</TD><TD muted>{item.unit}</TD><TD right muted>{peso(item.unitCost)}</TD><TD right>{item.baselineAvailability === "NO_BASELINE" ? "—" : peso(item.inventoryValue)}</TD><TD right muted>{item.reorderLevel.toLocaleString("en-PH")}</TD><TD><StatusChip status={chips[item.status]}/></TD><TD muted>{item.lastCountAt ? new Date(item.lastCountAt).toLocaleString("en-PH") : "No count yet"}</TD><TD><div className="flex items-center gap-2 whitespace-nowrap"><Btn variant="outline" size="sm" icon={Eye} onClick={() => setDetailsItem(item)}>View Details</Btn>{canConfigureBranchReorderPolicy(role) && <DropdownMenu><DropdownMenuTrigger asChild><button type="button" aria-label={`More actions for ${item.name}`} className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-muted)]"><MoreHorizontal size={16}/></button></DropdownMenuTrigger><DropdownMenuContent align="end" className="min-w-52 border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text)]">{canSetIngredientInitialStock(role, item.baselineAvailability) && <DropdownMenuItem onSelect={() => setInitialStockItem(item)}><PackageOpen/>Set Initial Quantity</DropdownMenuItem>}<DropdownMenuItem onSelect={() => setSettingsItem(item)}><SlidersHorizontal/>Reorder settings</DropdownMenuItem></DropdownMenuContent></DropdownMenu>}</div></TD>
+            <TD right>{item.baselineAvailability === "NO_BASELINE" ? "No Baseline" : item.systemStock.toLocaleString("en-PH")}</TD><TD muted>{item.unit}</TD><TD right muted>{peso(item.unitCost)}</TD><TD right>{item.baselineAvailability === "NO_BASELINE" ? "—" : peso(item.inventoryValue)}</TD><TD right muted>{item.reorderLevel.toLocaleString("en-PH")}</TD><TD><StatusChip status={chips[item.status]}/></TD><TD muted>{item.lastCountAt ? new Date(item.lastCountAt).toLocaleString("en-PH") : "No count yet"}</TD><TD center><div className="flex items-center justify-center gap-2 whitespace-nowrap"><Btn variant="outline" size="sm" icon={Eye} onClick={() => setDetailsItem(item)}>View</Btn>{canConfigureBranchReorderPolicy(role) && <DropdownMenu><DropdownMenuTrigger asChild><button type="button" aria-label={`More actions for ${item.name}`} className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-muted)]"><MoreHorizontal size={16}/></button></DropdownMenuTrigger><DropdownMenuContent align="end" className="min-w-52 border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text)]">{canSetIngredientInitialStock(role, item.baselineAvailability) && <DropdownMenuItem onSelect={() => setInitialStockItem(item)}><PackageOpen/>Set Initial Quantity</DropdownMenuItem>}<DropdownMenuItem onSelect={() => setSettingsItem(item)}><SlidersHorizontal/>Reorder settings</DropdownMenuItem></DropdownMenuContent></DropdownMenu>}</div></TD>
           </TR>)}
         </tbody>
       </TableWrapper>
@@ -366,8 +367,19 @@ export const stockOperationCards = (role: Role) => [
 const stockOperationIcons = { starting: PackageOpen, daily: SunMoon, full: ClipboardCheck } satisfies Record<StockOperationId, typeof PackageOpen>;
 
 export const shouldShowStockOperationCards = (selected: StockOperationId | null) => selected === null;
-export const dailyCountStatusLabel = (count: DailyInventoryCountContext["openingCount"] | DailyInventoryCountContext["closingCount"]) => count ? "Recorded" : "--";
+export const dailyCountStatusLabel = (count: DailyInventoryCountContext["openingCount"] | DailyInventoryCountContext["closingCount"]) => count ? "Recorded" : "Pending";
 export const canOpenClosingCount = (context: DailyInventoryCountContext | null) => Boolean(context?.openingCount && context.posDayComplete);
+export const startingStockOperationStatus = (setup: StartingStockSetup | null) => setup?.status === "INITIALIZED" ? "Completed" : "Setup Required";
+export const closingCountOperationStatus = (context: DailyInventoryCountContext | null) => context?.closingCount
+  ? "Recorded"
+  : canOpenClosingCount(context) ? "Ready to Record" : "Not Yet Available";
+export const fullCountOperationStatus = (context: FullInventoryCountContext | null) => context?.fullCount
+  ? "Recorded"
+  : !context?.closingCount
+    ? "Closing Required"
+    : context.weeklyFullCount >= context.weeklyFullLimit
+      ? "Weekly Limit Reached"
+      : "Ready to Record";
 export const dailyCountShortcutDestination = (context: DailyInventoryCountContext) => ({
   countType: context.openingCount ? "CLOSING" as const : "OPENING" as const,
   completed: Boolean(context.closingCount),
@@ -384,27 +396,33 @@ export function StockOperations({ role, scopeBranchId = "ALL", initialOperation 
   const [selected, setSelected] = useState<StockOperationId | null>(initialOperation);
   const [dailyCountType,setDailyCountType]=useState<"OPENING"|"CLOSING">(initialDailyCountType);
   const [dailyContext,setDailyContext]=useState<DailyInventoryCountContext|null>(null);
+  const [fullContext,setFullContext]=useState<FullInventoryCountContext|null>(null);
+  const [startingSetup,setStartingSetup]=useState<StartingStockSetup|null>(null);
   const [dailyRefresh,setDailyRefresh]=useState(0);
   useEffect(() => setSelected(initialOperation), [initialOperation]);
   useEffect(() => setDailyCountType(initialDailyCountType), [initialDailyCountType]);
   useEffect(()=>{
     if(role!=="manager") return;
     let active=true;
-    inventoryWorkflowService.expected(businessDate(),scopeBranchId==="ALL"?undefined:scopeBranchId,"OPENING")
-      .then((context)=>{if(active)setDailyContext(context);})
-      .catch(()=>{if(active)setDailyContext(null);});
+    Promise.all([
+      inventoryWorkflowService.expected(businessDate(),scopeBranchId==="ALL"?undefined:scopeBranchId,"OPENING"),
+      inventoryWorkflowService.expected(businessDate(),scopeBranchId==="ALL"?undefined:scopeBranchId,"FULL"),
+      inventoryWorkflowService.startingStockSetup(scopeBranchId==="ALL"?undefined:scopeBranchId),
+    ]).then(([daily,full,setup])=>{if(active){setDailyContext(daily.countType==="FULL"?null:daily);setFullContext(full.countType==="FULL"?full:null);setStartingSetup(setup);}})
+      .catch(()=>{if(active){setDailyContext(null);setFullContext(null);setStartingSetup(null);}});
     return()=>{active=false;};
-  },[dailyRefresh,role,scopeBranchId]);
+  },[dailyRefresh,role,scopeBranchId,selected]);
   const cards = stockOperationCards(role);
+  const fullStatus=fullCountOperationStatus(fullContext);
   return <div className="p-4 md:p-6 space-y-5">
     {!selected&&<SectionHeader title="Stock Operations" sub="Use the existing inventory workflows for branch setup and verified physical counting."/>}
     {shouldShowStockOperationCards(selected)&&<div className="grid gap-4 md:grid-cols-3">
       {cards.map((card) => {
         const Icon = stockOperationIcons[card.id];
         return <section key={card.id} className="flex min-h-56 flex-col rounded-2xl border p-5 bg-[var(--app-surface)] border-[var(--app-border)]">
-          <div className="flex items-start justify-between gap-3"><span className="flex h-11 w-11 items-center justify-center rounded-xl bg-[var(--app-primary-faint)] text-[var(--app-primary)]"><Icon size={21}/></span><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${card.enabled ? "bg-[var(--app-success-bg)] text-[var(--app-success)]" : "bg-[var(--app-surface-muted)] text-[var(--app-text-muted)]"}`}>{card.enabled ? "Available" : card.id === "daily" ? "Not yet available" : "Read only"}</span></div>
+          <div className="flex items-start justify-between gap-3"><span className="flex h-11 w-11 items-center justify-center rounded-xl bg-[var(--app-primary-faint)] text-[var(--app-primary)]"><Icon size={21}/></span><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${card.enabled ? "bg-[var(--app-success-bg)] text-[var(--app-success)]" : "bg-[var(--app-surface-muted)] text-[var(--app-text-muted)]"}`}>{role!=="manager"?"Read only":card.id==="starting"?startingStockOperationStatus(startingSetup):card.id==="daily"?"Daily workflow":fullStatus}</span></div>
           <h2 className="mt-4 text-lg font-bold">{card.title}</h2><p className="mt-2 flex-1 text-sm leading-6 text-[var(--app-text-muted)]">{card.description}</p>
-          {card.id==="daily"&&role==="manager"?<div className="mt-5 grid grid-cols-2 gap-3"><div className="flex flex-col gap-2"><p className="text-center text-xs font-semibold">Opening Count</p><Btn className="w-full" variant="outline" title="Open today's Opening Count" disabled={Boolean(dailyContext?.openingCount)} onClick={()=>{setDailyCountType("OPENING");setSelected("daily");}}>{dailyCountStatusLabel(dailyContext?.openingCount??null)}</Btn></div><div className="flex flex-col gap-2"><p className="text-center text-xs font-semibold">Closing Count</p><Btn className="w-full" variant="outline" title="Open today's Closing Count" disabled={Boolean(dailyContext?.closingCount)||!canOpenClosingCount(dailyContext)} onClick={()=>{setDailyCountType("CLOSING");setSelected("daily");}}>{dailyCountStatusLabel(dailyContext?.closingCount??null)}</Btn></div></div>:<Btn className="mt-5 w-full" variant="outline" disabled={!card.enabled} onClick={() => setSelected(card.id)}>{card.action}</Btn>}
+          {card.id==="daily"&&role==="manager"?<div className="mt-5 grid grid-cols-2 gap-3"><div className="flex flex-col gap-2"><p className="text-center text-xs font-semibold">Opening Count</p><Btn className="w-full" variant="outline" title="Open today's Opening Count" onClick={()=>{setDailyCountType("OPENING");setSelected("daily");}}>{dailyCountStatusLabel(dailyContext?.openingCount??null)}</Btn></div><div className="flex flex-col gap-2"><p className="text-center text-xs font-semibold">Closing Count</p><Btn className="w-full" variant="outline" title="Open today's Closing Count" disabled={!dailyContext?.closingCount&&!canOpenClosingCount(dailyContext)} onClick={()=>{setDailyCountType("CLOSING");setSelected("daily");}}>{closingCountOperationStatus(dailyContext)}</Btn></div></div>:card.id==="full"&&role==="manager"?<Btn className="mt-5 w-full" variant="outline" disabled={fullStatus!=="Ready to Record"&&fullStatus!=="Recorded"} onClick={() => setSelected(card.id)}>{fullStatus==="Recorded"?"View Full Count":"Record Full Count"}</Btn>:<Btn className="mt-5 w-full" variant="outline" disabled={!card.enabled} onClick={() => setSelected(card.id)}>{card.action}</Btn>}
         </section>;
       })}
     </div>}
@@ -415,7 +433,7 @@ export function StockOperations({ role, scopeBranchId = "ALL", initialOperation 
         : selected === "daily"
           ? <Suspense fallback={<ModuleLoadingFallback/>}><DailyStockCountWorkflow role={role} countType={dailyCountType} onSubmitted={()=>{setDailyRefresh((value)=>value+1);setSelected(stockOperationSelectionAfterDailySubmit());}}/></Suspense>
         : selected === "full"
-          ? <PhysicalCountsModule role={role} initialTab="record" scopeBranchId={scopeBranchId} embedded/>
+          ? <PhysicalCountsModule role={role} initialTab={fullStatus==="Recorded"?"history":"record"} scopeBranchId={scopeBranchId} embedded onOperationalCountSubmitted={()=>setDailyRefresh((value)=>value+1)}/>
           : null}
     </section>}
     {!selected && <div className="rounded-xl border p-4 text-sm border-[var(--app-border)] bg-[var(--app-surface-muted)] text-[var(--app-text-muted)]">Choose the stock operation that matches the branch task. Starting Stock is one-time setup; Daily Count is Opening/Closing; Full Physical Count remains the complete inventory workflow.</div>}
@@ -438,7 +456,7 @@ export function resolveInventoryCountHistoryVisibility(current: boolean, initial
   return initialView === "history" ? true : current;
 }
 
-export function PhysicalCountsModule({ role, initialTab = "history", scopeBranchId = "ALL", embedded=false }: { role: Role; initialTab?: PhysicalCountInitialView; scopeBranchId?: string; embedded?:boolean }) {
+export function PhysicalCountsModule({ role, initialTab = "history", scopeBranchId = "ALL", embedded=false, onOperationalCountSubmitted }: { role: Role; initialTab?: PhysicalCountInitialView; scopeBranchId?: string; embedded?:boolean; onOperationalCountSubmitted?:()=>void }) {
   const [searchParams] = useSearchParams();
   const editCountId = searchParams.get("editCount");
   const shortcutDate = searchParams.get("countIntent") === "record" ? searchParams.get("countDate") : null;
@@ -457,7 +475,7 @@ export function PhysicalCountsModule({ role, initialTab = "history", scopeBranch
         {showHistory
           ? <PhysicalCountHistoryPage role={role} scopeBranchId={scopeBranchId} onOperationalCountsLoaded={resolveShortcut} onEditCount={() => setShowHistory(false)}/>
           : role === "manager"
-            ? <InventoryCountPage embedded={embedded} onSubmitted={() => setShowHistory(true)} onBackToHistory={() => setShowHistory(true)}/>
+            ? <InventoryCountPage embedded={embedded} onSubmitted={() => {setShowHistory(true);onOperationalCountSubmitted?.();}} onBackToHistory={() => setShowHistory(true)}/>
             : <ExpectedInventoryPage role={role} view="expected" scopeBranchId={scopeBranchId}/>}
       </Suspense>
     </AnimatedTabPanel>

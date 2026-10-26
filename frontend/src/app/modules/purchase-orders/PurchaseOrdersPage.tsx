@@ -130,7 +130,7 @@ export const formatPurchaseOrderCountDate = (date: string) => new Intl.DateTimeF
 export function PhysicalCountRequiredNotice({ orderDate, onGoToInventoryCount }: { orderDate: string; onGoToInventoryCount: () => void }) {
   return <div className="mt-4 rounded-xl border p-4" role="alert" style={{ borderColor: C.amber, background: C.amberBg }}>
     <p className="text-sm font-bold text-[var(--app-text)]">Full Physical Count Required</p>
-    <p className="mt-1 text-sm text-[var(--app-text-muted)]">Complete today&apos;s Closing Count, then submit the Full Physical Count for {formatPurchaseOrderCountDate(orderDate)} before creating this purchase order.</p>
+    <p className="mt-1 text-sm text-[var(--app-text-muted)]">Complete a Full Physical Count for this branch during the Monday-Sunday week containing {formatPurchaseOrderCountDate(orderDate)} before creating this purchase order.</p>
     <div className="mt-3"><Btn size="sm" onClick={onGoToInventoryCount}>Go to Full Physical Count</Btn></div>
   </div>;
 }
@@ -262,8 +262,8 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
             <TD right bold>{peso(order.totalAmount)}</TD>
             <TD center><StatusChip status={chip[order.status]}/></TD>
             <TD center>
-              <button className="p-2 rounded-lg hover:bg-[var(--app-surface-muted)] text-[var(--app-primary)] transition-colors" aria-label={`View ${order.poNo}`} onClick={() => setSelected(order)}>
-                <Eye size={15}/>
+              <button className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] px-2.5 py-1.5 text-xs font-semibold text-[var(--app-primary)] transition-colors hover:bg-[var(--app-surface-muted)]" aria-label={`View ${order.poNo}`} onClick={() => setSelected(order)}>
+                <Eye size={15}/> View
               </button>
               {canAuthorizePurchaseOrderTest(role,order,testDataActionsEnabled)&&<button className="p-2 rounded-lg hover:bg-[var(--app-surface-muted)] text-[var(--app-warning)] transition-colors" aria-label={`Authorize ${order.poNo} as test data`} onClick={()=>{setAuthorizeTestTarget(order);setTestActionReason("");}}><ShieldCheck size={15}/></button>}
               {canDeletePurchaseOrderTest(role,order,testDataActionsEnabled)&&<button className="p-2 rounded-lg hover:bg-[var(--app-danger-bg)] text-[var(--app-danger)] transition-colors" aria-label={`Delete test purchase order ${order.poNo}`} onClick={()=>{setDeleteTestTarget(order);setTestActionReason("");}}><Trash2 size={15}/></button>}
@@ -389,7 +389,7 @@ function CreatePurchaseOrder({
     <CalendarDateField label="Order Date" value={orderDate} onChange={setOrderDate}/>
     <CalendarDateField label="Expected Delivery" value={expectedDeliveryDate} min={orderDate} onChange={setExpectedDeliveryDate}/>
     <label className="text-sm font-medium">Notes<input className="field mt-1.5" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional"/></label>
-  </div><div className="mt-4 space-y-1 rounded-xl border px-4 py-3 text-xs" style={{ borderColor:C.amber,background:C.amberBg,color:C.secondary }}><p>A physical inventory count for the selected Order Date must be submitted before this PO can be created.</p><p className="font-medium text-[var(--app-text)]">{PURCHASE_ORDER_STOCK_TIMING_GUIDANCE}</p></div><div className="mt-5 space-y-3">
+  </div><div className="mt-4 space-y-1 rounded-xl border px-4 py-3 text-xs" style={{ borderColor:C.amber,background:C.amberBg,color:C.secondary }}><p>A valid Full Physical Count from the selected Order Date&apos;s Monday-Sunday week must exist before this PO can be created.</p><p className="font-medium text-[var(--app-text)]">{PURCHASE_ORDER_STOCK_TIMING_GUIDANCE}</p></div><div className="mt-5 space-y-3">
     {rows.map((row, index) => {
       const stockItem=inventory.find((candidate)=>candidate.id===row.inventoryItemId);
       const purchaseUnits=stockItem?.unit==="g"||stockItem?.unit==="kg"?["g","kg"]:stockItem?.unit==="ml"||stockItem?.unit==="L"?["ml","L"]:["pc"];

@@ -845,7 +845,7 @@ table[class~="min-w-[820px]"] :is(th, td):nth-child(7) {
 }
 
 .cogs-kpi-grid {
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .cogs-kpi-grid .kpi-card__header {
@@ -875,7 +875,7 @@ table[class~="min-w-[820px]"] :is(th, td):nth-child(7) {
 
 @media (max-width: 1450px) {
   .cogs-kpi-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .cogs-kpi-grid .kpi-card__header {

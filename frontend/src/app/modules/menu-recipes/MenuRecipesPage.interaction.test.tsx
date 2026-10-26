@@ -3,6 +3,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  createMenuProduct: vi.fn(),
   createInventoryItem: vi.fn(),
   inventoryItems: vi.fn(),
   menuCategories: vi.fn(),
@@ -16,6 +17,7 @@ vi.mock("../../contexts/AuthContext", () => ({
 
 vi.mock("../../services/masterData.service", () => ({
   masterDataService: {
+    createMenuProduct: mocks.createMenuProduct,
     createInventoryItem: mocks.createInventoryItem,
     inventoryItems: mocks.inventoryItems,
     menuCategories: mocks.menuCategories,
@@ -81,6 +83,7 @@ describe("Menu & Recipe Owner inventory ingredient workflow", () => {
       itemScope: "GLOBAL",
       originBranchId: null,
     });
+    mocks.createMenuProduct.mockResolvedValue(undefined);
   });
 
   it("opens New Inventory Ingredient, accepts valid details, and submits through the existing service", async () => {
@@ -139,5 +142,32 @@ describe("Menu & Recipe Owner inventory ingredient workflow", () => {
     const labels = renderer!.root.findAllByType("button").map((candidate) => nodeText(candidate).trim());
     expect(labels).not.toContain("Add Product");
     expect(labels).not.toContain("New Inventory Ingredient");
+  });
+
+  it("rejects a numeric-only name, then submits a valid trimmed café product and price", async () => {
+    let renderer: ReactTestRenderer;
+    await act(async () => { renderer = create(<MenuRecipesPage />); });
+    const root=renderer!.root;
+    await act(async()=>button(root,"Add Product").props.onClick());
+    const name=root.findAllByType("input").find((input)=>input.props.placeholder==="e.g., Spanish Latte")!;
+    const price=root.findAllByType("input").find((input)=>input.props.placeholder==="0.00")!;
+    const category=root.findAllByType("select").find((select)=>String(select.props["data-values"]).includes("category-1"))!;
+    await act(async()=>{
+      name.props.onChange({target:{value:"12345"}});
+      price.props.onChange({target:{value:"149.95"}});
+      category.props.onChange({target:{value:"category-1"}});
+    });
+    await act(async()=>button(root,"Create Product").props.onClick());
+    expect(mocks.createMenuProduct).not.toHaveBeenCalled();
+    expect(root.findAllByType("span").some((node)=>nodeText(node).includes("at least one letter"))).toBe(true);
+
+    await act(async()=>name.props.onChange({target:{value:"  2-in-1 Coffee  "}}));
+    await act(async()=>button(root,"Create Product").props.onClick());
+    expect(mocks.createMenuProduct).toHaveBeenCalledOnce();
+    expect(mocks.createMenuProduct).toHaveBeenCalledWith(expect.objectContaining({
+      name:"2-in-1 Coffee",
+      categoryId:"category-1",
+      variants:[expect.objectContaining({name:"Standard",sellingPrice:149.95})],
+    }));
   });
 });

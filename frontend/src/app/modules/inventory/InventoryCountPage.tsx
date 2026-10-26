@@ -3,7 +3,7 @@ import { AlertTriangle, ArrowLeft, CheckCircle, ClipboardList, RefreshCw, Send }
 import { useNavigate, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
-import type { CountVarianceItem, DailyInventoryCountContext, ExpectedInventoryItem, InventoryCountType, UnavailableInventoryCountItem } from "../../types/inventoryWorkflow";
+import type { CountVarianceItem, DailyInventoryCountContext, ExpectedInventoryItem, FullInventoryCountContext, InventoryCountType, UnavailableInventoryCountItem } from "../../types/inventoryWorkflow";
 import { CalendarDateField, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, TableLoadingRow, Btn, SearchInput, Select, SkeletonBlock } from "../../components/ModuleUi";
 
 import { businessDate } from "../../utils/businessDate";
@@ -112,6 +112,18 @@ export const copyPreviousClosingEntries = (
   ]));
 };
 
+export const copySameDayClosingEntries = (
+  items: ExpectedInventoryItem[],
+  closingItems: FullInventoryCountContext["sameDayClosingItems"],
+) => copyPreviousClosingEntries(items, closingItems.map((item) => ({ ...item, countDate: "" })));
+
+export const fullCountSubmissionBlockReason = (context: FullInventoryCountContext | null) => {
+  if (!context?.closingCount) return "Submit the same-day Closing Count before recording the Full Physical Count.";
+  if (context.fullCount) return `Full Physical Count ${context.fullCount.countNo} has already been recorded for this date.`;
+  if (context.weeklyFullCount >= context.weeklyFullLimit) return "This branch has reached the limit of three Full Physical Counts for this Monday-Sunday week.";
+  return null;
+};
+
 export const inventoryCountColumns = (countType: InventoryCountType) => countType === "FULL"
   ? ["SKU", "Ingredient", "Previous Actual", "Received", "Recipe Consumption", "Expected Stock", "Physical Count", "Preview Variance"]
   : ["SKU", "Ingredient", "Previous Actual", "Received", "Recipe Consumption", "Expected Stock", "Opening Count", "Closing Count", "Preview Variance"];
@@ -209,6 +221,8 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
   const [completionFilter, setCompletionFilter] = useState<PhysicalCountCompletionFilter>("ALL");
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [dailyContext,setDailyContext]=useState<DailyInventoryCountContext|null>(null);
+  const [fullContext,setFullContext]=useState<FullInventoryCountContext|null>(null);
+  const [fullPhysicalVerificationConfirmed,setFullPhysicalVerificationConfirmed]=useState(false);
   const [copiedClosingDate,setCopiedClosingDate]=useState<string|null>(null);
   const [openingQuantities,setOpeningQuantities]=useState<Record<string,number>>({});
   const [closingQuantities,setClosingQuantities]=useState<Record<string,number>>({});
@@ -219,9 +233,10 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
     [completionFilter, entries, expected, search],
   );
   const activeDailyCount=countType==="OPENING"?dailyContext?.openingCount:countType==="CLOSING"?dailyContext?.closingCount:null;
+  const fullBlockReason=countType==="FULL"&&!editingCountId?fullCountSubmissionBlockReason(fullContext):null;
 
   const loadExpected = async () => {
-    setLoading(true); setError(""); setSubmitted(null); setEditingCountId(null); setUnavailable([]);
+    setLoading(true); setError(""); setSubmitted(null); setEditingCountId(null); setUnavailable([]); setDailyContext(null); setFullContext(null); setFullPhysicalVerificationConfirmed(false);
     try {
       if (requestedCountId) {
         const count = await inventoryWorkflowService.count(requestedCountId);
@@ -235,14 +250,19 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
       const data = await inventoryWorkflowService.expected(countDate,undefined,countType);
       setExpected(data.items);
       setUnavailable(data.unavailableItems ?? []);
-      setDailyContext(data);
+      const nextDailyContext = data.countType === "FULL" ? null : data;
+      const nextFullContext = data.countType === "FULL" ? data : null;
+      setDailyContext(nextDailyContext);
+      setFullContext(nextFullContext);
       const [opening,closing]=await Promise.all([
-        data.openingCount?inventoryWorkflowService.count(data.openingCount.id):Promise.resolve(null),
-        data.closingCount?inventoryWorkflowService.count(data.closingCount.id):Promise.resolve(null),
+        nextDailyContext?.openingCount?inventoryWorkflowService.count(nextDailyContext.openingCount.id):Promise.resolve(null),
+        nextDailyContext?.closingCount?inventoryWorkflowService.count(nextDailyContext.closingCount.id):Promise.resolve(null),
       ]);
       setOpeningQuantities(savedCountQuantities(opening?.items ?? []));
       setClosingQuantities(savedCountQuantities(closing?.items ?? []));
-      setEntries(Object.fromEntries(data.items.map((item) => [item.inventoryItemId, blankPhysicalCountEntry(item.unit)])));
+      setEntries(nextFullContext
+        ? copySameDayClosingEntries(data.items,nextFullContext.sameDayClosingItems)
+        : Object.fromEntries(data.items.map((item) => [item.inventoryItemId, blankPhysicalCountEntry(item.unit)])));
       setCompletionFilter("ALL");
       setHasUnsavedChanges(false);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to calculate expected inventory"); }
@@ -275,6 +295,14 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
     const dailyItems=buildEnteredPhysicalCountItems(expected,entries);
     if (countType === "FULL" ? !validPhysicalCountEntries(expected, entries) : dailyItems.length===0) {
       toast.error(countType === "FULL" ? "Enter a valid non-negative physical count and compatible unit for every item." : "Enter at least one valid ingredient quantity. Blank ingredients remain unchanged.");
+      return;
+    }
+    if(countType==="FULL"&&!editingCountId&&!fullPhysicalVerificationConfirmed){
+      toast.error("Confirm that every Full Physical Count quantity was physically verified.");
+      return;
+    }
+    if(countType==="FULL"&&fullBlockReason){
+      toast.error(fullBlockReason);
       return;
     }
     if(countType==="CLOSING"&&(!dailyContext?.openingCount||!dailyContext.posDayComplete)){
@@ -383,11 +411,12 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
           <span className="text-xs font-medium text-[var(--app-text-muted)]">Showing {visibleItems.length} of {expected.length} items</span>
           {search && <Btn variant="outline" size="sm" onClick={() => setSearch("")}>Clear search</Btn>}
           {countType==="OPENING"&&dailyContext?.previousClosingItems.length&&!activeDailyCount?<Btn variant="outline" size="sm" onClick={()=>{setEntries(copyPreviousClosingEntries(expected,dailyContext.previousClosingItems));setCopiedClosingDate(dailyContext.previousClosingDate);setHasUnsavedChanges(true);setPreviewing(false);}}>Copy Previous Closing</Btn>:null}
-          <div className="ml-auto"><Btn icon={Send} disabled={saving || expected.length === 0 || Boolean(activeDailyCount) || (countType==="FULL"&&completion.remaining > 0) || (countType==="CLOSING"&&(!dailyContext?.openingCount||!dailyContext.posDayComplete))} onClick={() => void submit()}>
+          <div className="ml-auto"><Btn icon={Send} disabled={saving || expected.length === 0 || Boolean(activeDailyCount) || (countType==="FULL"&&(Boolean(fullBlockReason)||completion.remaining > 0||(!editingCountId&&!fullPhysicalVerificationConfirmed))) || (countType==="CLOSING"&&(!dailyContext?.openingCount||!dailyContext.posDayComplete))} onClick={() => void submit()}>
             {saving ? "Saving…" : editingCountId ? "Save Corrections" : previewing ? "Confirm and Submit" : activeDailyCount ? `${countType === "OPENING" ? "Opening" : "Closing"} Submitted` : "Submit Count"}
           </Btn></div>
         </>}
       >
+        {countType==="FULL"&&fullBlockReason&&<div className="border-b p-4 text-sm font-medium text-[var(--app-warning)] border-[var(--app-border)] bg-[var(--app-warning-bg)]">{fullBlockReason}</div>}
         {countType!=="FULL"&&<div className="border-b p-4 text-sm text-[var(--app-text-muted)] border-[var(--app-border)] bg-[var(--app-surface-muted)]">{countType==="CLOSING"&&!dailyContext?.openingCount?"Closing Count is unavailable until today's Opening Count is submitted.":countType==="CLOSING"&&!dailyContext?.posDayComplete?"Closing Count is unavailable until the reconciled end-of-day POS report is imported and confirmed complete.":activeDailyCount?`${countType === "OPENING" ? "Opening" : "Closing"} Count has already been submitted for this date.`:"Blank ingredients are not counted and remain unchanged. Entered zero is saved as zero."}</div>}
         <div className="border-b p-4" style={{ borderColor: "var(--app-border)" }}>
           <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
@@ -398,6 +427,8 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
             <div className="h-full rounded-full bg-[var(--app-primary)] transition-[width]" style={{ width: expected.length ? `${(completion.counted / expected.length) * 100}%` : "0%" }}/>
           </div>
           {countType==="FULL"&&completion.remaining > 0 && <p className="mt-2 text-xs text-[var(--app-text-muted)]">Complete the remaining physical quantities before submitting. Still needed: {completion.remainingItems.slice(0, 5).map((item) => item.itemName).join(", ")}{completion.remaining > 5 ? ` and ${completion.remaining - 5} more` : ""}.</p>}
+          {countType==="FULL"&&!editingCountId&&fullContext?.closingCount&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">Same-day Closing quantities were copied where available. Blank ingredients were not included in Closing and must be counted.</p>}
+          {countType==="FULL"&&!editingCountId&&<label className="mt-3 flex items-start gap-2 text-xs font-medium text-[var(--app-text)]"><input className="mt-0.5" type="checkbox" checked={fullPhysicalVerificationConfirmed} onChange={(event)=>setFullPhysicalVerificationConfirmed(event.target.checked)}/><span>I physically verified every Full Count quantity, including values copied from Closing.</span></label>}
           {copiedClosingDate&&countType==="OPENING"&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">{previousClosingCopyMessage(copiedClosingDate)}</p>}
           {countType!=="FULL"&&previewing&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">{countType==="OPENING"?"Review the entered Opening quantities, then choose Confirm and Submit. Only entered ingredients will establish checkpoints.":"Preview ready. Review the calculated variances, then choose Confirm and Submit. Only entered ingredients will establish checkpoints."}</p>}
         </div>
@@ -413,7 +444,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
                 const entry = entries[item.inventoryItemId] ?? blankPhysicalCountEntry(item.unit);
                 const normalizedActual = normalizePhysicalCountPreview(entry, item.unit);
                 const variance = displayedPhysicalCountVariance(countType, item.expectedQuantity, normalizedActual);
-                const countEntry=<div className="flex flex-col items-end gap-1"><div className="flex items-center gap-1.5"><input type="number" min={0} step="any" value={entry.quantity} onChange={(event) => { setHasUnsavedChanges(true); setPreviewing(false); setEntries((current) => ({ ...current, [item.inventoryItemId]: { ...entry, quantity: event.target.value } })); }} placeholder="Not counted" className="min-h-9 w-28 px-2.5 py-1.5 rounded-xl border text-right font-semibold text-sm outline-none transition-colors border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] focus:border-[var(--app-primary)] focus:ring-2 focus:ring-[var(--app-primary-faint)]" aria-label={`${item.itemName} ${countType.toLowerCase()} quantity`}/><Select small value={entry.enteredUnit} onChange={(value) => { setHasUnsavedChanges(true); setPreviewing(false); setEntries((current) => ({ ...current, [item.inventoryItemId]: changePhysicalCountEntryUnit(entry, item.unit, value as PhysicalCountUnit) })); }} className="w-20 [&_.custom-select-trigger]:!min-w-0" ariaLabel={`${item.itemName} physical count unit`} options={allowedPhysicalCountUnits(item.unit).map((unit) => ({ value: unit, label: unit }))}/></div><span className="text-[10px] whitespace-nowrap text-[var(--app-text-muted)]">{entry.quantity.trim() === ""?"Not yet counted":normalizedActual === null?"Enter a valid non-negative quantity":`Converted to system unit: ${normalizedActual.toLocaleString("en-US", { maximumFractionDigits: 4 })} ${item.unit}`}</span></div>;
+                const countEntry=<div className="flex flex-col items-end gap-1"><div className="flex items-center gap-1.5"><input type="number" min={0} step="any" value={entry.quantity} onChange={(event) => { setHasUnsavedChanges(true); setPreviewing(false); if(countType==="FULL")setFullPhysicalVerificationConfirmed(false); setEntries((current) => ({ ...current, [item.inventoryItemId]: { ...entry, quantity: event.target.value } })); }} placeholder="Not counted" className="min-h-9 w-28 px-2.5 py-1.5 rounded-xl border text-right font-semibold text-sm outline-none transition-colors border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] focus:border-[var(--app-primary)] focus:ring-2 focus:ring-[var(--app-primary-faint)]" aria-label={`${item.itemName} ${countType.toLowerCase()} quantity`}/><Select small value={entry.enteredUnit} onChange={(value) => { setHasUnsavedChanges(true); setPreviewing(false); if(countType==="FULL")setFullPhysicalVerificationConfirmed(false); setEntries((current) => ({ ...current, [item.inventoryItemId]: changePhysicalCountEntryUnit(entry, item.unit, value as PhysicalCountUnit) })); }} className="w-20 [&_.custom-select-trigger]:!min-w-0" ariaLabel={`${item.itemName} physical count unit`} options={allowedPhysicalCountUnits(item.unit).map((unit) => ({ value: unit, label: unit }))}/></div><span className="text-[10px] whitespace-nowrap text-[var(--app-text-muted)]">{entry.quantity.trim() === ""?"Not yet counted":normalizedActual === null?"Enter a valid non-negative quantity":`Converted to system unit: ${normalizedActual.toLocaleString("en-US", { maximumFractionDigits: 4 })} ${item.unit}`}</span></div>;
                 const savedQuantity=(value:number|undefined)=>value===undefined?<span className="text-[var(--app-text-muted)]">—</span>:<span className="font-semibold">{value.toLocaleString("en-PH",{maximumFractionDigits:4})} {item.unit}</span>;
                 return (
                   <TR key={item.inventoryItemId}>

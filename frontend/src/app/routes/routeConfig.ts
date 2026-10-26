@@ -27,3 +27,28 @@ export function isPageAllowed(page: AppPage, role: UserRole) {
 export function pageFromPath(pathname: string): AppPage {
   return (Object.entries(pagePaths).find(([, path]) => path === pathname)?.[0] as AppPage) ?? "dashboard";
 }
+
+export type NotificationDestination = { path: string } | { message: string } | { messageTargetId: string | null };
+
+export function notificationDestination(
+  notification: { entityType: string | null; entityId: string | null; type?: string },
+  role: UserRole,
+): NotificationDestination {
+  const id = notification.entityId ? encodeURIComponent(notification.entityId) : null;
+  if (notification.entityType === "MESSAGE") return { messageTargetId: notification.entityId };
+  if (role === "STAFF") return { message: "This notification target is not available with Staff access." };
+  if (notification.entityType === "MENU_ITEM") return { path: "/cogs/menu-recipes" };
+  if (notification.entityType === "POS_FORMAT_SETUP_REQUEST") {
+    if (role !== "OWNER") return { path: "/sales" };
+    return id
+      ? { path: `/sales?formatRequestId=${id}` }
+      : { message: "This POS format setup request is no longer available." };
+  }
+  if (notification.entityType === "POS_IMPORT" || notification.entityType === "POS_IMPORT_APPROVAL" || notification.entityType === "POS_SOURCE") {
+    return { path: "/sales" };
+  }
+  if (notification.entityType === "INCIDENT_REPORT") return { path: id ? `/shrinkage?incidentId=${id}` : "/shrinkage" };
+  if (notification.entityType === "SHRINKAGE_REPORT") return { path: id ? `/shrinkage?reportId=${id}` : "/shrinkage" };
+  if (notification.entityType === "PURCHASE_ORDER") return { path: "/purchase-orders" };
+  return { message: "This notification target is no longer available or you do not have access." };
+}

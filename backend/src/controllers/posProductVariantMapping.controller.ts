@@ -39,6 +39,7 @@ const mappingCopyInput = z.object({
   message: "Choose two different POS sources.",
   path: ["targetPosSourceId"],
 });
+const mappingConfirmationInput = z.object({ confirmedSupportedFormat: supportedFormat });
 const idParam = z.object({ id: z.string().uuid() });
 const fieldMappingSchema = z.object({
   productName: z.string().trim().min(1).max(240),
@@ -84,6 +85,9 @@ function databaseConflict(error: unknown): never {
   if (typeof error === "object" && error !== null && "code" in error && error.code === "P0001") {
     throw new AppError(422, "POS_MAPPING_TARGET_INACTIVE", "Activate the verified POS source and approved product variant before activating this mapping.");
   }
+  if (typeof error === "object" && error !== null && "code" in error && (error.code === "40001" || error.code === "40P01")) {
+    throw new AppError(409, "POS_MAPPING_CONCURRENT_CHANGE", "The POS mappings changed during this request. Refresh and try again.");
+  }
   throw error;
 }
 
@@ -93,7 +97,8 @@ export const listPosSources: RequestHandler = async (req, res) => {
       concat(u.first_name,' ',u.last_name) "formatVerifiedByName",
       EXISTS(SELECT 1 FROM pos_imports pi WHERE pi.pos_source_id=s.id) "hasImports",
       EXISTS(SELECT 1 FROM pos_sale_items psi WHERE psi.pos_source_id=s.id) "hasSales",
-      EXISTS(SELECT 1 FROM pos_product_variant_mappings pm WHERE pm.pos_source_id=s.id AND pm.status='ACTIVE') "hasActiveMappings"
+      EXISTS(SELECT 1 FROM pos_product_variant_mappings pm WHERE pm.pos_source_id=s.id AND pm.status='ACTIVE' AND pm.review_status='APPROVED') "hasActiveMappings",
+      EXISTS(SELECT 1 FROM pos_product_variant_mappings pm WHERE pm.pos_source_id=s.id AND pm.status='INACTIVE' AND pm.review_status='PENDING') "hasPendingMappings"
     FROM pos_sources s LEFT JOIN users u ON u.id=s.format_verified_by LEFT JOIN branches b ON b.id=s.branch_id
     WHERE ($1::boolean OR (s.status='ACTIVE' AND s.branch_id=$2::uuid)) ORDER BY b.name,s.display_name`, [req.user!.role === "OWNER",req.user!.branchId]);
   res.json({ success: true, data: { sources: result.rows } });
@@ -280,46 +285,222 @@ export const copyApprovedGlobalPosMappings: RequestHandler = async (req, res) =>
   const client = await pool.connect();
   try {
     await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
-    const sources = await client.query<{ id: string; sourceCode: string }>(
-      `SELECT id,source_code "sourceCode" FROM pos_sources WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE`,
+    const sources = await client.query<{ id: string; sourceCode: string; branchId: string; supportedFormat: string }>(
+      `SELECT id,source_code "sourceCode",branch_id "branchId",supported_format "supportedFormat"
+         FROM pos_sources WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE`,
       [[value.sourcePosSourceId, value.targetPosSourceId]],
     );
     const source = sources.rows.find((item) => item.id === value.sourcePosSourceId);
     const target = sources.rows.find((item) => item.id === value.targetPosSourceId);
     if (!source || !target) throw new AppError(404, "POS_SOURCE_NOT_FOUND", "The source or destination POS source was not found.");
+    if (source.branchId === target.branchId) throw new AppError(409, "POS_MAPPING_COPY_SAME_BRANCH", "Choose a destination POS source from another branch.");
+    if (source.supportedFormat !== target.supportedFormat) throw new AppError(409, "POS_MAPPING_FORMAT_MISMATCH", "Source and destination POS systems must use the same file format.");
 
-    const eligible = await client.query<{ count: number }>(
-      `SELECT count(*)::int count FROM pos_product_variant_mappings
-        WHERE pos_source_id=$1 AND branch_id IS NULL AND status='ACTIVE' AND review_status='APPROVED'`,
-      [source.id],
-    );
-    const copied = await client.query<{ id: string }>(
-      `INSERT INTO pos_product_variant_mappings
-        (pos_source_id,branch_id,source_product_name,source_product_code,menu_item_variant_id,
-         status,review_status,review_comment,reviewed_by,reviewed_at)
-       SELECT $2,NULL,original.source_product_name,original.source_product_code,original.menu_item_variant_id,
-              'INACTIVE','PENDING',$3,NULL,NULL
-         FROM pos_product_variant_mappings original
-        WHERE original.pos_source_id=$1 AND original.branch_id IS NULL
-          AND original.status='ACTIVE' AND original.review_status='APPROVED'
-          AND NOT EXISTS (
-            SELECT 1 FROM pos_product_variant_mappings existing
-             WHERE existing.pos_source_id=$2 AND existing.branch_id IS NULL
-               AND ((original.source_product_code IS NOT NULL AND existing.source_product_code IS NOT NULL
-                     AND lower(btrim(existing.source_product_code))=lower(btrim(original.source_product_code)))
-                 OR (original.source_product_code IS NULL AND existing.source_product_code IS NULL
-                     AND existing.normalized_source_product_name=original.normalized_source_product_name))
-          )
-       RETURNING id`,
-      [source.id, target.id, `Copied from ${source.sourceCode} — pending review`],
-    );
-    const eligibleCount = Number(eligible.rows[0]?.count ?? 0);
-    const result = { copied: copied.rows.length, skipped: eligibleCount - copied.rows.length, eligible: eligibleCount };
+    const candidates = await client.query<{
+      sourceProductName: string; sourceProductCode: string | null; normalizedSourceProductName: string;
+      menuItemVariantId: string; sourceBranchScoped: boolean; targetAvailable: boolean; recipeAvailable: boolean;
+    }>(`SELECT original.source_product_name "sourceProductName",original.source_product_code "sourceProductCode",
+        original.normalized_source_product_name "normalizedSourceProductName",original.menu_item_variant_id "menuItemVariantId",
+        (original.branch_id IS NOT NULL) "sourceBranchScoped",
+        (v.status='ACTIVE' AND m.status='ACTIVE' AND m.approval_status='APPROVED'
+          AND (m.product_scope='GLOBAL' OR m.origin_branch_id=$3::uuid)) "targetAvailable",
+        EXISTS(SELECT 1 FROM recipes r WHERE r.menu_item_variant_id=v.id AND r.status='ACTIVE'
+          AND r.effective_from<=CURRENT_DATE AND (r.effective_to IS NULL OR r.effective_to>CURRENT_DATE)
+          AND EXISTS(SELECT 1 FROM recipe_items ri WHERE ri.recipe_id=r.id)
+          AND NOT EXISTS(SELECT 1 FROM recipe_items ri JOIN inventory_items ii ON ii.id=ri.inventory_item_id
+            WHERE ri.recipe_id=r.id AND NOT (((ri.unit IN ('g','kg')) AND (ii.unit IN ('g','kg')))
+              OR ((ri.unit IN ('ml','L')) AND (ii.unit IN ('ml','L'))) OR (ri.unit='pc' AND ii.unit='pc')))) "recipeAvailable"
+      FROM pos_product_variant_mappings original
+      JOIN menu_item_variants v ON v.id=original.menu_item_variant_id
+      JOIN menu_items m ON m.id=v.menu_item_id
+      WHERE original.pos_source_id=$1 AND (original.branch_id IS NULL OR original.branch_id=$2::uuid)
+        AND original.status='ACTIVE' AND original.review_status='APPROVED'
+      ORDER BY original.id FOR SHARE OF original`, [source.id, source.branchId, target.branchId]);
+    let copied = 0;
+    let skipped = 0;
+    const incompatibleMappings: Array<{ sourceProductName: string; sourceProductCode: string | null; reason: string }> = [];
+    for (const candidate of candidates.rows) {
+      if (!candidate.targetAvailable || !candidate.recipeAvailable) {
+        incompatibleMappings.push({ sourceProductName: candidate.sourceProductName, sourceProductCode: candidate.sourceProductCode,
+          reason: !candidate.targetAvailable ? "Product or variant is unavailable for the destination branch." : "No valid active recipe is available." });
+        continue;
+      }
+      const targetBranchId = candidate.sourceBranchScoped ? target.branchId : null;
+      const duplicate = await client.query(`SELECT id FROM pos_product_variant_mappings
+        WHERE pos_source_id=$1
+          AND coalesce(branch_id,'00000000-0000-0000-0000-000000000000'::uuid)=coalesce($2::uuid,'00000000-0000-0000-0000-000000000000'::uuid)
+          AND (($3::text IS NOT NULL AND source_product_code IS NOT NULL AND lower(btrim(source_product_code))=lower(btrim($3)))
+            OR ($3::text IS NULL AND source_product_code IS NULL AND normalized_source_product_name=$4)) LIMIT 1`,
+      [target.id,targetBranchId,candidate.sourceProductCode,candidate.normalizedSourceProductName]);
+      if (duplicate.rows[0]) { skipped += 1; continue; }
+      await client.query(`INSERT INTO pos_product_variant_mappings
+        (pos_source_id,branch_id,source_product_name,source_product_code,menu_item_variant_id,status,review_status,review_comment,reviewed_by,reviewed_at)
+        VALUES($1,$2,$3,$4,$5,'INACTIVE','PENDING',$6,NULL,NULL)`,
+      [target.id,targetBranchId,candidate.sourceProductName,candidate.sourceProductCode,candidate.menuItemVariantId,`Copied from ${source.sourceCode} — pending review`]);
+      copied += 1;
+    }
+    const result = { copied, skipped, incompatible: incompatibleMappings.length, eligible: candidates.rows.length, incompatibleMappings };
     await writeAudit(req.user!, "COPY_POS_MAPPINGS", "POS_SOURCE", target.id,
-      `Copied reviewed global mappings from ${source.sourceCode} to ${target.sourceCode}`,
+      `Copied approved mappings from ${source.sourceCode} to ${target.sourceCode}`,
       { sourcePosSourceId: source.id, targetPosSourceId: target.id, ...result }, client);
     await client.query("COMMIT");
     res.status(201).json({ success: true, data: result });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    databaseConflict(error);
+  } finally {
+    client.release();
+  }
+};
+
+export const approveAllPendingPosMappings: RequestHandler = async (req, res) => {
+  const { id: posSourceId } = idParam.parse(req.params);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    const sourceResult = await client.query<{ status: "ACTIVE" | "INACTIVE"; formatVerifiedAt: string | null }>(
+      `SELECT status,format_verified_at "formatVerifiedAt" FROM pos_sources WHERE id=$1 FOR UPDATE`, [posSourceId],
+    );
+    const source = sourceResult.rows[0];
+    if (!source) throw new AppError(404, "POS_SOURCE_NOT_FOUND", "POS source not found.");
+    if (source.status !== "ACTIVE" || !source.formatVerifiedAt) {
+      throw new AppError(422, "POS_SOURCE_FORMAT_REVIEW_REQUIRED", "Activate and verify the POS source format before approving mappings.");
+    }
+    const pending = await client.query<{
+      id: string; branchId: string | null; sourceProductCode: string | null; normalizedSourceProductName: string;
+      targetAvailable: boolean; recipeAvailable: boolean;
+    }>(`SELECT pm.id,pm.branch_id "branchId",pm.source_product_code "sourceProductCode",
+        pm.normalized_source_product_name "normalizedSourceProductName",
+        (v.status='ACTIVE' AND m.status='ACTIVE' AND m.approval_status='APPROVED' AND
+          ((pm.branch_id IS NULL AND m.product_scope='GLOBAL') OR
+           (pm.branch_id IS NOT NULL AND (m.product_scope='GLOBAL' OR m.origin_branch_id=pm.branch_id)))) "targetAvailable",
+        EXISTS(SELECT 1 FROM recipes r WHERE r.menu_item_variant_id=v.id AND r.status='ACTIVE'
+          AND r.effective_from<=CURRENT_DATE AND (r.effective_to IS NULL OR r.effective_to>CURRENT_DATE)
+          AND EXISTS(SELECT 1 FROM recipe_items ri WHERE ri.recipe_id=r.id)
+          AND NOT EXISTS(SELECT 1 FROM recipe_items ri JOIN inventory_items ii ON ii.id=ri.inventory_item_id
+            WHERE ri.recipe_id=r.id AND NOT (((ri.unit IN ('g','kg')) AND (ii.unit IN ('g','kg')))
+              OR ((ri.unit IN ('ml','L')) AND (ii.unit IN ('ml','L'))) OR (ri.unit='pc' AND ii.unit='pc')))) "recipeAvailable"
+      FROM pos_product_variant_mappings pm
+      JOIN menu_item_variants v ON v.id=pm.menu_item_variant_id
+      JOIN menu_items m ON m.id=v.menu_item_id
+      WHERE pm.pos_source_id=$1 AND pm.status='INACTIVE' AND pm.review_status='PENDING'
+      ORDER BY pm.id FOR UPDATE OF pm`, [posSourceId]);
+    if (pending.rows.length === 0) throw new AppError(409, "POS_MAPPING_NONE_PENDING", "There are no pending mappings to approve.");
+    const ids = pending.rows.map((mapping) => mapping.id);
+    const pendingIdentities = new Set<string>();
+    for (const mapping of pending.rows) {
+      if (!mapping.targetAvailable) throw new AppError(422, "POS_MAPPING_TARGET_INACTIVE", "Every pending mapping must target an active approved product and variant in its scope.");
+      if (!mapping.recipeAvailable) throw new AppError(422, "POS_MAPPING_RECIPE_REQUIRED", "Every pending mapping needs a valid active recipe before bulk approval.");
+      const identity = `${mapping.branchId ?? "GLOBAL"}:${mapping.sourceProductCode?.trim().toLowerCase() ?? `name:${mapping.normalizedSourceProductName}`}`;
+      if (pendingIdentities.has(identity)) throw new AppError(409, "POS_MAPPING_CONFLICT", "Pending mappings contain a duplicate POS identity. No mappings were approved.");
+      pendingIdentities.add(identity);
+      const conflict = await client.query(`SELECT id FROM pos_product_variant_mappings WHERE id<>ALL($1::uuid[]) AND pos_source_id=$2
+        AND coalesce(branch_id,'00000000-0000-0000-0000-000000000000'::uuid)=coalesce($3::uuid,'00000000-0000-0000-0000-000000000000'::uuid)
+        AND status='ACTIVE' AND (($4::text IS NOT NULL AND source_product_code IS NOT NULL AND lower(btrim(source_product_code))=lower(btrim($4)))
+          OR ($4::text IS NULL AND source_product_code IS NULL AND normalized_source_product_name=$5)) LIMIT 1`,
+      [ids,posSourceId,mapping.branchId,mapping.sourceProductCode,mapping.normalizedSourceProductName]);
+      if (conflict.rows[0]) throw new AppError(409, "POS_MAPPING_CONFLICT", "An approved mapping conflicts with a pending mapping. No mappings were approved.");
+    }
+    await client.query(`UPDATE pos_product_variant_mappings SET status='ACTIVE',review_status='APPROVED',
+      review_comment='Approved in bulk review',reviewed_by=$2,reviewed_at=now(),updated_at=now()
+      WHERE id=ANY($1::uuid[])`, [ids, req.user!.id]);
+    for (const mapping of pending.rows) {
+      await writeAudit(req.user!, "REVIEW_POS_MAPPING", "POS_MAPPING", mapping.id, "APPROVED POS mapping in bulk review", { posSourceId, bulkApproval: true }, client);
+    }
+    await client.query("COMMIT");
+    res.json({ success: true, data: { posSourceId, approved: ids.length } });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    databaseConflict(error);
+  } finally {
+    client.release();
+  }
+};
+
+export const confirmAndActivatePosMappings: RequestHandler = async (req, res) => {
+  const { id: posSourceId } = idParam.parse(req.params);
+  const value = mappingConfirmationInput.parse(req.body);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    const identity = await client.query<{ branchId: string | null }>(
+      `SELECT branch_id "branchId" FROM pos_sources WHERE id=$1`, [posSourceId],
+    );
+    if (!identity.rows[0]) throw new AppError(404, "POS_SOURCE_NOT_FOUND", "POS source not found.");
+    if (!identity.rows[0].branchId) throw new AppError(422, "POS_SOURCE_BRANCH_REQUIRED", "Choose the destination branch before confirmation.");
+    await client.query(`SELECT pg_advisory_xact_lock(hashtextextended('libro:pos-source:' || $1::text, 0))`, [identity.rows[0].branchId]);
+
+    const sourceResult = await client.query<{
+      branchId: string; displayName: string; sourceCode: string; status: "ACTIVE" | "INACTIVE";
+      supportedFormat: z.infer<typeof supportedFormat>; fieldMapping: PosFieldMapping | null;
+    }>(`SELECT branch_id "branchId",display_name "displayName",source_code "sourceCode",status,
+        supported_format "supportedFormat",field_mapping "fieldMapping"
+      FROM pos_sources WHERE id=$1 FOR UPDATE`, [posSourceId]);
+    const source = sourceResult.rows[0];
+    if (!source) throw new AppError(404, "POS_SOURCE_NOT_FOUND", "POS source not found.");
+    if (source.supportedFormat !== value.confirmedSupportedFormat) {
+      throw new AppError(422, "POS_SOURCE_FORMAT_REVIEW_REQUIRED", "The confirmed export format no longer matches this POS source. Review the format before activation.");
+    }
+    if (source.supportedFormat === "CUSTOM_TABULAR_XLSX" && !source.fieldMapping) {
+      throw new AppError(422, "POS_FIELD_MAPPING_REQUIRED", "Configure the POS column mapping before confirmation.");
+    }
+    const branch = await client.query(`SELECT id FROM branches WHERE id=$1 AND status='ACTIVE' FOR UPDATE`, [source.branchId]);
+    if (!branch.rows[0]) throw new AppError(422, "POS_SOURCE_BRANCH_INVALID", "The destination branch is not active.");
+    const competingSource = await client.query<{ id: string }>(
+      `SELECT id FROM pos_sources WHERE branch_id=$1 AND status='ACTIVE' AND id<>$2 ORDER BY id FOR UPDATE`,
+      [source.branchId, posSourceId],
+    );
+    if (competingSource.rows[0]) {
+      throw new AppError(409, "POS_SOURCE_ACTIVE_BRANCH_CONFLICT", "Another POS source is already active for this branch. Deactivate it explicitly before confirming this setup.");
+    }
+
+    const pending = await client.query<{
+      id: string; branchId: string | null; sourceProductCode: string | null; normalizedSourceProductName: string;
+      targetAvailable: boolean; recipeAvailable: boolean;
+    }>(`SELECT pm.id,pm.branch_id "branchId",pm.source_product_code "sourceProductCode",
+        pm.normalized_source_product_name "normalizedSourceProductName",
+        (v.status='ACTIVE' AND m.status='ACTIVE' AND m.approval_status='APPROVED' AND
+          ((pm.branch_id IS NULL AND m.product_scope='GLOBAL') OR
+           (pm.branch_id IS NOT NULL AND (m.product_scope='GLOBAL' OR m.origin_branch_id=pm.branch_id)))) "targetAvailable",
+        EXISTS(SELECT 1 FROM recipes r WHERE r.menu_item_variant_id=v.id AND r.status='ACTIVE'
+          AND r.effective_from<=CURRENT_DATE AND (r.effective_to IS NULL OR r.effective_to>CURRENT_DATE)
+          AND EXISTS(SELECT 1 FROM recipe_items ri WHERE ri.recipe_id=r.id)
+          AND NOT EXISTS(SELECT 1 FROM recipe_items ri JOIN inventory_items ii ON ii.id=ri.inventory_item_id
+            WHERE ri.recipe_id=r.id AND NOT (((ri.unit IN ('g','kg')) AND (ii.unit IN ('g','kg')))
+              OR ((ri.unit IN ('ml','L')) AND (ii.unit IN ('ml','L'))) OR (ri.unit='pc' AND ii.unit='pc')))) "recipeAvailable"
+      FROM pos_product_variant_mappings pm
+      JOIN menu_item_variants v ON v.id=pm.menu_item_variant_id
+      JOIN menu_items m ON m.id=v.menu_item_id
+      WHERE pm.pos_source_id=$1 AND pm.status='INACTIVE' AND pm.review_status='PENDING'
+      ORDER BY pm.id FOR UPDATE OF pm`, [posSourceId]);
+    if (pending.rows.length === 0) throw new AppError(409, "POS_MAPPING_NONE_PENDING", "There are no pending mappings to confirm.");
+    const ids = pending.rows.map((mapping) => mapping.id);
+    const pendingIdentities = new Set<string>();
+    for (const mapping of pending.rows) {
+      if (!mapping.targetAvailable) throw new AppError(422, "POS_MAPPING_TARGET_INACTIVE", "Every pending mapping must target an active approved product and variant in its scope.");
+      if (!mapping.recipeAvailable) throw new AppError(422, "POS_MAPPING_RECIPE_REQUIRED", "Every pending mapping needs a valid active recipe before confirmation.");
+      const mappingIdentity = `${mapping.branchId ?? "GLOBAL"}:${mapping.sourceProductCode?.trim().toLowerCase() ?? `name:${mapping.normalizedSourceProductName}`}`;
+      if (pendingIdentities.has(mappingIdentity)) throw new AppError(409, "POS_MAPPING_CONFLICT", "Pending mappings contain a duplicate POS identity. Nothing was activated.");
+      pendingIdentities.add(mappingIdentity);
+      const conflict = await client.query(`SELECT id FROM pos_product_variant_mappings WHERE id<>ALL($1::uuid[]) AND pos_source_id=$2
+        AND coalesce(branch_id,'00000000-0000-0000-0000-000000000000'::uuid)=coalesce($3::uuid,'00000000-0000-0000-0000-000000000000'::uuid)
+        AND status='ACTIVE' AND (($4::text IS NOT NULL AND source_product_code IS NOT NULL AND lower(btrim(source_product_code))=lower(btrim($4)))
+          OR ($4::text IS NULL AND source_product_code IS NULL AND normalized_source_product_name=$5)) LIMIT 1`,
+      [ids,posSourceId,mapping.branchId,mapping.sourceProductCode,mapping.normalizedSourceProductName]);
+      if (conflict.rows[0]) throw new AppError(409, "POS_MAPPING_CONFLICT", "An approved mapping conflicts with a pending mapping. Nothing was activated.");
+    }
+
+    await client.query(`UPDATE pos_sources SET status='ACTIVE',format_verified_by=$2,format_verified_at=now(),updated_at=now() WHERE id=$1`, [posSourceId, req.user!.id]);
+    await client.query(`UPDATE pos_product_variant_mappings SET status='ACTIVE',review_status='APPROVED',
+      review_comment='Approved during Quick Assign confirmation',reviewed_by=$2,reviewed_at=now(),updated_at=now()
+      WHERE id=ANY($1::uuid[])`, [ids, req.user!.id]);
+    await writeAudit(req.user!, "VERIFY_POS_SOURCE_FORMAT", "POS_SOURCE", posSourceId, `Verified ${source.supportedFormat} during Quick Assign confirmation`, { supportedFormat: source.supportedFormat, branchId: source.branchId }, client);
+    for (const mapping of pending.rows) {
+      await writeAudit(req.user!, "REVIEW_POS_MAPPING", "POS_MAPPING", mapping.id, "APPROVED POS mapping during Quick Assign confirmation", { posSourceId, quickAssignConfirmation: true }, client);
+    }
+    await writeAudit(req.user!, "ACTIVATE_POS_SOURCE", "POS_SOURCE", posSourceId, `Activated POS source ${source.sourceCode}`, { branchId: source.branchId, approvedMappings: ids.length }, client);
+    await client.query("COMMIT");
+    res.json({ success: true, data: { posSourceId, approved: ids.length, status: "ACTIVE", readiness: "Ready" } });
   } catch (error) {
     await client.query("ROLLBACK");
     databaseConflict(error);
@@ -342,8 +523,9 @@ export const updatePosMapping: RequestHandler = async (req, res) => {
         pm.normalized_source_product_name "normalizedSourceProductName",pm.pos_source_id "posSourceId",
         pm.review_status "reviewStatus",
         s.status "sourceStatus",s.format_verified_at "formatVerifiedAt",
-        (v.status='ACTIVE' AND m.status='ACTIVE' AND m.approval_status='APPROVED'
-          AND (pm.branch_id IS NULL OR m.product_scope='GLOBAL' OR m.origin_branch_id=pm.branch_id)) "targetAvailable",
+        (v.status='ACTIVE' AND m.status='ACTIVE' AND m.approval_status='APPROVED' AND
+          ((pm.branch_id IS NULL AND m.product_scope='GLOBAL') OR
+           (pm.branch_id IS NOT NULL AND (m.product_scope='GLOBAL' OR m.origin_branch_id=pm.branch_id)))) "targetAvailable",
         EXISTS(SELECT 1 FROM recipes r WHERE r.menu_item_variant_id=v.id AND r.status='ACTIVE'
           AND r.effective_from<=CURRENT_DATE AND (r.effective_to IS NULL OR r.effective_to>CURRENT_DATE)
           AND EXISTS(SELECT 1 FROM recipe_items ri WHERE ri.recipe_id=r.id)

@@ -582,13 +582,17 @@ export const createPurchaseOrder: RequestHandler = async (req, res) => {
   try {
     await client.query("BEGIN");
     await lockBranchInventoryOperation(client, branchId);
-    const completedCount = await client.query(
-      `SELECT ic.id FROM inventory_counts ic
-        WHERE ic.branch_id=$1 AND ic.count_date=$2::date AND ic.count_type='FULL' AND NOT ic.is_test_data
+    const completedCount = await client.query<{ id: string; countNo: string; countDate: string }>(
+      `SELECT ic.id,ic.count_no "countNo",ic.count_date::text "countDate" FROM inventory_counts ic
+        WHERE ic.branch_id=$1 AND ic.count_type='FULL' AND NOT ic.is_test_data
+          AND ic.count_date>=date_trunc('week',$2::date)::date
+          AND ic.count_date<(date_trunc('week',$2::date)::date + 7)
+          AND ic.count_date<=$2::date
           AND EXISTS(SELECT 1 FROM inventory_count_items valid_item
             WHERE valid_item.inventory_count_id=ic.id AND valid_item.voided_at IS NULL)
           AND NOT EXISTS(SELECT 1 FROM inventory_count_items invalid_item
             WHERE invalid_item.inventory_count_id=ic.id AND invalid_item.voided_at IS NOT NULL)
+        ORDER BY ic.count_date DESC,COALESCE(ic.effective_at,ic.submitted_at) DESC,ic.submitted_at DESC
         LIMIT 1 FOR SHARE OF ic`,
       [branchId, input.orderDate],
     );
@@ -596,7 +600,7 @@ export const createPurchaseOrder: RequestHandler = async (req, res) => {
       throw new AppError(
         409,
         "PHYSICAL_COUNT_REQUIRED",
-        `Complete the Full Physical Count for ${input.orderDate} before creating this purchase order.`,
+        `Complete a Full Physical Count in the current Monday-Sunday business week before creating this purchase order.`,
       );
     }
     const ids = input.items.map((item) => item.inventoryItemId);
@@ -654,7 +658,13 @@ export const createPurchaseOrder: RequestHandler = async (req, res) => {
       "PURCHASE_ORDER",
       inserted.rows[0]!.id,
       `Created ${number.rows[0]!.poNo}`,
-      { branchId, status: input.status },
+      {
+        branchId,
+        status: input.status,
+        verificationFullCountId: completedCount.rows[0]!.id,
+        verificationFullCountNo: completedCount.rows[0]!.countNo,
+        verificationFullCountDate: completedCount.rows[0]!.countDate,
+      },
       client,
     );
     await client.query("COMMIT");

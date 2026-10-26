@@ -5,6 +5,7 @@ import { Toaster, toast } from "sonner";
 import { useAuth } from "./contexts/AuthContext";
 import {
   isPageAllowed,
+  notificationDestination,
   pageFromPath,
   pagePaths,
   type AppPage,
@@ -129,6 +130,7 @@ type AppNotification = {
   icon: string;
   entityId: string | null;
   entityType: string | null;
+  type: string;
 };
 
 const notificationsData: AppNotification[] = [];
@@ -301,6 +303,7 @@ export default function App() {
                       : "shrink",
             entityId: notification.entityId,
             entityType: notification.entityType,
+            type: notification.type,
           })),
       );
     } catch {
@@ -522,22 +525,15 @@ export default function App() {
             ),
           );
           setNotifOpen(false);
-          if (notification.entityType === "MESSAGE") {
-            setMessageTargetId(notification.entityId);
+          const destination = notificationDestination(notification, user.role);
+          if ("messageTargetId" in destination) {
+            setMessageTargetId(destination.messageTargetId);
             setMessageOpen(true);
-          } else if (!isStaff && notification.entityType === "MENU_ITEM")
-            navigate("/cogs/menu-recipes");
-          else if (!isStaff && (notification.entityType === "POS_IMPORT" || notification.entityType === "POS_IMPORT_APPROVAL"))
-            navigate("/sales");
-          else if (!isStaff)
-            navigate(
-              notification.entityType === "INCIDENT_REPORT" &&
-                notification.entityId
-                ? `/shrinkage?incidentId=${notification.entityId}`
-                : notification.entityId
-                  ? `/shrinkage?reportId=${notification.entityId}`
-                  : "/shrinkage",
-            );
+          } else if ("path" in destination) {
+            navigate(destination.path);
+          } else {
+            toast.info(destination.message);
+          }
         }}
       />
       <MessageDrawer

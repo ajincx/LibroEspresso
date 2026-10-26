@@ -2,7 +2,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { ExpectedInventoryItem } from "../../types/inventoryWorkflow";
-import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, copyPreviousClosingEntries, displayedPhysicalCountVariance, filterPhysicalCountItems, initialPhysicalCountDate, inventoryCountColumns, isDailyCountColumnEditable, isFutureInventoryCountDate, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, PhysicalCountLoadingSkeleton, physicalCountCompletion, physicalCountEntryFromCanonical, physicalCountPreviewVariance, previousClosingCopyMessage, savedCountQuantities, showInventoryCountDateFilter, validPhysicalCountEntries } from "./InventoryCountPage";
+import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, copyPreviousClosingEntries, copySameDayClosingEntries, displayedPhysicalCountVariance, filterPhysicalCountItems, fullCountSubmissionBlockReason, initialPhysicalCountDate, inventoryCountColumns, isDailyCountColumnEditable, isFutureInventoryCountDate, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, PhysicalCountLoadingSkeleton, physicalCountCompletion, physicalCountEntryFromCanonical, physicalCountPreviewVariance, previousClosingCopyMessage, savedCountQuantities, showInventoryCountDateFilter, validPhysicalCountEntries } from "./InventoryCountPage";
 import { buildEnteredPhysicalCountItems } from "./InventoryCountPage";
 
 const item = (inventoryItemId: string, sku: string, itemName: string): ExpectedInventoryItem => ({
@@ -66,6 +66,25 @@ describe("Daily partial physical counts",()=>{
       milk:{quantity:"",enteredUnit:"pc"},
       sugar:{quantity:"3",enteredUnit:"pc"},
     });
+  });
+
+  it("prefills a Full Count from matching same-day Closing items and leaves uncounted ingredients blank",()=>{
+    expect(copySameDayClosingEntries(ingredients,[
+      {inventoryItemId:"ice",actualQuantity:0},
+      {inventoryItemId:"sugar",actualQuantity:3},
+    ])).toEqual({
+      ice:{quantity:"0",enteredUnit:"pc"},
+      milk:{quantity:"",enteredUnit:"pc"},
+      sugar:{quantity:"3",enteredUnit:"pc"},
+    });
+  });
+
+  it("blocks Full entry until Closing and after the weekly limit while allowing the ready state",()=>{
+    const base={countType:"FULL" as const,closingCount:null,fullCount:null,sameDayClosingItems:[],weeklyFullCount:0,weeklyFullLimit:3};
+    expect(fullCountSubmissionBlockReason(base)).toContain("same-day Closing Count");
+    expect(fullCountSubmissionBlockReason({...base,closingCount:{id:"closing",countNo:"IC-C",countType:"CLOSING",submittedAt:"now"},weeklyFullCount:2})).toBeNull();
+    expect(fullCountSubmissionBlockReason({...base,closingCount:{id:"closing",countNo:"IC-C",countType:"CLOSING",submittedAt:"now"},weeklyFullCount:3})).toContain("limit of three");
+    expect(fullCountSubmissionBlockReason({...base,closingCount:{id:"closing",countNo:"IC-C",countType:"CLOSING",submittedAt:"now"},fullCount:{id:"full",countNo:"IC-F",countType:"FULL",submittedAt:"now"}})).toContain("already been recorded");
   });
 
   it("supports the Daily Count return label without changing the Full Count default",()=>{

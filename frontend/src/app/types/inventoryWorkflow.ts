@@ -212,6 +212,7 @@ export interface PosSource {
   hasImports?: boolean;
   hasSales?: boolean;
   hasActiveMappings?: boolean;
+  hasPendingMappings?: boolean;
 }
 
 export interface PosFieldMapping {
@@ -297,6 +298,7 @@ export interface PosAnalytics {
   };
   trends: { date: string; sales: number; cogs: number; grossProfit: number }[];
   products: { id: string; name: string; category: string; unitsSold: number; sales: number; cogs: number }[];
+  productSalesRanking: { id: string; name: string; unitsSold: number }[];
   ingredients: { id: string; name: string; category: string; cost: number }[];
   shrinkageCauses?: { name: string; value: number }[];
 }
@@ -319,7 +321,7 @@ export interface InventoryCountSummary {
 
 export type InventoryCountType = "FULL" | "OPENING" | "CLOSING";
 export interface DailyInventoryCountContext {
-  countType: InventoryCountType;
+  countType: "OPENING" | "CLOSING";
   openingCount: { id:string;countNo:string;countType:"OPENING";submittedAt:string } | null;
   closingCount: { id:string;countNo:string;countType:"CLOSING";submittedAt:string } | null;
   previousClosingItems: Array<{inventoryItemId:string;actualQuantity:number;countDate:string;countType?:"CLOSING"|"FULL"}>;
@@ -327,6 +329,17 @@ export interface DailyInventoryCountContext {
   previousClosingCountType?: "CLOSING" | "FULL" | null;
   posDayComplete: boolean;
 }
+
+export interface FullInventoryCountContext {
+  countType: "FULL";
+  closingCount: { id:string;countNo:string;countType:"CLOSING";submittedAt:string } | null;
+  fullCount: { id:string;countNo:string;countType:"FULL";submittedAt:string } | null;
+  sameDayClosingItems: Array<{inventoryItemId:string;actualQuantity:number}>;
+  weeklyFullCount: number;
+  weeklyFullLimit: number;
+}
+
+export type InventoryCountContext = DailyInventoryCountContext | FullInventoryCountContext;
 
 export interface CountVarianceItem {
   id: string;

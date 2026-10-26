@@ -33,7 +33,7 @@ import {
 import { authenticate, authorize } from "../middleware/auth.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { archiveShrinkageReport, deletePosSourceConfiguration, voidVarianceRecord } from "../controllers/controlledDestructive.controller.js";
-import { copyApprovedGlobalPosMappings, createPosMapping, createPosSource, deactivateApprovedPosMapping, inspectPosSourceHeaders, listPosMappings, listPosSources, revisePendingPosMapping, savePosSourceFieldMapping, updatePosMapping, updatePosSource } from "../controllers/posProductVariantMapping.controller.js";
+import { approveAllPendingPosMappings, confirmAndActivatePosMappings, copyApprovedGlobalPosMappings, createPosMapping, createPosSource, deactivateApprovedPosMapping, inspectPosSourceHeaders, listPosMappings, listPosSources, revisePendingPosMapping, savePosSourceFieldMapping, updatePosMapping, updatePosSource } from "../controllers/posProductVariantMapping.controller.js";
 import { declareClosedPosDay, listDailyPosStatus, runDailyPosReminderCron } from "../controllers/posDailyMonitoring.controller.js";
 import { confirmIngredientInitialStock, confirmStartingStock, createOpeningInventoryBaseline, getStartingStockSetup, listOpeningInventoryBaselines } from "../controllers/openingInventory.controller.js";
 import { getShrinkageAiAnalysis } from "../controllers/shrinkageAi.controller.js";
@@ -60,6 +60,8 @@ posSalesRouter.post("/format-requests/:id/reject", authorize("OWNER"), asyncHand
 posSalesRouter.get("/mappings", asyncHandler(listPosMappings));
 posSalesRouter.post("/mappings", authorize("OWNER"), asyncHandler(createPosMapping));
 posSalesRouter.post("/mappings/copy", authorize("OWNER"), asyncHandler(copyApprovedGlobalPosMappings));
+posSalesRouter.post("/mappings/approve-all/:id", authorize("OWNER"), asyncHandler(approveAllPendingPosMappings));
+posSalesRouter.post("/mappings/confirm-and-activate/:id", authorize("OWNER"), asyncHandler(confirmAndActivatePosMappings));
 posSalesRouter.put("/mappings/:id", authorize("OWNER"), asyncHandler(revisePendingPosMapping));
 posSalesRouter.patch("/mappings/:id", authorize("OWNER"), asyncHandler(updatePosMapping));
 posSalesRouter.post("/mappings/:id/deactivate", authorize("OWNER"), asyncHandler(deactivateApprovedPosMapping));

@@ -3,7 +3,7 @@ import { Check, CheckCircle, Upload, X } from "lucide-react";
 import { Btn, C, formatPeso, isModalBackdropEvent, SkeletonBlock } from "../../components/ModuleUi";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
 import type { PosImportPreview, PosSource } from "../../types/inventoryWorkflow";
-import { deduplicatePosValidationIssues, PosMappingRecoveryNotice, requiresPosMappingRecovery } from "./posImportPresentation";
+import { deduplicatePosValidationIssues, posSourceReadiness, PosMappingRecoveryNotice, requiresPosMappingRecovery } from "./posImportPresentation";
 
 type Step = "select" | "preview" | "done";
 
@@ -26,6 +26,21 @@ export function canValidatePosImport(fileSelected: boolean, busy: boolean, sourc
   return fileSelected && !busy && Boolean(sourceId) && sources.length > 0;
 }
 
+const POS_SOURCE_FORMAT_LABELS: Record<PosSource["supportedFormat"], string> = {
+  SUMMARY_ITEMS_SOLD_LEGACY_XLS: "Libro Espresso XLS",
+  TRANSACTION_SUMMARY_XLSX: "Libro Espresso XLSX",
+  CANONICAL_CSV: "Libro Espresso CSV",
+  CUSTOM_TABULAR_XLSX: "Custom Mapped Spreadsheet",
+};
+
+export function managerPosSourceLabel(source: Pick<PosSource, "displayName" | "supportedFormat" | "status" | "formatVerifiedAt" | "fieldMapping" | "hasActiveMappings" | "hasPendingMappings">) {
+  const sourceName = source.displayName.replace(
+    /\s*(?:[-·|]\s*)?(?:libro espresso\s*[-·|]?\s*)?(?:transaction summary xlsx|summary items sold(?: legacy)?(?: xls)?|custom mapped spreadsheet|custom tabular xlsx|canonical csv|summary items|transaction summary|xlsx|xls|csv)$/i,
+    "",
+  ).trim() || source.displayName.trim();
+  return `${sourceName} - ${POS_SOURCE_FORMAT_LABELS[source.supportedFormat]} - ${posSourceReadiness(source)}`;
+}
+
 export function PosSourceField({ sources, sourceId, loading, onChange }: {
   sources: PosSource[];
   sourceId: string;
@@ -35,7 +50,7 @@ export function PosSourceField({ sources, sourceId, loading, onChange }: {
   if (!loading && sources.length === 1) {
     return <p className="text-sm font-normal" aria-label="POS Source">
       <span>POS Source: </span>
-      <strong style={{ color: C.maroon }}>{sources[0]!.displayName}</strong>
+      <strong style={{ color: C.maroon }}>{managerPosSourceLabel(sources[0]!)}</strong>
     </p>;
   }
   return <div className="text-sm font-semibold">
@@ -44,7 +59,7 @@ export function PosSourceField({ sources, sourceId, loading, onChange }: {
       : sources.length === 0 ? <p role="alert" className="mt-2 rounded-xl bg-[var(--app-warning-bg)] p-3 text-sm text-[var(--app-warning)]">No active POS source is configured for this branch.</p>
         : <select aria-label="POS Source" value={sourceId} onChange={(event) => onChange(event.target.value)} className="field mt-2">
           <option value="">Select active POS source</option>
-          {sources.map((source) => <option key={source.id} value={source.id}>{source.displayName} · {source.supportedFormat.replaceAll("_", " ")}</option>)}
+          {sources.map((source) => <option key={source.id} value={source.id}>{managerPosSourceLabel(source)}</option>)}
         </select>}
   </div>;
 }

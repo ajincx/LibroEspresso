@@ -38,6 +38,23 @@ export const recipeIngredientExists = (inventoryItemId: string, inventory: Inven
   inventory.some((item) => item.id === inventoryItemId && item.status === "ACTIVE");
 export const normalizeRecipeQuantityInput = (value: string): number | "" => value === "" ? "" : Number(value);
 export const isValidRecipeQuantity = (value: RecipeRow["quantity"]) => value !== "" && Number.isFinite(Number(value)) && Number(value) > 0;
+export const MAX_MENU_PRODUCT_PRICE_PHP = 10_000;
+export const hasAtMostTwoPriceDecimals = (value:number) => Math.abs(value*100-Math.round(value*100))<1e-8;
+export const productNameValidationError = (value:string) => {
+  const name=value.trim();
+  if(name.length<2)return "Product name is required.";
+  if(name.length>160)return "Product name must be 160 characters or fewer.";
+  if(/[\p{Cc}\p{Cf}]/u.test(name))return "Product name cannot contain control characters.";
+  if(!/\p{L}/u.test(name))return "Product name must contain at least one letter.";
+  return "";
+};
+export const menuSellingPriceValidationError = (value:number|"") => {
+  if(value===""||!Number.isFinite(value))return "Selling price must be a valid number.";
+  if(value<=0)return "Selling price must be greater than zero.";
+  if(value>MAX_MENU_PRODUCT_PRICE_PHP)return `Selling price must not exceed ₱${MAX_MENU_PRODUCT_PRICE_PHP.toLocaleString()}.`;
+  if(!hasAtMostTwoPriceDecimals(value))return "Selling price must have no more than two decimal places.";
+  return "";
+};
 export const selectInitialZeroQuantity = (input: Pick<HTMLInputElement, "value" | "select">) => {
   if (input.value !== "" && Number(input.value) === 0) input.select();
 };
@@ -114,10 +131,15 @@ export function MenuRecipesPage() {
   };
   const validate = () => {
     const errors: Record<string, string> = {};
-    if (!form.name.trim()) errors.name = "Product name is required.";
+    const nameError=productNameValidationError(form.name);
+    if(nameError)errors.name=nameError;
     if (!form.categoryId) errors.categoryId = "Category is required.";
     if (!form.variants.length || !form.variants.some((variant)=>variant.status==="ACTIVE")) errors.variants = "Keep at least one active size or variant.";
-    if (form.variants.some((variant)=>!variant.name.trim() || variant.sellingPrice==="" || Number(variant.sellingPrice)<=0)) errors.variants = "Give every variant a name and a selling price greater than zero.";
+    if (form.variants.some((variant)=>!variant.name.trim())) errors.variants = "Give every variant a name.";
+    else {
+      const priceError=form.variants.map((variant)=>menuSellingPriceValidationError(variant.sellingPrice)).find(Boolean);
+      if(priceError)errors.variants=priceError;
+    }
     if (new Set(form.variants.map((variant)=>variant.name.trim().toLowerCase())).size!==form.variants.length) errors.variants = "Variant names must be unique.";
     const draftEntries=Object.entries(form.recipeDrafts);
     for(const [variantKey,draft] of draftEntries){
@@ -146,7 +168,7 @@ export function MenuRecipesPage() {
   const saveProduct = async () => {
     if (!validate()) return;
     setSaving(true);
-    const input = { name: form.name, categoryId: form.categoryId, variants:attachPendingRecipeDrafts(form.variants,form.recipeDrafts), description: form.description, status: form.status };
+    const input = { name: form.name.trim(), categoryId: form.categoryId, variants:attachPendingRecipeDrafts(form.variants,form.recipeDrafts), description: form.description, status: form.status };
     const changesHistoricalRecipe=form.variants.some((variant)=>Boolean(form.recipeDrafts[variant.key]&&editing?.variants.find((item)=>item.id===variant.id)?.recipeHasHistoricalSales));
     try {
       if (editing) await masterDataService.updateMenuProduct(editing.id, input); else await masterDataService.createMenuProduct(input);
@@ -422,9 +444,9 @@ function CategoryManagerModal({categories,onClose,onChanged}:{categories:MenuCat
   };
   return <Modal onClose={onClose} width="max-w-3xl">
     <div className="flex items-start justify-between gap-4"><div><h2 className="text-xl font-bold">Menu Categories</h2><p className="text-sm mt-1 text-[var(--app-text-muted)]">Rename categories without changing their stable identity, and add optional user guidance.</p></div><button aria-label="Close category management" disabled={saving} onClick={onClose}><X size={18}/></button></div>
-    <div className="grid md:grid-cols-[1fr_1.2fr] gap-5 mt-5">
-      <div className="rounded-xl border overflow-hidden" style={{borderColor:"var(--app-border)"}}><div className="flex items-center justify-between px-3 py-2 border-b" style={{borderColor:"var(--app-border)"}}><span className="text-xs font-bold uppercase tracking-wider text-[var(--app-text-muted)]">Existing categories</span><Btn size="sm" variant="outline" icon={Plus} onClick={startCreate}>New</Btn></div><div className="max-h-96 overflow-y-auto divide-y" style={{borderColor:"var(--app-border)"}}>{categories.map((category)=><button type="button" key={category.id} onClick={()=>startEdit(category)} className="w-full text-left px-3 py-3 hover:bg-[var(--app-primary-faint)]"><div className="flex items-center justify-between gap-2"><span className="font-semibold text-sm">{category.name}</span><StatusBadge status={category.status.toLowerCase()}/></div><div className="text-xs mt-1 text-[var(--app-text-muted)] line-clamp-2">{category.description||"No description"}</div></button>)}</div></div>
-      <div><h3 className="font-bold">{editing?`Edit ${editing.name}`:"Create category"}</h3><div className="space-y-4 mt-4"><Field label="Category Name *" value={form.name} onChange={(name)=>setForm((current)=>({...current,name}))}/><label className="block text-sm font-semibold">Description <span className="font-normal text-[var(--app-text-faint)]">(optional)</span><textarea value={form.description} maxLength={1000} rows={4} onChange={(event)=>setForm((current)=>({...current,description:event.target.value}))} className="mt-2 w-full px-3 py-2.5 rounded-xl border resize-none outline-none" style={inputStyle} placeholder="Explain this category in user-friendly terms."/></label><SelectField label="Status" value={form.status} onChange={(status)=>setForm((current)=>({...current,status:status as RecordStatus}))} options={[{value:"ACTIVE",label:"Active"},{value:"INACTIVE",label:"Inactive"}]}/>{error&&<p role="alert" className="text-sm text-[var(--app-danger)]">{error}</p>}<div className="flex justify-end gap-2"><Btn variant="outline" disabled={saving} onClick={startCreate}>Clear</Btn><Btn disabled={saving} onClick={()=>void save()}>{saving?"Saving…":editing?"Save Category":"Create Category"}</Btn></div></div></div>
+    <div className="mt-6 grid gap-6 md:grid-cols-[1fr_1.2fr]">
+      <div className="overflow-hidden rounded-2xl border" style={{borderColor:"var(--app-border)"}}><div className="flex items-center justify-between border-b px-4 py-3" style={{borderColor:"var(--app-border)"}}><span className="text-xs font-bold uppercase tracking-wider text-[var(--app-text-muted)]">Existing categories</span><Btn size="sm" variant="outline" icon={Plus} onClick={startCreate}>New</Btn></div><div className="max-h-96 divide-y overflow-y-auto" style={{borderColor:"var(--app-border)"}}>{categories.map((category)=><button type="button" key={category.id} onClick={()=>startEdit(category)} className="w-full px-4 py-3.5 text-left hover:bg-[var(--app-primary-faint)]"><div className="flex items-center justify-between gap-2"><span className="text-sm font-semibold">{category.name}</span><StatusBadge status={category.status.toLowerCase()}/></div><div className="mt-1.5 line-clamp-2 text-xs text-[var(--app-text-muted)]">{category.description||"No description"}</div></button>)}</div></div>
+      <div className="rounded-2xl border p-4 md:p-5" style={{borderColor:"var(--app-border)",background:"var(--app-surface-elevated)"}}><h3 className="text-base font-bold">{editing?`Edit ${editing.name}`:"Create category"}</h3><p className="mt-1 text-xs text-[var(--app-text-muted)]">Use a clear name and optional guidance for menu organization.</p><div className="mt-5 space-y-5"><Field label="Category Name *" value={form.name} onChange={(name)=>setForm((current)=>({...current,name}))}/><label className="block text-sm font-semibold">Description <span className="font-normal text-[var(--app-text-faint)]">(optional)</span><textarea value={form.description} maxLength={1000} rows={4} onChange={(event)=>setForm((current)=>({...current,description:event.target.value}))} className="mt-2 w-full resize-none rounded-xl border px-4 py-3 outline-none" style={inputStyle} placeholder="Explain this category in user-friendly terms."/></label><SelectField label="Status" value={form.status} onChange={(status)=>setForm((current)=>({...current,status:status as RecordStatus}))} options={[{value:"ACTIVE",label:"Active"},{value:"INACTIVE",label:"Inactive"}]}/>{error&&<p role="alert" className="text-sm text-[var(--app-danger)]">{error}</p>}<div className="flex justify-end gap-2 border-t pt-4" style={{borderColor:"var(--app-border)"}}><Btn variant="outline" disabled={saving} onClick={startCreate}>Clear</Btn><Btn disabled={saving} onClick={()=>void save()}>{saving?"Saving…":editing?"Save Category":"Create Category"}</Btn></div></div></div>
     </div>
   </Modal>;
 }

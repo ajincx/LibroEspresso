@@ -80,7 +80,7 @@ describe("purchase-order creation validation",()=>{
     expect(isPhysicalCountRequiredError({ response: { data: { error: { code: "PHYSICAL_COUNT_REQUIRED" } } } })).toBe(true);
     const markup = renderToStaticMarkup(React.createElement(PhysicalCountRequiredNotice,{orderDate:"2026-10-03",onGoToInventoryCount}));
     expect(markup).toContain("Full Physical Count Required");
-    expect(markup).toContain("Complete today&#x27;s Closing Count");
+    expect(markup).toContain("Monday-Sunday week");
     expect(markup).toContain("October 3, 2026");
     expect(markup).toContain("Go to Full Physical Count");
     const notice = PhysicalCountRequiredNotice({orderDate:"2026-10-03",onGoToInventoryCount}) as React.ReactElement<{children:React.ReactNode}>;

@@ -287,7 +287,7 @@ describe("access controls", () => {
   it("keeps POS source and mapping administration Owner-only", async () => {
     const manager = session({ id: "manager", role: "BRANCH_MANAGER", branchId: "00000000-0000-4000-8000-000000000002" });
     const staff = session({ id: "staff", role: "STAFF", branchId: "00000000-0000-4000-8000-000000000002" });
-    const paths = ["/api/pos-sales/sources", "/api/pos-sales/mappings", "/api/pos-sales/mappings/copy"];
+    const paths = ["/api/pos-sales/sources", "/api/pos-sales/mappings", "/api/pos-sales/mappings/copy", "/api/pos-sales/mappings/approve-all/00000000-0000-4000-8000-000000000003", "/api/pos-sales/mappings/confirm-and-activate/00000000-0000-4000-8000-000000000003"];
     for (const path of paths) {
       const responses = await Promise.all([
         request(app).post(path).set("Cookie", manager).send({}),
