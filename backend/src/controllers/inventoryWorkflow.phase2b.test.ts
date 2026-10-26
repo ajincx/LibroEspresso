@@ -14,9 +14,11 @@ beforeEach(() => mocks.query.mockReset());
 describe("Phase 2B shrinkage aggregates", () => {
   it("returns filtered totals across every matching row instead of reducing the current page", async () => {
     const metrics = { detectedValue: 9876.5, detected: 137, pending: 81, spoilage: 42, wastage: 31, pilferage: 8 };
-    mocks.query.mockImplementation(async (sql?: string) => typeof sql === "string" && sql.includes("COALESCE(sum(CASE")
-      ? { rows: [metrics] }
-      : { rows: [{ id: "report-on-page", __total: 237 }] });
+    mocks.query.mockImplementation(async (sql?: string) => {
+      if (typeof sql === "string" && sql.includes("COALESCE(sum(CASE")) return { rows: [metrics] };
+      if (typeof sql === "string" && sql.includes("NOT EXISTS (SELECT 1 FROM shrinkage_reports linked")) return { rows: [] };
+      return { rows: [{ id: "report-on-page", __total: 237 }] };
+    });
     const json = vi.fn();
 
     await listShrinkageReports({
@@ -48,6 +50,8 @@ describe("Phase 2B shrinkage aggregates", () => {
         reports: [{ id: "report-on-page" }],
         pagination: { page: 3, pageSize: 10, total: 237, totalPages: 24 },
         metrics,
+        missingInvestigations: [],
+        missingInvestigationCount: 0,
       },
     });
   });
@@ -78,5 +82,40 @@ describe("Phase 2B variance visibility", () => {
     const [sql] = mocks.query.mock.calls[0] as [string, unknown[]];
     expect(sql).toContain("abs(COALESCE(correction.corrected_variance_quantity,ici.variance_quantity)) <= 0.0001");
     expect(sql).not.toContain("abs(COALESCE(correction.corrected_variance_quantity,ici.variance_quantity)) > 0.0001");
+  });
+
+  it("links only authoritative investigations, retains archived links, and derives materiality from current settings", async () => {
+    mocks.query.mockResolvedValue({ rows: [] });
+    await listInventoryVariances({ query: {}, user: manager } as never, { json: vi.fn() } as never, vi.fn());
+
+    const [sql] = mocks.query.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain("LEFT JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ici.id AND NOT sr.is_test_data");
+    expect(sql).not.toContain("sr.archived_at IS NULL");
+    expect(sql).toContain('sr.archived_at "anomalyArchivedAt"');
+    expect(sql).toContain('settings.variance_tolerance_quantity');
+    expect(sql).toContain('settings.variance_tolerance_percent');
+    expect(sql).toContain('"requiresInvestigation"');
+  });
+
+  it("surfaces material historical shortages with no authoritative investigation without creating records", async () => {
+    mocks.query.mockImplementation(async (sql?: string) => {
+      if (typeof sql === "string" && sql.includes("COALESCE(sum(CASE")) return { rows: [{ detectedValue: 0, detected: 0, pending: 0, spoilage: 0, wastage: 0, pilferage: 0 }] };
+      if (typeof sql === "string" && sql.includes("NOT EXISTS (SELECT 1 FROM shrinkage_reports linked")) return { rows: [{ countItemId: "bacon-item", inventoryItemName: "Bacon", __total: 2 }] };
+      return { rows: [] };
+    });
+    const json = vi.fn();
+    await listShrinkageReports({ query: { startDate: "2026-08-01", endDate: "2026-10-31" }, user: manager } as never, { json } as never, vi.fn());
+
+    const missingSql = String(mocks.query.mock.calls[2]?.[0]);
+    expect(missingSql).toContain("NOT linked.is_test_data");
+    expect(missingSql).toContain("ici.voided_at IS NULL");
+    expect(missingSql).toContain("greatest(settings.variance_tolerance_quantity");
+    expect(missingSql).toContain("ic.branch_id=$1");
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        missingInvestigations: [{ countItemId: "bacon-item", inventoryItemName: "Bacon" }],
+        missingInvestigationCount: 2,
+      }),
+    }));
   });
 });

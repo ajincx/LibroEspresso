@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ArrowDown, ArrowUp, Ban, Eye, GitCompare, RefreshCw, Search } from "lucide-react";
 import { toast } from "sonner";
-import { useNavigate } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useAuth } from "../../contexts/AuthContext";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
@@ -23,13 +23,14 @@ type DisplayStatus =
   | "DETECTED"
   | "VERIFIED"
   | "PENDING_REVIEW"
-  | "REVIEWED";
+  | "REVIEWED"
+  | "MISSING_INVESTIGATION";
 
 export function displayStatus(record: VarianceRecord): DisplayStatus {
   if (record.anomalyStatus) return record.anomalyStatus;
   const v = record.varianceQuantity;
   if (Math.abs(v) <= 0.0001) return "MATCHED";
-  if (v < 0) return "SHORTAGE_WITHIN_TOLERANCE";
+  if (v < 0) return record.requiresInvestigation ? "MISSING_INVESTIGATION" : "SHORTAGE_WITHIN_TOLERANCE";
   return "EXCESS_WITHIN_TOLERANCE";
 }
 
@@ -37,22 +38,30 @@ export function varianceScopeForStatus(status: DisplayStatus | "") {
   return status === "MATCHED" ? "MATCHED" as const : "DISCREPANCIES" as const;
 }
 
-export function varianceWithoutInvestigationLabel(record: Pick<VarianceRecord, "varianceQuantity" | "anomalyId">) {
+export function varianceWithoutInvestigationLabel(record: Pick<VarianceRecord, "varianceQuantity" | "anomalyId" | "requiresInvestigation">) {
   if (record.anomalyId) return "Investigation available";
   if (Math.abs(record.varianceQuantity) <= 0.0001) return "Matched — no investigation";
   if (record.varianceQuantity > 0) return "Excess — no shortage investigation";
-  return "Within tolerance — no investigation";
+  return record.requiresInvestigation ? "Investigation record missing" : "Within tolerance — no investigation";
+}
+
+export function varianceClassificationLabel(record: Pick<VarianceRecord, "classification" | "requiresInvestigation" | "anomalyId">) {
+  if (record.anomalyId) return classificationLabel(record.classification);
+  return record.requiresInvestigation
+    ? "Unexplained Variance — Investigation record missing"
+    : "No investigation classification — within tolerance";
 }
 
 export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string }) {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const owner = user?.role === "OWNER";
   const [records, setRecords] = useState<VarianceRecord[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [branchId, setBranchId] = useState(scopeBranchId === "ALL" ? "" : scopeBranchId);
-  const [countDate, setCountDate] = useState("");
-  const [query, setQuery] = useState("");
+  const [countDate, setCountDate] = useState(searchParams.get("countDate") ?? "");
+  const [query, setQuery] = useState(searchParams.get("query") ?? "");
   const [status, setStatus] = useState<DisplayStatus | "">("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -79,7 +88,7 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
     net: records.reduce((sum, record) => sum + record.varianceValue, 0),
     shortage: records.filter((record) => record.varianceValue < 0).reduce((sum, record) => sum + Math.abs(record.varianceValue), 0),
     excess: records.filter((record) => record.varianceValue > 0).reduce((sum, record) => sum + record.varianceValue, 0),
-    investigate: records.filter((record) => record.anomalyStatus === "DETECTED").length,
+    investigate: records.filter((record) => record.anomalyStatus === "DETECTED" || (!record.anomalyId && record.requiresInvestigation)).length,
   }), [records]);
 
   const chartData = useMemo(() => [...filtered].sort((a, b) => Math.abs(b.varianceValue) - Math.abs(a.varianceValue)).slice(0, 8).map((record) => ({
@@ -213,7 +222,7 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
                   </span>
                 </TD>
                 <TD right><span className="font-semibold">{record.varianceValue > 0 ? "+" : ""}₱{record.varianceValue.toFixed(2)}</span></TD>
-                <TD muted>{classificationLabel(record.classification)}</TD>
+                <TD muted>{varianceClassificationLabel(record)}</TD>
                 <TD center><VarianceStatus status={displayStatus(record)} /></TD>
                 <TD center>
                   <div className="flex justify-center gap-1">{record.anomalyId ? (
@@ -226,7 +235,7 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
                         background: "var(--app-primary-subtle)",
                       }}
                     >
-                      <Eye size={14}/>{record.anomalyStatus === "DETECTED" && !owner ? "Investigate" : "View"}
+                      <Eye size={14}/>{record.anomalyArchivedAt ? "View Archived Case" : record.anomalyStatus === "DETECTED" && !owner ? "Investigate" : "View Case"}
                     </button>
                   ) : (
                     <span className="max-w-32 text-right text-[11px] leading-4 text-[var(--app-text-muted)]">{varianceWithoutInvestigationLabel(record)}</span>
@@ -253,6 +262,7 @@ function VarianceStatus({ status }: { status: DisplayStatus }) {
     VERIFIED: { label: "Verified Shrinkage", color: "var(--app-primary)", background: "var(--app-primary-subtle)" },
     PENDING_REVIEW: { label: "Pending Final Verification", color: "var(--app-warning)", background: "var(--app-warning-bg)" },
     REVIEWED: { label: "Reviewed", color: "var(--app-success)", background: "var(--app-success-bg)" },
+    MISSING_INVESTIGATION: { label: "Investigation Missing", color: "var(--app-danger)", background: "var(--app-danger-bg)" },
   };
   const visual = map[status] ?? { label: status, color: "var(--app-text-muted)", background: "var(--app-surface-muted)" };
   return (

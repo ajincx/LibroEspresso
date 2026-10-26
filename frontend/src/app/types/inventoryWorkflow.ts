@@ -412,6 +412,22 @@ export interface ShrinkageReport {
   countDate: string;
 }
 
+export interface MissingShrinkageInvestigation {
+  countItemId: string;
+  countNo: string;
+  countDate: string;
+  branchId: string;
+  branchName: string;
+  inventoryItemId: string;
+  inventoryItemName: string;
+  sku: string;
+  expectedQuantity: number;
+  actualQuantity: number;
+  varianceQuantity: number;
+  varianceValue: number;
+  unit: string;
+}
+
 export interface ShrinkageEvidence {
   incidents: {
     id: string; incidentReportItemId: string; incidentType: string; quantity: number; unit: string; occurredAt: string; reason: string;
@@ -453,6 +469,8 @@ export interface VarianceRecord {
   reportNo: string | null;
   anomalyStatus: ShrinkageStatus | null;
   classification: ShrinkageClassification | null;
+  anomalyArchivedAt: string | null;
+  requiresInvestigation: boolean;
 }
 
 export interface WorkflowNotification {

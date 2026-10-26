@@ -2363,14 +2363,21 @@ export const listInventoryVariances: RequestHandler = async (req, res) => {
             COALESCE(correction.corrected_variance_quantity,ici.variance_quantity)::float8 "varianceQuantity",
             COALESCE(correction.corrected_variance_value,ici.variance_value)::float8 "varianceValue",ici.unit,
             CASE WHEN ici.expected_quantity > 0 THEN ((COALESCE(correction.corrected_variance_quantity,ici.variance_quantity) / ici.expected_quantity) * 100)::float8 ELSE NULL END "variancePercentage",
-            sr.id "anomalyId",sr.report_no "reportNo",sr.status "anomalyStatus",sr.classification,count(*) OVER()::int "__total"
+            sr.id "anomalyId",sr.report_no "reportNo",sr.status "anomalyStatus",sr.classification,
+            sr.archived_at "anomalyArchivedAt",
+            (COALESCE(correction.corrected_variance_quantity,ici.variance_quantity) < 0 AND
+             abs(COALESCE(correction.corrected_variance_quantity,ici.variance_quantity)) >
+             greatest(settings.variance_tolerance_quantity,
+               ici.expected_quantity * settings.variance_tolerance_percent / 100)) "requiresInvestigation",
+            count(*) OVER()::int "__total"
        FROM inventory_count_items ici
        JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
        JOIN branches b ON b.id=ic.branch_id
        JOIN inventory_items ii ON ii.id=ici.inventory_item_id
+       CROSS JOIN calculation_settings settings
        LEFT JOIN LATERAL (SELECT corrected_actual_quantity,corrected_variance_quantity,corrected_variance_value
          FROM inventory_count_corrections WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
-       LEFT JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ici.id AND sr.archived_at IS NULL
+       LEFT JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ici.id AND NOT sr.is_test_data
       ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
       ORDER BY ic.count_date DESC,abs(COALESCE(correction.corrected_variance_value,ici.variance_value)) DESC,ii.name LIMIT $${values.length+1} OFFSET $${values.length+2}`,
     [...values,pagination.pageSize,(pagination.page-1)*pagination.pageSize],
@@ -2430,7 +2437,36 @@ export const listShrinkageReports: RequestHandler = async (req, res) => {
     clauses.push(`EXISTS (SELECT 1 FROM incident_shrinkage_links isl JOIN incident_reports ir ON ir.id=isl.incident_report_id WHERE NOT ir.is_test_data AND ir.archived_at IS NULL AND isl.shrinkage_report_id=sr.id AND ir.incident_type=$${values.length})`);
   }
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-  const [result, aggregate] = await Promise.all([
+  const missingValues: unknown[] = [];
+  const missingClauses = [
+    "NOT ic.is_test_data",
+    "ic.count_type <> 'OPENING'",
+    "ici.voided_at IS NULL",
+    "COALESCE(correction.corrected_variance_quantity,ici.variance_quantity) < 0",
+    `abs(COALESCE(correction.corrected_variance_quantity,ici.variance_quantity)) >
+      greatest(settings.variance_tolerance_quantity,
+        ici.expected_quantity * settings.variance_tolerance_percent / 100)`,
+    "NOT EXISTS (SELECT 1 FROM shrinkage_reports linked WHERE linked.inventory_count_item_id=ici.id AND NOT linked.is_test_data)",
+  ];
+  if (branchId) {
+    missingValues.push(branchId);
+    missingClauses.push(`ic.branch_id=$${missingValues.length}`);
+  }
+  if (filters.inventoryItemId) {
+    missingValues.push(filters.inventoryItemId);
+    missingClauses.push(`ici.inventory_item_id=$${missingValues.length}`);
+  }
+  if (filters.startDate) {
+    missingValues.push(filters.startDate);
+    missingClauses.push(`ic.count_date >= $${missingValues.length}::date`);
+  }
+  if (filters.endDate) {
+    missingValues.push(filters.endDate);
+    missingClauses.push(`ic.count_date <= $${missingValues.length}::date`);
+  }
+  const includeMissingInvestigations = filters.archiveScope !== "ARCHIVED"
+    && !filters.status && !filters.classification && !filters.incidentType;
+  const [result, aggregate, missing] = await Promise.all([
     pool.query(
       `${shrinkageSelection.replace("SELECT ","SELECT count(*) OVER()::int \"__total\",")} ${where} ORDER BY CASE sr.status WHEN 'DETECTED' THEN 0 WHEN 'PENDING_REVIEW' THEN 1 ELSE 2 END,sr.detected_at DESC LIMIT $${values.length+1} OFFSET $${values.length+2}`,
       [...values,pagination.pageSize,(pagination.page-1)*pagination.pageSize],
@@ -2461,9 +2497,37 @@ export const listShrinkageReports: RequestHandler = async (req, res) => {
        ${where}`,
       values,
     ),
+    includeMissingInvestigations
+      ? pool.query(
+        `SELECT ici.id "countItemId",ic.count_no "countNo",ic.count_date::text "countDate",
+                b.id "branchId",b.name "branchName",ii.id "inventoryItemId",ii.sku,
+                ii.name "inventoryItemName",ici.expected_quantity::float8 "expectedQuantity",
+                COALESCE(correction.corrected_actual_quantity,ici.actual_quantity)::float8 "actualQuantity",
+                COALESCE(correction.corrected_variance_quantity,ici.variance_quantity)::float8 "varianceQuantity",
+                COALESCE(correction.corrected_variance_value,ici.variance_value)::float8 "varianceValue",ici.unit,
+                count(*) OVER()::int "__total"
+           FROM inventory_count_items ici
+           JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
+           JOIN branches b ON b.id=ic.branch_id
+           JOIN inventory_items ii ON ii.id=ici.inventory_item_id
+           CROSS JOIN calculation_settings settings
+           LEFT JOIN LATERAL (SELECT corrected_actual_quantity,corrected_variance_quantity,corrected_variance_value
+             FROM inventory_count_corrections WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
+          WHERE ${missingClauses.join(" AND ")}
+          ORDER BY ic.count_date DESC,abs(COALESCE(correction.corrected_variance_value,ici.variance_value)) DESC
+          LIMIT 100`,
+        missingValues,
+      )
+      : Promise.resolve({ rows: [] }),
   ]);
   const page = paginatedRows(result.rows, pagination);
-  res.json({ success: true, data: { reports: page.data, pagination: page.pagination, metrics: aggregate.rows[0] } });
+  res.json({ success: true, data: {
+    reports: page.data,
+    pagination: page.pagination,
+    metrics: aggregate.rows[0],
+    missingInvestigations: missing.rows.map(({ __total: _total, ...row }) => row),
+    missingInvestigationCount: Number(missing.rows[0]?.__total ?? 0),
+  } });
 };
 
 export const getShrinkageReport: RequestHandler = async (req, res) => {

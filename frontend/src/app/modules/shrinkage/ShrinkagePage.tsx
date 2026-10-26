@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, Archive, CheckCircle, Eye, RefreshCw, SearchCheck, ShieldCheck, Sparkles, X } from "lucide-react";
-import { useSearchParams } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { useAuth } from "../../contexts/AuthContext";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
 import { operationsService } from "../../services/operations.service";
 import { masterDataService } from "../../services/masterData.service";
-import type { EvidenceBasis, ShrinkageAiAnalysisResult, ShrinkageClassification, ShrinkageEvidence, ShrinkageMetrics, ShrinkageReport, ShrinkageStatus } from "../../types/inventoryWorkflow";
+import type { EvidenceBasis, MissingShrinkageInvestigation, ShrinkageAiAnalysisResult, ShrinkageClassification, ShrinkageEvidence, ShrinkageMetrics, ShrinkageReport, ShrinkageStatus } from "../../types/inventoryWorkflow";
 import type { Branch, InventoryItem, MenuItem } from "../../types/masterData";
 import type { IncidentType } from "../../types/operations";
 import { ShrinkageIncidentReports } from "./ShrinkageIncidentReports";
@@ -18,6 +18,8 @@ import { controlledActionService } from "../../services/controlledAction.service
 const formatDate = (value: string | null) => value ? formatAppDate(value, true) : "—";
 
 const emptyMetrics: ShrinkageMetrics = { detectedValue: 0, detected: 0, pending: 0, spoilage: 0, wastage: 0, pilferage: 0 };
+export const missingInvestigationVariancePath = (item: Pick<MissingShrinkageInvestigation, "countDate" | "inventoryItemName">) =>
+  `/variance?countDate=${encodeURIComponent(item.countDate)}&query=${encodeURIComponent(item.inventoryItemName)}`;
 export const SHRINKAGE_STATUS_FILTER_OPTIONS: Array<{ value: ShrinkageStatus | ""; label: string }> = [
   { value: "", label: "All Statuses" },
   { value: "DETECTED", label: "Needs Investigation" },
@@ -28,10 +30,13 @@ export const SHRINKAGE_STATUS_FILTER_OPTIONS: Array<{ value: ShrinkageStatus | "
 
 export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string }) {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const owner = user?.role === "OWNER";
   const [reports, setReports] = useState<ShrinkageReport[]>([]);
   const [metrics, setMetrics] = useState<ShrinkageMetrics>(emptyMetrics);
+  const [missingInvestigations, setMissingInvestigations] = useState<MissingShrinkageInvestigation[]>([]);
+  const [missingInvestigationCount, setMissingInvestigationCount] = useState(0);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [menu, setMenu] = useState<MenuItem[]>([]);
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
@@ -62,8 +67,10 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
       const result = await inventoryWorkflowService.reports({ branchId: branchId || undefined, archiveScope, status: status || undefined, classification: classification || undefined, inventoryItemId: inventoryItemId || undefined, incidentType: incidentType || undefined, startDate: startDate || undefined, endDate: endDate || undefined });
       setReports(result.reports);
       setMetrics(result.metrics);
+      setMissingInvestigations(result.missingInvestigations);
+      setMissingInvestigationCount(result.missingInvestigationCount);
     }
-    catch (reason) { setReports([]); setMetrics(emptyMetrics); setError(reason instanceof Error ? reason.message : "Unable to load system-detected anomalies"); }
+    catch (reason) { setReports([]); setMetrics(emptyMetrics); setMissingInvestigations([]); setMissingInvestigationCount(0); setError(reason instanceof Error ? reason.message : "Unable to load system-detected anomalies"); }
     finally { setLoading(false); }
   };
   useEffect(() => { void load(); }, [branchId, archiveScope, status, classification, inventoryItemId, incidentType, startDate, endDate]);
@@ -75,10 +82,14 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
   }, [owner]);
   useEffect(() => {
     const reportId = searchParams.get("reportId");
-    if (!reportId || !reports.length) return;
+    if (!reportId || loading) return;
     const report = reports.find((item) => item.id === reportId);
-    if (report) { openReport(report); setSearchParams({}, { replace: true }); }
-  }, [reports, searchParams, setSearchParams]);
+    setSearchParams({}, { replace: true });
+    if (report) { openReport(report); return; }
+    void inventoryWorkflowService.report(reportId)
+      .then(openReport)
+      .catch(() => setError("The linked investigation is unavailable or outside your authorized branch."));
+  }, [loading, reports, searchParams, setSearchParams]);
 
   const openReport = (report: ShrinkageReport) => {
     setSelected(report);
@@ -146,6 +157,10 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
     <div className="flex items-start justify-between gap-4"><div><h1 className="text-xl font-bold">Classification &amp; Investigation</h1><p className="text-sm mt-1" style={{ color: "var(--app-text-muted)" }}>{owner ? "Review Manager findings for system-detected inventory shortages across branches." : "Investigate shortages automatically detected from expected stock and physical counts."}</p></div><button onClick={() => void load()} className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border text-sm font-semibold" style={{ borderColor: "var(--app-border)", background: "var(--app-surface)" }}><RefreshCw size={14} />Refresh</button></div>
 
     <div className="flex gap-3 p-4 rounded-2xl border" style={{ borderColor: "var(--app-border)", background: "var(--app-primary-faint)" }}><SearchCheck size={20} style={{ color: "var(--app-primary)" }} /><div><div className="text-sm font-semibold">System-generated workflow</div><p className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>POS sales and standard recipes calculate expected usage. Physical counts create variance automatically. Shortages above tolerance become investigation cases; Managers document findings but cannot edit the calculated quantities.</p></div></div>
+
+    {!loading && missingInvestigationCount > 0 && <section aria-label="Material variances missing investigation records" className="rounded-2xl border p-4" style={{ borderColor: "var(--app-danger)", background: "var(--app-danger-bg)" }}>
+      <div className="flex gap-3"><AlertTriangle size={20} className="shrink-0" style={{ color: "var(--app-danger)" }}/><div className="min-w-0 flex-1"><h2 className="text-sm font-bold">{missingInvestigationCount} material variance{missingInvestigationCount === 1 ? "" : "s"} missing an investigation record</h2><p className="mt-1 text-xs text-[var(--app-text-muted)]">These historical shortages exceed the configured tolerance, but no authoritative non-test investigation exists. They are shown for review only; no case or classification was created automatically.</p><div className="mt-3 grid gap-2">{missingInvestigations.map((item)=><div key={item.countItemId} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-xs"><span><strong>{item.inventoryItemName}</strong> · {item.countNo} · {formatAppDate(item.countDate)} · {item.varianceQuantity.toFixed(2)} {item.unit}</span><button type="button" className="font-semibold text-[var(--app-primary)]" onClick={()=>navigate(missingInvestigationVariancePath(item))}>Find in Variance Records</button></div>)}</div></div></div>
+    </section>}
 
     <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">{[
       ["Detected Value", `₱${metrics.detectedValue.toLocaleString("en-PH", { maximumFractionDigits: 2 })}`], ["Needs Investigation", String(metrics.detected)], ["Pending Final Verification", String(metrics.pending)], ["Spoilage", String(metrics.spoilage)], ["Wastage", String(metrics.wastage)], ["Verified Pilferage", String(metrics.pilferage)],

@@ -1,7 +1,7 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { SHRINKAGE_STATUS_FILTER_OPTIONS, ShrinkageAiAnalysisPanel } from "./ShrinkagePage";
+import { missingInvestigationVariancePath, SHRINKAGE_STATUS_FILTER_OPTIONS, ShrinkageAiAnalysisPanel } from "./ShrinkagePage";
 
 describe("System-Detected Anomaly filters", () => {
   it("consolidates every existing status into one dropdown option set", () => {
@@ -12,6 +12,12 @@ describe("System-Detected Anomaly filters", () => {
       { value: "PENDING_REVIEW", label: "Pending Review" },
       { value: "REVIEWED", label: "Reviewed" },
     ]);
+  });
+
+  it("links a missing material case back to its exact variance date and ingredient", () => {
+    expect(missingInvestigationVariancePath({ countDate: "2026-10-25", inventoryItemName: "Bacon & Eggs" })).toBe(
+      "/variance?countDate=2026-10-25&query=Bacon%20%26%20Eggs",
+    );
   });
 });
 
