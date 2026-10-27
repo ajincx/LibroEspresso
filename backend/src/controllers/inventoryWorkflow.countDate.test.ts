@@ -17,6 +17,7 @@ vi.mock("../services/businessTime.service.js", () => ({
 }));
 
 import {
+  assertExpectedInventoryThroughDate,
   assertInventoryCountDateNotFuture,
   getInventoryCount,
   getExpectedInventory,
@@ -45,6 +46,14 @@ describe("inventory physical-count future-date protection", () => {
   it("rejects a future Manila business date", () => {
     expect(() => assertInventoryCountDateNotFuture("2026-10-02")).toThrowError(
       expect.objectContaining({ status: 422, code: "INVENTORY_COUNT_FUTURE_DATE" }),
+    );
+  });
+
+  it("accepts valid past and current through dates and rejects malformed dates", () => {
+    expect(() => assertExpectedInventoryThroughDate("2026-09-30", "2026-10-01")).not.toThrow();
+    expect(() => assertExpectedInventoryThroughDate("2026-10-01", "2026-10-01")).not.toThrow();
+    expect(() => assertExpectedInventoryThroughDate("2026-02-30", "2026-10-01")).toThrowError(
+      expect.objectContaining({ status: 422, code: "INVENTORY_DATE_INVALID" }),
     );
   });
 

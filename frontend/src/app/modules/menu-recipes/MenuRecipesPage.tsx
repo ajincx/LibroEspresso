@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { BookOpen, Boxes, Check, ChefHat, Edit3, Eye, Info, PackagePlus, Plus, RefreshCw, Tags, Trash2, X } from "lucide-react";
+import { BookOpen, Boxes, Check, ChefHat, Edit3, Eye, PackagePlus, Plus, RefreshCw, Tags, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "../../contexts/AuthContext";
 import { masterDataService } from "../../services/masterData.service";
@@ -8,7 +8,6 @@ import { Btn, SearchInput, Select, SkeletonBlock, StatusBadge, TableCard, TableL
 import { formatAppCurrency } from "../../utils/appPreferences";
 import { compatibleUnits, units } from "../../utils/units";
 import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
-import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/tooltip";
 
 export type RecipeRow = { key: string; inventoryItemId: string; quantity: number | ""; unit: string };
 export type VariantRow = { key:string; id?:string; name:string; sellingPrice:number|""; status:RecordStatus };
@@ -19,15 +18,24 @@ type CategoryForm = { name:string;description:string;status:RecordStatus };
 const newRow = (): RecipeRow => ({ key: crypto.randomUUID(), inventoryItemId: "", quantity: 1, unit: "" });
 const localToday=()=>{const now=new Date();return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;};
 const emptyForm = (): ProductForm => ({ name: "", categoryId: "", variants:[{key:crypto.randomUUID(),name:"Standard",sellingPrice:"",status:"ACTIVE"}], description: "", status: "ACTIVE", recipeVariantKey:null, recipeDrafts:{} });
+export const MENU_VARIANT_PRESETS = ["Standard", "Small", "Medium", "Large"] as const;
+export const menuVariantSelection = (name:string) => MENU_VARIANT_PRESETS.includes(name.trim() as typeof MENU_VARIANT_PRESETS[number]) ? name.trim() : "Custom";
+export const menuVariantNameForSelection = (currentName:string, selection:string) => selection === "Custom"
+  ? (menuVariantSelection(currentName) === "Custom" ? currentName : "")
+  : selection;
+export const nextMenuVariantName = (variants:Pick<VariantRow,"name">[]) => {
+  const used = new Set(variants.map((variant)=>variant.name.trim().toLowerCase()));
+  return MENU_VARIANT_PRESETS.slice(1).find((name)=>!used.has(name.toLowerCase())) ?? "";
+};
 const emptyIngredientForm = (): IngredientForm => ({ name: "", categoryChoice: "", otherCategory: "", unit: "", unitCost: "", reorderLevel: "" });
 const money = formatAppCurrency;
-export const categoryDescription=(name:string,categories:MenuCategory[])=>categories.find((item)=>item.name===name)?.description.trim()??"";
 export const canManageMenuCategories=(role:string|undefined)=>role==="OWNER";
+export const canDeleteMenuProduct=(role:string|undefined,product:Pick<MenuProduct,"productScope">)=>role==="OWNER"&&product.productScope==="GLOBAL";
 export const isControlledTestProductRetirement=(role:string|undefined,product:Pick<MenuProduct,"code">)=>role==="OWNER"&&product.code==="PRD-00073";
-export function CategoryLabel({name,categories}:{name:string;categories:MenuCategory[]}){
-  const description=categoryDescription(name,categories);
-  if(!description) return <span>{name}</span>;
-  return <span className="inline-flex items-center gap-1.5"><span>{name}</span><Tooltip><TooltipTrigger asChild><button type="button" title={description} aria-label={`About ${name}`} onClick={(event)=>event.stopPropagation()} className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[var(--app-primary)] hover:bg-[var(--app-primary-faint)]"><Info size={12}/><span className="sr-only">Category information</span></button></TooltipTrigger><TooltipContent><div className="max-w-64"><div className="font-semibold">{name}</div><div className="mt-1">{description}</div></div></TooltipContent></Tooltip></span>;
+export function CategoryLabel({name}:{name:string}){return <span>{name}</span>;}
+
+export function MenuProductDeleteDialog({product,busy,value,onChange,onCancel,onConfirm}:{product:Pick<MenuProduct,"name">;busy:boolean;value:ControlledActionValue;onChange:(value:ControlledActionValue)=>void;onCancel:()=>void;onConfirm:()=>void}){
+  return <ControlledActionDialog title="Delete Menu Product?" description={`Item: ${product.name}. Unused products are permanently deleted. If historical sales, mappings, recipes, incidents, COGS, or inventory evidence depend on this product, it will be deactivated instead.`} confirmLabel="Confirm Delete" value={value} busy={busy} requireVerificationPin={false} onChange={onChange} onCancel={onCancel} onConfirm={onConfirm}/>;
 }
 export function MenuProductsSkeleton() {
   const headings = ["Product Code", "Product Name", "Scope", "Category", "Selling Price", "Ingredients", "Recipe Cost", "Margin", "Status", "Actions"];
@@ -202,7 +210,7 @@ export function MenuRecipesPage() {
         await masterDataService.retireTestMenuProduct(deleteTarget.id,deleteConfirmation);
         toast.success(`${deleteTarget.name} test product chain was retired`);
       }else{
-        const result=await masterDataService.deleteMenuProduct(deleteTarget.id,deleteConfirmation);
+        const result=await masterDataService.deleteMenuProduct(deleteTarget.id,{reason:deleteConfirmation.reason});
         toast.success(result.action==="DELETED"?`${deleteTarget.name} was deleted`:`${deleteTarget.name} was deactivated because history depends on it`);
       }
       setDeleteTarget(null);
@@ -263,7 +271,6 @@ export function MenuRecipesPage() {
       ) : (
         <ProductTable
           products={filtered}
-          categories={categories}
           owner={owner}
           manager={manager}
           managerBranchId={user?.branchId ?? null}
@@ -277,18 +284,18 @@ export function MenuRecipesPage() {
         />
       )}
     </TableCard>
-    {selected && <ProductDetails product={selected} categories={categories} owner={owner} canEdit={(owner && selected.productScope === "GLOBAL") || (manager && selected.productScope === "BRANCH" && selected.originBranchId === user?.branchId)} onClose={() => setSelected(null)} onEdit={() => { setSelected(null); openEdit(selected); }} />}
+    {selected && <ProductDetails product={selected} owner={owner} canEdit={(owner && selected.productScope === "GLOBAL") || (manager && selected.productScope === "BRANCH" && selected.originBranchId === user?.branchId)} onClose={() => setSelected(null)} onEdit={() => { setSelected(null); openEdit(selected); }} />}
     {reviewTarget && <ProductReviewModal product={reviewTarget} categories={categories} comment={reviewComment} setComment={setReviewComment} saving={actionProductId === reviewTarget.id} onClose={() => { if (!actionProductId) { setReviewTarget(null); setReviewComment(""); } }} onDecision={(decision) => void reviewProduct(reviewTarget, decision, reviewComment)} />}
     {productModal && <ProductEditor editing={editing} form={form} setForm={setForm} errors={formErrors} categories={categories} inventory={owner ? inventory.filter((item) => item.itemScope === "GLOBAL") : inventory} canCreateIngredient={owner || manager} saving={saving} onInventoryCreated={(item) => setInventory((current) => [...current, item].sort((a, b) => a.name.localeCompare(b.name)))} onClose={() => setProductModal(false)} onSave={() => void saveProduct()} />}
     {categoryManagerOpen&&canManageMenuCategories(user?.role)&&<CategoryManagerModal categories={categories} onClose={()=>setCategoryManagerOpen(false)} onChanged={load}/>}
-    {deleteTarget && <ControlledActionDialog title={isControlledTestProductRetirement(user?.role,deleteTarget)?`Retire ${deleteTarget.name} as test data?`:`Remove ${deleteTarget.name}?`} description={isControlledTestProductRetirement(user?.role,deleteTarget)?"This preserves the product, Standard variant, recipe, recipe quantities, and history while making the approved UAT product chain non-operational. ING-00073 and its reorder settings are not changed.":"Unused products are deleted. Products with sales, mappings, or investigation history are deactivated so historical reports remain valid."} confirmLabel={isControlledTestProductRetirement(user?.role,deleteTarget)?"Retire Test Product":"Remove Product"} value={deleteConfirmation} busy={Boolean(actionProductId)} onChange={setDeleteConfirmation} onCancel={()=>{setDeleteTarget(null);setDeleteConfirmation({reason:"",verificationPin:""});}} onConfirm={()=>void deleteProduct()}/>}
+    {deleteTarget && (isControlledTestProductRetirement(user?.role,deleteTarget)?<ControlledActionDialog title={`Retire ${deleteTarget.name} as test data?`} description="This preserves the product, Standard variant, recipe, recipe quantities, and history while making the approved UAT product chain non-operational. ING-00073 and its reorder settings are not changed." confirmLabel="Retire Test Product" value={deleteConfirmation} busy={Boolean(actionProductId)} onChange={setDeleteConfirmation} onCancel={()=>{setDeleteTarget(null);setDeleteConfirmation({reason:"",verificationPin:""});}} onConfirm={()=>void deleteProduct()}/>:<MenuProductDeleteDialog product={deleteTarget} value={deleteConfirmation} busy={Boolean(actionProductId)} onChange={setDeleteConfirmation} onCancel={()=>{setDeleteTarget(null);setDeleteConfirmation({reason:"",verificationPin:""});}} onConfirm={()=>void deleteProduct()}/>)}
   </div>;
 }
 
 export const marginTextClass = (margin:number|null) => margin === null ? "text-[var(--app-text-muted)]" : margin > 0 ? "text-[var(--app-success)]" : margin < 0 ? "text-[var(--app-danger)]" : "text-[var(--app-text-muted)]";
 export const variantMarginRate = (sellingPrice:number,recipeCost:number|null) => recipeCost===null || sellingPrice<=0 ? null : (sellingPrice-recipeCost)/sellingPrice*100;
 
-function ProductTable({ products, categories, owner, manager, managerBranchId, actionProductId, onView, onEdit, onToggleStatus, onDelete, onOwnerReview, onManagerReview }: { products:MenuProduct[];categories:MenuCategory[];owner:boolean;manager:boolean;managerBranchId:string|null;actionProductId:string|null;onView:(product:MenuProduct)=>void;onEdit:(product:MenuProduct)=>void;onToggleStatus:(product:MenuProduct)=>void;onDelete:(product:MenuProduct)=>void;onOwnerReview:(product:MenuProduct)=>void;onManagerReview:(product:MenuProduct,decision:"APPROVE"|"REJECT")=>void }) {
+function ProductTable({ products, owner, manager, managerBranchId, actionProductId, onView, onEdit, onToggleStatus, onDelete, onOwnerReview, onManagerReview }: { products:MenuProduct[];owner:boolean;manager:boolean;managerBranchId:string|null;actionProductId:string|null;onView:(product:MenuProduct)=>void;onEdit:(product:MenuProduct)=>void;onToggleStatus:(product:MenuProduct)=>void;onDelete:(product:MenuProduct)=>void;onOwnerReview:(product:MenuProduct)=>void;onManagerReview:(product:MenuProduct,decision:"APPROVE"|"REJECT")=>void }) {
   const headings = ["Product Code", "Product Name", "Scope", "Category", "Selling Price", "Ingredients", "Recipe Cost", "Margin", "Status", "Actions"];
   return (
     <TableWrapper minWidth={940}>
@@ -297,6 +304,7 @@ function ProductTable({ products, categories, owner, manager, managerBranchId, a
         {products.map((product) => {
           const busy = actionProductId === product.id;
           const canEdit = (owner && product.productScope === "GLOBAL") || (manager && product.productScope === "BRANCH" && product.originBranchId === managerBranchId);
+          const canDelete = canDeleteMenuProduct(owner?"OWNER":manager?"BRANCH_MANAGER":undefined,product);
           const canToggle = manager && product.approvalStatus === "APPROVED" && product.branchAvailabilityStatus === "APPROVED";
           const awaitingOwnerReview = owner && product.productScope === "BRANCH" && product.approvalStatus === "PENDING_OWNER";
           const awaitingManagerReview = manager && product.productScope === "GLOBAL" && product.branchAvailabilityStatus === "PENDING_MANAGER";
@@ -313,7 +321,7 @@ function ProductTable({ products, categories, owner, manager, managerBranchId, a
                   {product.productScope === "GLOBAL" ? "All Branches" : product.originBranchName ?? "Branch"}
                 </span>
               </TD>
-              <TD muted><CategoryLabel name={product.category} categories={categories}/></TD>
+              <TD muted><CategoryLabel name={product.category}/></TD>
               <TD right bold><div className="space-y-1">{product.variants.filter((variant)=>variant.status==="ACTIVE").map((variant)=><div key={variant.id} className="whitespace-nowrap"><span className="text-xs font-normal text-[var(--app-text-muted)]">{variant.name}: </span>{money(variant.sellingPrice)}</div>)}</div></TD>
               <TD right muted>{product.variants.filter((variant)=>variant.status==="ACTIVE").map((variant)=>variant.ingredients?.length??0).join(" / ")} item(s)</TD>
               <TD right muted><div className="space-y-1">{product.variants.filter((variant)=>variant.status==="ACTIVE").map((variant)=><div key={variant.id}>{variant.name}: {variant.recipeCost==null?"Not configured":money(variant.recipeCost)}</div>)}</div></TD>
@@ -356,7 +364,7 @@ function ProductTable({ products, categories, owner, manager, managerBranchId, a
                       <Btn variant="outline" size="sm" icon={Edit3} disabled={busy} onClick={() => onEdit(product)}>
                         Edit
                       </Btn>
-                      <button
+                      {canDelete&&<button
                         disabled={busy}
                         title="Delete unused product"
                         aria-label={`Delete ${product.name}`}
@@ -364,7 +372,7 @@ function ProductTable({ products, categories, owner, manager, managerBranchId, a
                         className="w-8 h-8 inline-flex items-center justify-center rounded-lg border text-[var(--app-danger)] border-[var(--app-border)] hover:bg-[var(--app-danger-bg)] transition-colors disabled:opacity-50"
                       >
                         <Trash2 size={13} />
-                      </button>
+                      </button>}
                     </>
                   )}
                   {canToggle && (
@@ -387,7 +395,7 @@ function ProductTable({ products, categories, owner, manager, managerBranchId, a
   );
 }
 
-function ProductDetails({ product, categories, owner, canEdit, onClose, onEdit }: { product: MenuProduct;categories:MenuCategory[]; owner: boolean; canEdit: boolean; onClose: () => void; onEdit: () => void }) {
+function ProductDetails({ product, owner, canEdit, onClose, onEdit }: { product: MenuProduct; owner: boolean; canEdit: boolean; onClose: () => void; onEdit: () => void }) {
   const approvedBranches = product.branchApprovals.filter((item) => item.status === "APPROVED").length;
   const approvalSummary = product.productScope === "GLOBAL"
     ? (owner ? `${approvedBranches}/${product.branchApprovals.length} branches approved` : (product.branchAvailabilityStatus ?? "NOT ASSIGNED").replaceAll("_", " "))
@@ -396,8 +404,8 @@ function ProductDetails({ product, categories, owner, canEdit, onClose, onEdit }
   return <Modal onClose={onClose} width="max-w-2xl">
     <div className="flex justify-between gap-4"><div><h2 className="text-xl font-bold">{product.name}</h2><p className="text-xs font-mono mt-1" style={{ color: "var(--app-primary)" }}>{product.code}</p></div><button aria-label="Close product details" onClick={onClose}><X size={18} /></button></div>
     <p className="text-sm mt-4" style={{ color: "var(--app-text-muted)" }}>{product.description || "No product description."}</p>
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 my-5">{[{label:"Variants",value:String(product.variants.filter((variant)=>variant.status==="ACTIVE").length)},{label:"Recipes configured",value:`${product.variants.filter((variant)=>variant.status==="ACTIVE"&&variant.recipeId).length}/${product.variants.filter((variant)=>variant.status==="ACTIVE").length}`},{label:"Category",value:<CategoryLabel name={product.category} categories={categories}/>},{label:"Scope",value:product.productScope==="GLOBAL"?"All Branches":product.originBranchName??"Branch Product"}].map(({label,value})=><div key={label} className="p-3 rounded-xl" style={{background:"var(--app-bg)"}}><div className="text-[10px] uppercase" style={{color:"var(--app-text-faint)"}}>{label}</div><div className="font-bold mt-1">{value}</div></div>)}</div>
-    <div className="flex flex-wrap gap-2 mb-4"><span className="px-2.5 py-1 rounded-full text-xs" style={{ background: "var(--app-primary-subtle)", color: "var(--app-primary)" }}><CategoryLabel name={product.category} categories={categories}/></span><span className="px-2.5 py-1 rounded-full text-xs font-semibold" style={{ background: "var(--app-primary-faint)", color: "var(--app-primary)" }}>{product.productScope === "GLOBAL" ? "All Branches" : product.originBranchName ?? "Branch Product"}</span>{!owner && product.branchAvailabilityStatus === "APPROVED" && product.branchMenuStatus && <StatusBadge status={product.branchMenuStatus} />}</div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 my-5">{[{label:"Variants",value:String(product.variants.filter((variant)=>variant.status==="ACTIVE").length)},{label:"Recipes configured",value:`${product.variants.filter((variant)=>variant.status==="ACTIVE"&&variant.recipeId).length}/${product.variants.filter((variant)=>variant.status==="ACTIVE").length}`},{label:"Category",value:<CategoryLabel name={product.category}/>},{label:"Scope",value:product.productScope==="GLOBAL"?"All Branches":product.originBranchName??"Branch Product"}].map(({label,value})=><div key={label} className="p-3 rounded-xl" style={{background:"var(--app-bg)"}}><div className="text-[10px] uppercase" style={{color:"var(--app-text-faint)"}}>{label}</div><div className="font-bold mt-1">{value}</div></div>)}</div>
+      <div className="flex flex-wrap gap-2 mb-4"><span className="px-2.5 py-1 rounded-full text-xs" style={{ background: "var(--app-primary-subtle)", color: "var(--app-primary)" }}><CategoryLabel name={product.category}/></span><span className="px-2.5 py-1 rounded-full text-xs font-semibold" style={{ background: "var(--app-primary-faint)", color: "var(--app-primary)" }}>{product.productScope === "GLOBAL" ? "All Branches" : product.originBranchName ?? "Branch Product"}</span>{!owner && product.branchAvailabilityStatus === "APPROVED" && product.branchMenuStatus && <StatusBadge status={product.branchMenuStatus} />}</div>
     <div className="p-4 rounded-xl border mb-5" style={{ borderColor:"var(--app-border)",background:"var(--app-surface-elevated)" }}>
       <div className="text-[10px] font-bold uppercase tracking-wider" style={{ color:"var(--app-text-faint)" }}>Approval</div>
       <div className="font-semibold mt-1 capitalize">{approvalSummary.toLowerCase()}</div>
@@ -415,7 +423,7 @@ function ProductReviewModal({ product, categories, comment, setComment, saving, 
   return <Modal onClose={onClose} width="max-w-2xl">
     <div className="flex justify-between gap-4"><div><div className="text-[10px] font-bold uppercase tracking-wider" style={{ color:"var(--app-warning)" }}>Pending Owner Approval</div><h2 className="text-xl font-bold mt-1">Review {product.name}</h2><p className="text-xs mt-1" style={{ color:"var(--app-text-muted)" }}>Submitted by {product.createdByName ?? "Branch Manager"} · {product.originBranchName ?? "Assigned branch"}</p></div><button aria-label="Close product review" disabled={saving} onClick={onClose}><X size={18}/></button></div>
     <p className="text-sm mt-4 p-3 rounded-xl" style={{ color:"var(--app-text-muted)",background:"var(--app-bg)" }}>{product.description || "No product description."}</p>
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 my-5">{[{label:"Product Code",value:product.code},{label:"Category",value:<CategoryLabel name={product.category} categories={categories}/>},{label:"Variants",value:String(product.variants.filter((variant)=>variant.status==="ACTIVE").length)},{label:"Recipes configured",value:`${product.variants.filter((variant)=>variant.recipeId).length}/${product.variants.length}`}].map(({label,value})=><div key={label} className="p-3 rounded-xl border" style={{borderColor:"var(--app-border)"}}><div className="text-[10px] uppercase" style={{color:"var(--app-text-faint)"}}>{label}</div><div className="font-bold mt-1">{value}</div></div>)}</div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 my-5">{[{label:"Product Code",value:product.code},{label:"Category",value:<CategoryLabel name={product.category}/>},{label:"Variants",value:String(product.variants.filter((variant)=>variant.status==="ACTIVE").length)},{label:"Recipes configured",value:`${product.variants.filter((variant)=>variant.recipeId).length}/${product.variants.length}`}].map(({label,value})=><div key={label} className="p-3 rounded-xl border" style={{borderColor:"var(--app-border)"}}><div className="text-[10px] uppercase" style={{color:"var(--app-text-faint)"}}>{label}</div><div className="font-bold mt-1">{value}</div></div>)}</div>
     <h3 className="text-xs font-bold uppercase tracking-wider mb-2" style={{color:"var(--app-text-muted)"}}>Proposed Variant Recipes</h3>
     <div className="space-y-2">{product.variants.filter((variant)=>variant.status==="ACTIVE").map((variant)=><div key={variant.id} className="rounded-xl border p-3" style={{borderColor:"var(--app-border)"}}><div className="font-semibold text-sm">{variant.name} · {money(variant.sellingPrice)} · Cost: {variant.recipeCost==null?"Not available":money(variant.recipeCost)}</div><div className="text-xs mt-1 text-[var(--app-text-muted)]">{variant.ingredients?.length?variant.ingredients.map((item)=>`${item.name}: ${item.quantity} ${item.unit}`).join(" · "):"No recipe configured"}</div></div>)}</div>
     <label className="block text-sm font-semibold mt-5">Comment <span className="font-normal" style={{ color:"var(--app-text-faint)" }}>(optional)</span><textarea maxLength={1000} value={comment} onChange={(event)=>setComment(event.target.value)} placeholder="Add suggestions or explain your decision…" rows={3} className="mt-2 w-full px-3 py-2.5 rounded-xl border resize-none outline-none" style={inputStyle}/><span className="block text-right text-[10px] mt-1" style={{ color:"var(--app-text-faint)" }}>{comment.length}/1000</span></label>
@@ -474,7 +482,7 @@ function ProductEditor({ editing, form, setForm, errors, categories, inventory, 
         <div className="grid md:grid-cols-2 gap-4">
           <Field label="Product Name *" value={form.name} error={errors.name} placeholder="e.g., Spanish Latte" onChange={(value)=>setForm((current)=>({...current,name:value}))}/>
           <div><SelectField label="Category *" value={form.categoryId} error={errors.categoryId} onChange={(value)=>setForm((current)=>({...current,categoryId:value}))} options={categories.filter((item)=>item.status==="ACTIVE"||item.id===form.categoryId).map((item)=>({value:item.id,label:item.name}))}/>{categories.find((item)=>item.id===form.categoryId)?.description&&<p className="mt-1.5 text-xs text-[var(--app-text-muted)]">{categories.find((item)=>item.id===form.categoryId)!.description}</p>}</div>
-          <div className="md:col-span-2 space-y-3"><div className="flex justify-between items-center"><h4 className="text-sm font-semibold">Sizes / Variants *</h4><button type="button" onClick={()=>setForm((current)=>({...current,variants:[...current.variants,{key:crypto.randomUUID(),name:"",sellingPrice:"",status:"ACTIVE"}]}))} className="text-xs font-semibold text-[var(--app-primary)]">+ Add variant</button></div>{form.variants.map((variant)=><div key={variant.key} className="grid grid-cols-[1fr_1fr_auto_auto] gap-2 items-end"><Field label="Name" value={variant.name} placeholder="e.g., Small" onChange={(value)=>setForm((current)=>({...current,variants:current.variants.map((item)=>item.key===variant.key?{...item,name:value}:item)}))}/><Field label="Selling Price" type="number" value={variant.sellingPrice} placeholder="0.00" onChange={(value)=>setForm((current)=>({...current,variants:current.variants.map((item)=>item.key===variant.key?{...item,sellingPrice:value===""?"":Number(value)}:item)}))}/><button type="button" className="h-12 px-2 text-xs rounded-xl border" style={{borderColor:"var(--app-border)"}} onClick={()=>setForm((current)=>({...current,variants:current.variants.map((item)=>item.key===variant.key?{...item,status:item.status==="ACTIVE"?"INACTIVE":"ACTIVE"}:item)}))}>{variant.status==="ACTIVE"?"Active":"Inactive"}</button><button type="button" disabled={form.variants.length===1} title={variant.id?"Deactivate saved variant":"Remove new variant"} className="h-12 px-2 rounded-xl border disabled:opacity-30" style={{borderColor:"var(--app-border)",color:"var(--app-danger)"}} onClick={()=>setForm((current)=>({...current,variants:variant.id?current.variants.map((item)=>item.key===variant.key?{...item,status:"INACTIVE"}:item):current.variants.filter((item)=>item.key!==variant.key)}))}><Trash2 size={15}/></button></div>)}{errors.variants&&<p className="text-xs text-[var(--app-danger)]">{errors.variants}</p>}</div>
+          <div className="md:col-span-2 space-y-3"><div className="flex justify-between items-center"><h4 className="text-sm font-semibold">Sizes / Variants *</h4><button type="button" onClick={()=>setForm((current)=>({...current,variants:[...current.variants,{key:crypto.randomUUID(),name:nextMenuVariantName(current.variants),sellingPrice:"",status:"ACTIVE"}]}))} className="text-xs font-semibold text-[var(--app-primary)]">+ Add variant</button></div>{form.variants.map((variant)=><div key={variant.key} className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(170px,1fr)_minmax(150px,1fr)_auto_auto] sm:items-end"><div className="space-y-2"><SelectField label="Size / Variant" value={menuVariantSelection(variant.name)} onChange={(selection)=>setForm((current)=>({...current,variants:current.variants.map((item)=>item.key===variant.key?{...item,name:menuVariantNameForSelection(item.name,selection)}:item)}))} options={[...MENU_VARIANT_PRESETS.map((name)=>({value:name,label:name})),{value:"Custom",label:"Custom"}]}/>{menuVariantSelection(variant.name)==="Custom"&&<Field label="Custom variant name" value={variant.name} placeholder="e.g., 16 oz" onChange={(value)=>setForm((current)=>({...current,variants:current.variants.map((item)=>item.key===variant.key?{...item,name:value}:item)}))}/>}</div><Field label="Selling Price" type="number" value={variant.sellingPrice} placeholder="0.00" onChange={(value)=>setForm((current)=>({...current,variants:current.variants.map((item)=>item.key===variant.key?{...item,sellingPrice:value===""?"":Number(value)}:item)}))}/><button type="button" className="h-12 px-3 text-xs rounded-xl border" style={{borderColor:"var(--app-border)"}} onClick={()=>setForm((current)=>({...current,variants:current.variants.map((item)=>item.key===variant.key?{...item,status:item.status==="ACTIVE"?"INACTIVE":"ACTIVE"}:item)}))}>{variant.status==="ACTIVE"?"Active":"Inactive"}</button><button type="button" disabled={form.variants.length===1} title={variant.id?"Deactivate saved variant":"Remove new variant"} className="h-12 px-3 rounded-xl border disabled:opacity-30" style={{borderColor:"var(--app-border)",color:"var(--app-danger)"}} onClick={()=>setForm((current)=>({...current,variants:variant.id?current.variants.map((item)=>item.key===variant.key?{...item,status:"INACTIVE"}:item):current.variants.filter((item)=>item.key!==variant.key)}))}><Trash2 size={15}/></button></div>)}{errors.variants&&<p className="text-xs text-[var(--app-danger)]">{errors.variants}</p>}</div>
           <label className="md:col-span-2 text-sm font-semibold">Description <span className="font-normal" style={{color:"var(--app-text-faint)"}}>(optional)</span><textarea value={form.description} onChange={(event)=>setForm((current)=>({...current,description:event.target.value}))} placeholder="Add a short product description…" rows={3} className="mt-2 w-full px-4 py-3 rounded-2xl border resize-none outline-none transition-shadow focus:ring-2" style={inputStyle}/></label>
         </div>
       </section>

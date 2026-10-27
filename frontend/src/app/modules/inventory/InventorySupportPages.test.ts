@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { filterIngredientUsageItems, filterInventoryCountHistory, IngredientUsageSearch, INGREDIENT_USAGE_NO_MATCH_TITLE, inventoryCountHistoryActions, inventoryCountHistoryModes, PhysicalCountHistoryHeaderActions } from "./InventorySupportPages";
+import { filterIngredientUsageItems, filterInventoryCountHistory, ingredientUsageThroughDateError, IngredientUsageSearch, IngredientUsageToolbar, INGREDIENT_USAGE_NO_MATCH_TITLE, inventoryCountHistoryActions, inventoryCountHistoryModes, PhysicalCountHistoryHeaderActions } from "./InventorySupportPages";
 import type { ExpectedInventoryItem, InventoryCountSummary } from "../../types/inventoryWorkflow";
 
 describe("inventory-count history role actions", () => {
@@ -78,5 +78,24 @@ describe("Ingredient Usage search", () => {
     clear.props.onClick();
     expect(onChange).toHaveBeenCalledWith("");
     expect(renderToStaticMarkup(React.createElement(IngredientUsageSearch, { value: "", onChange }))).not.toContain("Clear Search");
+  });
+
+  it("groups the Usage Through Date and search controls responsively",()=>{
+    const markup=renderToStaticMarkup(React.createElement(IngredientUsageToolbar,{
+      date:"2026-10-27",search:"beans",onDateChange:vi.fn(),onSearchChange:vi.fn(),
+    }));
+    expect(markup).toContain("data-ingredient-usage-toolbar");
+    expect(markup).toContain("flex-col");
+    expect(markup).toContain("md:flex-row");
+    expect(markup).toContain("Usage Through Date");
+    expect(markup).toContain("validated POS sales up to this date");
+    expect(markup).toContain("Search ingredient name or SKU");
+  });
+
+  it("accepts today and past Manila dates but rejects future and invalid input",()=>{
+    expect(ingredientUsageThroughDateError("2026-10-27","2026-10-27")).toBe("");
+    expect(ingredientUsageThroughDateError("2026-09-01","2026-10-27")).toBe("");
+    expect(ingredientUsageThroughDateError("2026-10-28","2026-10-27")).toContain("cannot be later");
+    expect(ingredientUsageThroughDateError("2026-02-30","2026-10-27")).toContain("valid");
   });
 });

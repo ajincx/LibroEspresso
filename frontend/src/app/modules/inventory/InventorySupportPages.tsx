@@ -51,11 +51,30 @@ export const filterIngredientUsageItems = (items: ExpectedInventoryItem[], searc
     : items;
 };
 export const INGREDIENT_USAGE_NO_MATCH_TITLE = "No matching ingredients found";
+export const ingredientUsageThroughDateError = (value:string, manilaToday=businessDate()) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return "Choose a valid usage-through date.";
+  const parsed = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0,10) !== value) return "Choose a valid usage-through date.";
+  if (value > manilaToday) return "Usage Through Date cannot be later than today in Asia/Manila.";
+  return "";
+};
 
 export function IngredientUsageSearch({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  return <div className="mb-3 flex flex-wrap items-center gap-2">
-    <SearchInput placeholder="Search ingredient name or SKU..." width={300} value={value} onChange={onChange}/>
+  return <div data-ingredient-usage-search className="flex min-w-0 flex-1 flex-wrap items-center gap-2 md:min-w-72">
+    <SearchInput placeholder="Search ingredient name or SKU..." width={360} value={value} onChange={onChange}/>
     {value && <Btn variant="ghost" size="sm" icon={X} onClick={() => onChange("")}>Clear Search</Btn>}
+  </div>;
+}
+
+export function IngredientUsageToolbar({ date, search, onDateChange, onSearchChange }: {
+  date: string;
+  search: string;
+  onDateChange: (value: string) => void;
+  onSearchChange: (value: string) => void;
+}) {
+  return <div data-ingredient-usage-toolbar className="flex w-full min-w-0 flex-col gap-3 md:w-auto md:flex-1 md:flex-row md:items-end">
+    <div className="shrink-0"><CalendarDateField label="Usage Through Date" value={date} max={today} onChange={onDateChange}/><p className="mt-1 max-w-64 text-[10px] text-[var(--app-text-muted)]">Shows ingredient consumption from validated POS sales up to this date.</p></div>
+    <IngredientUsageSearch value={search} onChange={onSearchChange}/>
   </div>;
 }
 
@@ -83,6 +102,7 @@ export function ExpectedInventoryPage({ role, view, scopeBranchId = "ALL" }: { r
   const [usageSearch, setUsageSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [usageDateError, setUsageDateError] = useState("");
 
   useEffect(() => {
     if (!owner) return;
@@ -117,6 +137,11 @@ export function ExpectedInventoryPage({ role, view, scopeBranchId = "ALL" }: { r
     : ["SKU", "Ingredient", "Previous Actual", "Received", "Expected Usage", "Adjustments", "Expected Stock", "Unit"];
   const colCount = cols.length;
   const visibleItems = useMemo(() => isUsage ? filterIngredientUsageItems(items, usageSearch) : items, [isUsage, items, usageSearch]);
+  const changeUsageThroughDate = (value:string) => {
+    const validationError = ingredientUsageThroughDateError(value, today);
+    setUsageDateError(validationError);
+    if (!validationError) setCountDate(value);
+  };
 
   return (
     <div className="p-4 md:p-6 space-y-5">
@@ -137,7 +162,9 @@ export function ExpectedInventoryPage({ role, view, scopeBranchId = "ALL" }: { r
         toolbar={
           <>
             <BranchScope owner={owner} branches={branches} branchId={branchId} onChange={setBranchId} />
-            <CalendarDateField label="As of date" value={countDate} onChange={setCountDate} />
+            {isUsage
+              ? <div><IngredientUsageToolbar date={countDate} search={usageSearch} onDateChange={changeUsageThroughDate} onSearchChange={setUsageSearch}/>{usageDateError&&<p role="alert" className="mt-1 text-xs text-[var(--app-danger)]">{usageDateError}</p>}</div>
+              : <CalendarDateField label="As of date" value={countDate} onChange={setCountDate}/>}
             <div className="ml-auto">
               <Btn variant="outline" size="sm" icon={RefreshCw} onClick={() => void load()}>
                 Refresh
@@ -146,7 +173,6 @@ export function ExpectedInventoryPage({ role, view, scopeBranchId = "ALL" }: { r
           </>
         }
       >
-        {isUsage && <IngredientUsageSearch value={usageSearch} onChange={setUsageSearch}/>}
         <TableWrapper minWidth={840}>
           <THead cols={cols} />
           <tbody>

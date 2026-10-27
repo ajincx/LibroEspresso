@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { branchReorderSettingsInput, canConfigureBranchReorderPolicy, canOpenClosingCount, canSetIngredientInitialStock, closingCountOperationStatus, connectedProductStatusLabel, countCorrectionOperation, dailyCountCorrectionTarget, dailyCountShortcutDestination, dailyCountStatusLabel, fullCountOperationStatus, inventoryAdjustmentValidationError, InventoryOverview, inventoryOverviewColumns, inventoryTabs, movementCategoryLabel, projectedAdjustmentStock, recordCountShortcutDestination, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, shouldShowStockOperationCards, startingStockOperationStatus, stockOperationCards, stockOperationSelectionAfterDailySubmit, subscribeToInventoryDataChanges } from "./InventoryModule";
+import { branchReorderSettingsInput, canConfigureBranchReorderPolicy, canOpenClosingCount, canSetIngredientInitialStock, closingCountOperationStatus, connectedProductStatusLabel, countCorrectionBackLabel, countCorrectionOperation, dailyCountCorrectionTarget, dailyCountShortcutDestination, dailyCountStatusLabel, fullCountOperationStatus, inventoryAdjustmentValidationError, InventoryOverview, inventoryOverviewColumns, inventoryTabs, movementCategoryLabel, projectedAdjustmentStock, recordCountShortcutDestination, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, shouldShowStockOperationCards, startingStockOperationStatus, stockOperationCards, stockOperationSelectionAfterDailySubmit, subscribeToInventoryDataChanges } from "./InventoryModule";
 import type { InventoryCountSummary } from "../../types/inventoryWorkflow";
 
 afterEach(() => vi.useRealTimers());
@@ -106,6 +106,8 @@ describe("Inventory Management terminology", () => {
     expect(countCorrectionOperation("OPENING")).toBe("daily");
     expect(countCorrectionOperation("CLOSING")).toBe("daily");
     expect(countCorrectionOperation("FULL")).toBe("full");
+    expect(countCorrectionBackLabel(true)).toBe("Back to Count History");
+    expect(countCorrectionBackLabel(false)).toBe("Back to Operations");
   });
 
   it("does not render a duplicate Record Stock Count action in Inventory Overview", () => {

@@ -2,7 +2,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { ExpectedInventoryItem } from "../../types/inventoryWorkflow";
-import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, copyPreviousClosingEntries, copySameDayClosingEntries, displayedPhysicalCountVariance, filterPhysicalCountItems, fullCountSubmissionBlockReason, initialPhysicalCountDate, inventoryCountColumns, isDailyCountColumnEditable, isFutureInventoryCountDate, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, PhysicalCountLoadingSkeleton, physicalCountCompletion, physicalCountEntryFromCanonical, physicalCountPreviewVariance, previousClosingCopyMessage, savedCountQuantities, showInventoryCountDateFilter, validPhysicalCountEntries } from "./InventoryCountPage";
+import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, copyPreviousClosingEntries, copySameDayClosingEntries, displayedPhysicalCountVariance, filterPhysicalCountItems, fullCountSubmissionBlockReason, initialPhysicalCountDate, inventoryCountColumns, isDailyCountColumnEditable, isFutureInventoryCountDate, mergeOpeningCorrectionEntries, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, PhysicalCountLoadingSkeleton, physicalCountCompletion, physicalCountEntryFromCanonical, physicalCountPreviewVariance, previousClosingCopyMessage, savedCountQuantities, showInventoryCountDateFilter, validPhysicalCountEntries } from "./InventoryCountPage";
 import { buildEnteredPhysicalCountItems } from "./InventoryCountPage";
 
 const item = (inventoryItemId: string, sku: string, itemName: string): ExpectedInventoryItem => ({
@@ -53,8 +53,19 @@ describe("Daily partial physical counts",()=>{
 
   it("identifies the authoritative source date after copying previous quantities",()=>{
     expect(previousClosingCopyMessage("2026-10-15")).toBe(
-      "Values copied from the latest authoritative inventory checkpoint on 2026-10-15. Review and confirm them before submitting.",
+      "Values copied from the previous Closing Count on 2026-10-15. Review and confirm them before submitting.",
     );
+  });
+
+  it("prefills only originally counted ingredients when editing an Opening Count",()=>{
+    expect(mergeOpeningCorrectionEntries(ingredients,[
+      {...ingredients[0]!,actualQuantity:0,unit:"pc"},
+      {...ingredients[2]!,actualQuantity:3,unit:"pc"},
+    ])).toEqual({
+      ice:{quantity:"0",enteredUnit:"pc"},
+      milk:{quantity:"",enteredUnit:"pc"},
+      sugar:{quantity:"3",enteredUnit:"pc"},
+    });
   });
 
   it("copies explicit zero while leaving ingredients missing from the previous Closing blank",()=>{

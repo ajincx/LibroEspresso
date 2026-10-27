@@ -179,6 +179,18 @@ describe("access controls", () => {
     expect(response.status).toBe(403);
   });
 
+  it("keeps menu product deletion Owner-only and validates the Owner's reason before database access",async()=>{
+    const path="/api/menu-items/00000000-0000-4000-8000-000000000001/with-recipe";
+    const manager=await request(app).delete(path)
+      .set("Cookie",session({id:"manager",role:"BRANCH_MANAGER",branchId:"lipa"}))
+      .send({reason:"Remove unused product"});
+    const ownerBlank=await request(app).delete(path)
+      .set("Cookie",session({id:"owner",role:"OWNER",branchId:null}))
+      .send({reason:"   "});
+    expect(manager.status).toBe(403);
+    expect(ownerBlank.status).toBe(422);
+  });
+
   it("keeps controlled test-product retirement Owner-only", async () => {
     const path = "/api/menu-items/00000000-0000-4000-8000-000000000073/retire-test-data";
     for (const identity of [

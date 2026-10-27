@@ -100,6 +100,20 @@ export function assertInventoryCountDateNotFuture(
   }
 }
 
+export function assertExpectedInventoryThroughDate(
+  countDate: string,
+  currentBusinessDate = manilaBusinessDate(),
+) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(countDate)) {
+    throw new AppError(422, "INVENTORY_DATE_INVALID", "Choose a valid inventory date.");
+  }
+  const parsed = new Date(`${countDate}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== countDate) {
+    throw new AppError(422, "INVENTORY_DATE_INVALID", "Choose a valid inventory date.");
+  }
+  assertInventoryCountDateNotFuture(countDate, currentBusinessDate);
+}
+
 type PosPreviewProductRow = PosMenuCandidate;
 type PosPreviewVariantRow = {
   id: string;
@@ -1482,7 +1496,7 @@ export const getExpectedInventory: RequestHandler = async (req, res) => {
     typeof req.query.countDate === "string"
       ? req.query.countDate
       : manilaBusinessDate();
-  assertInventoryCountDateNotFuture(countDate);
+  assertExpectedInventoryThroughDate(countDate);
   const parsedType = z.enum(["FULL", "OPENING", "CLOSING"]).safeParse(req.query.countType ?? "FULL");
   if (!parsedType.success) throw new AppError(422, "INVENTORY_COUNT_TYPE_INVALID", "Select a valid physical count type.");
   const countType = parsedType.data;
@@ -1532,16 +1546,21 @@ export const getExpectedInventory: RequestHandler = async (req, res) => {
       [branchId,countDate]);
   const previousClosing = countType === "OPENING" ? await pool.query<{
     inventoryItemId: string; actualQuantity: number; countDate: string; countType:"CLOSING"|"FULL";
-  }>(`SELECT DISTINCT ON (ici.inventory_item_id)
+  }>(`WITH previous_count AS (
+        SELECT id,count_date,count_type
+          FROM inventory_counts
+         WHERE branch_id=$1 AND count_type='CLOSING' AND count_date<$2 AND NOT is_test_data
+           AND EXISTS(SELECT 1 FROM inventory_count_items valid_item
+             WHERE valid_item.inventory_count_id=inventory_counts.id AND valid_item.voided_at IS NULL)
+         ORDER BY count_date DESC,COALESCE(effective_at,submitted_at) DESC,submitted_at DESC
+         LIMIT 1
+      ) SELECT
             ici.inventory_item_id "inventoryItemId",COALESCE(correction.corrected_actual_quantity,ici.actual_quantity)::float8 "actualQuantity",
             ic.count_date::text "countDate",ic.count_type "countType"
-        FROM inventory_counts ic JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id AND ici.voided_at IS NULL
+        FROM previous_count ic JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id AND ici.voided_at IS NULL
         LEFT JOIN LATERAL (SELECT corrected_actual_quantity FROM inventory_count_corrections
           WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
-       WHERE ic.branch_id=$1 AND ic.count_type IN ('CLOSING','FULL') AND ic.count_date<$2 AND NOT ic.is_test_data
-       ORDER BY ici.inventory_item_id,ic.count_date DESC,
-                CASE ic.count_type WHEN 'FULL' THEN 2 ELSE 1 END DESC,
-                COALESCE(ic.effective_at,ic.submitted_at) DESC,ic.submitted_at DESC`,
+       ORDER BY ici.inventory_item_id`,
       [branchId,countDate]) : { rows: [] as {inventoryItemId:string;actualQuantity:number;countDate:string;countType:"CLOSING"|"FULL"}[] };
   const completeness = await pool.query<{ complete: boolean }>(
     `SELECT EXISTS(
@@ -1960,27 +1979,90 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
       [id, branchId],
     );
     const submittedItemIds = input.items.map((item) => item.inventoryItemId);
+    const existingItemIds = new Set(existing.rows.map((row) => row.inventoryItemId));
+    const addedItems = input.items.filter((item) => !existingItemIds.has(item.inventoryItemId));
     if (
       new Set(submittedItemIds).size !== submittedItemIds.length ||
-      input.items.length !== existing.rows.length ||
-      input.items.some(
-        (item) =>
-          !existing.rows.some(
-            (row) => row.inventoryItemId === item.inventoryItemId,
-          ),
-      )
+      existing.rows.some((row) => !submittedItemIds.includes(row.inventoryItemId)) ||
+      (count.rows[0].countType !== "OPENING" && addedItems.length > 0)
     ) {
       throw new AppError(
         422,
         "COUNT_ITEMS_MISMATCH",
-        "All original count items must be included exactly once",
+        count.rows[0].countType === "OPENING"
+          ? "All originally counted ingredients must remain included exactly once"
+          : "All original count items must be included exactly once",
       );
+    }
+    const addedExpectedById = new Map<string, Awaited<ReturnType<typeof calculateExpectedInventoryBatch>>["items"][number]>();
+    if (addedItems.length > 0) {
+      const eligible = await calculateExpectedInventoryBatch(
+        client,
+        branchId,
+        input.countDate,
+        "OPENING",
+      );
+      validatePartialInventoryCountItemSet(
+        eligible,
+        addedItems.map((item) => item.inventoryItemId),
+      );
+      for (const item of eligible.items) addedExpectedById.set(item.inventoryItemId, item);
     }
     const returned = [];
     for (const submitted of input.items) {
       const row = existing.rows.find(
         (candidate) => candidate.inventoryItemId === submitted.inventoryItemId,
-      )!;
+      );
+      if (!row) {
+        const expected = addedExpectedById.get(submitted.inventoryItemId)!;
+        let actualQuantity: number;
+        try {
+          actualQuantity = normalizePhysicalCountQuantity({
+            quantity: submitted.quantity,
+            enteredUnit: submitted.enteredUnit,
+            canonicalUnit: expected.unit,
+          });
+        } catch (error) {
+          throw new AppError(
+            422,
+            "INVENTORY_COUNT_UNIT_INCOMPATIBLE",
+            error instanceof Error ? error.message : "Invalid physical-count unit",
+          );
+        }
+        const { varianceQuantity, varianceValue, variancePercentage } = computeVariance(
+          expected.expectedQuantity,
+          actualQuantity,
+          expected.unitCost,
+        );
+        const inserted = await client.query<{ id: string }>(
+          `INSERT INTO inventory_count_items
+            (inventory_count_id,inventory_item_id,previous_actual_quantity,stock_received,expected_consumption,approved_adjustments,expected_quantity,actual_quantity,variance_quantity,variance_value,unit)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+          [id,submitted.inventoryItemId,expected.previousActualQuantity,expected.stockReceived,expected.expectedConsumption,expected.approvedAdjustments,expected.expectedQuantity,actualQuantity,varianceQuantity,varianceValue,expected.unit],
+        );
+        await client.query(
+          `INSERT INTO branch_inventory_balances (branch_id,inventory_item_id,actual_quantity,as_of,is_test_data)
+           VALUES($1,$2,$3,now(),$4)
+           ON CONFLICT (branch_id,inventory_item_id) DO UPDATE SET actual_quantity=excluded.actual_quantity,as_of=excluded.as_of,is_test_data=excluded.is_test_data,updated_at=now()`,
+          [branchId,submitted.inventoryItemId,actualQuantity,count.rows[0].isTestData],
+        );
+        returned.push({
+          id: inserted.rows[0]!.id,
+          inventoryItemId: submitted.inventoryItemId,
+          sku: expected.sku,
+          itemName: expected.itemName,
+          expectedConsumption: expected.expectedConsumption,
+          expectedQuantity: expected.expectedQuantity,
+          actualQuantity,
+          varianceQuantity,
+          varianceValue,
+          variancePercentage,
+          unit: expected.unit,
+          requiresInvestigation: false,
+          shrinkageReportId: null,
+        });
+        continue;
+      }
       let actualQuantity: number;
       try {
         actualQuantity = normalizePhysicalCountQuantity({
@@ -2100,7 +2182,7 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
       "INVENTORY_COUNT",
       id,
       `Corrected physical inventory count ${count.rows[0].countNo}`,
-      { branchId, itemCount: returned.length, reason: input.correctionReason, correctionType: "APPEND_ONLY" },
+      { branchId, itemCount: returned.length, addedItemCount: addedItems.length, reason: input.correctionReason, correctionType: "APPEND_ONLY" },
       client,
     );
     await client.query("COMMIT");

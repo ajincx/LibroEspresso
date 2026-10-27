@@ -5,6 +5,10 @@ export const destructiveActionInput = z.object({
   verificationPin: z.string().trim().min(1, "Verification PIN is required"),
 });
 
+export const reasonedDeletionInput = z.object({
+  reason: z.string().trim().min(10, "A reason of at least 10 characters is required").max(500),
+});
+
 export const testDataProductRetirementInput = destructiveActionInput.extend({
   confirmed: z.literal(true, {
     error: "Explicit confirmation is required",

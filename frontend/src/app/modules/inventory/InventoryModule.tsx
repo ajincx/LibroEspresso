@@ -393,6 +393,7 @@ export const stockOperationSelectionAfterDailySubmit = (): StockOperationId | nu
 type CountCorrectionTarget = { id:string; countType:"OPENING"|"CLOSING"|"FULL" };
 export const countCorrectionOperation = (countType:CountCorrectionTarget["countType"]):StockOperationId => countType==="FULL"?"full":"daily";
 export const dailyCountCorrectionTarget = (count:DailyInventoryCountContext["openingCount"]|DailyInventoryCountContext["closingCount"],countType:"OPENING"|"CLOSING"):CountCorrectionTarget|null => count?{id:count.id,countType}:null;
+export const countCorrectionBackLabel = (openedFromHistory:boolean) => openedFromHistory ? "Back to Count History" : "Back to Operations";
 
 function DailyStockCountWorkflow({role,countType,editCountId,onSubmitted,onBackToHistory}:{role:Role;countType:"OPENING"|"CLOSING";editCountId?:string|null;onSubmitted:()=>void;onBackToHistory?:()=>void}){
   const [revision,setRevision]=useState(0);
@@ -429,7 +430,11 @@ export function StockOperations({ role, scopeBranchId = "ALL", initialOperation 
   },[dailyRefresh,role,scopeBranchId,selected]);
   const cards = stockOperationCards(role);
   const fullStatus=fullCountOperationStatus(fullContext);
-  const leaveCorrection=()=>{setLocalCorrectionTarget(null);onCorrectionExit?.();};
+  const leaveCorrection=()=>{
+    setLocalCorrectionTarget(null);
+    if(correctionTarget) onCorrectionExit?.();
+    else setSelected(null);
+  };
   const finishCount=()=>{setDailyRefresh((value)=>value+1);if(activeCorrection)leaveCorrection();else setSelected(stockOperationSelectionAfterDailySubmit());};
   return <div className="p-4 md:p-6 space-y-5">
     {!selected&&<SectionHeader title="Stock Operations" sub="Use the existing inventory workflows for branch setup and verified physical counting."/>}
@@ -444,7 +449,7 @@ export function StockOperations({ role, scopeBranchId = "ALL", initialOperation 
       })}
     </div>}
     {selected && <section className="overflow-hidden rounded-2xl border bg-[var(--app-surface)] border-[var(--app-border)]">
-      <div className="flex flex-col gap-3 border-b p-4 sm:flex-row sm:items-center sm:justify-between border-[var(--app-border)]"><div><p className="text-xs font-semibold uppercase tracking-wide text-[var(--app-primary)]">Stock Operations</p><h2 className="mt-1 font-bold">{activeCorrection?`Correct ${activeCorrection.countType === "OPENING" ? "Opening Count" : activeCorrection.countType === "CLOSING" ? "Closing Count" : "Full Physical Count"}`:cards.find((card) => card.id === selected)?.title}</h2></div><Btn variant="outline" size="sm" icon={ArrowLeft} onClick={()=>activeCorrection?leaveCorrection():setSelected(null)}>{activeCorrection?"Back to Count History":"Back to Operations"}</Btn></div>
+      <div className="flex flex-col gap-3 border-b p-4 sm:flex-row sm:items-center sm:justify-between border-[var(--app-border)]"><div><p className="text-xs font-semibold uppercase tracking-wide text-[var(--app-primary)]">Stock Operations</p><h2 className="mt-1 font-bold">{activeCorrection?`Correct ${activeCorrection.countType === "OPENING" ? "Opening Count" : activeCorrection.countType === "CLOSING" ? "Closing Count" : "Full Physical Count"}`:cards.find((card) => card.id === selected)?.title}</h2></div><Btn variant="outline" size="sm" icon={ArrowLeft} onClick={()=>activeCorrection?leaveCorrection():setSelected(null)}>{activeCorrection?countCorrectionBackLabel(Boolean(correctionTarget)):"Back to Operations"}</Btn></div>
       {selected === "starting"
         ? <Suspense fallback={<ModuleLoadingFallback/>}><OpeningInventoryBaselinePage role={role} scopeBranchId={scopeBranchId}/></Suspense>
         : selected === "daily"

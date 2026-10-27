@@ -97,7 +97,7 @@ export const displayedPhysicalCountVariance = (
   : physicalCountPreviewVariance(expectedQuantity, actualQuantity);
 
 export const previousClosingCopyMessage = (countDate: string) =>
-  `Values copied from the latest authoritative inventory checkpoint on ${countDate}. Review and confirm them before submitting.`;
+  `Values copied from the previous Closing Count on ${countDate}. Review and confirm them before submitting.`;
 
 export const copyPreviousClosingEntries = (
   items: ExpectedInventoryItem[],
@@ -116,6 +116,22 @@ export const copySameDayClosingEntries = (
   items: ExpectedInventoryItem[],
   closingItems: FullInventoryCountContext["sameDayClosingItems"],
 ) => copyPreviousClosingEntries(items, closingItems.map((item) => ({ ...item, countDate: "" })));
+
+export const mergeOpeningCorrectionEntries = (
+  eligibleItems: ExpectedInventoryItem[],
+  recordedItems: Array<{ inventoryItemId: string; actualQuantity: number; unit: string }>,
+) => {
+  const recorded = new Map(recordedItems.map((item) => [item.inventoryItemId, item]));
+  return Object.fromEntries(eligibleItems.map((item) => {
+    const saved = recorded.get(item.inventoryItemId);
+    return [
+      item.inventoryItemId,
+      saved
+        ? physicalCountEntryFromCanonical(saved.actualQuantity, item.unit)
+        : blankPhysicalCountEntry(item.unit),
+    ];
+  }));
+};
 
 export const fullCountSubmissionBlockReason = (context: FullInventoryCountContext | null) => {
   if (!context?.closingCount) return "Submit the same-day Closing Count before recording the Full Physical Count.";
@@ -227,12 +243,19 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
   const [openingQuantities,setOpeningQuantities]=useState<Record<string,number>>({});
   const [closingQuantities,setClosingQuantities]=useState<Record<string,number>>({});
   const [previewing,setPreviewing]=useState(false);
+  const [openingMode,setOpeningMode]=useState<"ENTRY"|"SUMMARY"|"EDIT">(countType==="OPENING"&&requestedCountId?"SUMMARY":"ENTRY");
+  const [openingRecordedItems,setOpeningRecordedItems]=useState<Array<ExpectedInventoryItem & CountVarianceItem>>([]);
+  const [openingCanEdit,setOpeningCanEdit]=useState(false);
+  const [openingEditBlockReason,setOpeningEditBlockReason]=useState<string|null>(null);
+  const [reloadRevision,setReloadRevision]=useState(0);
   const completion = useMemo(() => physicalCountCompletion(expected, entries), [entries, expected]);
   const visibleItems = useMemo(
     () => filterPhysicalCountItems(expected, search, completionFilter, entries),
     [completionFilter, entries, expected, search],
   );
-  const activeDailyCount=countType==="OPENING"?dailyContext?.openingCount:countType==="CLOSING"?dailyContext?.closingCount:null;
+  const openingSummary=countType==="OPENING"&&Boolean(requestedCountId)&&openingMode==="SUMMARY";
+  const openingEditing=countType==="OPENING"&&openingMode==="EDIT";
+  const activeDailyCount=editingCountId?null:countType==="OPENING"?dailyContext?.openingCount:countType==="CLOSING"?dailyContext?.closingCount:null;
   const fullBlockReason=countType==="FULL"&&!editingCountId?fullCountSubmissionBlockReason(fullContext):null;
 
   const loadExpected = async () => {
@@ -241,6 +264,19 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
       if (requestedCountId) {
         const count = await inventoryWorkflowService.count(requestedCountId);
         if (count.countType !== countType) throw new Error(`This is a ${count.countType.toLowerCase()} count. Open it from Stock History to use the correct correction form.`);
+        if (countType === "OPENING") {
+          setCountDate(count.countDate);
+          setExpected(count.items);
+          setOpeningRecordedItems(count.items);
+          setOpeningQuantities(savedCountQuantities(count.items));
+          setClosingQuantities({});
+          setEntries(Object.fromEntries(count.items.map((item) => [item.inventoryItemId, physicalCountEntryFromCanonical(item.actualQuantity, item.unit)])));
+          setOpeningCanEdit(count.canEdit);
+          setOpeningEditBlockReason(count.editBlockReason);
+          setOpeningMode("SUMMARY");
+          setHasUnsavedChanges(false);
+          return;
+        }
         if (!count.canEdit) throw new Error(count.editBlockReason??"This count is locked because newer inventory activity or a linked investigation prevents correction.");
         setCountDate(count.countDate); setExpected(count.items);
         setEntries(Object.fromEntries(count.items.map(item => [item.inventoryItemId,physicalCountEntryFromCanonical(item.actualQuantity, item.unit)])));
@@ -269,10 +305,37 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to calculate expected inventory"); }
     finally { setLoading(false); }
   };
-  useEffect(() => { void loadExpected(); }, [countDate, requestedCountId, countType]);
+  useEffect(() => { void loadExpected(); }, [countDate, requestedCountId, countType, reloadRevision]);
+
+  const beginOpeningEdit = async () => {
+    if (!requestedCountId || !openingCanEdit) return;
+    setLoading(true); setError("");
+    try {
+      const data = await inventoryWorkflowService.expected(countDate,undefined,"OPENING");
+      if (data.countType === "FULL") throw new Error("Unable to load the Opening Count correction context.");
+      setExpected(data.items);
+      setUnavailable(data.unavailableItems ?? []);
+      setDailyContext(data);
+      setEntries(mergeOpeningCorrectionEntries(data.items,openingRecordedItems));
+      setEditingCountId(requestedCountId);
+      setOpeningMode("EDIT");
+      setCompletionFilter("ALL");
+      setHasUnsavedChanges(false);
+      setPreviewing(false);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to prepare the Opening Count correction");
+    } finally { setLoading(false); }
+  };
 
   const cancelEdit = () => {
     if (!canLeavePhysicalCountEntry(hasUnsavedChanges, () => window.confirm("Discard unsaved physical-count changes and return?"))) return;
+    if (openingEditing) {
+      setEditingCountId(null);
+      setOpeningMode("SUMMARY");
+      setHasUnsavedChanges(false);
+      setReloadRevision((value) => value + 1);
+      return;
+    }
     setEditingCountId(null);
     const nextParams = new URLSearchParams(params);
     nextParams.delete("editCount");
@@ -320,7 +383,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
       toast.error(!dailyContext?.openingCount?"Submit today's Opening Count before Closing Count.":"Import and confirm the complete end-of-day POS report before Closing Count.");
       return;
     }
-    if(countType!=="FULL"&&!previewing){setPreviewing(true);return;}
+    if(countType!=="FULL"&&!previewing&&!openingEditing){setPreviewing(true);return;}
     setSaving(true);
     try {
       const items = countType === "FULL" ? buildPhysicalCountItems(expected, entries) : dailyItems;
@@ -333,9 +396,17 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
         : countType === "OPENING"
           ? "Opening Count submitted"
           : "Physical count submitted and variances calculated automatically");
-      setEditingCountId(null);
-      setParams({}, { replace: true });
-      onSubmitted?.();
+      if (openingEditing) {
+        setEditingCountId(null);
+        setOpeningMode("SUMMARY");
+        setHasUnsavedChanges(false);
+        setPreviewing(false);
+        setReloadRevision((value) => value + 1);
+      } else {
+        setEditingCountId(null);
+        setParams({}, { replace: true });
+        onSubmitted?.();
+      }
     } catch (reason) { toast.error(reason instanceof Error ? reason.message : "Unable to submit inventory count"); }
     finally { setSaving(false); }
   };
@@ -408,7 +479,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
 
     {submitted ? <CountResult countNo={submitted.countNo} items={submitted.items} onEdit={() => { setEntries(Object.fromEntries(submitted.items.map((item) => [item.inventoryItemId, physicalCountEntryFromCanonical(item.actualQuantity, item.unit)]))); setEditingCountId(submitted.id); setSubmitted(null); }} onInvestigate={(item) => item.shrinkageReportId && navigate(`/shrinkage?reportId=${item.shrinkageReportId}`)} onNewCount={() => void loadExpected()} /> : (
       <TableCard
-        title={countType==="FULL"?(editingCountId ? "Correct Physical Count" : "Full Physical Count Entry"):undefined}
+        title={countType==="FULL"?(editingCountId ? "Correct Physical Count" : "Full Physical Count Entry"):openingSummary?"Recorded Opening Count":openingEditing?"Edit Opening Count":undefined}
         subtitle={countType==="FULL"?"Record and verify the physical stock available at the branch. Expected stock remains system-calculated.":undefined}
         badge={
           <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-0.5 rounded-full bg-[var(--app-primary-faint)] text-[var(--app-primary)] border border-[var(--app-border)]">
@@ -421,14 +492,14 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
           <Select small value={completionFilter} onChange={(value) => setCompletionFilter(value as PhysicalCountCompletionFilter)} options={[{ value: "ALL", label: "All" }, { value: "COUNTED", label: "Counted" }, { value: "NOT_COUNTED", label: "Not Counted" }]}/>
           <span className="text-xs font-medium text-[var(--app-text-muted)]">Showing {visibleItems.length} of {expected.length} items</span>
           {search && <Btn variant="outline" size="sm" onClick={() => setSearch("")}>Clear search</Btn>}
-          {countType==="OPENING"&&dailyContext?.previousClosingItems.length&&!activeDailyCount?<Btn variant="outline" size="sm" onClick={()=>{setEntries(copyPreviousClosingEntries(expected,dailyContext.previousClosingItems));setCopiedClosingDate(dailyContext.previousClosingDate);setHasUnsavedChanges(true);setPreviewing(false);}}>Copy Previous Closing</Btn>:null}
-          <div className="ml-auto"><Btn icon={Send} disabled={saving || expected.length === 0 || Boolean(activeDailyCount) || (countType==="FULL"&&(Boolean(fullBlockReason)||completion.remaining > 0||(!editingCountId&&!fullPhysicalVerificationConfirmed))) || (countType==="CLOSING"&&(!dailyContext?.openingCount||!dailyContext.posDayComplete))} onClick={() => void submit()}>
-            {saving ? "Saving…" : editingCountId ? "Save Corrections" : previewing ? "Confirm and Submit" : activeDailyCount ? `${countType === "OPENING" ? "Opening" : "Closing"} Submitted` : "Submit Count"}
-          </Btn></div>
+          {countType==="OPENING"&&dailyContext?.previousClosingItems.length&&!activeDailyCount&&!requestedCountId?<Btn variant="outline" size="sm" onClick={()=>{if(completion.counted>0&&!window.confirm("Replace the quantities currently entered with the previous Closing Count values?"))return;setEntries(copyPreviousClosingEntries(expected,dailyContext.previousClosingItems));setCopiedClosingDate(dailyContext.previousClosingDate);setHasUnsavedChanges(true);setPreviewing(false);}}>Copy Previous Closing Stock</Btn>:null}
+          {openingSummary?<div className="ml-auto"><Btn disabled={!openingCanEdit} onClick={()=>void beginOpeningEdit()}>Edit Inventory</Btn></div>:<div className="ml-auto"><Btn icon={Send} disabled={saving || expected.length === 0 || Boolean(activeDailyCount) || (countType==="FULL"&&(Boolean(fullBlockReason)||completion.remaining > 0||(!editingCountId&&!fullPhysicalVerificationConfirmed))) || (countType==="CLOSING"&&(!dailyContext?.openingCount||!dailyContext.posDayComplete))} onClick={() => void submit()}>
+            {saving ? "Saving…" : openingEditing ? "Submit Count" : editingCountId ? "Save Corrections" : previewing ? "Confirm and Submit" : activeDailyCount ? `${countType === "OPENING" ? "Opening" : "Closing"} Submitted` : "Submit Count"}
+          </Btn></div>}
         </>}
       >
         {countType==="FULL"&&fullBlockReason&&<div className="border-b p-4 text-sm font-medium text-[var(--app-warning)] border-[var(--app-border)] bg-[var(--app-warning-bg)]">{fullBlockReason}</div>}
-        {countType!=="FULL"&&<div className="border-b p-4 text-sm text-[var(--app-text-muted)] border-[var(--app-border)] bg-[var(--app-surface-muted)]">{countType==="CLOSING"&&!dailyContext?.openingCount?"Closing Count is unavailable until today's Opening Count is submitted.":countType==="CLOSING"&&!dailyContext?.posDayComplete?"Closing Count is unavailable until the reconciled end-of-day POS report is imported and confirmed complete.":activeDailyCount?`${countType === "OPENING" ? "Opening" : "Closing"} Count has already been submitted for this date.`:"Blank ingredients are not counted and remain unchanged. Entered zero is saved as zero."}</div>}
+        {countType!=="FULL"&&<div className="border-b p-4 text-sm text-[var(--app-text-muted)] border-[var(--app-border)] bg-[var(--app-surface-muted)]">{openingSummary?(openingCanEdit?"This read-only summary shows only ingredients explicitly recorded in the submitted Opening Count.":openingEditBlockReason??"This Opening Count is read-only because later inventory activity prevents correction."):countType==="CLOSING"&&!dailyContext?.openingCount?"Closing Count is unavailable until today's Opening Count is submitted.":countType==="CLOSING"&&!dailyContext?.posDayComplete?"Closing Count is unavailable until the reconciled end-of-day POS report is imported and confirmed complete.":activeDailyCount?`${countType === "OPENING" ? "Opening" : "Closing"} Count has already been submitted for this date.`:"Blank ingredients are not counted and remain unchanged. Entered zero is saved as zero."}</div>}
         <div className="border-b p-4" style={{ borderColor: "var(--app-border)" }}>
           <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
             <strong>{completion.counted} of {expected.length} ingredients counted</strong>
@@ -441,6 +512,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
           {countType==="FULL"&&!editingCountId&&fullContext?.closingCount&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">Same-day Closing quantities were copied where available. Blank ingredients were not included in Closing and must be counted.</p>}
           {countType==="FULL"&&!editingCountId&&<label className="mt-3 flex items-start gap-2 text-xs font-medium text-[var(--app-text)]"><input className="mt-0.5" type="checkbox" checked={fullPhysicalVerificationConfirmed} onChange={(event)=>setFullPhysicalVerificationConfirmed(event.target.checked)}/><span>I physically verified every Full Count quantity, including values copied from Closing.</span></label>}
           {copiedClosingDate&&countType==="OPENING"&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">{previousClosingCopyMessage(copiedClosingDate)}</p>}
+          {countType==="OPENING"&&!requestedCountId&&dailyContext?.previousClosingItems.length===0&&<p className="mt-2 text-xs text-[var(--app-text-muted)]">No previous Closing Count is available. Enter quantities manually.</p>}
           {countType!=="FULL"&&previewing&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">{countType==="OPENING"?"Review the entered Opening quantities, then choose Confirm and Submit. Only entered ingredients will establish checkpoints.":"Preview ready. Review the calculated variances, then choose Confirm and Submit. Only entered ingredients will establish checkpoints."}</p>}
         </div>
         <TableWrapper minWidth={countType==="FULL"?900:1120}>
@@ -465,7 +537,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
                     <TD right muted>{item.stockReceived.toFixed(2)} {item.unit}</TD>
                     <TD right><span className="font-medium text-[var(--app-primary)]">−{item.expectedConsumption.toFixed(2)} {item.unit}</span></TD>
                     <TD right><span className="font-bold text-[var(--app-text)]">{item.expectedQuantity.toFixed(2)} {item.unit}</span></TD>
-                    {countType==="FULL"?<TD right>{countEntry}</TD>:<><TD right>{isDailyCountColumnEditable(countType,"OPENING")&&!activeDailyCount?countEntry:savedQuantity(openingQuantities[item.inventoryItemId])}</TD><TD right>{isDailyCountColumnEditable(countType,"CLOSING")&&!activeDailyCount?countEntry:savedQuantity(closingQuantities[item.inventoryItemId])}</TD></>}
+                    {countType==="FULL"?<TD right>{countEntry}</TD>:<><TD right>{isDailyCountColumnEditable(countType,"OPENING")&&!activeDailyCount&&!openingSummary?countEntry:savedQuantity(openingQuantities[item.inventoryItemId])}</TD><TD right>{isDailyCountColumnEditable(countType,"CLOSING")&&!activeDailyCount?countEntry:savedQuantity(closingQuantities[item.inventoryItemId])}</TD></>}
                     <TD right>
                       <span
                         className="font-bold text-sm"
@@ -493,7 +565,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
           <div className="flex items-center gap-2">
             {editingCountId && (
               <Btn variant="outline" onClick={cancelEdit}>
-                Cancel Correction
+                {openingEditing?"Cancel Editing":"Cancel Correction"}
               </Btn>
             )}
           </div>

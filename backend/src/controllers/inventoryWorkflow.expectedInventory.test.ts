@@ -121,7 +121,7 @@ describe("expected inventory partial baseline availability", () => {
     });
   });
 
-  it("prefills Opening from each ingredient's latest Closing or newer Full checkpoint", async () => {
+  it("prefills Opening only from the single latest valid prior Closing Count", async () => {
     const expectedItem = {
       inventoryItemId: validItem.id,
       sku: validItem.sku,
@@ -133,11 +133,11 @@ describe("expected inventory partial baseline availability", () => {
     mocks.poolQuery.mockImplementation(async (statement: unknown) => {
       const sql = String(statement);
       if (sql.includes("count_type IN ('OPENING','CLOSING')")) return { rows: [] };
-      if (sql.includes("DISTINCT ON (ici.inventory_item_id)")) return { rows: [{
+      if (sql.includes("WITH previous_count AS")) return { rows: [{
         inventoryItemId: validItem.id,
         actualQuantity: 5100,
         countDate: "2026-10-02",
-        countType: "FULL",
+        countType: "CLOSING",
       }] };
       if (sql.includes("SELECT EXISTS")) return { rows: [{ complete: false }] };
       return { rows: [] };
@@ -149,16 +149,18 @@ describe("expected inventory partial baseline availability", () => {
       user: { id: "owner", role: "OWNER", branchId: null },
     } as never, { json } as never, vi.fn());
 
-    const checkpointQuery = String(mocks.poolQuery.mock.calls.find(([sql]) => String(sql).includes("DISTINCT ON"))?.[0]);
-    expect(checkpointQuery).toContain("ic.count_type IN ('CLOSING','FULL')");
+    const checkpointQuery = String(mocks.poolQuery.mock.calls.find(([sql]) => String(sql).includes("WITH previous_count AS"))?.[0]);
+    expect(checkpointQuery).toContain("count_type='CLOSING'");
+    expect(checkpointQuery).not.toContain("count_type IN ('CLOSING','FULL')");
+    expect(checkpointQuery).toContain("LIMIT 1");
     expect(checkpointQuery).toContain("ici.voided_at IS NULL");
     expect(json).toHaveBeenCalledWith({
       success: true,
       data: expect.objectContaining({
         countType: "OPENING",
-        previousClosingItems: [expect.objectContaining({ countType: "FULL", actualQuantity: 5100 })],
+        previousClosingItems: [expect.objectContaining({ countType: "CLOSING", actualQuantity: 5100 })],
         previousClosingDate: "2026-10-02",
-        previousClosingCountType: "FULL",
+        previousClosingCountType: "CLOSING",
       }),
     });
   });

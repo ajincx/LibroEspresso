@@ -16,9 +16,12 @@ suite("Opening Count PostgreSQL integration", () => {
   const baselineId = crypto.randomUUID();
   let inventoryItemId = "";
   let inventoryUnit = "";
+  let additionalItemId = "";
+  let additionalItemUnit = "";
   let countId = "";
   let pool: pg.Pool;
   let submitInventoryCount: Awaited<typeof import("./inventoryWorkflow.controller.js")>["submitInventoryCount"];
+  let updateInventoryCount: Awaited<typeof import("./inventoryWorkflow.controller.js")>["updateInventoryCount"];
 
   beforeAll(async () => {
     if (!databaseUrl) throw new Error("PHASE_C_E2E_DATABASE_URL is required");
@@ -30,13 +33,17 @@ suite("Opening Count PostgreSQL integration", () => {
     process.env.NODE_ENV = "test";
     process.env.DATABASE_URL = databaseUrl;
     pool = new pg.Pool({ connectionString: databaseUrl });
-    ({ submitInventoryCount } = await import("./inventoryWorkflow.controller.js"));
+    ({ submitInventoryCount, updateInventoryCount } = await import("./inventoryWorkflow.controller.js"));
 
-    const item = (await pool.query<{ id: string; unit: string; unitCost: number }>(
-      `SELECT id,unit,unit_cost::float8 "unitCost" FROM inventory_items WHERE status='ACTIVE' ORDER BY sku LIMIT 1`,
-    )).rows[0]!;
+    const items = (await pool.query<{ id: string; unit: string; unitCost: number }>(
+      `SELECT id,unit,unit_cost::float8 "unitCost" FROM inventory_items WHERE status='ACTIVE' ORDER BY sku LIMIT 2`,
+    )).rows;
+    const item = items[0]!;
+    const additionalItem = items[1]!;
     inventoryItemId = item.id;
     inventoryUnit = item.unit;
+    additionalItemId = additionalItem.id;
+    additionalItemUnit = additionalItem.unit;
 
     const client = await pool.connect();
     try {
@@ -52,8 +59,8 @@ suite("Opening Count PostgreSQL integration", () => {
       );
       await client.query(
         `INSERT INTO branch_inventory_settings(branch_id,inventory_item_id,current_unit_cost,reorder_level,reorder_days,reorder_category,updated_by)
-         VALUES($1,$2,$3,0,7,'MEDIUM',$4)`,
-        [branchId, inventoryItemId, item.unitCost, managerId],
+         VALUES($1,$2,$3,0,7,'MEDIUM',$5),($1,$4,$6,0,7,'MEDIUM',$5)`,
+        [branchId, inventoryItemId, item.unitCost, additionalItemId, managerId, additionalItem.unitCost],
       );
       await client.query(
         `INSERT INTO inventory_opening_baselines(id,baseline_no,branch_id,effective_at,designation,notes,created_by)
@@ -62,8 +69,8 @@ suite("Opening Count PostgreSQL integration", () => {
       );
       await client.query(
         `INSERT INTO inventory_opening_baseline_items(opening_baseline_id,inventory_item_id,quantity,unit)
-         VALUES($1,$2,5200,$3)`,
-        [baselineId, inventoryItemId, inventoryUnit],
+         VALUES($1,$2,5200,$3),($1,$4,700,$5)`,
+        [baselineId, inventoryItemId, inventoryUnit, additionalItemId, additionalItemUnit],
       );
       await client.query("COMMIT");
     } catch (error) {
@@ -159,6 +166,66 @@ suite("Opening Count PostgreSQL integration", () => {
     expect(audit.rows[0]?.count).toBeGreaterThan(0);
   });
 
+  it("serializes concurrent additions of a previously uncounted eligible ingredient without replacing the Opening Count", async () => {
+    const businessDate = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Manila", year: "numeric", month: "2-digit", day: "2-digit",
+    }).format(new Date());
+    const updateRequest = () => ({
+      params: { id: countId },
+      body: {
+        countDate: businessDate,
+        correctionReason: "Add physically verified ingredient",
+        items: [
+          { inventoryItemId, quantity: 5000, enteredUnit: inventoryUnit },
+          { inventoryItemId: additionalItemId, quantity: 650, enteredUnit: additionalItemUnit },
+        ],
+      },
+      user: { id: managerId, role: "BRANCH_MANAGER", branchId },
+    });
+    const responseStates: Array<{ body?: unknown }> = [{}, {}];
+    await Promise.all(responseStates.map((state) => updateInventoryCount(
+      updateRequest() as never,
+      { json(body: unknown) { state.body = body; return this; } } as never,
+      () => {},
+    )));
+
+    const [counts, items, addedBalance] = await Promise.all([
+      pool.query<{ count: number }>("SELECT count(*)::int count FROM inventory_counts WHERE branch_id=$1 AND count_type='OPENING'", [branchId]),
+      pool.query<{ inventoryItemId: string; actualQuantity: number }>(
+        `SELECT inventory_item_id "inventoryItemId",actual_quantity::float8 "actualQuantity"
+         FROM inventory_count_items WHERE inventory_count_id=$1 AND voided_at IS NULL ORDER BY inventory_item_id`,
+        [countId],
+      ),
+      pool.query<{ quantity: number }>(
+        `SELECT actual_quantity::float8 quantity FROM branch_inventory_balances
+         WHERE branch_id=$1 AND inventory_item_id=$2`,
+        [branchId, additionalItemId],
+      ),
+    ]);
+    expect(responseStates).toEqual([
+      { body: expect.objectContaining({ success: true }) },
+      { body: expect.objectContaining({ success: true }) },
+    ]);
+    expect(counts.rows[0]?.count).toBe(1);
+    expect(items.rows).toHaveLength(2);
+    expect(items.rows).toContainEqual({ inventoryItemId: additionalItemId, actualQuantity: 650 });
+    expect(addedBalance.rows[0]?.quantity).toBe(650);
+
+    await expect(updateInventoryCount({
+      params: { id: countId },
+      body: {
+        countDate: businessDate,
+        correctionReason: "Attempt to omit original ingredient",
+        items: [{ inventoryItemId: additionalItemId, quantity: 650, enteredUnit: additionalItemUnit }],
+      },
+      user: { id: managerId, role: "BRANCH_MANAGER", branchId },
+    } as never, { json() { return this; } } as never, () => {})).rejects.toMatchObject({ code: "COUNT_ITEMS_MISMATCH" });
+    expect((await pool.query<{ count: number }>(
+      "SELECT count(*)::int count FROM inventory_count_items WHERE inventory_count_id=$1 AND voided_at IS NULL",
+      [countId],
+    )).rows[0]?.count).toBe(2);
+  });
+
   it("uses the latest correction, then falls back to Starting Stock after that count item is voided", async () => {
     const countItem = (await pool.query<{ id: string }>(
       "SELECT id FROM inventory_count_items WHERE inventory_count_id=$1 AND inventory_item_id=$2",
@@ -172,7 +239,7 @@ suite("Opening Count PostgreSQL integration", () => {
       `INSERT INTO inventory_count_corrections
        (inventory_count_item_id,revision,previous_actual_quantity,corrected_actual_quantity,
         previous_variance_quantity,corrected_variance_quantity,previous_variance_value,corrected_variance_value,reason,corrected_by)
-       VALUES($1,1,5000,5100,-200,-100,-200,-100,'Disposable correction test',$2)`,
+       VALUES($1,(SELECT coalesce(max(revision),0)+1 FROM inventory_count_corrections WHERE inventory_count_item_id=$1),5000,5100,-200,-100,-200,-100,'Disposable correction test',$2)`,
       [countItem.id, managerId],
     );
     const corrected = await calculateExpectedInventory(pool, branchId, inventoryItemId, businessDate);
@@ -228,8 +295,8 @@ suite("Opening Count PostgreSQL integration", () => {
       .toContainEqual(expect.objectContaining({ key: "detected", value: 0 }));
 
     const itemWithoutStartingStock = (await pool.query<{ id: string; unit: string }>(
-      "SELECT id,unit FROM inventory_items WHERE status='ACTIVE' AND id<>$1 ORDER BY sku LIMIT 1",
-      [inventoryItemId],
+      "SELECT id,unit FROM inventory_items WHERE status='ACTIVE' AND id<>ALL($1::uuid[]) ORDER BY sku LIMIT 1",
+      [[inventoryItemId, additionalItemId]],
     )).rows[0]!;
     await pool.query(
       `INSERT INTO inventory_count_items(inventory_count_id,inventory_item_id,previous_actual_quantity,

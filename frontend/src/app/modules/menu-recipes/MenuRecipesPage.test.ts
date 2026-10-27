@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { attachPendingRecipeDrafts,canManageMenuCategories,CategoryLabel,categoryDescription,ingredientSetsMatch,initializePendingRecipeDrafts,isControlledTestProductRetirement,isValidRecipeQuantity,MAX_MENU_PRODUCT_PRICE_PHP,menuSellingPriceValidationError,marginTextClass,MenuProductsSkeleton,normalizeRecipeQuantityInput,productNameValidationError,recipeIngredientExists,removeRecipeIngredientRow,selectInitialZeroQuantity,updatePendingRecipeDraftRow,variantMarginRate,type RecipeDraft } from "./MenuRecipesPage";
+import { attachPendingRecipeDrafts,canDeleteMenuProduct,canManageMenuCategories,CategoryLabel,ingredientSetsMatch,initializePendingRecipeDrafts,isControlledTestProductRetirement,isValidRecipeQuantity,MAX_MENU_PRODUCT_PRICE_PHP,menuSellingPriceValidationError,marginTextClass,MENU_VARIANT_PRESETS,menuVariantNameForSelection,menuVariantSelection,MenuProductDeleteDialog,MenuProductsSkeleton,nextMenuVariantName,normalizeRecipeQuantityInput,productNameValidationError,recipeIngredientExists,removeRecipeIngredientRow,selectInitialZeroQuantity,updatePendingRecipeDraftRow,variantMarginRate,type RecipeDraft } from "./MenuRecipesPage";
 import { menuRecipeTabs } from "./MenuRecipeManagementModule";
 import type { MenuCategory, MenuProduct } from "../../types/masterData";
 
@@ -18,16 +18,11 @@ describe("Menu category guidance and permissions",()=>{
     expect(markup).toContain("motion-reduce:animate-none");
   });
   const categories=[{id:"cold-id",name:"Cold Classics",description:"Chilled and iced beverage products.",status:"ACTIVE",createdAt:"",updatedAt:""},{id:"food-id",name:"Food",description:"",status:"ACTIVE",createdAt:"",updatedAt:""}] satisfies MenuCategory[];
-  it("renders accessible category information only when a database description exists",()=>{
-    const described=renderToStaticMarkup(createElement(CategoryLabel,{name:"Cold Classics",categories}));
-    const blank=renderToStaticMarkup(createElement(CategoryLabel,{name:"Food",categories}));
-    expect(described).toContain('aria-label="About Cold Classics"');
-    expect(described).toContain('title="Chilled and iced beverage products."');
-    expect(blank).not.toContain("aria-label");
-  });
-  it("uses the exact stored description and leaves category identity unchanged",()=>{
-    expect(categoryDescription("Cold Classics",categories)).toBe("Chilled and iced beverage products.");
-    expect(categories[0]).toMatchObject({id:"cold-id",name:"Cold Classics"});
+  it("shows the category name without the redundant information icon or tooltip",()=>{
+    const markup=renderToStaticMarkup(createElement(CategoryLabel,{name:"Cold Classics"}));
+    expect(markup).toContain("Cold Classics");
+    expect(markup).not.toContain("About Cold Classics");
+    expect(markup).not.toContain("Chilled and iced beverage products.");
   });
   it("exposes category management controls only to Owners",()=>{
     expect(canManageMenuCategories("OWNER")).toBe(true);
@@ -39,6 +34,21 @@ describe("Menu category guidance and permissions",()=>{
     expect(isControlledTestProductRetirement("BRANCH_MANAGER",{code:"PRD-00073"} as MenuProduct)).toBe(false);
     expect(isControlledTestProductRetirement("STAFF",{code:"PRD-00073"} as MenuProduct)).toBe(false);
     expect(isControlledTestProductRetirement("OWNER",{code:"PRD-00001"} as MenuProduct)).toBe(false);
+  });
+  it("allows only the Owner to request deletion of global products",()=>{
+    expect(canDeleteMenuProduct("OWNER",{productScope:"GLOBAL"} as MenuProduct)).toBe(true);
+    expect(canDeleteMenuProduct("OWNER",{productScope:"BRANCH"} as MenuProduct)).toBe(false);
+    expect(canDeleteMenuProduct("BRANCH_MANAGER",{productScope:"GLOBAL"} as MenuProduct)).toBe(false);
+  });
+
+  it("uses a reason-only product deletion confirmation and rejects a blank reason",()=>{
+    const blank=renderToStaticMarkup(createElement(MenuProductDeleteDialog,{product:{name:"Café Latte"},busy:false,value:{reason:"",verificationPin:""},onChange:vi.fn(),onCancel:vi.fn(),onConfirm:vi.fn()}));
+    const ready=renderToStaticMarkup(createElement(MenuProductDeleteDialog,{product:{name:"Café Latte"},busy:false,value:{reason:"Remove unused menu product",verificationPin:""},onChange:vi.fn(),onCancel:vi.fn(),onConfirm:vi.fn()}));
+    expect(blank).toContain("Delete Menu Product?");
+    expect(blank).toContain("Item: Café Latte");
+    expect(blank).not.toContain("Verification PIN");
+    expect(blank).toMatch(/<button[^>]*disabled[^>]*>Confirm Delete<\/button>/);
+    expect(ready).not.toMatch(/<button[^>]*disabled[^>]*>Confirm Delete<\/button>/);
   });
 });
 
@@ -53,6 +63,17 @@ describe("Menu Products & Recipes margin presentation",()=>{
 });
 
 describe("Menu product input validation",()=>{
+  it("defaults new products to Standard and supports preset and custom variants without changing stored names",()=>{
+    expect(MENU_VARIANT_PRESETS).toEqual(["Standard","Small","Medium","Large"]);
+    expect(menuVariantSelection("Standard")).toBe("Standard");
+    expect(menuVariantNameForSelection("Standard","Small")).toBe("Small");
+    expect(menuVariantNameForSelection("Small","Medium")).toBe("Medium");
+    expect(menuVariantNameForSelection("Medium","Large")).toBe("Large");
+    expect(menuVariantNameForSelection("Large","Custom")).toBe("");
+    expect(menuVariantSelection("16 oz")).toBe("Custom");
+    expect(menuVariantNameForSelection("16 oz","Custom")).toBe("16 oz");
+    expect(nextMenuVariantName([{name:"Standard"},{name:"Small"}])).toBe("Medium");
+  });
   it.each(["12345"," 987 ","Coffee\u0007Latte"])("rejects invalid product names: %j",(name)=>expect(productNameValidationError(name)).not.toBe(""));
   it.each(["Café Latte","Iced Coffee 16oz","2-in-1 Coffee","Cookies & Cream"])("accepts legitimate café product names: %s",(name)=>expect(productNameValidationError(name)).toBe(""));
   it.each(["",0,-1,Number.NaN,Number.POSITIVE_INFINITY,149.999,MAX_MENU_PRODUCT_PRICE_PHP+0.01] as const)("rejects invalid prices: %s",(price)=>expect(menuSellingPriceValidationError(price)).not.toBe(""));
