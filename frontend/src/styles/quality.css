@@ -42,3 +42,28 @@
   .custom-range-controls > * { flex: 1 1 100%; }
   .custom-range-controls > span { display: none; }
 }
+@media (max-width: 639px) {
+  [aria-labelledby="staff-incident-title"] fieldset .grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  [aria-labelledby="staff-incident-title"] fieldset .col-span-4 {
+    grid-column: span 1 / span 1;
+  }
+  [aria-labelledby="staff-incident-title"] fieldset [aria-label^="Remove affected item"] {
+    width: 100%;
+  }
+}
+@media (min-width: 640px) {
+  [aria-labelledby="staff-incident-title"] fieldset .grid {
+    position: relative;
+    grid-template-columns: minmax(0, 1fr) 7rem 6rem !important;
+    column-gap: 0.75rem;
+    align-items: end;
+    padding-right: 4.75rem;
+  }
+  [aria-labelledby="staff-incident-title"] fieldset .grid > div:has(> [aria-label^="Remove affected item"]) {
+    position: absolute;
+    right: 0.75rem;
+    bottom: 0.75rem;
+  }
+}

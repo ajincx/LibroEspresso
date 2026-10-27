@@ -17,7 +17,8 @@ import { masterDataService } from "../../services/masterData.service";
 import type { Branch, ManagedUser, RecordStatus } from "../../types/masterData";
 import { formatAppDate } from "../../utils/appPreferences";
 import { Btn, KPICard, Select, SkeletonBlock, StatusBadge, TableCard, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
-import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
+import { TwoStepDeactivationDialog } from "../../components/TwoStepDeactivationDialog";
+import { useLocalDraft } from "../../hooks/useLocalDraft";
 
 type UserRole = "OWNER" | "BRANCH_MANAGER" | "STAFF";
 type UserForm = {
@@ -49,6 +50,14 @@ const emptyForm: UserForm = {
 };
 const inputClass =
   "mt-1.5 w-full rounded-xl border px-3 py-2.5 text-sm outline-none bg-[var(--app-surface)] text-[var(--app-text)] border-[var(--app-border)] focus:border-[var(--app-primary)] focus:ring-4 focus:ring-[var(--app-primary-faint)] disabled:bg-[var(--app-surface-muted)] disabled:cursor-not-allowed";
+export const normalizeUserName=(value:string)=>value.trim().replace(/\s+/g," ");
+export const normalizeUserEmail=(value:string)=>value.trim().toLocaleLowerCase("en-US");
+export const normalizeUserPhone=(value:string)=>value.startsWith("09")?`+63${value.slice(1)}`:value;
+export const validUserEmail=(value:string)=>/^[^\s@]+@(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$/i.test(normalizeUserEmail(value));
+export const validUserPhone=(value:string)=>!value.trim()||/^(?:09\d{9}|\+639\d{9})$/.test(value.trim());
+const userDeactivationReasons=["Employee resigned.","Employment contract ended.","Transferred to another branch or position.","Account no longer required.","Security or access concern.","Other."] as const;
+type SafeUserDraft=Omit<UserForm,"password"|"confirmPassword">;
+const isSafeUserDraft=(value:unknown):value is SafeUserDraft=>Boolean(value&&typeof value==="object"&&typeof (value as SafeUserDraft).firstName==="string"&&typeof (value as SafeUserDraft).email==="string");
 
 function message(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
@@ -72,8 +81,8 @@ export function UserManagementPage({
   const [branchFilter, setBranchFilter] = useState("ALL");
   const [roleFilter, setRoleFilter] = useState("ALL");
   const [deactivateTarget,setDeactivateTarget]=useState<ManagedUser|null>(null);
-  const [controlledValue,setControlledValue]=useState<ControlledActionValue>({reason:"",verificationPin:""});
   const [controlledBusy,setControlledBusy]=useState(false);
+  const userDraft=useLocalDraft<SafeUserDraft>({userId:currentUser?.id,branchId:currentUser?.branchId,form:"user-account",recordId:editing?.id},isSafeUserDraft);
 
   const load = async (silent = false) => {
     if (!silent) setLoading(true);
@@ -154,7 +163,8 @@ export function UserManagementPage({
 
   const openCreate = () => {
     setEditing(null);
-    setForm(emptyForm);
+    const restored=userDraft.read();
+    setForm(restored?{...restored,password:"",confirmPassword:""}:emptyForm);
     setShowPassword(false);
     setCreateOpen(true);
   };
@@ -182,6 +192,7 @@ export function UserManagementPage({
     setForm(emptyForm);
     setShowPassword(false);
   };
+  useEffect(()=>{if(!(createOpen||editing))return;const {password:_password,confirmPassword:_confirmation,...safe}=form;userDraft.save(safe);},[createOpen,editing,form,userDraft]);
 
   const validate = (creating: boolean) => {
     if (
@@ -191,6 +202,8 @@ export function UserManagementPage({
       !form.email.trim()
     )
       return "Complete all required account fields";
+    if (!validUserEmail(form.email)) return "Enter a valid email address";
+    if (!validUserPhone(form.phoneNumber)) return "Enter a Philippine mobile number as 09XXXXXXXXX or +639XXXXXXXXX";
     if (creating && form.password.length < 10)
       return "Temporary password must be at least 10 characters";
     if (!creating && form.password && form.password.length < 10)
@@ -209,14 +222,18 @@ export function UserManagementPage({
     if (validation) return toast.error(validation);
     setSaving(true);
     try {
+      const normalizedFirstName=normalizeUserName(form.firstName);
+      const normalizedLastName=normalizeUserName(form.lastName);
+      const duplicate=users.find(item=>item.id!==editing?.id&&item.branchId===(form.role==="OWNER"?null:form.branchId)&&normalizeUserName(item.firstName).toLocaleLowerCase()===normalizedFirstName.toLocaleLowerCase()&&normalizeUserName(item.lastName).toLocaleLowerCase()===normalizedLastName.toLocaleLowerCase());
+      if(duplicate) toast.warning("Another account in this branch has the same full name. Verify the username and email before continuing.");
       const branchId = form.role === "OWNER" ? null : form.branchId;
       if (editing) {
         await masterDataService.updateUser(editing.id, {
-          firstName: form.firstName.trim(),
-          lastName: form.lastName.trim(),
+          firstName: normalizedFirstName,
+          lastName: normalizedLastName,
           username: form.username.trim(),
-          email: form.email.trim(),
-          phoneNumber: form.phoneNumber.trim() || null,
+          email: normalizeUserEmail(form.email),
+          phoneNumber: form.phoneNumber.trim() ? normalizeUserPhone(form.phoneNumber.trim()) : null,
           position: form.position.trim(),
           role: form.role,
           branchId,
@@ -226,11 +243,11 @@ export function UserManagementPage({
         toast.success("User account updated");
       } else {
         await masterDataService.createUser({
-          firstName: form.firstName.trim(),
-          lastName: form.lastName.trim(),
+          firstName: normalizedFirstName,
+          lastName: normalizedLastName,
           username: form.username.trim(),
-          email: form.email.trim(),
-          phoneNumber: form.phoneNumber.trim() || null,
+          email: normalizeUserEmail(form.email),
+          phoneNumber: form.phoneNumber.trim() ? normalizeUserPhone(form.phoneNumber.trim()) : null,
           position: form.position.trim(),
           password: form.password,
           role: form.role,
@@ -240,6 +257,7 @@ export function UserManagementPage({
         toast.success("User account created");
       }
       closeModal();
+      userDraft.clear();
       await load();
     } catch (reason) {
       toast.error(
@@ -254,7 +272,7 @@ export function UserManagementPage({
   };
 
   const toggleStatus = async (selected: ManagedUser) => {
-    if(selected.status==="ACTIVE"){setDeactivateTarget(selected);setControlledValue({reason:"",verificationPin:""});return;}
+    if(selected.status==="ACTIVE"){setDeactivateTarget(selected);return;}
     try {
       await masterDataService.setUserStatus(
         selected.id,
@@ -275,13 +293,13 @@ export function UserManagementPage({
     }
   };
 
-  const deleteAccount = async () => {
+  const deleteAccount = async (reason:string) => {
     if(!deactivateTarget)return;
     setControlledBusy(true);
     try {
-      await masterDataService.deleteUser(deactivateTarget.id,controlledValue);
+      await masterDataService.deleteUser(deactivateTarget.id,{reason});
       toast.success("User account deactivated; historical ownership was retained");
-      setDeactivateTarget(null); setControlledValue({reason:"",verificationPin:""});
+      setDeactivateTarget(null);
       await load();
     } catch (reason) {
       toast.error(message(reason, "Unable to deactivate user account"));
@@ -477,7 +495,7 @@ export function UserManagementPage({
           </tbody>
         </TableWrapper>
       </TableCard>
-      {deactivateTarget&&<ControlledActionDialog title={`Deactivate ${deactivateTarget.firstName} ${deactivateTarget.lastName}?`} description="The account and active sessions will be disabled. Ownership, audit, and operational history remain intact. Your own account and the final active Owner are protected." confirmLabel="Deactivate Account" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setDeactivateTarget(null)} onConfirm={()=>void deleteAccount()}/>}
+      {deactivateTarget&&<TwoStepDeactivationDialog message="Are you sure you want to deactivate this account?" reasons={userDeactivationReasons} busy={controlledBusy} onCancel={()=>setDeactivateTarget(null)} onConfirm={reason=>void deleteAccount(reason)}/>}
 
       {modalOpen && (
         <div
@@ -563,6 +581,8 @@ export function UserManagementPage({
                 Phone Number
                 <input
                   type="tel"
+                  inputMode="tel"
+                  placeholder="09XXXXXXXXX or +639XXXXXXXXX"
                   value={form.phoneNumber}
                   onChange={(e) =>
                     setForm((current) => ({

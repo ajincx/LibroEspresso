@@ -21,6 +21,13 @@ const schema = z.object({
   POS_REMINDER_HOUR_MANILA: z.coerce.number().int().min(0).max(23).default(22),
   POS_REMINDER_MINUTE_MANILA: z.coerce.number().int().min(0).max(59).default(0),
   CRON_SECRET: z.string().trim().optional().transform((value) => value || undefined),
+  SMTP_HOST: z.preprocess(value=>value===""?undefined:value,z.string().trim().default("smtp.gmail.com")),
+  SMTP_PORT: z.preprocess(value=>value===""?undefined:value,z.coerce.number().int().min(1).max(65535).default(465)),
+  SMTP_SECURE: z.preprocess(value=>value===""?undefined:value,z.enum(["true","false"]).default("true").transform((value)=>value==="true")),
+  SMTP_USER: z.preprocess(value=>value===""?undefined:value,z.string().trim().email().optional()),
+  SMTP_APP_PASSWORD: z.preprocess(value=>value===""?undefined:value,z.string().trim().min(16).optional()),
+  SMTP_FROM: z.preprocess(value=>value===""?undefined:value,z.string().trim().email().optional()),
+  PASSWORD_RESET_URL_BASE: z.preprocess(value=>value===""?undefined:value,z.string().url().optional()),
 }).superRefine((value, context) => {
   if (value.CRON_SECRET && value.CRON_SECRET.length < 32) {
     context.addIssue({ code: "custom", path: ["CRON_SECRET"], message: "CRON_SECRET must contain at least 32 characters" });
@@ -28,6 +35,10 @@ const schema = z.object({
   if (value.NODE_ENV === "production" && !value.CRON_SECRET) {
     context.addIssue({ code: "custom", path: ["CRON_SECRET"], message: "CRON_SECRET is required in production" });
   }
+  const emailValues=[value.SMTP_USER,value.SMTP_APP_PASSWORD,value.SMTP_FROM,value.PASSWORD_RESET_URL_BASE];
+  if(emailValues.some(Boolean)&&!emailValues.every(Boolean)) context.addIssue({code:"custom",path:["SMTP_USER"],message:"SMTP credentials, sender, and password reset URL must be configured together"});
+  if(emailValues.some(Boolean)&&(value.SMTP_HOST!=="smtp.gmail.com"||value.SMTP_PORT!==465||!value.SMTP_SECURE)) context.addIssue({code:"custom",path:["SMTP_HOST"],message:"Gmail SMTP must use smtp.gmail.com on port 465 with SMTP_SECURE=true"});
+  if(value.NODE_ENV==="production"&&value.PASSWORD_RESET_URL_BASE&&!value.PASSWORD_RESET_URL_BASE.startsWith("https://")) context.addIssue({code:"custom",path:["PASSWORD_RESET_URL_BASE"],message:"Production password reset links must use HTTPS"});
 });
 
 const parsed = schema.safeParse(process.env);

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Camera, Plus, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { operationsService } from "../../services/operations.service";
@@ -7,6 +7,8 @@ import { CalendarDateTimeField, isModalBackdropEvent, Select } from "../../compo
 import { businessDate, manilaBusinessDateTime, manilaDateTimeToIso, validateIncidentDateTime } from "../../utils/businessDate";
 import { incidentTypeOptions } from "../../utils/shrinkageTaxonomy";
 import { compatibleUnits, type MeasurementUnit } from "../../utils/units";
+import { useOptionalAuth } from "../../contexts/AuthContext";
+import { useLocalDraft } from "../../hooks/useLocalDraft";
 const currentDateTime = () => manilaBusinessDateTime();
 const controlClass = "mt-2 block w-full min-w-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-elevated)] px-3.5 py-3 text-sm text-[var(--app-text)] outline-none transition focus:border-[var(--app-primary)] focus:ring-4 focus:ring-[var(--app-primary-faint)]";
 export const validateOtherIncidentType = (type: IncidentType, value: string) =>
@@ -23,6 +25,8 @@ export const nextIncidentProductSelection = (products: IncidentProductOption[], 
 export type AffectedItemDraft = { inventoryItemId: string; quantity: string; enteredUnit?: MeasurementUnit | "" };
 export const validAffectedItems = (items: AffectedItemDraft[]) => items.length>0 && items.every((item)=>item.inventoryItemId&&Number.isFinite(Number(item.quantity))&&Number(item.quantity)>0) && new Set(items.map((item)=>item.inventoryItemId)).size===items.length;
 export const affectedItemsPayload = (items: AffectedItemDraft[]) => items.map((item)=>({inventoryItemId:item.inventoryItemId,quantity:Number(item.quantity),enteredUnit:item.enteredUnit || undefined}));
+type IncidentDraft={type:IncidentType|"";affectedItems:AffectedItemDraft[];productVariantId:string;occurredAt:string;reason:string;lateReportingReason:string;otherIncidentType:string};
+const isIncidentDraft=(value:unknown):value is IncidentDraft=>Boolean(value&&typeof value==="object"&&Array.isArray((value as IncidentDraft).affectedItems)&&typeof (value as IncidentDraft).reason==="string");
 
 export function OtherIncidentTypeField({type,value,error,onChange}:{type:IncidentType;value:string;error:string;onChange:(value:string)=>void}) {
   if (type !== "OTHER") return null;
@@ -30,6 +34,7 @@ export function OtherIncidentTypeField({type,value,error,onChange}:{type:Inciden
 }
 
 export function StaffIncidentModal({ options, products, onClose, onSaved }: { options: IncidentItemOption[]; products: IncidentProductOption[]; onClose: () => void; onSaved: () => void }) {
+  const user=useOptionalAuth()?.user;
   const [type, setType] = useState<IncidentType | "">("");
   const [affectedItems, setAffectedItems] = useState<AffectedItemDraft[]>([{ inventoryItemId: "", quantity: "", enteredUnit: "" }]);
   const [productVariantId, setProductVariantId] = useState("");
@@ -40,6 +45,9 @@ export function StaffIncidentModal({ options, products, onClose, onSaved }: { op
   const [otherIncidentTypeError, setOtherIncidentTypeError] = useState("");
   const [photoUrl, setPhotoUrl] = useState<string>();
   const [saving, setSaving] = useState(false);
+  const draft=useLocalDraft<IncidentDraft>({userId:user?.id,branchId:user?.branchId,form:"staff-incident"},isIncidentDraft);
+  useEffect(()=>{const saved=draft.read();if(!saved)return;setType(saved.type);setAffectedItems(saved.affectedItems);setProductVariantId(saved.productVariantId);setOccurredAt(validateIncidentDateTime(saved.occurredAt)?currentDateTime():saved.occurredAt);setReason(saved.reason);setLateReportingReason(saved.lateReportingReason);setOtherIncidentType(saved.otherIncidentType);toast.info("Restored your unsent incident draft.");},[draft]);
+  useEffect(()=>{draft.save({type,affectedItems,productVariantId,occurredAt,reason,lateReportingReason,otherIncidentType});},[draft,type,affectedItems,productVariantId,occurredAt,reason,lateReportingReason,otherIncidentType]);
   const selectedIds = affectedItems.map((item) => item.inventoryItemId).filter(Boolean);
   const availableProducts = incidentProductsForIngredients(products,selectedIds);
   const selectedProduct = availableProducts.find((product)=>product.variantId===productVariantId);
@@ -62,6 +70,7 @@ export function StaffIncidentModal({ options, products, onClose, onSaved }: { op
     try {
       const incident = await operationsService.createIncident({ items: affectedItemsPayload(affectedItems), productId: selectedProduct?.productId, productVariantId: selectedProduct?.variantId, incidentType: type, otherIncidentType: type === "OTHER" ? otherIncidentType.trim() : undefined, occurredAt: manilaDateTimeToIso(occurredAt), lateReportingReason: occurredAt.slice(0,10) < businessDate(new Date(), "Asia/Manila") ? lateReportingReason.trim() : undefined, reason: reason.trim(), photoUrl });
       toast.success(incident.isLate ? "Late incident request sent for Manager verification" : "Incident report submitted for Manager review");
+      draft.clear();
       onSaved();
     } catch (error) { toast.error(error instanceof Error ? error.message : "Unable to submit incident report."); }
     finally { setSaving(false); }

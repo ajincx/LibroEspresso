@@ -11,7 +11,7 @@ import type { PosAnalytics } from "../../types/inventoryWorkflow";
 import type { InventoryOverviewItem } from "../../types/operations";
 import type { PredictiveForecast } from "../../types/predictive";
 import type { Page, Role } from "../../types/navigation";
-import { businessDate, addDateDays, periodDates, adjustRangeForAutomaticImport, adjustRangeForImport } from "../../utils/businessDate";
+import { businessDate, addDateDays, periodDates, adjustRangeForImport, isValidBusinessDateRange } from "../../utils/businessDate";
 import { formatAppCurrency as money, formatAppDate, readAppPreferences } from "../../utils/appPreferences";
 import { officialFinancialMetrics } from "../../utils/financialMetrics";
 import { PosImportModal } from "../cogs/PosImportModal";
@@ -49,8 +49,8 @@ export function recordStockCountUrl(branchId: string | undefined, countDate = bu
   if (branchId && branchId !== "ALL") params.set("branchId", branchId);
   return `/inventory?${params.toString()}`;
 }
-export const DEFAULT_DASHBOARD_RANGE: DashboardRange = "mtd";
-export const STORAGE_KEY_DASHBOARD_USER_RANGE = "libro.dashboard.userRange";
+export const DEFAULT_DASHBOARD_RANGE: DashboardRange = "7d";
+export const STORAGE_KEY_DASHBOARD_USER_RANGE = "libro.reporting.userRange";
 
 export interface DashboardUserRangeConfig {
   range: DashboardRange;
@@ -63,7 +63,9 @@ export function readDashboardUserRange(): DashboardUserRangeConfig | null {
     const raw = localStorage.getItem(STORAGE_KEY_DASHBOARD_USER_RANGE);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && typeof parsed.range === "string") {
+    const supported = ["today", "7d", "30d", "mtd", "custom"];
+    if (parsed && typeof parsed === "object" && supported.includes(parsed.range)
+      && (parsed.range !== "custom" || isValidBusinessDateRange(parsed.customStart, parsed.customEnd))) {
       return parsed as DashboardUserRangeConfig;
     }
   } catch {
@@ -256,8 +258,8 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
   const [now, setNow] = useState(new Date());
   const [range, setRange] = useState<DashboardRange>(initialUserRange?.range ?? DEFAULT_DASHBOARD_RANGE);
   const [comparison, setComparison] = useState<DashboardComparison>("previous");
-  const [customStart, setCustomStart] = useState(initialUserRange?.customStart ?? businessDate());
-  const [customEnd, setCustomEnd] = useState(initialUserRange?.customEnd ?? businessDate());
+  const [customStart, setCustomStart] = useState(initialUserRange?.customStart ?? businessDate(new Date(), "Asia/Manila"));
+  const [customEnd, setCustomEnd] = useState(initialUserRange?.customEnd ?? businessDate(new Date(), "Asia/Manila"));
   const [refresh, setRefresh] = useState(0);
   const lastRefreshAt = useRef(Date.now());
   const [data, setData] = useState<{ current: PosAnalytics; previous: PosAnalytics; inventory: InventoryOverviewItem[] } | null>(null);
@@ -270,34 +272,8 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
   const [alertCategory, setAlertCategory] = useState("All Categories");
   const branchId = getEffectiveDashboardBranchId(role, scopeBranchId, user?.branch?.id);
   const scope = role === "manager" ? user?.branch?.name ?? "Assigned Branch" : scopeBranchName;
-  const today = businessDate(now);
+  const today = businessDate(now, "Asia/Manila");
   const { startDate, endDate } = periodDates(range, customStart, customEnd);
-
-  useEffect(() => {
-    let active = true;
-    if (!userSelected) {
-      workflow.posImports({ branchId, pageSize: DASHBOARD_LATEST_POS_PAGE_SIZE })
-        .then((res) => {
-          if (!active) return;
-          const latestDate = res.imports?.[0]?.businessDate;
-          if (latestDate) {
-            const defaultDates = periodDates(DEFAULT_DASHBOARD_RANGE);
-            const adjustment = adjustRangeForAutomaticImport(false, DEFAULT_DASHBOARD_RANGE, defaultDates.startDate, defaultDates.endDate, latestDate, today);
-            if (adjustment) {
-              if (adjustment.customStart) setCustomStart(adjustment.customStart);
-              if (adjustment.customEnd) setCustomEnd(adjustment.customEnd);
-              setRange(adjustment.range);
-            } else {
-              setRange(DEFAULT_DASHBOARD_RANGE);
-            }
-          } else {
-            setRange(DEFAULT_DASHBOARD_RANGE);
-          }
-        })
-        .catch(() => undefined);
-    }
-    return () => { active = false; };
-  }, [branchId, userSelected, refresh, today]);
 
   useEffect(() => {
     const tick = window.setInterval(() => setNow(new Date()), 60000);
@@ -311,14 +287,7 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
     const handleDataChanged = (event: Event) => {
       const customEvent = event as CustomEvent<{ businessDate?: string } | undefined>;
       const importedDate = customEvent.detail?.businessDate;
-      if (importedDate) {
-        const adjustment = adjustRangeForAutomaticImport(userSelected, range, startDate, endDate, importedDate, today);
-        if (adjustment) {
-          if (adjustment.customStart) setCustomStart(adjustment.customStart);
-          if (adjustment.customEnd) setCustomEnd(adjustment.customEnd);
-          setRange(adjustment.range);
-        }
-      }
+      void importedDate;
       setNow(new Date());
       lastRefreshAt.current = Date.now();
       setRefresh(v => v + 1);
@@ -416,6 +385,7 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
         comparison={comparison}
         customStart={customStart}
         customEnd={customEnd}
+        customApplied={range === "custom" && userSelected}
         onRangeChange={(nextRange) => {
           setUserSelected(true);
           setRange(nextRange);
@@ -662,15 +632,7 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
       branchName={scope}
       onClose={() => setImportOpen(false)}
       onImported={(importedDate) => {
-        if (importedDate) {
-          const currentDates = periodDates(range, customStart, customEnd);
-          const adjustment = adjustRangeForAutomaticImport(userSelected, range, currentDates.startDate, currentDates.endDate, importedDate, today);
-          if (adjustment) {
-            if (adjustment.customStart) setCustomStart(adjustment.customStart);
-            if (adjustment.customEnd) setCustomEnd(adjustment.customEnd);
-            setRange(adjustment.range);
-          }
-        }
+        void importedDate;
         setRefresh((value) => value + 1);
       }}
     />

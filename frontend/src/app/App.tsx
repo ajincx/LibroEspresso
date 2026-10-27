@@ -30,7 +30,7 @@ import {
   MessageDrawer,
   LogoutModal,
 } from "./layouts/AppChrome";
-import { LoginPage as RedesignedLoginPage } from "./modules/authentication/LoginPage";
+import { isPasswordResetPath, LoginPage as RedesignedLoginPage } from "./modules/authentication/LoginPage";
 import { accountService } from "./services/account.service";
 import {
   applyAppPreferences,
@@ -375,6 +375,7 @@ export default function App() {
           <COGSAndPosSalesModule
             role={role}
             initialTab="sales"
+            scopeBranchId={branch}
             scopeBranchName={
               branches.find((item) => item.id === branch)?.name ??
               "All Branches"
@@ -431,6 +432,7 @@ export default function App() {
         return (
           <COGSAndPosSalesModule
             role={role}
+            scopeBranchId={branch}
             scopeBranchName={
               branches.find((item) => item.id === branch)?.name ??
               "All Branches"
@@ -488,6 +490,14 @@ export default function App() {
     return <SessionRestoreLoader />;
   if (loading || shouldPreviewSessionLoading(location.search))
     return <SessionLoadingIndicator />;
+
+  if (isPasswordResetPath(location.pathname))
+    return (
+      <>
+        <RedesignedLoginPage onLogin={handleLogin} />
+        <Toaster position="bottom-right" richColors />
+      </>
+    );
 
   if (!user) {
     if (location.pathname !== "/login") return <Navigate to="/login" replace />;

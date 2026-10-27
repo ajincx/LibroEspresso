@@ -4,9 +4,8 @@ import { getEffectiveBranchId } from "../services/branchScope.js";
 import { writeAudit } from "../services/audit.service.js";
 import { AppError } from "../utils/appError.js";
 import { branchInput, branchPatch, idParams } from "../validators/masterData.js";
-import { destructiveActionInput } from "../validators/destructiveAction.js";
-import { verifyDestructiveAction, writeDestructiveActionAudit } from "../services/destructiveAction.service.js";
-import { revokeAllUserSessions } from "../services/auth.service.js";
+import { branchDeactivationInput } from "../validators/deactivation.js";
+import { writeDestructiveActionAudit } from "../services/destructiveAction.service.js";
 
 const selection = `SELECT b.id,b.code,b.name,b.location,b.status,b.created_at "createdAt",b.updated_at "updatedAt",
   manager.id "managerId",manager.name manager,manager.status "managerStatus",
@@ -46,11 +45,11 @@ export const createBranch: RequestHandler = async (req, res) => {
     await writeAudit(req.user!, "CREATE_BRANCH", "BRANCH", result.rows[0].id, `Created branch ${input.name}`, {}, client);
     await client.query("COMMIT");
     res.status(201).json({ success: true, data: { branch: result.rows[0] } });
-  } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  } catch (error) { await client.query("ROLLBACK"); if(typeof error==="object"&&error!==null&&"code" in error&&error.code==="23505")throw new AppError(409,"BRANCH_IDENTITY_IN_USE","That branch code or name is already in use"); throw error; } finally { client.release(); }
 };
 export const updateBranch: RequestHandler = async (req, res) => {
   const { id } = idParams.parse(req.params); const input = branchPatch.parse(req.body);
-  if (input.status === "INACTIVE") throw new AppError(409, "CONTROLLED_DEACTIVATION_REQUIRED", "Use the controlled branch deactivation action and provide a reason and verification PIN");
+  if (input.status === "INACTIVE") throw new AppError(409, "CONTROLLED_DEACTIVATION_REQUIRED", "Use the controlled branch deactivation action and provide a reason");
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -60,22 +59,25 @@ export const updateBranch: RequestHandler = async (req, res) => {
     await writeAudit(req.user!, "UPDATE_BRANCH", "BRANCH", id, `Updated branch ${result.rows[0].name}`, { fields: Object.keys(input) }, client);
     await client.query("COMMIT");
     res.json({ success: true, data: { branch: result.rows[0] } });
-  } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  } catch (error) { await client.query("ROLLBACK"); if(typeof error==="object"&&error!==null&&"code" in error&&error.code==="23505")throw new AppError(409,"BRANCH_IDENTITY_IN_USE","That branch code or name is already in use"); throw error; } finally { client.release(); }
 };
 
 export const deactivateBranch: RequestHandler = async (req, res) => {
   if (req.user!.role !== "OWNER") throw new AppError(403, "FORBIDDEN", "Only the Owner can deactivate a branch");
-  const { id } = idParams.parse(req.params); const input = destructiveActionInput.parse(req.body);
-  await verifyDestructiveAction(req.user!, input.verificationPin, { module: "BRANCH", action: "DEACTIVATE", recordId: id, reason: input.reason });
+  const { id } = idParams.parse(req.params); const input = branchDeactivationInput.parse(req.body);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    const branch=await client.query("SELECT id FROM branches WHERE id=$1 AND status='ACTIVE' FOR UPDATE",[id]);
+    if(!branch.rows[0]) throw new AppError(404,"ACTIVE_BRANCH_NOT_FOUND","Active branch not found");
+    const users=await client.query<{count:string}>("SELECT count(*) count FROM users WHERE branch_id=$1 AND status='ACTIVE'",[id]);
+    const orders=await client.query<{count:string}>("SELECT count(*) count FROM purchase_orders WHERE branch_id=$1 AND status IN ('DRAFT','ORDERED','PARTIALLY_RECEIVED')",[id]);
+    if(Number(users.rows[0]?.count??0)>0||Number(orders.rows[0]?.count??0)>0) throw new AppError(409,"BRANCH_HAS_OPEN_OBLIGATIONS",`Resolve ${users.rows[0]?.count??0} active account(s) and ${orders.rows[0]?.count??0} open purchase order(s) before deactivating this branch.`);
     const result = await client.query<{ name: string }>(`UPDATE branches SET status='INACTIVE',updated_at=now() WHERE id=$1 AND status='ACTIVE' RETURNING name`, [id]);
-    if (!result.rows[0]) throw new AppError(404, "ACTIVE_BRANCH_NOT_FOUND", "Active branch not found");
-    const affectedUsers = await client.query<{ id: string }>(`UPDATE users SET status='INACTIVE',updated_at=now() WHERE branch_id=$1 AND status='ACTIVE' RETURNING id`, [id]);
-    for (const user of affectedUsers.rows) await revokeAllUserSessions(user.id, "BRANCH_DEACTIVATED", client);
+    if(!result.rows[0]) throw new AppError(409,"BRANCH_STATE_CHANGED","The branch is no longer active");
     await client.query(`UPDATE menu_item_branches SET is_active=false,updated_at=now() WHERE branch_id=$1`, [id]);
-    await writeDestructiveActionAudit(req.user!, { module: "BRANCH", action: "DEACTIVATE", recordId: id, reason: input.reason }, `Deactivated branch ${result.rows[0].name}`, { operationalHistoryPreserved: true, deactivatedUserCount: affectedUsers.rowCount ?? 0 }, client);
+    await client.query(`UPDATE pos_sources SET status='INACTIVE',updated_at=now() WHERE branch_id=$1 AND status='ACTIVE'`, [id]);
+    await writeDestructiveActionAudit(req.user!, { module: "BRANCH", action: "DEACTIVATE", recordId: id, reason: input.reason }, `Deactivated branch ${result.rows[0].name}`, { operationalHistoryPreserved: true, deactivatedUserCount: 0 }, client);
     await client.query("COMMIT"); res.json({ success: true, data: { id, action: "DEACTIVATED" } });
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 };

@@ -3,6 +3,7 @@ import { Search, ChevronDown, ChevronRight, ArrowUp, ArrowDown, ChevronLeft, Git
 import * as Popover from "@radix-ui/react-popover";
 import { format, isValid, parseISO } from "date-fns";
 import { DayPicker } from "react-day-picker";
+import { isValidBusinessDateRange, periodDates } from "../utils/businessDate";
 import "react-day-picker/dist/style.css";
 
 // ─── Color System ──────────────────────────────────────────────────────────────
@@ -59,12 +60,8 @@ export function dashboardPeriodLabel(range: DashboardRange, customStart?: string
       return readableRange(start,end);
     }
   }
-  const end=new Date();
-  const start=new Date(end);
-  if(range==="7d") start.setDate(end.getDate()-6);
-  if(range==="30d") start.setDate(end.getDate()-29);
-  if(range==="mtd") start.setDate(1);
-  return readableRange(range==="today"?end:start,end);
+  const dates=periodDates(range,customStart,customEnd);
+  return readableRange(parseISO(dates.startDate),parseISO(dates.endDate));
 }
 
 export function dashboardRangeFactor(range: DashboardRange) {
@@ -506,11 +503,12 @@ export function CalendarDateTimeField({label,value,max,onChange}:{label:string;v
 }
 
 // ─── Table Primitives ──────────────────────────────────────────────────────────
-export function DashboardFilters({ range, comparison, customStart, customEnd, onRangeChange, onComparisonChange, onApplyCustom, onReset }: {
+export function DashboardFilters({ range, comparison, customStart, customEnd, customApplied = false, onRangeChange, onComparisonChange, onApplyCustom, onReset }: {
   range: DashboardRange;
   comparison: DashboardComparison;
   customStart: string;
   customEnd: string;
+  customApplied?: boolean;
   onRangeChange: (range: DashboardRange) => void;
   onComparisonChange: (comparison: DashboardComparison) => void;
   onApplyCustom: (start: string, end: string) => void;
@@ -522,22 +520,21 @@ export function DashboardFilters({ range, comparison, customStart, customEnd, on
 
   return (
     <div className="dashboard-filters flex min-w-0 max-w-full items-center gap-2 flex-wrap justify-end">
-      <div className="filter-control"><Select options={(Object.entries(dashboardRangeLabels) as [DashboardRange,string][]).map(([option,label])=>({value:option,label}))} value={range} onChange={(value)=>onRangeChange(value as DashboardRange)} icon={Calendar} small ariaLabel="Dashboard date range"/></div>
+      {!(range === "custom" && customApplied) && <div className="filter-control"><Select options={(Object.entries(dashboardRangeLabels) as [DashboardRange,string][]).map(([option,label])=>({value:option,label}))} value={range} onChange={(value)=>onRangeChange(value as DashboardRange)} icon={Calendar} small ariaLabel="Reporting date range"/></div>}
       {range !== "custom" && <div className="filter-control"><Select options={[{value:"previous",label:"vs Previous Period"},{value:"lastMonth",label:"vs Last Month"}]} value={comparison} onChange={(value)=>onComparisonChange(value as DashboardComparison)} icon={GitCompare} small ariaLabel="Dashboard comparison period"/></div>}
-      {range === "custom" && (
+      {range === "custom" && !customApplied && (
         <div className="custom-range-controls flex items-end gap-2 rounded-2xl border p-2 shadow-lg" style={{ borderColor:C.border,background:C.surface }}>
           <CalendarDateField label="Start date" value={draftStart} max={draftEnd} onChange={setDraftStart}/>
           <span className="pb-3 text-[10px] font-bold uppercase" style={{color:C.muted}}>to</span>
           <CalendarDateField label="End date" value={draftEnd} min={draftStart} onChange={setDraftEnd}/>
-          <button type="button" onClick={() => onApplyCustom(draftStart, draftEnd)} disabled={!draftStart || !draftEnd}
+          <button type="button" onClick={() => onApplyCustom(draftStart, draftEnd)} disabled={!isValidBusinessDateRange(draftStart, draftEnd)}
             className="min-h-12 px-4 py-2 rounded-xl text-xs font-semibold text-white shadow-sm disabled:opacity-40" style={{ background:C.maroon }}>Apply</button>
-          <button type="button" onClick={() => { setDraftStart(customStart); setDraftEnd(customEnd); onReset(); }}
-            className="min-h-12 px-3 py-2 rounded-xl text-xs font-semibold" style={{ color:C.secondary }}>Reset</button>
         </div>
       )}
       <span className="period-pill px-3 py-2 rounded-xl text-xs font-medium border" style={{ color: C.secondary, borderColor: C.border, background: C.mainBg }}>
         {dashboardPeriodLabel(range, customStart, customEnd)}
       </span>
+      {range === "custom" && customApplied && <button type="button" onClick={onReset} className="min-h-10 rounded-xl border px-3 py-2 text-xs font-semibold" style={{color:C.maroon,borderColor:C.border,background:C.surface}}>Reset</button>}
     </div>
   );
 }

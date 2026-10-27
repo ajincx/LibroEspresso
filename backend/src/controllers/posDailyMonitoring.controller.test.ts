@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ poolQuery: vi.fn() }));
+const mocks = vi.hoisted(() => ({ poolQuery: vi.fn(), sendEmails: vi.fn() }));
 
 vi.mock("../config/database.js", () => ({ pool: { query: mocks.poolQuery } }));
+vi.mock("../services/posImportReminderEmail.service.js", () => ({ sendMissingPosImportReminderEmails: mocks.sendEmails }));
 vi.mock("../config/env.js", () => ({ env: {
   POS_REMINDER_HOUR_MANILA: 22,
   POS_REMINDER_MINUTE_MANILA: 0,
@@ -16,16 +17,20 @@ describe("daily POS reminder persistence", () => {
 
   it("uses an idempotent in-app notification insert after the Manila cutoff", async () => {
     mocks.poolQuery.mockResolvedValueOnce({ rows: [{ id: "notification-1" }], rowCount: 1 });
+    mocks.sendEmails.mockResolvedValueOnce({ configured:true,claimed:1,sent:1,failed:0,suppressed:0 });
     const result = await runDailyPosReminderJob(new Date("2026-09-27T14:05:00.000Z"));
-    expect(result).toEqual({ created: 1 });
+    expect(result).toEqual({ created: 1,email:{ configured:true,claimed:1,sent:1,failed:0,suppressed:0 } });
     const [sql, values] = mocks.poolQuery.mock.calls[0]!;
     expect(String(sql)).toContain("NOT EXISTS(SELECT 1 FROM notifications existing");
     expect(String(sql)).toContain("existing.entity_id=source.id");
+    expect(String(sql)).toContain("pi.completed_at IS NOT NULL");
+    expect(String(sql)).toContain("NOT pi.is_test_data");
     expect(values).toEqual(["2026-09-27"]);
+    expect(mocks.sendEmails).toHaveBeenCalledWith("2026-09-27");
   });
 
   it("does not create reminders before the configured cutoff", async () => {
-    expect(await runDailyPosReminderJob(new Date("2026-09-27T13:59:00.000Z"))).toEqual({ created: 0 });
+    expect(await runDailyPosReminderJob(new Date("2026-09-27T13:59:00.000Z"))).toEqual({ created: 0,email:{configured:false,claimed:0,sent:0,failed:0,suppressed:0} });
     expect(mocks.poolQuery).not.toHaveBeenCalled();
   });
 
@@ -43,6 +48,7 @@ describe("daily POS reminder persistence", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-27T14:05:00.000Z"));
     mocks.poolQuery.mockResolvedValueOnce({ rows: [{ id: "notification-1" }], rowCount: 1 });
+    mocks.sendEmails.mockResolvedValueOnce({configured:true,claimed:1,sent:1,failed:0,suppressed:0});
     const json=vi.fn();
     try {
       await runDailyPosReminderCron({
@@ -51,7 +57,7 @@ describe("daily POS reminder persistence", () => {
     } finally {
       vi.useRealTimers();
     }
-    expect(json).toHaveBeenCalledWith({success:true,data:{created:1}});
+    expect(json).toHaveBeenCalledWith({success:true,data:{created:1,email:{configured:true,claimed:1,sent:1,failed:0,suppressed:0}}});
     expect(mocks.poolQuery).toHaveBeenCalledOnce();
   });
 

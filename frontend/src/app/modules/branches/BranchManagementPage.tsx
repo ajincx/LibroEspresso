@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
-import { Building2, CheckCircle, Plus, RefreshCw, Power, X } from "lucide-react";
+import { Building2, CheckCircle, Plus, RefreshCw, Power, X, Edit2 } from "lucide-react";
 import { toast } from "sonner";
 import { Btn, KPICard, Select, SkeletonBlock, StatusBadge, TableCard, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
 import { masterDataService } from "../../services/masterData.service";
 import type { Branch, RecordStatus } from "../../types/masterData";
 import { formatAppDate } from "../../utils/appPreferences";
-import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
+import { TwoStepDeactivationDialog } from "../../components/TwoStepDeactivationDialog";
 import { controlledActionService } from "../../services/controlledAction.service";
 
 const empty = {
@@ -14,6 +14,7 @@ const empty = {
   location: "",
   status: "ACTIVE" as RecordStatus,
 };
+const branchDeactivationReasons=["Branch permanently closed.","Branch temporarily not operating.","Branch relocated.","Branch operations consolidated.","Branch no longer managed by the company.","Other."] as const;
 
 export function BranchManagementPage({
   scopeBranchId = "ALL",
@@ -26,8 +27,8 @@ export function BranchManagementPage({
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState(empty);
+  const [editing,setEditing]=useState<Branch|null>(null);
   const [deactivateTarget,setDeactivateTarget]=useState<Branch|null>(null);
-  const [controlledValue,setControlledValue]=useState<ControlledActionValue>({reason:"",verificationPin:""});
   const [controlledBusy,setControlledBusy]=useState(false);
   const visibleBranches =
     scopeBranchId === "ALL"
@@ -73,30 +74,32 @@ export function BranchManagementPage({
     };
   }, [scopeBranchId]);
 
-  const create = async () => {
+  const save = async () => {
     if (!form.code.trim() || !form.name.trim() || !form.location.trim())
       return toast.error("Complete the branch code, name, and location.");
     setSaving(true);
     try {
-      await masterDataService.createBranch({
+      const input={
         ...form,
         code: form.code.trim(),
         name: form.name.trim(),
         location: form.location.trim(),
-      });
+      };
+      if(editing) await masterDataService.updateBranch(editing.id,input); else await masterDataService.createBranch(input);
       setOpen(false);
+      setEditing(null);
       setForm(empty);
-      toast.success("Branch created");
+      toast.success(editing?"Branch updated":"Branch created");
       await load(true);
     } catch (cause) {
       toast.error(
-        cause instanceof Error ? cause.message : "Unable to create branch",
+        cause instanceof Error ? cause.message : `Unable to ${editing?"update":"create"} branch`,
       );
     } finally {
       setSaving(false);
     }
   };
-  const deactivate=async()=>{if(!deactivateTarget)return;setControlledBusy(true);try{await controlledActionService.deactivateBranch(deactivateTarget.id,controlledValue);toast.success("Branch deactivated; operational history was preserved");setDeactivateTarget(null);setControlledValue({reason:"",verificationPin:""});await load(true);}catch(cause){toast.error(cause instanceof Error?cause.message:"Unable to deactivate branch");}finally{setControlledBusy(false);}};
+  const deactivate=async(reason:string)=>{if(!deactivateTarget)return;setControlledBusy(true);try{await controlledActionService.deactivateBranch(deactivateTarget.id,{reason});toast.success("Branch deactivated; operational history was preserved");setDeactivateTarget(null);await load(true);}catch(cause){toast.error(cause instanceof Error?cause.message:"Unable to deactivate branch");}finally{setControlledBusy(false);}};
 
   return (
     <div className="p-4 sm:p-6 space-y-5">
@@ -108,7 +111,7 @@ export function BranchManagementPage({
           </p>
         </div>
         <button
-          onClick={() => setOpen(true)}
+          onClick={() => {setEditing(null);setForm(empty);setOpen(true);}}
           className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white bg-[var(--app-primary)]"
         >
           <Plus size={15} />
@@ -197,22 +200,22 @@ export function BranchManagementPage({
                       {branch.lastActivityDescription}
                     </span>
                   </TD>
-                  <TD center>{branch.status==="ACTIVE"?<Btn variant="outline" size="sm" icon={Power} onClick={()=>{setDeactivateTarget(branch);setControlledValue({reason:"",verificationPin:""});}}>Deactivate</Btn>:<span className="text-xs text-[var(--app-text-muted)]">—</span>}</TD>
+                  <TD center><div className="flex justify-center gap-2"><Btn variant="outline" size="sm" icon={Edit2} onClick={()=>{setEditing(branch);setForm({code:branch.code,name:branch.name,location:branch.location,status:branch.status});setOpen(true);}}>Edit</Btn>{branch.status==="ACTIVE"?<Btn variant="outline" size="sm" icon={Power} onClick={()=>setDeactivateTarget(branch)}>Deactivate</Btn>:null}</div></TD>
                 </TR>
               ))}
           </tbody>
         </TableWrapper>
       </TableCard>
-      {deactivateTarget&&<ControlledActionDialog title={`Deactivate ${deactivateTarget.name}?`} description="The branch, its active accounts, and branch menu availability will be disabled. Sales, counts, incidents, and audit history remain unchanged." confirmLabel="Deactivate Branch" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setDeactivateTarget(null)} onConfirm={()=>void deactivate()}/>}
+      {deactivateTarget&&<TwoStepDeactivationDialog message="Are you sure you want to deactivate this branch?" reasons={branchDeactivationReasons} busy={controlledBusy} onCancel={()=>setDeactivateTarget(null)} onConfirm={reason=>void deactivate(reason)}/>}
 
       {open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/45" onMouseDown={(event)=>{if(event.target===event.currentTarget)setOpen(false);}}>
           <div role="dialog" aria-modal="true" aria-labelledby="add-branch-title" className="rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto p-6 bg-[var(--app-surface)] border border-[var(--app-border)]">
             <div className="flex justify-between mb-5">
               <div>
-                <h2 id="add-branch-title" className="font-bold text-lg">Add Branch</h2>
+                <h2 id="add-branch-title" className="font-bold text-lg">{editing?"Edit Branch":"Add Branch"}</h2>
                 <p className="text-xs mt-1 text-[var(--app-text-muted)]">
-                  Create a new Libro Espresso location.
+                  {editing?"Update branch details without changing historical links.":"Create a new Libro Espresso location."}
                 </p>
               </div>
               <button
@@ -270,10 +273,10 @@ export function BranchManagementPage({
               </button>
               <button
                 disabled={saving}
-                onClick={() => void create()}
+                onClick={() => void save()}
                 className="flex-1 py-2.5 rounded-xl text-white font-semibold bg-[var(--app-primary)] disabled:opacity-60"
               >
-                {saving ? "Creating…" : "Create Branch"}
+                {saving ? "Saving…" : editing?"Save Changes":"Create Branch"}
               </button>
             </div>
           </div>

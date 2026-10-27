@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { Eye, EyeOff, LoaderCircle, Lock, Mail, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
+import { authService } from "../../services/auth.service";
 import "./LoginPage.css";
 
 export const REMEMBER_ME_ENABLED = false;
 export const LOGIN_PASSWORD_MIN_LENGTH = 8;
+export const isPasswordResetPath = (pathname: string) => pathname === "/reset-password";
 const SIMPLE_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function loginValidationMessage(email: string, password: string) {
@@ -44,6 +46,13 @@ export function LoginPage({ onLogin }: LoginPageProps) {
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [forgotOpen,setForgotOpen]=useState(false);
+  const [recoveryEmail,setRecoveryEmail]=useState("");
+  const [resetToken]=useState(()=>new URLSearchParams(window.location.search).get("token")??"");
+  const [newPassword,setNewPassword]=useState("");
+  const [confirmPassword,setConfirmPassword]=useState("");
+  const [recoveryBusy,setRecoveryBusy]=useState(false);
+  const genericRecoveryMessage="If an active account uses that email, a password reset link will be sent.";
   const emailError = error === "Enter your email address." || error === "Enter a valid email address.";
   const passwordError = error === "Enter your password." || error === "Password must be at least 8 characters.";
   const formError = error && !emailError && !passwordError ? error : "";
@@ -119,7 +128,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
             </div>
 
             <div className="login-options">
-              <button type="button" onClick={() => toast.info("Password recovery is not configured yet. Please contact the system administrator.")}>Forgot Password?</button>
+              <button type="button" onClick={() => setForgotOpen(true)}>Forgot Password?</button>
             </div>
 
             {formError && <div className="login-error" role="alert" aria-live="polite">{formError}</div>}
@@ -129,6 +138,11 @@ export function LoginPage({ onLogin }: LoginPageProps) {
           </form>
         </div>
       </section>
+      {(forgotOpen||resetToken)&&<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true"><form className="w-full max-w-md rounded-2xl border bg-[var(--app-surface)] p-6 shadow-2xl" onSubmit={async event=>{event.preventDefault();if(recoveryBusy)return;setRecoveryBusy(true);try{if(resetToken){if(newPassword.length<10||newPassword!==confirmPassword){toast.error("Use at least 10 characters and make both passwords match.");return;}const result=await authService.resetPassword(resetToken,newPassword,confirmPassword);toast.success(result.message);window.history.replaceState({},"","/");window.location.reload();}else{await authService.forgotPassword(recoveryEmail);toast.success(genericRecoveryMessage);setForgotOpen(false);}}catch(reason){toast.error(reason instanceof Error?reason.message:"Unable to complete password recovery.");}finally{setRecoveryBusy(false);}}}>
+        <h2 className="text-lg font-bold">{resetToken?"Choose a new password":"Forgot Password"}</h2><p className="mt-1 text-sm text-[var(--app-text-muted)]">{resetToken?"This secure link can be used once before it expires.":"Enter your registered email. The response is intentionally the same for every address."}</p>
+        {resetToken?<><label className="mt-4 block text-sm font-medium">New password<input className="field mt-1.5" type="password" autoComplete="new-password" value={newPassword} onChange={event=>setNewPassword(event.target.value)}/></label><label className="mt-3 block text-sm font-medium">Confirm password<input className="field mt-1.5" type="password" autoComplete="new-password" value={confirmPassword} onChange={event=>setConfirmPassword(event.target.value)}/></label></>:<label className="mt-4 block text-sm font-medium">Email<input className="field mt-1.5" type="email" value={recoveryEmail} onChange={event=>setRecoveryEmail(event.target.value)} required/></label>}
+        <div className="mt-6 flex justify-end gap-2">{!resetToken&&<button type="button" className="rounded-xl border px-4 py-2 text-sm" onClick={()=>setForgotOpen(false)}>Cancel</button>}<button type="submit" disabled={recoveryBusy} className="rounded-xl bg-[var(--app-primary)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{recoveryBusy?"Please wait…":resetToken?"Reset Password":"Send Reset Link"}</button></div>
+      </form></div>}
     </main>
   );
 }

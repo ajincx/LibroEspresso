@@ -189,8 +189,8 @@ describe("Forecast & Replenishment presentation",()=>{
 });
 
 describe("dashboard scope and range synchronization", () => {
-  it("defaults the dashboard range to mtd for consistent visibility", () => {
-    expect(DEFAULT_DASHBOARD_RANGE).toBe("mtd");
+  it("defaults the dashboard range to the current seven Manila business dates", () => {
+    expect(DEFAULT_DASHBOARD_RANGE).toBe("7d");
   });
 
   it("resolves the branch ID correctly for owner and manager roles", () => {

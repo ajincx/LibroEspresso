@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useEffect, useState } from "react";
-import { ArrowLeft, Search, X, Upload, Check, Coffee, CheckCircle, TrendingUp, DollarSign, BarChart2, Percent, Trash2, Building2, Layers, GitBranch, Eye, Info, ShieldCheck } from "lucide-react";
+import { ArrowLeft, Search, X, Upload, Check, Coffee, CheckCircle, TrendingUp, DollarSign, BarChart2, Percent, Trash2, Building2, Layers, GitBranch, Eye, Info, ShieldCheck, Settings } from "lucide-react";
 import { Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart } from "recharts";
 import { C, DashboardRange, DashboardComparison, dashboardPeriodLabel, formatPeso, isModalBackdropEvent, StatusChip, KPICard, Card, SectionHeader, Btn, SearchInput, Select, DashboardFilters, THead, TR, TD, Pagination, ChartTip, ModuleTabSwitcher, AnimatedTabPanel, SkeletonBlock, TableCard, TableWrapper, TableEmptyRow, TableLoadingRow } from "../../components/ModuleUi";
 import { toast } from "sonner";
@@ -11,7 +11,7 @@ import { ControlledActionDialog } from "../../components/ControlledActionDialog"
 import type { DailyPosUploadStatus, PosAnalytics, PosFieldMapping, PosFormatSetupRequest, PosHeaderInspection, PosImportRecord, PosMapping, PosMappingReviewStatus, PosSource } from "../../types/inventoryWorkflow";
 import type { Branch, MenuProduct } from "../../types/masterData";
 import { useAuth } from "../../contexts/AuthContext";
-import { businessDate, periodDates, adjustRangeForAutomaticImport } from "../../utils/businessDate";
+import { businessDate, periodDates, addDateDays, isValidBusinessDateRange } from "../../utils/businessDate";
 import { formatAppDate } from "../../utils/appPreferences";
 import { useSearchParams } from "react-router";
 import { excludedInvalidRowCount, posSourceReadiness } from "./posImportPresentation";
@@ -236,7 +236,7 @@ function dateRange(range: DashboardRange, customStart: string, customEnd: string
   return periodDates(range, customStart, customEnd);
 }
 
-export const STORAGE_KEY_COGS_USER_RANGE = "libro.cogs.userRange";
+export const STORAGE_KEY_COGS_USER_RANGE = "libro.reporting.userRange";
 
 export interface CogsUserRangeConfig {
   range: DashboardRange;
@@ -249,7 +249,9 @@ export function readCogsUserRange(): CogsUserRangeConfig | null {
     const raw = localStorage.getItem(STORAGE_KEY_COGS_USER_RANGE);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && typeof parsed.range === "string") {
+    const supported = ["today", "7d", "30d", "mtd", "custom"];
+    if (parsed && typeof parsed === "object" && supported.includes(parsed.range)
+      && (parsed.range !== "custom" || isValidBusinessDateRange(parsed.customStart, parsed.customEnd))) {
       return parsed as CogsUserRangeConfig;
     }
   } catch {
@@ -285,7 +287,7 @@ export function getInitialCogsDateRange(): {
       const params = new URLSearchParams(window.location.search);
       const qStart = params.get("startDate");
       const qEnd = params.get("endDate");
-      if (qStart && qEnd) {
+      if (qStart && qEnd && isValidBusinessDateRange(qStart, qEnd)) {
         return {
           userSelected: true,
           range: "custom",
@@ -302,16 +304,15 @@ export function getInitialCogsDateRange(): {
     return {
       userSelected: true,
       range: saved.range,
-      customStart: saved.customStart ?? businessDate(),
-      customEnd: saved.customEnd ?? businessDate(),
+      customStart: saved.customStart ?? businessDate(new Date(), "Asia/Manila"),
+      customEnd: saved.customEnd ?? businessDate(new Date(), "Asia/Manila"),
     };
   }
-  const today = businessDate();
-  const monthStart = `${today.slice(0, 8)}01`;
+  const today = businessDate(new Date(), "Asia/Manila");
   return {
     userSelected: false,
-    range: "mtd",
-    customStart: monthStart,
+    range: "7d",
+    customStart: addDateDays(today, -6),
     customEnd: today,
   };
 }
@@ -581,8 +582,8 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "", initialF
         <h3 className="text-base font-bold text-[var(--app-text)]">POS System & Mapping Setup</h3>
         <p className="mt-0.5 text-xs text-[var(--app-text-muted)]">Connect sales files from your branch POS systems and tell Libro how to read them.</p>
       </div>
-      <button type="button" className="rounded-lg border px-3 py-1.5 text-sm font-semibold transition-colors hover:bg-[var(--app-surface-muted)]" style={{ borderColor: C.border, color: C.maroon }} onClick={() => setOpen((value) => !value)}>
-        {open ? "Hide POS Setup" : "Open POS Setup"}
+      <button type="button" className="inline-flex min-h-10 items-center gap-2 rounded-xl border-2 px-4 py-2 text-sm font-semibold shadow-sm transition-colors hover:bg-[var(--app-primary-faint)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" style={{ borderColor: C.maroon, color: C.maroon }} onClick={() => setOpen((value) => !value)}>
+        <Settings size={16}/>{open ? "Hide POS Setup" : "Open POS Setup"}
       </button>
     </div>
 
@@ -942,13 +943,12 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "", initialF
 }
 
 // ─── Sales Analysis ────────────────────────────────────────────────────────────
-function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role | string; scopeBranchName?: string }) {
+function SalesAnalysis({ role, scopeBranchId, scopeBranchName = "All Branches" }: { role: Role | string; scopeBranchId?: string; scopeBranchName?: string }) {
   const { user } = useAuth();
   const [searchParams] = useSearchParams();
   const isOwner = isOwnerRole(role) || user?.role === "OWNER";
   const effectiveRole: Role = isOwner ? "owner" : "manager";
-  const localToday = businessDate();
-  const initialMonthStart = `${localToday.slice(0, 8)}01`;
+  const localToday = businessDate(new Date(), "Asia/Manila");
   const [posImportOpen, setPosImportOpen] = useState(false);
   const [posImports, setPosImports] = useState<PosImportRecord[]>([]);
   const [posHistoryLoading, setPosHistoryLoading] = useState(true);
@@ -973,7 +973,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
   const [posImportSearch, setPosImportSearch] = useState("");
   const [productSearch, setProductSearch] = useState("");
   const [productCategory, setProductCategory] = useState("All Categories");
-  const [posBranchFilter, setPosBranchFilter] = useState("All Branches");
+  const posBranchFilter = scopeBranchName;
   const [branches, setBranches] = useState<Branch[]>([]);
   const [analytics, setAnalytics] = useState<PosAnalytics | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(true);
@@ -986,53 +986,17 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
   const [customEnd, setCustomEnd] = useState(initialRange.customEnd);
   const periodLabel = dashboardPeriodLabel(range, customStart, customEnd);
   const branchLabel = !isOwner ? (user?.branch?.name ?? "Assigned Branch") : posBranchFilter;
-  const branchId = isOwner ? branches.find((branch) => branch.name === posBranchFilter)?.id : user?.branch?.id;
+  const branchId = isOwner ? (scopeBranchId && scopeBranchId !== "ALL" ? scopeBranchId : undefined) : user?.branch?.id;
 
   useEffect(() => {
     if (!isOwner) return;
     void masterDataService.branches().then(setBranches).catch(() => setBranches([]));
   }, [isOwner]);
-  useEffect(() => { if (isOwner) setPosBranchFilter(scopeBranchName); }, [isOwner, scopeBranchName]);
-
-  useEffect(() => {
-    let active = true;
-    if (!userSelected) {
-      inventoryWorkflowService.posImports({ branchId, pageSize: 1 })
-        .then((res) => {
-          if (!active) return;
-          const latestDate = res.imports?.[0]?.businessDate;
-          if (latestDate) {
-            const defaultDates = periodDates("mtd");
-            const adjustment = adjustRangeForAutomaticImport(false, "mtd", defaultDates.startDate, defaultDates.endDate, latestDate, localToday);
-            if (adjustment) {
-              if (adjustment.customStart) setCustomStart(adjustment.customStart);
-              if (adjustment.customEnd) setCustomEnd(adjustment.customEnd);
-              setRange(adjustment.range);
-            } else {
-              setRange("mtd");
-            }
-          } else {
-            setRange("mtd");
-          }
-        })
-        .catch(() => undefined);
-    }
-    return () => { active = false; };
-  }, [branchId, userSelected, historyRefresh, localToday]);
-
   useEffect(() => {
     const handleDataChanged = (event: Event) => {
       const customEvent = event as CustomEvent<{ businessDate?: string } | undefined>;
       const importedDate = customEvent.detail?.businessDate;
-      if (importedDate) {
-        const currentDates = dateRange(range, customStart, customEnd);
-        const adjustment = adjustRangeForAutomaticImport(userSelected, range, currentDates.startDate, currentDates.endDate, importedDate, localToday);
-        if (adjustment) {
-          if (adjustment.customStart) setCustomStart(adjustment.customStart);
-          if (adjustment.customEnd) setCustomEnd(adjustment.customEnd);
-          setRange(adjustment.range);
-        }
-      }
+      void importedDate;
       setHistoryRefresh((value) => value + 1);
     };
     window.addEventListener("libro-data-changed", handleDataChanged);
@@ -1050,26 +1014,26 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
 
   useEffect(() => {
     let cancelled=false;
-    const branchId=isOwner?branches.find(branch=>branch.name===posBranchFilter)?.id:undefined;
+    const requestedBranchId=isOwner?branchId:undefined;
     setPosHistoryLoading(true);
-    const timer=window.setTimeout(()=>void inventoryWorkflowService.posImports({branchId,search:posImportSearch.trim()||undefined,page:posHistoryPage,pageSize:10})
+    const timer=window.setTimeout(()=>void inventoryWorkflowService.posImports({branchId:requestedBranchId,search:posImportSearch.trim()||undefined,page:posHistoryPage,pageSize:10})
       .then(result=>{if(!cancelled){setPosImports(result.imports);setPosHistoryTotal(result.pagination.total);}})
       .catch(()=>{if(!cancelled){setPosImports([]);setPosHistoryTotal(0);}})
       .finally(()=>{if(!cancelled)setPosHistoryLoading(false);}),200);
     return()=>{cancelled=true;window.clearTimeout(timer);};
-  }, [branches, historyRefresh, posBranchFilter, posHistoryPage, posImportSearch, effectiveRole, isOwner]);
+  }, [branchId, historyRefresh, posHistoryPage, posImportSearch, effectiveRole, isOwner]);
   useEffect(()=>{
     if(tab!=="import_history")return;
     let cancelled=false;
-    const branchId=isOwner?branches.find((branch)=>branch.name===posBranchFilter)?.id:undefined;
+    const requestedBranchId=isOwner?branchId:undefined;
     const monitoringView=dailyPosMonitoringView(localToday);
     setDailyPosLoading(true);setDailyPosError("");
-    void inventoryWorkflowService.dailyPosStatus({startDate:monitoringView.startDate,endDate:monitoringView.endDate,branchId})
+    void inventoryWorkflowService.dailyPosStatus({startDate:monitoringView.startDate,endDate:monitoringView.endDate,branchId:requestedBranchId})
       .then((result)=>{if(!cancelled)setDailyPosStatuses(result.statuses);})
       .catch((reason)=>{if(!cancelled){setDailyPosStatuses([]);setDailyPosError(reason instanceof Error?reason.message:"Unable to load daily upload monitoring.");}})
       .finally(()=>{if(!cancelled)setDailyPosLoading(false);});
     return()=>{cancelled=true;};
-  },[branches,historyRefresh,localToday,posBranchFilter,effectiveRole,isOwner,tab]);
+  },[branchId,historyRefresh,localToday,effectiveRole,isOwner,tab]);
   const monitoringView=dailyPosMonitoringView(localToday);
   const visibleDailyStatuses=summarizeDailyPosStatuses(dailyPosStatuses);
   const productCategories = [...new Set((analytics?.products ?? []).map((product) => product.category))];
@@ -1123,8 +1087,8 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
         actions={
           <>
             {!isOwner && <Btn variant="primary" icon={Upload} onClick={() => setPosImportOpen(true)}>Import POS File</Btn>}
-            {isOwner && <Select options={["All Branches", ...branches.map((branch) => branch.name)]} value={posBranchFilter} onChange={value=>{setPosBranchFilter(value);setPosHistoryPage(1);}} small />}
             <DashboardFilters range={range} comparison={comparison} customStart={customStart} customEnd={customEnd}
+              customApplied={range === "custom" && userSelected}
               onRangeChange={(nextRange) => {
                 setUserSelected(true);
                 setRange(nextRange);
@@ -1141,7 +1105,7 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
               onReset={() => {
                 setUserSelected(false);
                 clearCogsUserRange();
-                setRange("mtd");
+                setRange("7d");
                 setComparison("previous");
                 setHistoryRefresh((v) => v + 1);
               }} />
@@ -1184,17 +1148,18 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
             </div>
           </Card>
           <Card>
-            <h3 className="font-semibold mb-4" style={{ color: C.primary }}>Top Products</h3>
+            <h3 className="font-semibold mb-1" style={{ color: C.primary }}>Top Products by Quantity Sold</h3>
+            <p className="mb-4 text-xs" style={{color:C.secondary}}>Accepted units sold for the selected branch and reporting period.</p>
             <div className="space-y-3.5">
-              {analyticsLoading ? <AnalyticsListLoading label="Loading top products"/> : (analytics?.products ?? []).slice(0, 5).map((p, i) => (
+              {analyticsLoading ? <AnalyticsListLoading label="Loading top products"/> : (analytics?.productSalesRanking ?? []).slice(0, 5).map((p, i) => (
                 <div key={p.id}>
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-sm" style={{ color: C.primary }}>{p.name}</span>
-                    <span className="text-sm font-semibold" style={{ color: C.primary }}>₱{(p.sales / 1000).toFixed(0)}k</span>
+                    <span className="text-sm font-semibold" style={{ color: C.primary }}>{p.unitsSold.toLocaleString()} units</span>
                   </div>
                   <div className="h-1.5 rounded-full overflow-hidden" style={{ background: C.grayBg }}>
                     <div className="h-full rounded-full" style={{
-                      width: `${analytics?.summary.sales ? Math.max(4, (p.sales / analytics.summary.sales) * 100) : 0}%`,
+                      width: `${(analytics?.productSalesRanking?.[0]?.unitsSold ?? 0) > 0 ? Math.max(4, (p.unitsSold / analytics!.productSalesRanking[0].unitsSold) * 100) : 0}%`,
                       background: i === 0 ? C.maroon : i === 1 ? C.mediumMaroon : C.blue
                     }} />
                   </div>
@@ -1248,7 +1213,6 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div><h3 className="font-semibold" style={{color:C.primary}}>{monitoringView.title}</h3><p className="mt-1 text-xs" style={{color:C.secondary}}>Current business-date upload status for each monitored branch.</p></div>
             <div className="flex flex-wrap gap-2">
-              {isOwner && <Select ariaLabel="Monitoring branch" options={["All Branches", ...branches.map((branch) => branch.name)]} value={posBranchFilter} onChange={value=>{setPosBranchFilter(value);setPosHistoryPage(1);}} />}
             </div>
           </div>
           {dailyPosError&&<p role="alert" className="mt-3 text-sm" style={{color:C.red}}>{dailyPosError}</p>}
@@ -1265,7 +1229,6 @@ function SalesAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role 
           toolbar={
             <>
               <SearchInput placeholder="Search imports…" value={posImportSearch} onChange={value=>{setPosImportSearch(value);setPosHistoryPage(1);}} />
-              {isOwner && <Select options={["All Branches", ...branches.map((branch) => branch.name)]} value={posBranchFilter} onChange={value=>{setPosBranchFilter(value);setPosHistoryPage(1);}} />}
             </>
           }
         >
@@ -1363,76 +1326,33 @@ export function CogsOverviewKpis({ loading, summary }: { loading: boolean; summa
   </div>;
 }
 
-function COGSAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role | string; scopeBranchName?: string }) {
+function COGSAnalysis({ role, scopeBranchId, scopeBranchName = "All Branches" }: { role: Role | string; scopeBranchId?: string; scopeBranchName?: string }) {
   const { user } = useAuth();
   const isOwner = isOwnerRole(role) || user?.role === "OWNER";
   const effectiveRole: Role = isOwner ? "owner" : "manager";
-  const today = businessDate();
   const initialRange = getInitialCogsDateRange();
   const [userSelected, setUserSelected] = useState<boolean>(initialRange.userSelected);
   const [range, setRange] = useState<DashboardRange>(initialRange.range);
   const [comparison, setComparison] = useState<DashboardComparison>("previous");
   const [customStart, setCustomStart] = useState(initialRange.customStart);
   const [customEnd, setCustomEnd] = useState(initialRange.customEnd);
-  const [branches, setBranches] = useState<Branch[]>([]);
-  const [branchFilter, setBranchFilter] = useState("All Branches");
   const [analytics, setAnalytics] = useState<PosAnalytics | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("All Categories");
   const [refresh, setRefresh] = useState(0);
-  const branchId = isOwner ? branches.find((branch) => branch.name === branchFilter)?.id : user?.branch?.id;
-
-  useEffect(() => {
-    let active = true;
-    if (!userSelected) {
-      inventoryWorkflowService.posImports({ branchId, pageSize: 1 })
-        .then((res) => {
-          if (!active) return;
-          const latestDate = res.imports?.[0]?.businessDate;
-          if (latestDate) {
-            const defaultDates = periodDates("mtd");
-            const adjustment = adjustRangeForAutomaticImport(false, "mtd", defaultDates.startDate, defaultDates.endDate, latestDate, today);
-            if (adjustment) {
-              if (adjustment.customStart) setCustomStart(adjustment.customStart);
-              if (adjustment.customEnd) setCustomEnd(adjustment.customEnd);
-              setRange(adjustment.range);
-            } else {
-              setRange("mtd");
-            }
-          } else {
-            setRange("mtd");
-          }
-        })
-        .catch(() => undefined);
-    }
-    return () => { active = false; };
-  }, [branchId, userSelected, refresh, today]);
+  const branchId = isOwner ? (scopeBranchId && scopeBranchId !== "ALL" ? scopeBranchId : undefined) : user?.branch?.id;
 
   useEffect(() => {
     const handleDataChanged = (event: Event) => {
       const customEvent = event as CustomEvent<{ businessDate?: string } | undefined>;
       const importedDate = customEvent.detail?.businessDate;
-      if (importedDate) {
-        const currentDates = dateRange(range, customStart, customEnd);
-        const adjustment = adjustRangeForAutomaticImport(userSelected, range, currentDates.startDate, currentDates.endDate, importedDate, today);
-        if (adjustment) {
-          if (adjustment.customStart) setCustomStart(adjustment.customStart);
-          if (adjustment.customEnd) setCustomEnd(adjustment.customEnd);
-          setRange(adjustment.range);
-        }
-      }
+      void importedDate;
       setRefresh((value) => value + 1);
     };
     window.addEventListener("libro-data-changed", handleDataChanged);
     return () => window.removeEventListener("libro-data-changed", handleDataChanged);
-  }, [range, customStart, customEnd, userSelected, today]);
-
-  useEffect(() => {
-    if (!isOwner) return;
-    void masterDataService.branches().then(setBranches).catch(() => setBranches([]));
-  }, [isOwner]);
-  useEffect(() => { if (isOwner) setBranchFilter(scopeBranchName); }, [isOwner, scopeBranchName]);
+  }, [range, customStart, customEnd, userSelected]);
 
   useEffect(() => {
     setLoading(true);
@@ -1440,10 +1360,10 @@ function COGSAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role |
       .then(setAnalytics)
       .catch(() => setAnalytics(null))
       .finally(() => setLoading(false));
-  }, [branchId, branches, customEnd, customStart, range, effectiveRole, isOwner, refresh]);
+  }, [branchId, customEnd, customStart, range, effectiveRole, isOwner, refresh]);
 
   const summary = analytics?.summary;
-  const branchLabel = !isOwner ? (user?.branch?.name ?? "Assigned Branch") : branchFilter;
+  const branchLabel = !isOwner ? (user?.branch?.name ?? "Assigned Branch") : scopeBranchName;
   const categories = [...new Set((analytics?.products ?? []).map((product) => product.category))];
   const products = (analytics?.products ?? []).filter((product) =>
     (category === "All Categories" || product.category === category)
@@ -1456,8 +1376,8 @@ function COGSAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role |
         sub={`Cost of Goods Sold · ${branchLabel} · ${dashboardPeriodLabel(range, customStart, customEnd)}`}
         actions={
           <>
-            {isOwner && <Select options={["All Branches", ...branches.map((branch) => branch.name)]} value={branchFilter} onChange={setBranchFilter} />}
             <DashboardFilters range={range} comparison={comparison} customStart={customStart} customEnd={customEnd}
+              customApplied={range === "custom" && userSelected}
               onRangeChange={(nextRange) => {
                 setUserSelected(true);
                 setRange(nextRange);
@@ -1474,7 +1394,7 @@ function COGSAnalysis({ role, scopeBranchName = "All Branches" }: { role: Role |
               onReset={() => {
                 setUserSelected(false);
                 clearCogsUserRange();
-                setRange("mtd");
+                setRange("7d");
                 setComparison("previous");
                 setRefresh((v) => v + 1);
               }} />
@@ -1569,9 +1489,10 @@ const cogsModuleTabs = [
   { id: "sales", label: "POS Sales Data" },
 ] as const;
 
-export function COGSAndPosSalesModule({ role, initialTab = "overview", scopeBranchName = "All Branches" }: {
+export function COGSAndPosSalesModule({ role, initialTab = "overview", scopeBranchId, scopeBranchName = "All Branches" }: {
   role: Role | string;
   initialTab?: "overview" | "sales";
+  scopeBranchId?: string;
   scopeBranchName?: string;
 }) {
   const { user } = useAuth();
@@ -1584,7 +1505,7 @@ export function COGSAndPosSalesModule({ role, initialTab = "overview", scopeBran
     <div>
       <ModuleTabSwitcher tabs={cogsModuleTabs} active={activeTab} onChange={setActiveTab} />
       <AnimatedTabPanel panelKey={activeTab}>
-        {activeTab === "overview" ? <COGSAnalysis role={effectiveRole} scopeBranchName={scopeBranchName} /> : <SalesAnalysis role={effectiveRole} scopeBranchName={scopeBranchName} />}
+        {activeTab === "overview" ? <COGSAnalysis role={effectiveRole} scopeBranchId={scopeBranchId} scopeBranchName={scopeBranchName} /> : <SalesAnalysis role={effectiveRole} scopeBranchId={scopeBranchId} scopeBranchName={scopeBranchName} />}
       </AnimatedTabPanel>
     </div>
   );

@@ -1,5 +1,5 @@
 import { describe,expect,it } from "vitest";
-import { inventoryItemInput,MAX_MENU_PRODUCT_PRICE_PHP,menuProductInput,recipeInput,userCreate } from "./masterData.js";
+import { inventoryItemInput,MAX_MENU_PRODUCT_PRICE_PHP,menuProductInput,normalizeEmailAddress,normalizePhilippineMobile,recipeInput,userCreate } from "./masterData.js";
 const id="11111111-1111-4111-8111-111111111111";
 describe("master data validation",()=>{
   it("requires a branch assignment for Branch Managers",()=>{expect(()=>userCreate.parse({firstName:"Maria",lastName:"Santos",email:"m@libro.local",username:"maria",password:"very-secure-password",role:"BRANCH_MANAGER",branchId:null,status:"ACTIVE"})).toThrow();});
@@ -26,4 +26,10 @@ describe("master data validation",()=>{
     expect(menuProductInput.parse({...product,variants:[{name:"Standard",sellingPrice:149.95}]}).variants?.[0]?.sellingPrice).toBe(149.95);
     expect(menuProductInput.parse({...product,variants:[{id,name:"Large",sellingPrice:MAX_MENU_PRODUCT_PRICE_PHP,status:"ACTIVE"}]}).variants?.[0]?.sellingPrice).toBe(MAX_MENU_PRODUCT_PRICE_PHP);
   });
+  it("normalizes user names, email, and Philippine mobile numbers",()=>{
+    const value=userCreate.parse({firstName:" Ana  Maria ",lastName:" Reyes ",email:" ANA@Example.COM ",username:"ana.reyes",password:"very-secure-password",phoneNumber:"09171234567",role:"STAFF",branchId:id,status:"ACTIVE"});
+    expect(value.firstName).toBe("Ana Maria");expect(value.email).toBe("ana@example.com");expect(value.phoneNumber).toBe("+639171234567");
+    expect(normalizeEmailAddress(" Team@Libro.PH ")).toBe("team@libro.ph");expect(normalizePhilippineMobile("+639171234567")).toBe("+639171234567");
+  });
+  it.each(["123","0917ABC4567","+638171234567","0917123456","091712345678"])("rejects invalid mobile %s",phoneNumber=>expect(()=>userCreate.parse({firstName:"Ana",lastName:"Reyes",email:"ana@example.com",username:"ana",password:"very-secure-password",phoneNumber,role:"STAFF",branchId:id,status:"ACTIVE"})).toThrow());
 });

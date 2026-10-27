@@ -6,7 +6,13 @@ export const statusSchema = z.object({ status: z.enum(["ACTIVE", "INACTIVE"]) })
 export const branchInput = z.object({ code: z.string().trim().min(2).max(20).transform((v) => v.toUpperCase()), name: z.string().trim().min(2).max(120), location: z.string().trim().min(2).max(255), status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE") });
 export const branchPatch = branchInput.partial().refine((value) => Object.keys(value).length > 0, "At least one field is required");
 
-const userFields = z.object({ firstName: z.string().trim().min(1).max(80), lastName: z.string().trim().min(1).max(80), email: z.string().email().max(255), username: z.string().trim().min(3).max(80), phoneNumber: z.string().trim().max(30).nullable().optional(), position: z.string().trim().min(2).max(100).optional(), role: z.enum(["OWNER", "BRANCH_MANAGER", "STAFF"]), branchId: z.string().uuid().nullable(), status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE") });
+export const normalizePersonName = (value: string) => value.trim().replace(/\s+/g, " ");
+export const normalizeEmailAddress = (value: string) => value.trim().toLocaleLowerCase("en-US");
+export const normalizePhilippineMobile = (value: string) => value.startsWith("09") ? `+63${value.slice(1)}` : value;
+const personName = z.string().transform(normalizePersonName).pipe(z.string().min(1).max(80));
+const emailAddress = z.string().transform(normalizeEmailAddress).pipe(z.string().email("Enter a valid email address").max(255));
+const philippineMobile = z.string().trim().refine((value) => /^(?:09\d{9}|\+639\d{9})$/.test(value), "Enter a Philippine mobile number as 09XXXXXXXXX or +639XXXXXXXXX").transform(normalizePhilippineMobile);
+const userFields = z.object({ firstName: personName, lastName: personName, email: emailAddress, username: z.string().trim().min(3).max(80), phoneNumber: z.union([philippineMobile,z.literal("").transform(() => null),z.null()]).optional(), position: z.string().trim().min(2).max(100).optional(), role: z.enum(["OWNER", "BRANCH_MANAGER", "STAFF"]), branchId: z.string().uuid().nullable(), status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE") });
 const validAssignment = <T extends { role?: "OWNER" | "BRANCH_MANAGER" | "STAFF"; branchId?: string | null }>(value: T) => value.role === undefined || (value.role === "OWNER" ? value.branchId === null : Boolean(value.branchId));
 export const userCreate = userFields.extend({ password: z.string().min(10).max(128) }).refine(validAssignment, { message: "Owner branchId must be null; Manager and Staff branchId are required", path: ["branchId"] });
 export const userPatch = userFields.partial().extend({ password: z.string().min(10).max(128).optional() }).refine((value) => Object.keys(value).length > 0, "At least one field is required");

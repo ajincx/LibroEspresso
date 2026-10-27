@@ -5,6 +5,7 @@ import { env } from "../config/env.js";
 import { manilaBusinessDate } from "../services/businessTime.service.js";
 import { getEffectiveBranchId } from "../services/branchScope.js";
 import { resolveDailyPosStatus } from "../services/posDailyMonitoring.service.js";
+import { sendMissingPosImportReminderEmails } from "../services/posImportReminderEmail.service.js";
 import { lockBranchInventoryOperation } from "../services/inventoryOperationLock.service.js";
 import { AppError } from "../utils/appError.js";
 
@@ -87,7 +88,7 @@ export async function runDailyPosReminderJob(now=new Date()){
   const today=manilaBusinessDate(now);
   const minute=manilaMinuteOfDay(now);
   const cutoff=env.POS_REMINDER_HOUR_MANILA*60+env.POS_REMINDER_MINUTE_MANILA;
-  if(minute<cutoff)return {created:0};
+  if(minute<cutoff)return {created:0,email:{configured:false,claimed:0,sent:0,failed:0,suppressed:0}};
   const result=await pool.query(`INSERT INTO notifications(recipient_user_id,branch_id,type,title,message,entity_type,entity_id)
     SELECT manager.id,b.id,'POS_DAILY_REMINDER','Daily POS sales upload pending',
       'Sales for '||$1::date::text||' have not been uploaded for '||source.display_name||'. Import the sales file or record a valid no-sales/closed day.',
@@ -95,13 +96,15 @@ export async function runDailyPosReminderJob(now=new Date()){
     FROM branches b JOIN pos_sources source ON source.branch_id=b.id AND source.status='ACTIVE'
     JOIN users manager ON manager.branch_id=b.id AND manager.role='BRANCH_MANAGER' AND manager.status='ACTIVE'
     WHERE b.status='ACTIVE'
-      AND NOT EXISTS(SELECT 1 FROM pos_imports pi WHERE pi.branch_id=b.id AND pi.pos_source_id=source.id AND pi.business_date=$1::date AND pi.voided_at IS NULL)
+      AND NOT EXISTS(SELECT 1 FROM pos_imports pi WHERE pi.branch_id=b.id AND pi.business_date=$1::date
+        AND pi.completed_at IS NOT NULL AND pi.voided_at IS NULL AND NOT pi.is_test_data)
       AND NOT EXISTS(SELECT 1 FROM pos_daily_declarations declaration WHERE declaration.branch_id=b.id AND declaration.business_date=$1::date AND declaration.invalidated_at IS NULL)
       AND NOT EXISTS(SELECT 1 FROM notifications existing WHERE existing.recipient_user_id=manager.id AND existing.branch_id=b.id
         AND existing.type='POS_DAILY_REMINDER' AND existing.entity_type='POS_SOURCE' AND existing.entity_id=source.id
         AND existing.message LIKE '%'||$1::date::text||'%')
     RETURNING id`,[today]);
-  return {created:result.rowCount??0};
+  const email=await sendMissingPosImportReminderEmails(today);
+  return {created:result.rowCount??0,email};
 }
 
 export const runDailyPosReminderCron:RequestHandler=async(req,res)=>{

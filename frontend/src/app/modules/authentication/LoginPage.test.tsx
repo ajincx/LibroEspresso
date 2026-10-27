@@ -1,6 +1,14 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loginErrorMessage, loginValidationMessage } from "./LoginPage";
+import { isPasswordResetPath, loginErrorMessage, loginValidationMessage } from "./LoginPage";
+
+describe("password reset route", () => {
+  it("keeps the HTTPS reset-link path in the authentication UI", () => {
+    expect(isPasswordResetPath("/reset-password")).toBe(true);
+    expect(isPasswordResetPath("/login")).toBe(false);
+    expect(isPasswordResetPath("/dashboard")).toBe(false);
+  });
+});
 
 describe("login input validation", () => {
   it.each([

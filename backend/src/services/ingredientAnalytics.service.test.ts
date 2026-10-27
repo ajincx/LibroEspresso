@@ -127,7 +127,7 @@ describe.skipIf(!postgresUrl)("ingredient analytics real PostgreSQL verification
       const identity = await client.query<{ database: string; address: string }>(
         `SELECT current_database() "database",split_part(inet_server_addr()::text,'/',1) "address"`,
       );
-      expect(identity.rows[0]?.database).toMatch(/^libro_phase2_verify_/);
+      expect(identity.rows[0]?.database).toMatch(/^libro_(?:phase2_verify_|phase3fix12_)/);
       expect(["127.0.0.1", "::1"]).toContain(identity.rows[0]?.address);
       await client.query("BEGIN");
       await client.query(
@@ -299,4 +299,18 @@ describe.skipIf(!postgresUrl)("ingredient analytics real PostgreSQL verification
     expect(after.rows).toEqual(before.rows);
     expect(after.rows[0]).toMatchObject({ reorderLevel: 42, reorderDays: 9, reorderCategory: "MEDIUM", balance: 777 });
   }, 30_000);
+
+  it("reconciles authoritative ingredient cost distribution to eligible product COGS without duplicate joins",async()=>{
+    const totals=await pool.query<{productCogs:number;ingredientCogs:number;ingredientRows:number}>(`WITH eligible AS (
+      SELECT usage.inventory_item_id,usage.quantity_consumed*usage.unit_cost_snapshot cost
+        FROM pos_imports pi JOIN pos_sources source ON source.id=pi.pos_source_id
+        JOIN pos_sale_items sale ON sale.pos_import_id=pi.id
+        JOIN pos_sale_ingredient_usage usage ON usage.pos_sale_item_id=sale.id
+       WHERE pi.branch_id=$1 AND pi.completed_at IS NOT NULL AND NOT pi.is_test_data AND pi.voided_at IS NULL
+    ), distribution AS (SELECT inventory_item_id,sum(cost) cost FROM eligible GROUP BY inventory_item_id)
+    SELECT (SELECT sum(cost)::float8 FROM eligible) "productCogs",(SELECT sum(cost)::float8 FROM distribution) "ingredientCogs",(SELECT count(*)::int FROM distribution) "ingredientRows"`,[ids.branchA]);
+    expect(totals.rows[0]!.ingredientRows).toBe(4);
+    expect(totals.rows[0]!.ingredientCogs).toBeCloseTo(totals.rows[0]!.productCogs,8);
+    expect(totals.rows[0]!.productCogs).toBeCloseTo(7*(1000*.02+.35*.03+35*.04+10*.07),8);
+  },30_000);
 });

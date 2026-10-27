@@ -36,8 +36,16 @@ export function validateIncidentDateTime(value: string, now = new Date()) {
 export function addDateDays(date: string, days: number) {
   return new Date(Date.parse(`${date}T12:00:00Z`) + days * 86400000).toISOString().slice(0, 10);
 }
+export function isValidBusinessDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+export function isValidBusinessDateRange(startDate: string, endDate: string) {
+  return isValidBusinessDate(startDate) && isValidBusinessDate(endDate) && startDate <= endDate;
+}
 export function periodDates(range: string, customStart?: string, customEnd?: string) {
-  const endDate = businessDate();
+  const endDate = businessDate(new Date(), "Asia/Manila");
   if (range === 'custom' && customStart && customEnd) return { startDate: customStart, endDate: customEnd };
   return { startDate: range === 'today' ? endDate : range === '7d' ? addDateDays(endDate, -6) : range === '30d' ? addDateDays(endDate, -29) : `${endDate.slice(0,7)}-01`, endDate };
 }

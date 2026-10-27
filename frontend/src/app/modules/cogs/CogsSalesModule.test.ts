@@ -541,10 +541,10 @@ describe("COGS and Sales reporting period synchronization and persistence", () =
     expect(readCogsUserRange()).toBeNull();
   });
 
-  it("defaults getInitialCogsDateRange to mtd with userSelected=false when no params or storage exist", () => {
+  it("defaults getInitialCogsDateRange to the shared seven-day period with userSelected=false", () => {
     const initial = getInitialCogsDateRange();
     expect(initial.userSelected).toBe(false);
-    expect(initial.range).toBe("mtd");
+    expect(initial.range).toBe("7d");
   });
 
   it("restores user-selected range in getInitialCogsDateRange when storage is populated", () => {

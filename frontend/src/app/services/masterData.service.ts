@@ -19,7 +19,7 @@ export const masterDataService = {
   async createUser(input:{firstName:string;lastName:string;email:string;username:string;phoneNumber?:string|null;position?:string;password:string;role:"OWNER"|"BRANCH_MANAGER"|"STAFF";branchId:string|null;status:RecordStatus}) { return (await api.post<ApiSuccess<{user:ManagedUser}>>("/users",input)).data.data.user; },
   async updateUser(id:string,input:Partial<{firstName:string;lastName:string;email:string;username:string;phoneNumber:string|null;position:string;password:string;role:"OWNER"|"BRANCH_MANAGER"|"STAFF";branchId:string|null;status:RecordStatus}>) { return (await api.patch<ApiSuccess<{user:ManagedUser}>>(`/users/${id}`,input)).data.data.user; },
   async setUserStatus(id:string,status:RecordStatus) { await api.patch(`/users/${id}/status`,{status}); },
-  async deleteUser(id:string,input:{reason:string;verificationPin:string}) { await api.delete(`/users/${id}`,{data:input}); },
+  async deleteUser(id:string,input:{reason:string}) { await api.delete(`/users/${id}`,{data:input}); },
   async inventoryItems() { return (await api.get<ApiSuccess<{items:InventoryItem[]}>>("/inventory-items")).data.data.items; },
   async createInventoryItem(input:Pick<InventoryItem,"name"|"category"|"unit"|"unitCost"|"reorderLevel"|"status">) { return (await api.post<ApiSuccess<{item:InventoryItem}>>("/inventory-items",input)).data.data.item; },
   async menuItems() { return (await api.get<ApiSuccess<{items:MenuItem[]}>>("/menu-items")).data.data.items; },

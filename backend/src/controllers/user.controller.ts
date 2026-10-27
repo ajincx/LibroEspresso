@@ -5,8 +5,8 @@ import { writeAudit } from "../services/audit.service.js";
 import { revokeAllUserSessions } from "../services/auth.service.js";
 import { AppError } from "../utils/appError.js";
 import { idParams, statusSchema, userCreate, userPatch } from "../validators/masterData.js";
-import { destructiveActionInput } from "../validators/destructiveAction.js";
-import { verifyDestructiveAction, writeDestructiveActionAudit } from "../services/destructiveAction.service.js";
+import { userDeactivationInput } from "../validators/deactivation.js";
+import { writeDestructiveActionAudit } from "../services/destructiveAction.service.js";
 
 const selection = `SELECT u.id,u.branch_id "branchId",u.first_name "firstName",u.last_name "lastName",u.email,u.username,u.phone_number "phoneNumber",u.position,u.role,u.status,u.last_login_at "lastLoginAt",u.created_at "createdAt",u.updated_at "updatedAt",b.code "branchCode",b.name "branchName",
   GREATEST(u.updated_at,u.last_login_at,activity.created_at) "lastActivityAt",
@@ -20,14 +20,17 @@ export const getUser: RequestHandler = async (req, res) => { const { id } = idPa
 export const createUser: RequestHandler = async (req, res) => {
   const input = userCreate.parse(req.body); const passwordHash = await bcrypt.hash(input.password, 12);
   const defaultPosition = input.role === "OWNER" ? "Owner / System Administrator" : input.role === "BRANCH_MANAGER" ? "Branch Manager" : "Staff";
-  const result = await pool.query(`INSERT INTO users (branch_id,first_name,last_name,email,username,phone_number,position,password_hash,role,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`, [input.branchId,input.firstName,input.lastName,input.email,input.username,input.phoneNumber??null,input.position??defaultPosition,passwordHash,input.role,input.status]);
+  const duplicate=await pool.query("SELECT id FROM users WHERE branch_id IS NOT DISTINCT FROM $1 AND lower(regexp_replace(trim(first_name),'\\s+',' ','g'))=lower($2) AND lower(regexp_replace(trim(last_name),'\\s+',' ','g'))=lower($3) LIMIT 1",[input.branchId,input.firstName,input.lastName]);
+  let result;
+  try{result=await pool.query(`INSERT INTO users (branch_id,first_name,last_name,email,username,phone_number,position,password_hash,role,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`, [input.branchId,input.firstName,input.lastName,input.email,input.username,input.phoneNumber??null,input.position??defaultPosition,passwordHash,input.role,input.status]);}
+  catch(error){if(typeof error==="object"&&error!==null&&"code" in error&&error.code==="23505")throw new AppError(409,"USER_IDENTITY_IN_USE","That email address or username is already in use");throw error;}
   await writeAudit(req.user!,"CREATE_USER","USER",result.rows[0].id,`Created ${input.role} account`,{ role: input.role, branchId: input.branchId });
-  const created = await pool.query(`${selection} WHERE u.id=$1`, [result.rows[0].id]); res.status(201).json({ success: true, data: { user: created.rows[0] } });
+  const created = await pool.query(`${selection} WHERE u.id=$1`, [result.rows[0].id]); res.status(201).json({ success: true, data: { user: created.rows[0], duplicateNameWarning: Boolean(duplicate.rows[0]) } });
 };
 export const updateUser: RequestHandler = async (req, res) => {
   const { id } = idParams.parse(req.params);
   const input = userPatch.parse(req.body);
-  if (input.status === "INACTIVE") throw new AppError(409, "CONTROLLED_DEACTIVATION_REQUIRED", "Use the controlled account deactivation action and provide a reason and verification PIN");
+  if (input.status === "INACTIVE") throw new AppError(409, "CONTROLLED_DEACTIVATION_REQUIRED", "Use the controlled account deactivation action and provide a reason");
   const current = await pool.query<{ role: "OWNER"|"BRANCH_MANAGER"|"STAFF"; branch_id: string|null }>("SELECT role,branch_id FROM users WHERE id=$1", [id]);
   if (!current.rows[0]) throw new AppError(404, "USER_NOT_FOUND", "User not found");
   const role = input.role ?? current.rows[0].role;
@@ -47,6 +50,9 @@ export const updateUser: RequestHandler = async (req, res) => {
     if (!branch.rows[0]) throw new AppError(422, "INVALID_BRANCH", "Select an active branch for the Manager or Staff account");
   }
   const passwordHash = input.password ? await bcrypt.hash(input.password, 12) : null;
+  const effectiveFirstName=input.firstName??(await pool.query<{first_name:string}>("SELECT first_name FROM users WHERE id=$1",[id])).rows[0]?.first_name;
+  const effectiveLastName=input.lastName??(await pool.query<{last_name:string}>("SELECT last_name FROM users WHERE id=$1",[id])).rows[0]?.last_name;
+  const duplicate=await pool.query("SELECT id FROM users WHERE id<>$1 AND branch_id IS NOT DISTINCT FROM $2 AND lower(regexp_replace(trim(first_name),'\\s+',' ','g'))=lower($3) AND lower(regexp_replace(trim(last_name),'\\s+',' ','g'))=lower($4) LIMIT 1",[id,branchId,effectiveFirstName,effectiveLastName]);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -71,11 +77,11 @@ export const updateUser: RequestHandler = async (req, res) => {
     client.release();
   }
   const result = await pool.query(`${selection} WHERE u.id=$1`, [id]);
-  res.json({ success: true, data: { user: result.rows[0] } });
+  res.json({ success: true, data: { user: result.rows[0], duplicateNameWarning: Boolean(duplicate.rows[0]) } });
 };
 export const updateUserStatus: RequestHandler = async (req,res) => {
   const {id}=idParams.parse(req.params); const {status}=statusSchema.parse(req.body);
-  if(status==="INACTIVE") throw new AppError(409,"CONTROLLED_DEACTIVATION_REQUIRED","Use the controlled account deactivation action and provide a reason and verification PIN");
+  if(status==="INACTIVE") throw new AppError(409,"CONTROLLED_DEACTIVATION_REQUIRED","Use the controlled account deactivation action and provide a reason");
   const client=await pool.connect();
   try {
     await client.query("BEGIN");
@@ -89,19 +95,19 @@ export const updateUserStatus: RequestHandler = async (req,res) => {
 
 export const deleteUserAccount: RequestHandler = async (req, res) => {
   const { id } = idParams.parse(req.params);
-  const input = destructiveActionInput.parse(req.body);
-  await verifyDestructiveAction(req.user!, input.verificationPin, { module: "USER", action: "DEACTIVATE", recordId: id, reason: input.reason });
+  const input = userDeactivationInput.parse(req.body);
   if (id === req.user!.id) throw new AppError(409, "SELF_DELETION", "You cannot delete your own account");
-  const current = await pool.query<{ role: "OWNER" | "BRANCH_MANAGER" | "STAFF" }>("SELECT role FROM users WHERE id=$1", [id]);
-  if (!current.rows[0]) throw new AppError(404, "USER_NOT_FOUND", "User not found");
-  if (current.rows[0].role === "OWNER") {
-    const owners = await pool.query<{ count: string }>("SELECT count(*) count FROM users WHERE role='OWNER' AND status='ACTIVE'");
-    if (Number(owners.rows[0]?.count ?? 0) <= 1) throw new AppError(409, "LAST_OWNER", "The system must retain at least one active Owner");
-  }
   const client=await pool.connect();
   try {
     await client.query("BEGIN");
-    await client.query("UPDATE users SET status='INACTIVE',updated_at=now() WHERE id=$1", [id]);
+    const current=await client.query<{role:"OWNER"|"BRANCH_MANAGER"|"STAFF";status:string}>("SELECT role,status FROM users WHERE id=$1 FOR UPDATE",[id]);
+    if(!current.rows[0]) throw new AppError(404,"USER_NOT_FOUND","User not found");
+    if(current.rows[0].status==="INACTIVE") throw new AppError(409,"USER_ALREADY_INACTIVE","This account is already inactive");
+    if(current.rows[0].role==="OWNER") {
+      const owners=await client.query<{count:string}>("SELECT count(*) count FROM users WHERE role='OWNER' AND status='ACTIVE'");
+      if(Number(owners.rows[0]?.count??0)<=1) throw new AppError(409,"LAST_OWNER","The system must retain at least one active Owner");
+    }
+    await client.query("UPDATE users SET status='INACTIVE',updated_at=now() WHERE id=$1 AND status='ACTIVE'", [id]);
     const revoked=await revokeAllUserSessions(id,"ACCOUNT_DISABLED",client);
     if(revoked.rowCount) await writeAudit(req.user!,"SESSION_REVOKED","USER",id,"Revoked active sessions because the account was soft-deleted",{reason:"ACCOUNT_DISABLED"},client);
     await writeAudit(req.user!,"ACCOUNT_DISABLED","USER",id,"Soft-deleted account disabled and active sessions revoked",{},client);
