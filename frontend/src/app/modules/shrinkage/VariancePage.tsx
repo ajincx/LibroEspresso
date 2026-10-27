@@ -10,6 +10,7 @@ import type { Branch } from "../../types/masterData";
 import { CalendarDateField, Select, SearchInput, SkeletonBlock, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, TableLoadingRow, StatusBadge } from "../../components/ModuleUi";
 import { formatAppDate } from "../../utils/appPreferences";
 import { classificationLabel } from "../../utils/shrinkageTaxonomy";
+import { businessDate, isValidBusinessDate } from "../../utils/businessDate";
 
 type DisplayStatus =
   | "MATCHED"
@@ -49,6 +50,31 @@ export function varianceClassificationLabel(record: Pick<VarianceRecord, "classi
     : "No investigation classification — within tolerance";
 }
 
+export function inventoryCountDateMax(now = new Date()) {
+  return businessDate(now, "Asia/Manila");
+}
+
+export function inventoryCountDateRangeError(startDate: string, endDate = startDate, now = new Date()) {
+  if (!startDate && !endDate) return "";
+  if (!isValidBusinessDate(startDate) || !isValidBusinessDate(endDate)) return "Enter a valid inventory count date.";
+  if (startDate > endDate) return "Inventory count start date cannot be after the end date.";
+  const maxDate = inventoryCountDateMax(now);
+  return startDate > maxDate || endDate > maxDate ? "Inventory count dates cannot be in the future." : "";
+}
+
+export function InventoryCountDateFilter({ value, onChange, onValidationError, now = new Date() }: {
+  value: string;
+  onChange: (value: string) => void;
+  onValidationError: (message: string) => void;
+  now?: Date;
+}) {
+  return <CalendarDateField label="Inventory Count Date" value={value} max={inventoryCountDateMax(now)} onChange={(nextValue) => {
+    const validationError = inventoryCountDateRangeError(nextValue, nextValue, now);
+    onValidationError(validationError);
+    if (!validationError) onChange(nextValue);
+  }}/>;
+}
+
 export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string }) {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -57,7 +83,10 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
   const [records, setRecords] = useState<VarianceRecord[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [branchId, setBranchId] = useState(scopeBranchId === "ALL" ? "" : scopeBranchId);
-  const [countDate, setCountDate] = useState(searchParams.get("countDate") ?? "");
+  const requestedCountDate = searchParams.get("countDate") ?? "";
+  const requestedCountDateError = inventoryCountDateRangeError(requestedCountDate);
+  const [countDate, setCountDate] = useState(requestedCountDateError ? "" : requestedCountDate);
+  const [dateError, setDateError] = useState(requestedCountDateError);
   const [query, setQuery] = useState(searchParams.get("query") ?? "");
   const [status, setStatus] = useState<DisplayStatus | "">("");
   const [loading, setLoading] = useState(true);
@@ -95,10 +124,11 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
 
   return <div className="p-4 md:p-6 space-y-5">
     <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4"><div><h1 className="text-xl font-bold">Variance &amp; Discrepancies</h1><p className="text-sm mt-1" style={{ color: "var(--app-text-muted)" }}>System-calculated comparison of submitted physical counts and expected inventory (Actual − Expected). Negative values indicate shortages.</p></div><div className="flex gap-2 flex-wrap">
-      <CalendarDateField label="Count date" value={countDate} onChange={setCountDate}/>
+      <InventoryCountDateFilter value={countDate} onChange={setCountDate} onValidationError={setDateError}/>
       {owner && <Select value={branchId} onChange={setBranchId} options={[{ value: "", label: "All Branches" }, ...branches.map((branch) => ({ value: branch.id, label: branch.name }))]}/>}
       <button onClick={() => void load()} className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border text-sm font-semibold"><RefreshCw size={14} />Refresh</button>
     </div></div>
+    {dateError && <p role="alert" className="text-sm text-[var(--app-danger)]">{dateError}</p>}
 
     <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">{[
       ["Net Variance", `${metrics.net < 0 ? "−" : "+"}₱${Math.abs(metrics.net).toLocaleString("en-PH", { maximumFractionDigits: 2 })}`, GitCompare, "var(--app-primary)"],

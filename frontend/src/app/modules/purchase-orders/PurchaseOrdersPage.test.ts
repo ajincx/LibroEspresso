@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PurchaseOrder } from "../../types/operations";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { canAuthorizePurchaseOrderTest, canDeletePurchaseOrderTest, convertedPurchaseQuantity, isCompletePurchaseOrderItem, isPhysicalCountRequiredError, PhysicalCountRequiredNotice, PURCHASE_ORDER_STOCK_TIMING_GUIDANCE, purchaseOrderFormValidationError, receiptDateError, standardPurchaseConversionFactor } from "./PurchaseOrdersPage";
+import { canAuthorizePurchaseOrderTest, canDeletePurchaseOrderTest, convertedPurchaseQuantity, isCompletePurchaseOrderItem, isPhysicalCountRequiredError, OrderDetail, PhysicalCountRequiredNotice, PURCHASE_ORDER_STOCK_TIMING_GUIDANCE, PurchaseOrderManageButton, purchaseOrderFormValidationError, receiptDateError, standardPurchaseConversionFactor } from "./PurchaseOrdersPage";
 
 const order=(patch:Partial<PurchaseOrder>={}):PurchaseOrder=>({
   id:"po-1",poNo:"PO-TEST",branchId:"branch-1",branchName:"Gulod",createdByUserId:"manager-1",createdByName:"Manager",
@@ -10,6 +10,63 @@ const order=(patch:Partial<PurchaseOrder>={}):PurchaseOrder=>({
   isTestData:false,testAuthorizedAt:null,createdAt:"2026-09-28T00:00:00Z",updatedAt:"2026-09-28T00:00:00Z",itemCount:1,totalAmount:100,
   items:[{id:"poi-1",inventoryItemId:"item-1",sku:"RM-001",name:"Beans",unit:"g",quantityOrdered:10,quantityReceived:0,unitCost:10,purchaseUom:"g",conversionFactor:1,latestPhysicalCountDate:null}],
   ...patch,
+});
+
+const detailMarkup=(status:PurchaseOrder["status"],role:"owner"|"manager"="manager")=>renderToStaticMarkup(React.createElement(OrderDetail,{
+  order:order({status}),role,onClose:vi.fn(),onOrder:vi.fn(),onCancel:vi.fn(),onCorrectReceipt:vi.fn(),onReceive:vi.fn(),
+}));
+
+describe("purchase-order Manage UI",()=>{
+  it("uses one clearly labelled Manage action for the selected registry record",()=>{
+    const onManage=vi.fn();
+    const action=PurchaseOrderManageButton({order:order(),onManage}) as React.ReactElement<{onClick:()=>void}>;
+    const markup=renderToStaticMarkup(action);
+    expect(markup).toContain("Manage");
+    expect(markup).toContain("Manage PO-TEST");
+    expect(markup).not.toContain("View");
+    action.props.onClick();
+    expect(onManage).toHaveBeenCalledWith(expect.objectContaining({id:"po-1",poNo:"PO-TEST"}));
+  });
+
+  it("shows ordered actions and removes the redundant footer Close action",()=>{
+    const markup=detailMarkup("ORDERED");
+    expect(markup).toContain("Receive Items");
+    expect(markup).toContain("Cancel Order");
+    expect(markup).not.toContain(">Close</button>");
+    expect(markup).not.toContain("Edit Received Order");
+  });
+
+  it("uses the audited receipt-correction action for received orders",()=>{
+    const markup=detailMarkup("RECEIVED");
+    expect(markup).toContain("Edit Received Order");
+    expect(markup).toContain("compensating stock movements");
+    expect(markup).not.toContain("Receive Items");
+    expect(markup).not.toContain("Cancel Order");
+  });
+
+  it("preserves remaining receipt and correction actions for partial orders",()=>{
+    const markup=detailMarkup("PARTIALLY_RECEIVED");
+    expect(markup).toContain("Receive Items");
+    expect(markup).toContain("Edit Received Order");
+    expect(markup).not.toContain("Cancel Order");
+  });
+
+  it("keeps cancelled orders and Owner views read-only",()=>{
+    const cancelled=detailMarkup("CANCELLED");
+    const ownerReceived=detailMarkup("RECEIVED","owner");
+    for(const markup of [cancelled,ownerReceived]){
+      expect(markup).not.toContain("Receive Items");
+      expect(markup).not.toContain("Cancel Order");
+      expect(markup).not.toContain("Edit Received Order");
+    }
+  });
+
+  it("shows the requested PO metadata, item columns, and total",()=>{
+    const markup=detailMarkup("ORDERED");
+    for(const value of ["PO-TEST","Branch","Gulod","Supplier","Test Supplier","Created By","Manager","SKU","Ingredient","Ordered","Received","Unit Cost","Total","Total Amount","RM-001","Beans"]){
+      expect(markup).toContain(value);
+    }
+  });
 });
 
 describe("purchase-order test controls",()=>{

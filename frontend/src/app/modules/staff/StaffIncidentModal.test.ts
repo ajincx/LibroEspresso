@@ -98,5 +98,13 @@ describe("Staff incident ingredient/product filtering",()=>{
     expect(markup).toContain("grid-cols-[minmax(0,1fr)_5rem_5rem_2.75rem]");
     expect(markup).toContain("mt-5 flex w-full min-w-0 flex-col gap-5");
     expect(markup).toContain("max-w-full cursor-pointer");
+    const itemIndex=markup.indexOf(">Item<");
+    const quantityIndex=markup.indexOf(">Quantity<");
+    const unitIndex=markup.indexOf(">Unit<");
+    const removeIndex=markup.indexOf("Remove affected item 1");
+    expect(itemIndex).toBeGreaterThan(-1);
+    expect(quantityIndex).toBeGreaterThan(itemIndex);
+    expect(unitIndex).toBeGreaterThan(quantityIndex);
+    expect(removeIndex).toBeGreaterThan(unitIndex);
   });
 });

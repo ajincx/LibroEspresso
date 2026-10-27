@@ -57,7 +57,7 @@ export function dashboardPeriodLabel(range: DashboardRange, customStart?: string
     const start=parseISO(customStart);
     const end=parseISO(customEnd);
     if (isValid(start) && isValid(end)) {
-      return readableRange(start,end);
+      return `${format(start,"MMMM d, yyyy")} – ${format(end,"MMMM d, yyyy")}`;
     }
   }
   const dates=periodDates(range,customStart,customEnd);
@@ -516,19 +516,35 @@ export function DashboardFilters({ range, comparison, customStart, customEnd, cu
 }) {
   const [draftStart, setDraftStart] = useState(customStart);
   const [draftEnd, setDraftEnd] = useState(customEnd);
-  useEffect(() => { setDraftStart(customStart); setDraftEnd(customEnd); }, [customStart, customEnd]);
+  const [customEditorOpen, setCustomEditorOpen] = useState(range === "custom" && !customApplied);
+  useEffect(() => {
+    setDraftStart(customStart);
+    setDraftEnd(customEnd);
+    if (range === "custom" && !customApplied) setCustomEditorOpen(true);
+    if (customApplied) setCustomEditorOpen(false);
+  }, [customStart, customEnd, range, customApplied]);
+
+  const selectRange = (value: string) => {
+    const nextRange = value as DashboardRange;
+    if (nextRange === "custom") {
+      setCustomEditorOpen(true);
+      return;
+    }
+    setCustomEditorOpen(false);
+    onRangeChange(nextRange);
+  };
 
   return (
     <div className="dashboard-filters flex min-w-0 max-w-full items-center gap-2 flex-wrap justify-end">
-      {!(range === "custom" && customApplied) && <div className="filter-control"><Select options={(Object.entries(dashboardRangeLabels) as [DashboardRange,string][]).map(([option,label])=>({value:option,label}))} value={range} onChange={(value)=>onRangeChange(value as DashboardRange)} icon={Calendar} small ariaLabel="Reporting date range"/></div>}
-      {range !== "custom" && <div className="filter-control"><Select options={[{value:"previous",label:"vs Previous Period"},{value:"lastMonth",label:"vs Last Month"}]} value={comparison} onChange={(value)=>onComparisonChange(value as DashboardComparison)} icon={GitCompare} small ariaLabel="Dashboard comparison period"/></div>}
-      {range === "custom" && !customApplied && (
+      {!(range === "custom" && customApplied) && <div className="filter-control"><Select options={(Object.entries(dashboardRangeLabels) as [DashboardRange,string][]).map(([option,label])=>({value:option,label}))} value={customEditorOpen ? "custom" : range} onChange={selectRange} icon={Calendar} small ariaLabel="Reporting date range"/></div>}
+      {!customEditorOpen && range !== "custom" && <div className="filter-control"><Select options={[{value:"previous",label:"vs Previous Period"},{value:"lastMonth",label:"vs Last Month"}]} value={comparison} onChange={(value)=>onComparisonChange(value as DashboardComparison)} icon={GitCompare} small ariaLabel="Dashboard comparison period"/></div>}
+      {customEditorOpen && (
         <div className="custom-range-controls flex items-end gap-2 rounded-2xl border p-2 shadow-lg" style={{ borderColor:C.border,background:C.surface }}>
           <CalendarDateField label="Start date" value={draftStart} max={draftEnd} onChange={setDraftStart}/>
           <span className="pb-3 text-[10px] font-bold uppercase" style={{color:C.muted}}>to</span>
           <CalendarDateField label="End date" value={draftEnd} min={draftStart} onChange={setDraftEnd}/>
           <button type="button" onClick={() => onApplyCustom(draftStart, draftEnd)} disabled={!isValidBusinessDateRange(draftStart, draftEnd)}
-            className="min-h-12 px-4 py-2 rounded-xl text-xs font-semibold text-white shadow-sm disabled:opacity-40" style={{ background:C.maroon }}>Apply</button>
+            className="min-h-12 px-4 py-2 rounded-xl text-xs font-semibold text-white shadow-sm disabled:opacity-40" style={{ background:C.maroon }}>Set</button>
         </div>
       )}
       <span className="period-pill px-3 py-2 rounded-xl text-xs font-medium border" style={{ color: C.secondary, borderColor: C.border, background: C.mainBg }}>

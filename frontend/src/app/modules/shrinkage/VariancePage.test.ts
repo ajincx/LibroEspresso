@@ -1,5 +1,44 @@
-import { describe, expect, it } from "vitest";
-import { displayStatus, varianceClassificationLabel, varianceScopeForStatus, varianceWithoutInvestigationLabel } from "./VariancePage";
+import { createElement } from "react";
+import { act, create } from "react-test-renderer";
+import { describe, expect, it, vi } from "vitest";
+import { CalendarDateField } from "../../components/ModuleUi";
+import { displayStatus, InventoryCountDateFilter, inventoryCountDateMax, inventoryCountDateRangeError, varianceClassificationLabel, varianceScopeForStatus, varianceWithoutInvestigationLabel } from "./VariancePage";
+
+describe("inventory count date filter", () => {
+  const manilaOctober27 = new Date("2026-10-26T16:30:00.000Z");
+
+  it("uses today in Asia/Manila as the maximum and allows historical dates including today", () => {
+    expect(inventoryCountDateMax(manilaOctober27)).toBe("2026-10-27");
+    expect(inventoryCountDateRangeError("2026-10-27", "2026-10-27", manilaOctober27)).toBe("");
+    expect(inventoryCountDateRangeError("2026-08-26", "2026-10-27", manilaOctober27)).toBe("");
+  });
+
+  it("rejects future dates, impossible dates, and reversed ranges", () => {
+    expect(inventoryCountDateRangeError("2026-10-28", "2026-10-28", manilaOctober27)).toBe("Inventory count dates cannot be in the future.");
+    expect(inventoryCountDateRangeError("2026-02-30", "2026-02-30", manilaOctober27)).toBe("Enter a valid inventory count date.");
+    expect(inventoryCountDateRangeError("2026-10-20", "2026-10-19", manilaOctober27)).toBe("Inventory count start date cannot be after the end date.");
+  });
+
+  it("handles the UTC-to-Manila business-date boundary", () => {
+    expect(inventoryCountDateMax(new Date("2026-10-26T15:59:59.999Z"))).toBe("2026-10-26");
+    expect(inventoryCountDateMax(new Date("2026-10-26T16:00:00.000Z"))).toBe("2026-10-27");
+  });
+
+  it("labels the picker clearly, disables dates after Manila today, and rejects a manual future value", () => {
+    const onChange = vi.fn();
+    const onValidationError = vi.fn();
+    const renderer = create(createElement(InventoryCountDateFilter, { value: "", onChange, onValidationError, now: manilaOctober27 }));
+    const field = renderer.root.findByType(CalendarDateField);
+    expect(field.props.label).toBe("Inventory Count Date");
+    expect(field.props.max).toBe("2026-10-27");
+    act(() => field.props.onChange("2026-10-28"));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onValidationError).toHaveBeenLastCalledWith("Inventory count dates cannot be in the future.");
+    act(() => field.props.onChange("2026-10-27"));
+    expect(onChange).toHaveBeenCalledWith("2026-10-27");
+    expect(onValidationError).toHaveBeenLastCalledWith("");
+  });
+});
 
 describe("variance sign presentation", () => {
   it("treats negative Actual-minus-Expected variance as shortage", () => {

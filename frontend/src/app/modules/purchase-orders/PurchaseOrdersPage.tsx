@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
-import { Eye, Inbox, PackageCheck, Plus, RefreshCw, Send, ShieldCheck, ShoppingCart, Trash2, X } from "lucide-react";
+import { Inbox, PackageCheck, Pencil, Plus, RefreshCw, Send, Settings, ShieldCheck, ShoppingCart, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { Btn, C, CalendarDateField, KPICard, SearchInput, SectionHeader, Select, SkeletonBlock, StatusChip, TableCard, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
 import { masterDataService } from "../../services/masterData.service";
@@ -22,6 +22,11 @@ const testDataActionsEnabled = import.meta.env.MODE !== "production";
 const currentManilaBusinessDate = () => businessDate(new Date(), "Asia/Manila");
 export const canAuthorizePurchaseOrderTest = (role:Role,order:PurchaseOrder,enabled=true) => enabled && role==="owner" && !order.testAuthorizedAt && ["DRAFT","ORDERED","CANCELLED"].includes(order.status) && order.items.every((item)=>item.quantityReceived===0);
 export const canDeletePurchaseOrderTest = (role:Role,order:PurchaseOrder,enabled=true) => enabled && role==="owner" && order.isTestData && Boolean(order.testAuthorizedAt);
+export function PurchaseOrderManageButton({order,onManage}:{order:PurchaseOrder;onManage:(order:PurchaseOrder)=>void}) {
+  return <button className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--app-border)] px-3 py-1.5 text-xs font-semibold text-[var(--app-primary)] transition-colors hover:bg-[var(--app-surface-muted)]" aria-label={`Manage ${order.poNo}`} onClick={()=>onManage(order)}>
+    <Settings size={15}/> Manage
+  </button>;
+}
 const latestReceiptCountDate = (order: PurchaseOrder, purchaseOrderItemIds?: string[]) => {
   const selectedIds = purchaseOrderItemIds ? new Set(purchaseOrderItemIds) : null;
   return order.items
@@ -269,12 +274,7 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
             <TD right bold>{peso(order.totalAmount)}</TD>
             <TD center><StatusChip status={chip[order.status]}/></TD>
             <TD center>
-              <button className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] px-2.5 py-1.5 text-xs font-semibold text-[var(--app-primary)] transition-colors hover:bg-[var(--app-surface-muted)]" aria-label={`View ${order.poNo}`} onClick={() => setSelected(order)}>
-                <Eye size={15}/> View
-              </button>
-              {canAuthorizePurchaseOrderTest(role,order,testDataActionsEnabled)&&<button className="p-2 rounded-lg hover:bg-[var(--app-surface-muted)] text-[var(--app-warning)] transition-colors" aria-label={`Authorize ${order.poNo} as test data`} onClick={()=>{setAuthorizeTestTarget(order);setTestActionReason("");}}><ShieldCheck size={15}/></button>}
-              {canDeletePurchaseOrderTest(role,order,testDataActionsEnabled)&&<button className="p-2 rounded-lg hover:bg-[var(--app-danger-bg)] text-[var(--app-danger)] transition-colors" aria-label={`Delete test purchase order ${order.poNo}`} onClick={()=>{setDeleteTestTarget(order);setTestActionReason("");}}><Trash2 size={15}/></button>}
-              {role==="manager"&&lifecycleAction(order)&&<button className="ml-1 inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] px-2.5 py-1.5 text-xs font-semibold text-[var(--app-danger)] transition-colors hover:bg-[var(--app-danger-bg)]" aria-label={`${lifecycleAction(order)} ${order.poNo}`} onClick={()=>{setLifecycleTarget(order);setControlledValue({reason:"",verificationPin:""});}}>{lifecycleAction(order)==="CANCEL"?"Cancel":"Reverse"}</button>}
+              <PurchaseOrderManageButton order={order} onManage={setSelected}/>
             </TD>
           </TR>)}
         </tbody>
@@ -298,7 +298,17 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
       />
     )}
     {selected && (
-      <OrderDetail order={selected} role={role} onClose={() => setSelected(null)} onOrder={() => void setOrderStatus(selected, "ORDERED")} onCancel={() => {setLifecycleTarget(selected);setControlledValue({reason:"",verificationPin:""});}} onReceive={() => { setReceiving(selected); setSelected(null); }}/>
+      <OrderDetail
+        order={selected}
+        role={role}
+        onClose={() => setSelected(null)}
+        onOrder={() => void setOrderStatus(selected, "ORDERED")}
+        onCancel={() => {setLifecycleTarget(selected);setControlledValue({reason:"",verificationPin:""});}}
+        onCorrectReceipt={() => {setLifecycleTarget(selected);setControlledValue({reason:"",verificationPin:""});}}
+        onReceive={() => { setReceiving(selected); setSelected(null); }}
+        onAuthorizeTest={canAuthorizePurchaseOrderTest(role,selected,testDataActionsEnabled)?()=>{setAuthorizeTestTarget(selected);setTestActionReason("");}:undefined}
+        onDeleteTest={canDeletePurchaseOrderTest(role,selected,testDataActionsEnabled)?()=>{setDeleteTestTarget(selected);setTestActionReason("");}:undefined}
+      />
     )}
     {receiving && <ReceiveOrder
       order={receiving}
@@ -308,7 +318,7 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
     {authorizeTestTarget&&<TestPurchaseOrderDialog mode="authorize" order={authorizeTestTarget} reason={testActionReason} busy={testActionBusy} onReasonChange={setTestActionReason} onClose={()=>{if(!testActionBusy){setAuthorizeTestTarget(null);setTestActionReason("");}}} onConfirm={()=>void authorizeTestOrder()}/>}
     {deleteTestTarget&&<TestPurchaseOrderDialog mode="delete" order={deleteTestTarget} reason={testActionReason} busy={testActionBusy} onReasonChange={setTestActionReason} onClose={()=>{if(!testActionBusy){setDeleteTestTarget(null);setTestActionReason("");}}} onConfirm={()=>void deleteTestOrder()}/>}
     {role==="manager"&&lifecycleTarget&&lifecycleAction(lifecycleTarget)&&(
-      <ControlledActionDialog title={`${lifecycleAction(lifecycleTarget)==="CANCEL"?"Cancel order":"Reverse received order"} ${lifecycleTarget.poNo}?`} description={lifecycleAction(lifecycleTarget)==="REVERSE"?"Received quantities are preserved in the PO history and offset with approved decrease movements. A later physical count blocks reversal.":"The purchase order remains in history. The server rechecks received quantities and dependencies."} confirmLabel={lifecycleAction(lifecycleTarget)==="CANCEL"?"Cancel Order":"Reverse Receipt"} value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setLifecycleTarget(null)} onConfirm={()=>void applyLifecycle()}/>
+      <ControlledActionDialog title={`${lifecycleAction(lifecycleTarget)==="CANCEL"?"Cancel order":"Correct received order"} ${lifecycleTarget.poNo}?`} description={lifecycleAction(lifecycleTarget)==="REVERSE"?"This does not edit historical quantities. It reverses the audited receipt with compensating stock movements, preserves the original evidence, and cancels the PO. A later physical count blocks correction.":"The purchase order remains in history. The server rechecks received quantities and dependencies."} confirmLabel={lifecycleAction(lifecycleTarget)==="CANCEL"?"Cancel Order":"Reverse Receipt for Correction"} value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setLifecycleTarget(null)} onConfirm={()=>void applyLifecycle()}/>
     )}
   </div>;
 }
@@ -417,7 +427,7 @@ function CreatePurchaseOrder({
   </div><div className="mt-4 flex justify-between rounded-xl p-3 bg-[var(--app-surface-muted)]"><span className="text-sm">Estimated Total</span><strong>{peso(rows.reduce((sum, row) => sum + Number(row.quantityOrdered || 0) * Number(row.unitCost || 0), 0))}</strong></div>{physicalCountRequired ? <PhysicalCountRequiredNotice orderDate={orderDate} onGoToInventoryCount={() => onGoToInventoryCount(orderDate)}/> : error && <p className="text-sm mt-3 text-[var(--app-danger)]">{error}</p>}<div className="mt-5 flex justify-end gap-2"><Btn variant="outline" onClick={onClose}>Cancel</Btn><Btn variant="outline" disabled={saving} onClick={() => void save("DRAFT")}>Save Draft</Btn><Btn icon={Send} disabled={saving} onClick={() => void save("ORDERED")}>{saving ? "Saving…" : "Create Order"}</Btn></div>{ingredientTarget!==null&&<IngredientEditorModal categories={Array.from(new Set(inventory.map((item)=>item.category))).sort()} onClose={()=>setIngredientTarget(null)} onCreated={(item)=>{onInventoryCreated(item);update(ingredientTarget,{inventoryItemId:item.id,unitCost:String(item.unitCost),purchaseUom:item.unit,conversionFactor:"1"});setIngredientTarget(null);}}/>}</ModalShell>;
 }
 
-function OrderDetail({ order, role, onClose, onOrder, onCancel, onReceive }: { order: PurchaseOrder; role: Role; onClose: () => void; onOrder: () => void; onCancel: () => void; onReceive: () => void }) {
+export function OrderDetail({ order, role, onClose, onOrder, onCancel, onCorrectReceipt, onReceive, onAuthorizeTest, onDeleteTest }: { order: PurchaseOrder; role: Role; onClose: () => void; onOrder: () => void; onCancel: () => void; onCorrectReceipt: () => void; onReceive: () => void; onAuthorizeTest?: () => void; onDeleteTest?: () => void }) {
   return <ModalShell title={order.poNo} onClose={onClose}>
     <div className="grid sm:grid-cols-4 gap-3 rounded-xl p-4 bg-[var(--app-surface-muted)]">
       {[["Branch", order.branchName], ["Supplier", order.supplierName], ["Created By", order.createdByName], ["Status", prettyStatus(order.status)]].map(([label, value]) => <div key={label}><p className="text-xs text-[var(--app-text-muted)]">{label}</p><p className="text-sm font-semibold mt-1">{value}</p></div>)}
@@ -443,10 +453,12 @@ function OrderDetail({ order, role, onClose, onOrder, onCancel, onReceive }: { o
     </div>
     {order.notes && <p className="mt-3 text-xs text-[var(--app-text-muted)] bg-[var(--app-surface-muted)] p-3 rounded-xl">{order.notes}</p>}
     <div className="mt-5 flex justify-end gap-2">
-      <Btn variant="outline" onClick={onClose}>Close</Btn>
+      {onAuthorizeTest&&<Btn variant="outline" icon={ShieldCheck} onClick={onAuthorizeTest}>Authorize as Test Data</Btn>}
+      {onDeleteTest&&<Btn variant="danger" icon={Trash2} onClick={onDeleteTest}>Clean Up Test PO</Btn>}
       {role === "manager" && order.status === "DRAFT" && <Btn icon={Send} onClick={onOrder}>Mark Ordered</Btn>}
       {role === "manager" && (order.status === "ORDERED" || order.status === "PARTIALLY_RECEIVED") && <Btn icon={PackageCheck} onClick={onReceive}>Receive Items</Btn>}
-      {role === "manager" && ["DRAFT", "ORDERED"].includes(order.status) && <Btn variant="danger" onClick={onCancel}>Cancel</Btn>}
+      {role === "manager" && ["PARTIALLY_RECEIVED", "RECEIVED"].includes(order.status) && <Btn icon={Pencil} variant="outline" title="Reverse the audited receipt with compensating stock movements before recording a corrected order." onClick={onCorrectReceipt}>Edit Received Order</Btn>}
+      {role === "manager" && ["DRAFT", "ORDERED"].includes(order.status) && <Btn variant="danger" onClick={onCancel}>Cancel Order</Btn>}
     </div>
   </ModalShell>;
 }

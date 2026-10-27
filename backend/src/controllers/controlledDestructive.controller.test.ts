@@ -83,6 +83,33 @@ describe("controlled destructive actions", () => {
     expect(statements.some((sql) => sql.includes("INSERT INTO inventory_movements"))).toBe(false);
   });
 
+  it("corrects a received PO through audited compensating movements without editing receipt history", async () => {
+    const statements: string[] = [];
+    const client = { query: vi.fn(async (statement: unknown) => {
+      const sql = String(statement); statements.push(sql);
+      if (sql.includes('SELECT branch_id "branchId" FROM purchase_orders')) return { rows: [{ branchId: "branch-1" }] };
+      if (sql.includes('SELECT po_no "poNo"')) return { rows: [{ poNo: "PO-1", branchId: "branch-1", status: "RECEIVED", isTestData: false, reversedAt: null }] };
+      if (sql.includes("FROM inventory_counts")) return { rows: [] };
+      if (sql.includes("FROM purchase_order_items")) return { rows: [
+        { inventoryItemId: "ingredient-1", stockQuantity: 250 },
+        { inventoryItemId: "ingredient-2", stockQuantity: 4 },
+      ] };
+      return { rows: [] };
+    }), release: vi.fn() };
+    mocks.connect.mockResolvedValue(client);
+    const res = response();
+
+    await applyPurchaseOrderLifecycle(request(manager, { ...input, action: "REVERSE" }), res as never, vi.fn());
+
+    expect(statements.filter((sql) => sql.includes("INSERT INTO inventory_movements") && sql.includes("APPROVED_ADJUSTMENT_DECREASE"))).toHaveLength(2);
+    expect(statements.some((sql) => sql.includes("UPDATE purchase_order_items"))).toBe(false);
+    expect(statements.some((sql) => sql.includes("UPDATE inventory_balances"))).toBe(false);
+    expect(statements.some((sql) => sql.includes("UPDATE purchase_orders SET status='CANCELLED'"))).toBe(true);
+    expect(mocks.writeAudit).toHaveBeenCalledWith(manager, "CONTROLLED_REVERSE", "PURCHASE_ORDER", itemId, expect.any(String), expect.objectContaining({ branchId: "branch-1", priorStatus: "RECEIVED", verificationResult: "VERIFIED" }), client);
+    expect(statements).toContain("COMMIT");
+    expect(res.json).toHaveBeenCalledWith({ success: true, data: { id: itemId, action: "REVERSED" } });
+  });
+
   it("prevents Staff cancellation when Closing or Full has finalized the incident date", async () => {
     const statements: string[]=[];
     const client={query:vi.fn(async(statement:unknown)=>{
