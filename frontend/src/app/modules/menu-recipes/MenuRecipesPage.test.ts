@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { attachPendingRecipeDrafts,canDeleteMenuProduct,canManageMenuCategories,CategoryLabel,ingredientSetsMatch,initializePendingRecipeDrafts,isControlledTestProductRetirement,isValidRecipeQuantity,MAX_MENU_PRODUCT_PRICE_PHP,menuSellingPriceValidationError,marginTextClass,MENU_VARIANT_PRESETS,menuVariantNameForSelection,menuVariantSelection,MenuProductDeleteDialog,MenuProductsSkeleton,nextMenuVariantName,normalizeRecipeQuantityInput,productNameValidationError,recipeIngredientExists,removeRecipeIngredientRow,selectInitialZeroQuantity,updatePendingRecipeDraftRow,variantMarginRate,type RecipeDraft } from "./MenuRecipesPage";
+import { attachPendingRecipeDrafts,canDeleteMenuProduct,canManageMenuCategories,CategoryLabel,ingredientSetsMatch,initializePendingRecipeDrafts,isControlledTestProductRetirement,isValidRecipeQuantity,MAX_MENU_PRODUCT_PRICE_PHP,menuProductDraftIsMeaningful,menuProductDraftSummary,menuSellingPriceValidationError,marginTextClass,MENU_VARIANT_PRESETS,menuVariantNameForSelection,menuVariantSelection,MenuProductDeleteDialog,MenuProductsSkeleton,nextMenuVariantName,normalizeRecipeQuantityInput,productNameValidationError,recipeIngredientExists,removeRecipeIngredientRow,revalidateMenuProductDraft,selectInitialZeroQuantity,updatePendingRecipeDraftRow,variantMarginRate,type ProductForm,type RecipeDraft } from "./MenuRecipesPage";
 import { menuRecipeTabs } from "./MenuRecipeManagementModule";
 import type { MenuCategory, MenuProduct } from "../../types/masterData";
 
@@ -63,6 +63,20 @@ describe("Menu Products & Recipes margin presentation",()=>{
 });
 
 describe("Menu product input validation",()=>{
+  it("recognizes meaningful incomplete product drafts and preserves stable rows",()=>{
+    const empty:ProductForm={name:"",categoryId:"",variants:[{key:"variant-1",name:"Standard",sellingPrice:"",status:"ACTIVE"}],description:"",status:"ACTIVE",recipeVariantKey:null,recipeDrafts:{}};
+    expect(menuProductDraftIsMeaningful(empty)).toBe(false);
+    expect(menuProductDraftIsMeaningful({...empty,name:"Draft Latte"})).toBe(true);
+    expect(menuProductDraftSummary({...empty,name:"Draft Latte"})).toBe("Draft Latte · 1 variant");
+  });
+  it("revalidates stale category and ingredient selections without changing row identities",()=>{
+    const draft:ProductForm={name:"Latte",categoryId:"retired",variants:[{key:"variant-1",name:"Custom 16 oz",sellingPrice:150,status:"ACTIVE"}],description:"",status:"ACTIVE",recipeVariantKey:"variant-1",recipeDrafts:{"variant-1":{yieldQuantity:1,effectiveFrom:"",changeReason:"",items:[{key:"row-1",inventoryItemId:"retired-item",quantity:2,unit:"g"}]}}};
+    const result=revalidateMenuProductDraft(draft,[],[]);
+    expect(result.categoryId).toBe("");
+    expect(result.variants[0]?.key).toBe("variant-1");
+    expect(result.variants[0]?.name).toBe("Custom 16 oz");
+    expect(result.recipeDrafts["variant-1"]?.items[0]).toMatchObject({key:"row-1",inventoryItemId:"",unit:""});
+  });
   it("defaults new products to Standard and supports preset and custom variants without changing stored names",()=>{
     expect(MENU_VARIANT_PRESETS).toEqual(["Standard","Small","Medium","Large"]);
     expect(menuVariantSelection("Standard")).toBe("Standard");

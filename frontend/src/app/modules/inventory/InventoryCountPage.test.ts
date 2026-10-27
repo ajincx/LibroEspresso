@@ -1,8 +1,9 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import type { ExpectedInventoryItem } from "../../types/inventoryWorkflow";
-import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, copyPreviousClosingEntries, copySameDayClosingEntries, displayedPhysicalCountVariance, filterPhysicalCountItems, fullCountSubmissionBlockReason, initialPhysicalCountDate, inventoryCountColumns, isDailyCountColumnEditable, isFutureInventoryCountDate, mergeOpeningCorrectionEntries, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, PhysicalCountLoadingSkeleton, physicalCountCompletion, physicalCountEntryFromCanonical, physicalCountPreviewVariance, previousClosingCopyMessage, savedCountQuantities, showInventoryCountDateFilter, validPhysicalCountEntries } from "./InventoryCountPage";
+import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, copyPreviousClosingEntries, copySameDayClosingEntries, displayedPhysicalCountVariance, filterPhysicalCountItems, fullCountSubmissionBlockReason, initialPhysicalCountDate, inventoryCountColumns, isDailyCountColumnEditable, isFutureInventoryCountDate, mergeOpeningCorrectionEntries, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, PhysicalCountCorrectionDialog, PhysicalCountLoadingSkeleton, physicalCountCompletion, physicalCountCorrectionReasonError, physicalCountEntryFromCanonical, physicalCountPreviewVariance, previousClosingCopyMessage, savedCountQuantities, showInventoryCountDateFilter, validPhysicalCountEntries } from "./InventoryCountPage";
 import { buildEnteredPhysicalCountItems } from "./InventoryCountPage";
 
 const item = (inventoryItemId: string, sku: string, itemName: string): ExpectedInventoryItem => ({
@@ -118,6 +119,48 @@ describe("Daily partial physical counts",()=>{
 });
 
 describe("Inventory physical-count history navigation", () => {
+  it("uses an application correction modal with a trimmed nonempty reason and no PIN",()=>{
+    const blank=renderToStaticMarkup(React.createElement(PhysicalCountCorrectionDialog,{countType:"OPENING",reason:"   ",error:physicalCountCorrectionReasonError("   "),busy:false,onReasonChange:vi.fn(),onCancel:vi.fn(),onConfirm:vi.fn()}));
+    const short=renderToStaticMarkup(React.createElement(PhysicalCountCorrectionDialog,{countType:"OPENING",reason:"Fix",error:"",busy:false,onReasonChange:vi.fn(),onCancel:vi.fn(),onConfirm:vi.fn()}));
+    expect(blank).toContain("Confirm Opening Count Correction");
+    expect(blank).toContain("Reason for Correction");
+    expect(blank).toContain("Close correction dialog");
+    expect(blank).not.toContain("Verification PIN");
+    expect(blank).toContain("Reason for Correction is required");
+    expect(blank).toMatch(/<button[^>]*disabled[^>]*>Confirm Correction<\/button>/);
+    expect(short).not.toMatch(/<button[^>]*disabled[^>]*>Confirm Correction<\/button>/);
+  });
+
+  it("keeps correction dismissal separate from edited quantity state",()=>{
+    const entries={ice:{quantity:"12",enteredUnit:"pc" as const}};
+    const onCancel=vi.fn();
+    const dialog=PhysicalCountCorrectionDialog({countType:"OPENING",reason:"Fix",error:"",busy:false,onReasonChange:vi.fn(),onCancel,onConfirm:vi.fn()}) as React.ReactElement;
+    expect(dialog.props.onCancel).toBe(onCancel);
+    expect(entries.ice.quantity).toBe("12");
+  });
+
+  it("submits one correction action and disables confirmation while submitting",()=>{
+    const onConfirm=vi.fn();
+    let renderer:ReactTestRenderer;
+    act(()=>{renderer=create(React.createElement(PhysicalCountCorrectionDialog,{countType:"OPENING",reason:"Fix",error:"",busy:false,onReasonChange:vi.fn(),onCancel:vi.fn(),onConfirm}));});
+    const confirmButton=renderer!.root.findAllByType("button").find((node:ReactTestInstance)=>node.children.join("")==="Confirm Correction");
+    expect(confirmButton).toBeDefined();
+    act(()=>confirmButton!.props.onClick());
+    expect(onConfirm).toHaveBeenCalledOnce();
+    act(()=>renderer!.update(React.createElement(PhysicalCountCorrectionDialog,{countType:"OPENING",reason:"Fix",error:"A later inventory event prevents this correction.",busy:true,onReasonChange:vi.fn(),onCancel:vi.fn(),onConfirm})));
+    const busyButton=renderer!.root.findAllByType("button").find((node:ReactTestInstance)=>node.children.join("")==="Processing…");
+    expect(busyButton?.props.disabled).toBe(true);
+    expect(renderer!.root.findAll((node:ReactTestInstance)=>node.props.role==="alert")[0]?.children.join("")).toContain("later inventory event");
+    act(()=>renderer!.unmount());
+  });
+
+  it("uses the same correction modal safely for Closing and Full counts",()=>{
+    const closing=renderToStaticMarkup(React.createElement(PhysicalCountCorrectionDialog,{countType:"CLOSING",reason:"Fix",error:"",busy:false,onReasonChange:vi.fn(),onCancel:vi.fn(),onConfirm:vi.fn()}));
+    const full=renderToStaticMarkup(React.createElement(PhysicalCountCorrectionDialog,{countType:"FULL",reason:"Fix",error:"",busy:false,onReasonChange:vi.fn(),onCancel:vi.fn(),onConfirm:vi.fn()}));
+    expect(closing).toContain("Confirm Closing Count Correction");
+    expect(full).toContain("Confirm Full Physical Count Correction");
+  });
+
   it("explains that only material discrepancies may require investigation", () => {
     expect(PHYSICAL_COUNT_INVESTIGATION_GUIDANCE).toBe(
       "Significant discrepancies may require an investigation based on the configured tolerance.",

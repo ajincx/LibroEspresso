@@ -62,6 +62,15 @@ describe("Inventory Workflow Input Validation (QA Suite)", () => {
       };
       expect(() => inventoryCountInput.parse(invalid)).toThrow();
     });
+
+    it("accepts a short nonempty correction reason but rejects blank whitespace", () => {
+      const correction = {
+        countDate: "2026-09-04",
+        items: [{ inventoryItemId: sampleUuid1, quantity: 2.5, enteredUnit: "kg" }],
+      };
+      expect(inventoryCountInput.parse({ ...correction, correctionReason: "Fix" }).correctionReason).toBe("Fix");
+      expect(() => inventoryCountInput.parse({ ...correction, correctionReason: "   " })).toThrow();
+    });
   });
 
   describe("shrinkageInvestigationInput", () => {

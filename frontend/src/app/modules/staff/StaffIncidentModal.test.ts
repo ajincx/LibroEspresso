@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { filterSelectOptions, moveSelectActiveIndex, selectFilteredOption } from "../../components/ModuleUi";
-import { affectedItemsPayload, incidentDraftSummary, incidentProductOptionLabel, incidentProductsForIngredient, incidentProductsForIngredients, nextIncidentProductSelection, nextOtherIncidentType, OtherIncidentTypeField, StaffIncidentModal, validAffectedItems, validateOtherIncidentType } from "./StaffIncidentModal";
+import { affectedItemsPayload, incidentDraftIsMeaningful, incidentDraftSummary, incidentProductOptionLabel, incidentProductsForIngredient, incidentProductsForIngredients, nextIncidentProductSelection, nextOtherIncidentType, OtherIncidentTypeField, StaffIncidentModal, validAffectedItems, validateOtherIncidentType } from "./StaffIncidentModal";
 import { manilaBusinessDateTime, manilaDateTimeToIso, validateIncidentDateTime } from "../../utils/businessDate";
 
 describe("Staff incident Manila date handling",()=>{
@@ -91,11 +91,12 @@ describe("Staff incident ingredient/product filtering",()=>{
     expect(markup.indexOf("Affected Product Variant")).toBeLessThan(markup.indexOf("Affected Items"));
     expect(markup.indexOf("Affected Items")).toBeLessThan(markup.indexOf("Date and Time"));
     expect(markup).toContain("overflow-x-hidden");
-    expect(markup).toContain("shrink-0 items-center justify-end");
+    expect(markup).toContain("shrink-0 flex-wrap items-center justify-end");
     expect(markup).toContain("lg:max-w-4xl");
     expect(markup).toContain("Select Incident Type");
-    expect(markup).toContain("View Drafts (0)");
-    expect(markup).toContain("Save Draft");
+    expect(markup).not.toContain("View Drafts (0)");
+    expect(markup).not.toContain(">Save Draft<");
+    expect(markup).toContain("Submit Incident");
     expect(markup).toContain('data-incident-item-grid="true"');
     expect(markup).toContain('data-incident-field="ingredient"');
     expect(markup).toContain('data-incident-field="quantity"');
@@ -104,7 +105,8 @@ describe("Staff incident ingredient/product filtering",()=>{
     expect(markup.indexOf('data-incident-field="unit"')).toBeLessThan(markup.indexOf('data-incident-field="delete"'));
     expect(markup).toContain("grid-cols-[minmax(0,1fr)_2.75rem]");
     expect(markup).toContain("sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(5rem,7rem)_2.75rem]");
-    expect(markup).toContain("lg:grid-cols-[minmax(20rem,1fr)_minmax(8rem,10rem)_minmax(5rem,7rem)_2.75rem]");
+    expect(markup).toContain("lg:grid-cols-[minmax(0,1fr)_minmax(8rem,10rem)_minmax(5rem,7rem)_2.75rem]");
+    expect(markup).toContain("overflow-hidden");
     expect(markup).toContain('data-incident-field="unit" class="col-[1]');
     expect(markup).toContain("sm:col-[3]");
     expect(markup).toContain('data-incident-field="delete" class="col-[2] w-11');
@@ -123,6 +125,8 @@ describe("Staff incident ingredient/product filtering",()=>{
   it("summarizes incomplete temporary incident drafts without attachments",()=>{
     const draft={type:"" as const,affectedItems:[{inventoryItemId:"",quantity:"",enteredUnit:"" as const}],productVariantId:"",occurredAt:"2026-10-27T08:00",reason:"",lateReportingReason:"",otherIncidentType:""};
     expect(incidentDraftSummary(draft)).toBe("Incident type not selected · 0 affected items");
+    expect(incidentDraftIsMeaningful(draft,"2026-10-27T08:00")).toBe(false);
+    expect(incidentDraftIsMeaningful({...draft,affectedItems:[{...draft.affectedItems[0]!,quantity:"0"}]},"2026-10-27T08:00")).toBe(true);
     expect(draft).not.toHaveProperty("photoUrl");
   });
 });

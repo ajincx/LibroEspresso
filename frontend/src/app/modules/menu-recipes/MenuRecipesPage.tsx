@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { BookOpen, Boxes, Check, ChefHat, Edit3, Eye, PackagePlus, Plus, RefreshCw, Tags, Trash2, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { BookOpen, Boxes, Check, ChefHat, Edit3, Eye, FilePenLine, FolderOpen, PackagePlus, Plus, RefreshCw, Tags, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "../../contexts/AuthContext";
 import { masterDataService } from "../../services/masterData.service";
@@ -8,16 +8,25 @@ import { Btn, SearchInput, Select, SkeletonBlock, StatusBadge, TableCard, TableL
 import { formatAppCurrency } from "../../utils/appPreferences";
 import { compatibleUnits, units } from "../../utils/units";
 import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
+import { useLocalDraftCollection, type LocalDraftEntry } from "../../hooks/useLocalDraft";
 
 export type RecipeRow = { key: string; inventoryItemId: string; quantity: number | ""; unit: string };
 export type VariantRow = { key:string; id?:string; name:string; sellingPrice:number|""; status:RecordStatus };
 export type RecipeDraft = { yieldQuantity:number; effectiveFrom:string; changeReason:string; items:RecipeRow[] };
-type ProductForm = { name: string; categoryId: string; variants:VariantRow[]; description: string; status: RecordStatus; recipeVariantKey:string|null; recipeDrafts:Record<string,RecipeDraft> };
+export type ProductForm = { name: string; categoryId: string; variants:VariantRow[]; description: string; status: RecordStatus; recipeVariantKey:string|null; recipeDrafts:Record<string,RecipeDraft> };
 type IngredientForm = { name: string; categoryChoice: string; otherCategory: string; unit: string; unitCost: number | ""; reorderLevel: number | "" };
 type CategoryForm = { name:string;description:string;status:RecordStatus };
 const newRow = (): RecipeRow => ({ key: crypto.randomUUID(), inventoryItemId: "", quantity: 1, unit: "" });
 const localToday=()=>{const now=new Date();return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;};
 const emptyForm = (): ProductForm => ({ name: "", categoryId: "", variants:[{key:crypto.randomUUID(),name:"Standard",sellingPrice:"",status:"ACTIVE"}], description: "", status: "ACTIVE", recipeVariantKey:null, recipeDrafts:{} });
+const isProductForm=(value:unknown):value is ProductForm=>Boolean(value&&typeof value==="object"&&typeof (value as ProductForm).name==="string"&&typeof (value as ProductForm).categoryId==="string"&&typeof (value as ProductForm).description==="string"&&Array.isArray((value as ProductForm).variants)&&(value as ProductForm).variants.every((variant)=>variant&&typeof variant.key==="string"&&typeof variant.name==="string")&&typeof (value as ProductForm).recipeDrafts==="object");
+export const menuProductDraftIsMeaningful=(form:ProductForm)=>Boolean(form.name.trim()||form.categoryId||form.description.trim()||form.variants.some((variant)=>variant.name!=="Standard"||variant.sellingPrice!==""||variant.status!=="ACTIVE")||Object.keys(form.recipeDrafts).length);
+export const menuProductDraftSummary=(form:ProductForm)=>`${form.name.trim()||"Unnamed menu product"} · ${form.variants.length} variant${form.variants.length===1?"":"s"}`;
+export const revalidateMenuProductDraft=(form:ProductForm,categories:MenuCategory[],inventory:InventoryItem[]):ProductForm=>({
+  ...form,
+  categoryId:categories.some((category)=>category.id===form.categoryId&&category.status==="ACTIVE")?form.categoryId:"",
+  recipeDrafts:Object.fromEntries(Object.entries(form.recipeDrafts).map(([key,draft])=>[key,{...draft,items:draft.items.map((item)=>inventory.some((candidate)=>candidate.id===item.inventoryItemId&&candidate.status==="ACTIVE")?item:{...item,inventoryItemId:"",unit:""})}]))
+});
 export const MENU_VARIANT_PRESETS = ["Standard", "Small", "Medium", "Large"] as const;
 export const menuVariantSelection = (name:string) => MENU_VARIANT_PRESETS.includes(name.trim() as typeof MENU_VARIANT_PRESETS[number]) ? name.trim() : "Custom";
 export const menuVariantNameForSelection = (currentName:string, selection:string) => selection === "Custom"
@@ -108,6 +117,16 @@ export function MenuRecipesPage() {
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const productDrafts=useLocalDraftCollection<ProductForm>({userId:user?.id,branchId:user?.branchId,form:"menu-product-form"},isProductForm);
+  const [activeProductDraftId,setActiveProductDraftId]=useState<string|null>(null);
+  const activeProductDraftIdRef=useRef<string|null>(null);
+  const productAutosaveTimerRef=useRef<ReturnType<typeof setTimeout>|null>(null);
+  const productAutosaveBlockedRef=useRef(false);
+  const [productRecoveryDraftId,setProductRecoveryDraftId]=useState<string|null>(null);
+  const [productDraftsOpen,setProductDraftsOpen]=useState(false);
+  const [productExitOpen,setProductExitOpen]=useState(false);
+  const [productDeleteDraftId,setProductDeleteDraftId]=useState<string|null>(null);
+  const [productDraftError,setProductDraftError]=useState("");
   const [actionProductId, setActionProductId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<MenuProduct | null>(null);
   const [deleteConfirmation,setDeleteConfirmation]=useState<ControlledActionValue>({reason:"",verificationPin:""});
@@ -131,12 +150,21 @@ export function MenuRecipesPage() {
     return (category === "All" || product.category === category) && (!query || product.name.toLowerCase().includes(query) || product.code.toLowerCase().includes(query) || product.category.toLowerCase().includes(query));
   }), [products, category, search]);
 
-  const openCreate = () => { setEditing(null); setForm(emptyForm()); setFormErrors({}); setProductModal(true); };
+  const resetProductDraftForm=()=>{setForm(emptyForm());setFormErrors({});setProductDraftError("");activeProductDraftIdRef.current=null;setActiveProductDraftId(null);};
+  const openCreate = () => { setEditing(null);resetProductDraftForm();productAutosaveBlockedRef.current=false;setProductRecoveryDraftId(productDrafts.list()[0]?.id??null);setProductModal(true); };
   const openEdit = (product: MenuProduct) => {
     setEditing(product); setFormErrors({});
     setForm({ name: product.name, categoryId: product.categoryId ?? categories.find((item) => item.name === product.category)?.id ?? "", variants:product.variants.map((variant)=>({key:variant.id||crypto.randomUUID(),id:variant.id||undefined,name:variant.name,sellingPrice:variant.sellingPrice,status:variant.status})), description: product.description ?? "", status: product.status, recipeVariantKey:null, recipeDrafts:{} });
     setProductModal(true);
   };
+  const persistProductDraft=()=>{const id=productDrafts.save(form,activeProductDraftIdRef.current??undefined);if(!id){setProductDraftError("Unable to save this draft in browser storage. Keep editing and check browser storage availability.");return "";}activeProductDraftIdRef.current=id;setActiveProductDraftId(id);setProductDraftError("");return id;};
+  const continueProductDraft=(id:string)=>{const entry=productDrafts.read(id);if(!entry){setProductDraftError("This draft is unavailable or expired.");return;}setForm(revalidateMenuProductDraft(entry.value,categories,inventory));setFormErrors({});setProductDraftError("");activeProductDraftIdRef.current=id;setActiveProductDraftId(id);setProductRecoveryDraftId(null);setProductDraftsOpen(false);};
+  const preventProductAutosave=()=>{productAutosaveBlockedRef.current=true;if(productAutosaveTimerRef.current){clearTimeout(productAutosaveTimerRef.current);productAutosaveTimerRef.current=null;}};
+  useEffect(()=>{if(!productModal||editing||productRecoveryDraftId||productAutosaveBlockedRef.current||!menuProductDraftIsMeaningful(form))return;if(productAutosaveTimerRef.current)clearTimeout(productAutosaveTimerRef.current);productAutosaveTimerRef.current=setTimeout(()=>{if(!productAutosaveBlockedRef.current)persistProductDraft();},600);return()=>{if(productAutosaveTimerRef.current){clearTimeout(productAutosaveTimerRef.current);productAutosaveTimerRef.current=null;}};},[editing,form,productModal,productRecoveryDraftId]);
+  const requestProductClose=()=>{if(editing||!menuProductDraftIsMeaningful(form)){preventProductAutosave();setProductModal(false);return;}setProductDraftError("");setProductExitOpen(true);};
+  const saveProductDraftAndExit=()=>{if(!persistProductDraft())return;preventProductAutosave();setProductExitOpen(false);setProductModal(false);};
+  const exitProductWithoutSaving=()=>{preventProductAutosave();if(activeProductDraftIdRef.current)productDrafts.remove(activeProductDraftIdRef.current);activeProductDraftIdRef.current=null;setActiveProductDraftId(null);setProductExitOpen(false);setProductModal(false);};
+  const confirmDeleteProductDraft=()=>{if(!productDeleteDraftId)return;productDrafts.remove(productDeleteDraftId);if(activeProductDraftIdRef.current===productDeleteDraftId){activeProductDraftIdRef.current=null;setActiveProductDraftId(null);}setProductDeleteDraftId(null);};
   const validate = () => {
     const errors: Record<string, string> = {};
     const nameError=productNameValidationError(form.name);
@@ -183,7 +211,7 @@ export function MenuRecipesPage() {
       const message = editing
         ? (manager ? "Changes submitted for Owner approval" : changesHistoricalRecipe?"New recipe versions saved; historical COGS was preserved":"Menu product updated")
         : (manager ? "Product submitted for Owner approval" : "Product sent to Branch Managers for review");
-      toast.success(message); setProductModal(false); await load();
+      toast.success(message);if(!editing){preventProductAutosave();if(activeProductDraftIdRef.current)productDrafts.remove(activeProductDraftIdRef.current);}setProductModal(false); await load();
     } catch (reason) { toast.error(reason instanceof Error ? reason.message : "Unable to save product"); }
     finally { setSaving(false); }
   };
@@ -286,7 +314,9 @@ export function MenuRecipesPage() {
     </TableCard>
     {selected && <ProductDetails product={selected} owner={owner} canEdit={(owner && selected.productScope === "GLOBAL") || (manager && selected.productScope === "BRANCH" && selected.originBranchId === user?.branchId)} onClose={() => setSelected(null)} onEdit={() => { setSelected(null); openEdit(selected); }} />}
     {reviewTarget && <ProductReviewModal product={reviewTarget} categories={categories} comment={reviewComment} setComment={setReviewComment} saving={actionProductId === reviewTarget.id} onClose={() => { if (!actionProductId) { setReviewTarget(null); setReviewComment(""); } }} onDecision={(decision) => void reviewProduct(reviewTarget, decision, reviewComment)} />}
-    {productModal && <ProductEditor editing={editing} form={form} setForm={setForm} errors={formErrors} categories={categories} inventory={owner ? inventory.filter((item) => item.itemScope === "GLOBAL") : inventory} canCreateIngredient={owner || manager} saving={saving} onInventoryCreated={(item) => setInventory((current) => [...current, item].sort((a, b) => a.name.localeCompare(b.name)))} onClose={() => setProductModal(false)} onSave={() => void saveProduct()} />}
+    {productModal && <ProductEditor editing={editing} form={form} setForm={setForm} errors={formErrors} categories={categories} inventory={owner ? inventory.filter((item) => item.itemScope === "GLOBAL") : inventory} canCreateIngredient={owner || manager} saving={saving} draftEntries={editing?[]:productDrafts.list()} activeDraftId={activeProductDraftId} recoveryDraft={productRecoveryDraftId?productDrafts.read(productRecoveryDraftId):null} draftError={productDraftError} draftsOpen={productDraftsOpen} onToggleDrafts={()=>setProductDraftsOpen((open)=>!open)} onResumeDraft={continueProductDraft} onStartNew={()=>{setProductRecoveryDraftId(null);resetProductDraftForm();}} onDeleteDraft={setProductDeleteDraftId} onInventoryCreated={(item) => setInventory((current) => [...current, item].sort((a, b) => a.name.localeCompare(b.name)))} onClose={requestProductClose} onSave={() => void saveProduct()} />}
+    {productExitOpen&&<ProductDraftExitDialog error={productDraftError} onKeepEditing={()=>{setProductExitOpen(false);setProductDraftError("");}} onSaveDraft={saveProductDraftAndExit} onExit={exitProductWithoutSaving}/>}
+    {productDeleteDraftId&&<ProductDraftDeleteDialog onCancel={()=>setProductDeleteDraftId(null)} onConfirm={confirmDeleteProductDraft}/>}
     {categoryManagerOpen&&canManageMenuCategories(user?.role)&&<CategoryManagerModal categories={categories} onClose={()=>setCategoryManagerOpen(false)} onChanged={load}/>}
     {deleteTarget && (isControlledTestProductRetirement(user?.role,deleteTarget)?<ControlledActionDialog title={`Retire ${deleteTarget.name} as test data?`} description="This preserves the product, Standard variant, recipe, recipe quantities, and history while making the approved UAT product chain non-operational. ING-00073 and its reorder settings are not changed." confirmLabel="Retire Test Product" value={deleteConfirmation} busy={Boolean(actionProductId)} onChange={setDeleteConfirmation} onCancel={()=>{setDeleteTarget(null);setDeleteConfirmation({reason:"",verificationPin:""});}} onConfirm={()=>void deleteProduct()}/>:<MenuProductDeleteDialog product={deleteTarget} value={deleteConfirmation} busy={Boolean(actionProductId)} onChange={setDeleteConfirmation} onCancel={()=>{setDeleteTarget(null);setDeleteConfirmation({reason:"",verificationPin:""});}} onConfirm={()=>void deleteProduct()}/>)}
   </div>;
@@ -459,7 +489,10 @@ function CategoryManagerModal({categories,onClose,onChanged}:{categories:MenuCat
   </Modal>;
 }
 
-function ProductEditor({ editing, form, setForm, errors, categories, inventory, canCreateIngredient, saving, onInventoryCreated, onClose, onSave }: { editing: MenuProduct|null; form: ProductForm; setForm: React.Dispatch<React.SetStateAction<ProductForm>>; errors: Record<string,string>; categories: MenuCategory[]; inventory: InventoryItem[]; canCreateIngredient:boolean; saving:boolean; onInventoryCreated:(item:InventoryItem)=>void; onClose:()=>void; onSave:()=>void }) {
+function ProductDraftExitDialog({error,onKeepEditing,onSaveDraft,onExit}:{error:string;onKeepEditing:()=>void;onSaveDraft:()=>void;onExit:()=>void}){return <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4"><div role="alertdialog" aria-modal="true" aria-label="Exit Without Submitting?" className="w-full max-w-lg rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5 shadow-2xl"><h3 className="text-lg font-bold">Exit Without Submitting?</h3><p className="mt-2 text-sm text-[var(--app-text-muted)]">You have unfinished changes. Would you like to save them as a draft?</p>{error&&<p role="alert" className="mt-3 text-sm text-[var(--app-danger)]">{error}</p>}<div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Btn variant="outline" onClick={onKeepEditing}>Keep Editing</Btn><Btn variant="outline" onClick={onSaveDraft}>Save as Draft</Btn><Btn variant="danger" onClick={onExit}>Exit Without Saving</Btn></div></div></div>;}
+function ProductDraftDeleteDialog({onCancel,onConfirm}:{onCancel:()=>void;onConfirm:()=>void}){return <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4"><div role="alertdialog" aria-modal="true" aria-label="Delete Menu Product Draft?" className="w-full max-w-md rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5 shadow-2xl"><h3 className="text-lg font-bold">Delete Menu Product Draft?</h3><p className="mt-2 text-sm text-[var(--app-text-muted)]">This removes only the selected browser-local draft.</p><div className="mt-5 flex justify-end gap-2"><Btn variant="outline" onClick={onCancel}>Cancel</Btn><Btn variant="danger" onClick={onConfirm}>Delete Draft</Btn></div></div></div>;}
+
+function ProductEditor({ editing, form, setForm, errors, categories, inventory, canCreateIngredient, saving, draftEntries, activeDraftId, recoveryDraft, draftError, draftsOpen, onToggleDrafts, onResumeDraft, onStartNew, onDeleteDraft, onInventoryCreated, onClose, onSave }: { editing: MenuProduct|null; form: ProductForm; setForm: React.Dispatch<React.SetStateAction<ProductForm>>; errors: Record<string,string>; categories: MenuCategory[]; inventory: InventoryItem[]; canCreateIngredient:boolean; saving:boolean; draftEntries:LocalDraftEntry<ProductForm>[];activeDraftId:string|null;recoveryDraft:LocalDraftEntry<ProductForm>|null;draftError:string;draftsOpen:boolean;onToggleDrafts:()=>void;onResumeDraft:(id:string)=>void;onStartNew:()=>void;onDeleteDraft:(id:string)=>void;onInventoryCreated:(item:InventoryItem)=>void; onClose:()=>void; onSave:()=>void }) {
   const [ingredientTarget,setIngredientTarget]=useState<{variantKey:string;rowKey:string}|null>(null);
   const selectedRecipeVariant=form.variants.find((variant)=>variant.key===form.recipeVariantKey);
   const existingRecipeVariant=editing?.variants.find((variant)=>variant.id===selectedRecipeVariant?.id);
@@ -477,6 +510,9 @@ function ProductEditor({ editing, form, setForm, errors, categories, inventory, 
         <div className="flex items-start gap-3"><div className="w-11 h-11 rounded-2xl flex items-center justify-center text-white shadow-sm" style={{background:"var(--app-primary)"}}><ChefHat size={21}/></div><div><h2 className="text-xl font-bold">{editing?"Edit Menu Product":"Add Menu Product"}</h2><p className="text-sm mt-1" style={{color:"var(--app-text-muted)"}}>Save the product and its sizes. Add a recipe when verified ingredients are available.</p></div></div>
         <button aria-label="Close form" onClick={onClose} className="w-9 h-9 rounded-xl border flex items-center justify-center" style={{borderColor:"var(--app-border)",background:"var(--app-surface)"}}><X size={18}/></button>
       </div>
+      {!editing&&recoveryDraft&&<section className="mb-5 rounded-2xl border border-[var(--app-primary)] bg-[var(--app-primary-faint)] p-4"><p className="font-semibold">Resume Menu Product Draft?</p><p className="mt-1 text-xs text-[var(--app-text-muted)]">{menuProductDraftSummary(recoveryDraft.value)}</p><div className="mt-3 flex gap-2"><Btn size="sm" onClick={()=>onResumeDraft(recoveryDraft.id)}>Resume Draft</Btn><Btn size="sm" variant="outline" onClick={onStartNew}>Start New</Btn></div></section>}
+      {!editing&&draftsOpen&&<section aria-label="Temporary menu product drafts" className="mb-5 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-4"><h3 className="font-semibold">Temporary Menu Product Drafts</h3><p className="text-xs text-[var(--app-text-muted)]">Browser-only unfinished forms; no product or recipe is created until submission.</p>{draftEntries.length===0?<p className="py-5 text-center text-sm text-[var(--app-text-muted)]">No saved menu product drafts.</p>:<ul className="mt-3 space-y-2">{draftEntries.map((draft)=><li key={draft.id} className="flex flex-col gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 sm:flex-row sm:items-center sm:justify-between"><div className="min-w-0"><p className="truncate text-sm font-semibold">{menuProductDraftSummary(draft.value)}</p></div><div className="flex gap-2"><button type="button" onClick={()=>onResumeDraft(draft.id)} className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] px-2.5 py-1.5 text-xs font-semibold text-[var(--app-primary)]"><FilePenLine size={13}/>Continue/Edit</button><button type="button" onClick={()=>onDeleteDraft(draft.id)} className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] px-2.5 py-1.5 text-xs font-semibold text-[var(--app-danger)]"><Trash2 size={13}/>Delete Draft</button></div></li>)}</ul>}</section>}
+      {!editing&&activeDraftId&&<p className="mb-4 text-xs text-[var(--app-text-muted)]">Autosaving this menu product draft on this device.</p>}{draftError&&<p role="alert" className="mb-4 text-sm text-[var(--app-danger)]">{draftError}</p>}
       <section className="rounded-2xl border p-4 md:p-5" style={{borderColor:"var(--app-border)",background:"var(--app-surface-elevated)"}}>
         <div className="flex items-center gap-2 mb-4"><BookOpen size={16} style={{color:"var(--app-primary)"}}/><h3 className="text-xs font-bold uppercase tracking-wider" style={{color:"var(--app-primary)"}}>Product Information</h3></div>
         <div className="grid md:grid-cols-2 gap-4">
@@ -503,7 +539,7 @@ function ProductEditor({ editing, form, setForm, errors, categories, inventory, 
         </div>;})}</div>
         {errors.items&&<p className="text-xs mt-3" style={{color:"var(--app-danger)"}}>{errors.items}</p>}
       </section>}
-      <div className="flex flex-col-reverse sm:flex-row justify-end gap-3 mt-6"><button type="button" onClick={onClose} className="px-5 py-3 rounded-xl border text-sm font-semibold" style={{borderColor:"var(--app-border)",background:"var(--app-surface)"}}>Cancel</button><button type="button" disabled={saving} onClick={onSave} className="px-6 py-3 rounded-xl text-white text-sm font-semibold shadow-md disabled:opacity-50" style={{background:"var(--app-primary)"}}>{saving?"Saving…":editing?"Save Changes":"Create Product"}</button></div>
+      <div className="flex flex-wrap justify-end gap-3 mt-6"><button type="button" disabled={saving} onClick={onSave} className="px-6 py-3 rounded-xl text-white text-sm font-semibold shadow-md disabled:opacity-50" style={{background:"var(--app-primary)"}}>{saving?"Saving…":editing?"Save Changes":"Create Menu Product"}</button>{!editing&&draftEntries.length>0&&<button type="button" onClick={onToggleDrafts} className="inline-flex items-center gap-2 rounded-xl border border-[var(--app-border)] px-5 py-3 text-sm font-semibold text-[var(--app-primary)]"><FolderOpen size={15}/>View Drafts ({draftEntries.length})</button>}<button type="button" onClick={onClose} className="px-5 py-3 rounded-xl border text-sm font-semibold" style={{borderColor:"var(--app-border)",background:"var(--app-surface)"}}>Cancel</button></div>
     </Modal>
     {ingredientTarget&&<IngredientEditorModal categories={Array.from(new Set(inventory.map((item)=>item.category))).sort()} onClose={()=>setIngredientTarget(null)} onCreated={(item)=>{onInventoryCreated(item);updateRow(ingredientTarget.variantKey,ingredientTarget.rowKey,{inventoryItemId:item.id,unit:item.unit});setIngredientTarget(null);}}/>}
   </>;

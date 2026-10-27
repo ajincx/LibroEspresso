@@ -47,6 +47,13 @@
 [aria-label="New Purchase Order"] .grid:has(> label > [aria-label="Purchase quantity"]) > * { min-width: 0; }
 [aria-label="New Purchase Order"] .grid:has(> label > [aria-label="Purchase quantity"]) .custom-select-trigger { min-width: 0; }
 
+/* Incident item controls must override the shared Select trigger's 150px
+   minimum so the fixed delete track can never be covered at narrow widths. */
+[data-incident-item-grid] > * { min-width: 0; }
+[data-incident-item-grid] .dropdown-control,
+[data-incident-item-grid] .custom-select-trigger { width: 100%; min-width: 0; }
+[data-incident-item-grid] .custom-select-trigger { min-height: 2.75rem; }
+
 @media (max-width: 560px) {
   .dashboard-kpis { grid-template-columns: 1fr !important; }
   .sales-analysis-page .dashboard-filters > *,

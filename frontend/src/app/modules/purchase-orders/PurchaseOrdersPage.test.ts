@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PurchaseOrder } from "../../types/operations";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { canAuthorizePurchaseOrderTest, canDeletePurchaseOrderTest, convertedPurchaseQuantity, CreatePurchaseOrder, isCompletePurchaseOrderItem, isPhysicalCountRequiredError, OrderDetail, PhysicalCountRequiredNotice, PURCHASE_ORDER_STOCK_TIMING_GUIDANCE, PurchaseOrderCorrectionDialog, purchaseOrderCorrectionReady, PurchaseOrderManageButton, purchaseOrderDraftSummary, purchaseOrderFormValidationError, receiptDateError, standardPurchaseConversionFactor } from "./PurchaseOrdersPage";
+import { canAuthorizePurchaseOrderTest, canDeletePurchaseOrderTest, convertedPurchaseQuantity, CreatePurchaseOrder, isCompletePurchaseOrderItem, isPhysicalCountRequiredError, OrderDetail, PhysicalCountRequiredNotice, PURCHASE_ORDER_STOCK_TIMING_GUIDANCE, PurchaseOrderCorrectionDialog, purchaseOrderCorrectionReady, PurchaseOrderExitDialog, purchaseOrderFooterActions, PurchaseOrderManageButton, purchaseOrderDraftIsMeaningful, purchaseOrderDraftSummary, PurchaseOrderRecoveryDialog, purchaseOrderFormValidationError, receiptDateError, standardPurchaseConversionFactor } from "./PurchaseOrdersPage";
 import { purchaseOrderLifecyclePayload } from "../../services/controlledAction.service";
 
 const order=(patch:Partial<PurchaseOrder>={}):PurchaseOrder=>({
@@ -112,15 +112,38 @@ describe("new purchase-order item layout",()=>{
     expect(markup).not.toContain("position:absolute");
     expect(markup).toContain("Notes <span");
     expect(markup).toContain("(Optional)");
-    expect(markup).toContain("View Drafts (0)");
-    expect(markup).toContain("Save Temporary Draft");
-    expect(markup).toContain("Create Official PO Draft");
+    expect(markup).toContain("Create Order");
+    expect(markup).toContain("Cancel Order");
+    expect(markup).not.toContain("View Drafts (0)");
+    expect(markup).not.toContain("Save Temporary Draft");
+    expect(markup).not.toContain("Create Official PO Draft");
+    expect(markup).toContain("border-[var(--app-border)]");
+    expect(markup.match(/\(Optional\)/g)).toHaveLength(1);
+    expect(markup).not.toContain('placeholder="Optional"');
   });
 
   it("allows an incomplete browser-only draft summary without weakening official validation",()=>{
     const draft={supplierChoice:"",otherSupplier:"",orderDate:"2026-10-27",expectedDeliveryDate:"",notes:"",rows:[{inventoryItemId:"",quantityOrdered:"",unitCost:"",purchaseUom:"g",conversionFactor:"1"}]};
     expect(purchaseOrderDraftSummary(draft)).toBe("Supplier not selected · 0 items");
+    expect(purchaseOrderDraftIsMeaningful(draft,"2026-10-27")).toBe(false);
+    expect(purchaseOrderDraftIsMeaningful({...draft,rows:[{...draft.rows[0]!,quantityOrdered:"0"}]},"2026-10-27")).toBe(true);
     expect(purchaseOrderFormValidationError({supplierName:"",orderDate:"2026-10-27",expectedDeliveryDate:"",rowCount:1,validRowCount:0})).not.toBeNull();
+  });
+
+  it("shows View Drafts only when temporary drafts exist",()=>{
+    expect(purchaseOrderFooterActions(0)).toEqual(["Create Order","Cancel Order"]);
+    expect(purchaseOrderFooterActions(2)).toEqual(["Create Order","View Drafts (2)","Cancel Order"]);
+  });
+
+  it("uses application dialogs for exit and recovery decisions",()=>{
+    const exit=renderToStaticMarkup(React.createElement(PurchaseOrderExitDialog,{error:"",onKeepEditing:vi.fn(),onSaveDraft:vi.fn(),onExitWithoutSaving:vi.fn()}));
+    expect(exit).toContain("Exit New Purchase Order?");
+    for(const action of ["Keep Editing","Save as Draft","Exit Without Saving"])expect(exit).toContain(action);
+    const recovery=renderToStaticMarkup(React.createElement(PurchaseOrderRecoveryDialog,{summary:"Supplier · 1 item",onResume:vi.fn(),onStartNew:vi.fn()}));
+    expect(recovery).toContain("Resume Purchase Order Draft?");
+    expect(recovery).toContain("Resume Draft");
+    expect(recovery).toContain("Start New");
+    expect(recovery).toContain("seven days");
   });
 });
 

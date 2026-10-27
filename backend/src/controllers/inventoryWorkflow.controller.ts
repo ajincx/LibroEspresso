@@ -1889,7 +1889,7 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
   const { id } = idParams.parse(req.params);
   const input = inventoryCountInput.parse(req.body);
   assertInventoryCountDateNotFuture(input.countDate);
-  if (!input.correctionReason) throw new AppError(422,"COUNT_CORRECTION_REASON_REQUIRED","Provide a correction reason of at least 10 characters.");
+  if (!input.correctionReason) throw new AppError(422,"COUNT_CORRECTION_REASON_REQUIRED","Provide a reason for this physical-count correction.");
   const branchId = requiredBranchId(req.user!);
   const client = await pool.connect();
   try {

@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ArrowLeft, CheckCircle, ClipboardList, RefreshCw, Send } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
 import type { CountVarianceItem, DailyInventoryCountContext, ExpectedInventoryItem, FullInventoryCountContext, InventoryCountType, UnavailableInventoryCountItem } from "../../types/inventoryWorkflow";
 import { CalendarDateField, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, TableLoadingRow, Btn, SearchInput, Select, SkeletonBlock } from "../../components/ModuleUi";
+import { ControlledActionDialog } from "../../components/ControlledActionDialog";
 
 import { businessDate } from "../../utils/businessDate";
 
@@ -219,6 +220,32 @@ export function PhysicalCountBackAction({ onBack, label="Back to Count History" 
   return <Btn variant="outline" size="sm" icon={ArrowLeft} onClick={onBack}>{label}</Btn>;
 }
 
+export const physicalCountCorrectionReasonError = (reason:string) => reason.trim() ? "" : "Reason for Correction is required.";
+
+export function PhysicalCountCorrectionDialog({countType,reason,error,busy,onReasonChange,onCancel,onConfirm}:{
+  countType:InventoryCountType;reason:string;error:string;busy:boolean;onReasonChange:(reason:string)=>void;onCancel:()=>void;onConfirm:()=>void;
+}) {
+  const countLabel=countType==="OPENING"?"Opening Count":countType==="CLOSING"?"Closing Count":"Full Physical Count";
+  return <ControlledActionDialog
+    title={`Confirm ${countLabel} Correction`}
+    description="You are correcting an existing physical count. The original evidence remains preserved and this correction will be recorded in the audit history."
+    confirmLabel="Confirm Correction"
+    confirmVariant="primary"
+    value={{reason,verificationPin:""}}
+    busy={busy}
+    requireVerificationPin={false}
+    minReasonLength={1}
+    maxReasonLength={1000}
+    reasonLabel="Reason for Correction"
+    reasonPlaceholder="Explain why this count needs correction"
+    error={error}
+    showCloseButton
+    onChange={(value)=>onReasonChange(value.reason)}
+    onCancel={onCancel}
+    onConfirm={onConfirm}
+  />;
+}
+
 export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FULL", embedded=false, editCountId=null }: { onSubmitted?: () => void; onBackToHistory?: () => void; countType?:InventoryCountType; embedded?:boolean; editCountId?:string|null }) {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
@@ -248,6 +275,10 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
   const [openingCanEdit,setOpeningCanEdit]=useState(false);
   const [openingEditBlockReason,setOpeningEditBlockReason]=useState<string|null>(null);
   const [reloadRevision,setReloadRevision]=useState(0);
+  const [correctionDialogOpen,setCorrectionDialogOpen]=useState(false);
+  const [correctionReason,setCorrectionReason]=useState("");
+  const [correctionDialogError,setCorrectionDialogError]=useState("");
+  const correctionSubmittingRef=useRef(false);
   const completion = useMemo(() => physicalCountCompletion(expected, entries), [entries, expected]);
   const visibleItems = useMemo(
     () => filterPhysicalCountItems(expected, search, completionFilter, entries),
@@ -361,6 +392,48 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
     else navigate("/inventory/physical-count-history");
   };
 
+  const closeCorrectionDialog = () => {
+    if (saving) return;
+    setCorrectionDialogOpen(false);
+    setCorrectionReason("");
+    setCorrectionDialogError("");
+  };
+
+  const finishSubmission = (count:{id:string;countNo:string;items:CountVarianceItem[]}, corrected:boolean) => {
+    if (!onSubmitted) setSubmitted({ id: count.id, countNo: count.countNo, items: count.items });
+    toast.success(corrected
+      ? "Physical count corrections saved"
+      : countType === "OPENING"
+        ? "Opening Count submitted"
+        : "Physical count submitted and variances calculated automatically");
+    if (openingEditing) {
+      setEditingCountId(null);
+      setOpeningMode("SUMMARY");
+      setHasUnsavedChanges(false);
+      setPreviewing(false);
+      setReloadRevision((value) => value + 1);
+    } else {
+      setEditingCountId(null);
+      setParams({}, { replace: true });
+      onSubmitted?.();
+    }
+  };
+
+  const confirmCorrection = async () => {
+    if (!editingCountId || saving || correctionSubmittingRef.current) return;
+    const reasonError=physicalCountCorrectionReasonError(correctionReason);
+    if(reasonError){setCorrectionDialogError(reasonError);return;}
+    correctionSubmittingRef.current=true;setSaving(true);setCorrectionDialogError("");
+    try {
+      const items=countType==="FULL"?buildPhysicalCountItems(expected,entries):buildEnteredPhysicalCountItems(expected,entries);
+      const count=await inventoryWorkflowService.updateCount(editingCountId,countDate,items,correctionReason.trim());
+      setCorrectionDialogOpen(false);setCorrectionReason("");
+      finishSubmission(count,true);
+    } catch (reason) {
+      setCorrectionDialogError(reason instanceof Error?reason.message:"Unable to save the physical-count correction");
+    } finally { correctionSubmittingRef.current=false;setSaving(false); }
+  };
+
   const submit = async () => {
     if (isFutureInventoryCountDate(countDate, currentBusinessDate)) {
       toast.error("Physical counts cannot be recorded for a future date.");
@@ -384,29 +457,12 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
       return;
     }
     if(countType!=="FULL"&&!previewing&&!openingEditing){setPreviewing(true);return;}
+    if(editingCountId){setCorrectionDialogError("");setCorrectionDialogOpen(true);return;}
     setSaving(true);
     try {
       const items = countType === "FULL" ? buildPhysicalCountItems(expected, entries) : dailyItems;
-      const reason=editingCountId?window.prompt("Explain this correction (at least 10 characters):")?.trim():undefined;
-      if(editingCountId&&(!reason||reason.length<10)){toast.error("Provide a correction reason of at least 10 characters.");return;}
-      const count = editingCountId ? await inventoryWorkflowService.updateCount(editingCountId, countDate, items,reason!) : await inventoryWorkflowService.submitCount(countDate, items,countType);
-      if (!onSubmitted) setSubmitted({ id: count.id, countNo: count.countNo, items: count.items });
-      toast.success(editingCountId
-        ? "Physical count corrections saved"
-        : countType === "OPENING"
-          ? "Opening Count submitted"
-          : "Physical count submitted and variances calculated automatically");
-      if (openingEditing) {
-        setEditingCountId(null);
-        setOpeningMode("SUMMARY");
-        setHasUnsavedChanges(false);
-        setPreviewing(false);
-        setReloadRevision((value) => value + 1);
-      } else {
-        setEditingCountId(null);
-        setParams({}, { replace: true });
-        onSubmitted?.();
-      }
+      const count = await inventoryWorkflowService.submitCount(countDate, items,countType);
+      finishSubmission(count,false);
     } catch (reason) { toast.error(reason instanceof Error ? reason.message : "Unable to submit inventory count"); }
     finally { setSaving(false); }
   };
@@ -430,6 +486,9 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
   );
 
   return <div className={embedded?"space-y-5":"p-4 md:p-6 space-y-5"}>
+    {correctionDialogOpen&&(
+      <PhysicalCountCorrectionDialog countType={countType} reason={correctionReason} error={correctionDialogError} busy={saving} onReasonChange={(reason)=>{setCorrectionReason(reason);setCorrectionDialogError("");}} onCancel={closeCorrectionDialog} onConfirm={()=>void confirmCorrection()}/>
+    )}
     {!embedded&&<div>
       <PhysicalCountBackAction onBack={backToHistory} label={countType==="FULL"?"Back to Count History":"Back to Operations"}/>
     </div>}

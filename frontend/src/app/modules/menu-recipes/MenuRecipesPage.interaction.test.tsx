@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   menuProducts: vi.fn(),
   role: "OWNER",
 }));
+const localDraftValues=new Map<string,string>();
+Object.defineProperty(globalThis,"localStorage",{configurable:true,value:{getItem:(key:string)=>localDraftValues.get(key)??null,setItem:(key:string,value:string)=>localDraftValues.set(key,value),removeItem:(key:string)=>localDraftValues.delete(key)}});
 
 vi.mock("../../contexts/AuthContext", () => ({
   useAuth: () => ({ user: { id: "user-1", role: mocks.role, branchId: mocks.role === "OWNER" ? null : "branch-1" } }),
@@ -67,6 +69,7 @@ const button = (root: ReactTestInstance, label: string) => {
 describe("Menu & Recipe Owner inventory ingredient workflow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localDraftValues.clear();
     mocks.role = "OWNER";
     mocks.menuProducts.mockResolvedValue([]);
     mocks.menuCategories.mockResolvedValue([{ id: "category-1", name: "Coffee", description: "", status: "ACTIVE" }]);
@@ -157,17 +160,32 @@ describe("Menu & Recipe Owner inventory ingredient workflow", () => {
       price.props.onChange({target:{value:"149.95"}});
       category.props.onChange({target:{value:"category-1"}});
     });
-    await act(async()=>button(root,"Create Product").props.onClick());
+    await act(async()=>button(root,"Create Menu Product").props.onClick());
     expect(mocks.createMenuProduct).not.toHaveBeenCalled();
     expect(root.findAllByType("span").some((node)=>nodeText(node).includes("at least one letter"))).toBe(true);
 
     await act(async()=>name.props.onChange({target:{value:"  2-in-1 Coffee  "}}));
-    await act(async()=>button(root,"Create Product").props.onClick());
+    await act(async()=>button(root,"Create Menu Product").props.onClick());
     expect(mocks.createMenuProduct).toHaveBeenCalledOnce();
     expect(mocks.createMenuProduct).toHaveBeenCalledWith(expect.objectContaining({
       name:"2-in-1 Coffee",
       categoryId:"category-1",
       variants:[expect.objectContaining({name:"Standard",sellingPrice:149.95})],
     }));
+  });
+
+  it("autosaves incomplete menu product input without calling the creation API",async()=>{
+    let renderer:ReactTestRenderer;
+    await act(async()=>{renderer=create(<MenuRecipesPage/>);});
+    const root=renderer!.root;
+    await act(async()=>button(root,"Add Product").props.onClick());
+    const name=root.findAllByType("input").find((input)=>input.props.placeholder==="e.g., Spanish Latte")!;
+    vi.useFakeTimers();
+    await act(async()=>name.props.onChange({target:{value:"Unfinished Latte"}}));
+    await act(async()=>{vi.advanceTimersByTime(650);});
+    vi.useRealTimers();
+    expect(mocks.createMenuProduct).not.toHaveBeenCalled();
+    expect([...localDraftValues.values()].some((value)=>value.includes("Unfinished Latte"))).toBe(true);
+    renderer!.unmount();
   });
 });
