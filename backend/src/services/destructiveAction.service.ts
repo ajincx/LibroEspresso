@@ -40,6 +40,7 @@ export async function writeDestructiveActionAudit(
   description: string,
   metadata: Record<string, unknown>,
   client: Pick<PoolClient, "query">,
+  verificationResult: "VERIFIED" | "NOT_REQUIRED" = "VERIFIED",
 ) {
   await writeAudit(
     user,
@@ -47,7 +48,7 @@ export async function writeDestructiveActionAudit(
     context.module,
     context.recordId,
     description,
-    { ...metadata, reason: context.reason, verificationResult: "VERIFIED" },
+    { ...metadata, reason: context.reason, verificationResult },
     client,
   );
 }

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
-import { Bar, BarChart, CartesianGrid, Cell, LabelList, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { ShoppingCart, Package, Percent, TrendingDown, RefreshCw, Check, AlertTriangle, Search, BadgeDollarSign, Sparkles, ArrowRight, Pencil, Plus, Upload, Info, X } from "lucide-react";
 import { Card, Btn, KPICard, DashboardFilters, StatusChip, SearchInput, Select, SkeletonBlock, C, isModalBackdropEvent, type DashboardRange, type DashboardComparison } from "../../components/ModuleUi";
 import { useAuth } from "../../contexts/AuthContext";
@@ -35,14 +35,46 @@ export function rankDashboardProductSales(products: ProductSalesRow[]) {
   return { highest: descending.slice(0, 5), lowest: ascending.slice(0, 5) };
 }
 
-function ProductRankingBars({ title, products, color }: { title: string; products: ProductSalesRow[]; color: string }) {
-  return <div className="min-w-0"><h3 className="text-xs font-bold uppercase tracking-wide text-[var(--app-text-muted)]">{title}</h3><ul className="sr-only">{products.map((product)=><li key={product.id}>{product.name}: {product.unitsSold.toLocaleString()} units sold</li>)}</ul><div className="mt-2 h-56"><ResponsiveContainer width="100%" height="100%"><BarChart data={products} layout="vertical" margin={{left:8,right:34}}><CartesianGrid strokeDasharray="3 3" horizontal={false}/><XAxis type="number" allowDecimals={false} tick={{fontSize:10}}/><YAxis type="category" dataKey="name" width={118} tick={{fontSize:10}}/><Tooltip formatter={(value)=>[`${Number(value).toLocaleString()} units`,"Quantity sold"]} contentStyle={{borderRadius:12,borderColor:"var(--app-border)"}}/><Bar dataKey="unitsSold" name="Quantity sold" fill={color} radius={[0,8,8,0]} maxBarSize={28}><LabelList dataKey="unitsSold" position="right" formatter={(value:unknown)=>Number(value).toLocaleString()}/></Bar></BarChart></ResponsiveContainer></div></div>;
+export function productSalesSharePercent(unitsSold: number, totalUnitsSold: number) {
+  return totalUnitsSold > 0 ? (Math.max(0, unitsSold) / totalUnitsSold) * 100 : 0;
+}
+
+function ProductRankingBars({ title, products, color, totalUnitsSold }: { title: string; products: ProductSalesRow[]; color: string; totalUnitsSold: number }) {
+  const largestDisplayedValue = Math.max(0, ...products.map((product) => product.unitsSold));
+  return <section className="min-w-0 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 sm:p-5">
+    <h3 className="text-xs font-bold uppercase tracking-wide text-[var(--app-text-muted)]">{title}</h3>
+    <ol className="mt-4 space-y-4">
+      {products.map((product) => {
+        const share = productSalesSharePercent(product.unitsSold, totalUnitsSold);
+        const formattedShare = `${share.toFixed(1)}%`;
+        const relativeWidth = largestDisplayedValue > 0 ? Math.max(0, product.unitsSold) / largestDisplayedValue * 100 : 0;
+        return <li key={product.id} data-product-ranking-row className="min-w-0">
+          <div className="flex min-w-0 items-start justify-between gap-3 text-sm">
+            <span className="min-w-0 break-words font-medium leading-5 text-[var(--app-text)]">{product.name}</span>
+            <span className="shrink-0 font-semibold tabular-nums text-[var(--app-text)]">{formattedShare}</span>
+          </div>
+          <div
+            className="mt-2 h-2 w-full overflow-hidden rounded-full bg-[var(--app-surface-muted)]"
+            role="meter"
+            aria-label={`${product.name}: ${formattedShare} of total units sold`}
+            aria-valuemin={0}
+            aria-valuemax={largestDisplayedValue || 1}
+            aria-valuenow={Math.max(0, product.unitsSold)}
+            aria-valuetext={`${formattedShare} of total units sold; ${product.unitsSold.toLocaleString()} units`}
+          >
+            <span data-product-ranking-fill className="block h-full rounded-full transition-[width] duration-300 motion-reduce:transition-none" style={{ width: `${relativeWidth}%`, backgroundColor: color }}/>
+          </div>
+        </li>;
+      })}
+    </ol>
+  </section>;
 }
 
 export function ProductSalesRankingChart({ products }: { products: ProductSalesRow[] }) {
   const ranked = rankDashboardProductSales(products);
   const hasSales = products.some((product) => product.unitsSold > 0);
-  return <Card className="min-w-0 xl:col-span-2"><h2 className="font-semibold">Highest &amp; Lowest-Selling Menu Products</h2><p className="mt-1 text-xs text-[var(--app-text-muted)]">Quantity sold from accepted sales for the selected branch and date range.</p>{products.length === 0 ? <p className="py-12 text-sm text-[var(--app-text-muted)]">No active menu products are available for this branch scope.</p> : <>{!hasSales&&<p className="mt-4 rounded-xl bg-[var(--app-surface-muted)] p-3 text-sm text-[var(--app-text-muted)]">No accepted sales were recorded for this period. Active products are shown with zero quantity.</p>}<div className="mt-4 grid gap-5 md:grid-cols-2"><ProductRankingBars title="Top 5 highest-selling" products={ranked.highest} color={C.maroon}/><ProductRankingBars title="Top 5 lowest-selling" products={ranked.lowest} color={C.amber}/></div></>}</Card>;
+  const totalUnitsSold = products.reduce((total, product) => total + Math.max(0, product.unitsSold), 0);
+  return <Card className="min-w-0 xl:col-span-2"><h2 className="font-semibold">Highest &amp; Lowest-Selling Menu Products</h2><p className="mt-1 text-xs text-[var(--app-text-muted)]">Share of quantity sold from accepted sales for the selected branch and date range.</p>{products.length === 0 ? <p className="py-12 text-sm text-[var(--app-text-muted)]">No active menu products are available for this branch scope.</p> : <>{!hasSales&&<p className="mt-4 rounded-xl bg-[var(--app-surface-muted)] p-3 text-sm text-[var(--app-text-muted)]">No accepted sales were recorded for this period. Active products are shown with zero quantity.</p>}<div className="mt-4 grid gap-5 md:grid-cols-2"><ProductRankingBars title="Top 5 Highest-Selling Menu Products" products={ranked.highest} color={C.maroon} totalUnitsSold={totalUnitsSold}/><ProductRankingBars title="Top 5 Lowest-Selling Menu Products" products={ranked.lowest} color={C.amber} totalUnitsSold={totalUnitsSold}/></div></>}</Card>;
 }
 export function recordStockCountUrl(branchId: string | undefined, countDate = businessDate()) {
   const params = new URLSearchParams({ tab: "counts", countIntent: "record", countDate });

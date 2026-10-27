@@ -43,7 +43,7 @@ export const inventoryWorkflowService = {
     return (await api.get<ApiSuccess<{ counts: InventoryCountSummary[]; uatTestControlsEnabled: boolean }>>("/inventory-counts", { params: { branchId } })).data.data;
   },
   async count(id: string) {
-    return (await api.get<ApiSuccess<{ count: { id: string; countNo: string; countDate: string; canEdit: boolean; items: (CountVarianceItem & ExpectedInventoryItem)[] } }>>("/inventory-counts/" + id)).data.data.count;
+    return (await api.get<ApiSuccess<{ count: { id: string; countNo: string; countDate: string; countType: InventoryCountType; branchId: string; canEdit: boolean; editBlockReason:string|null; items: (CountVarianceItem & ExpectedInventoryItem)[] } }>>("/inventory-counts/" + id)).data.data.count;
   },
   async uatCounts(branchId?: string) {
     return (await api.get<ApiSuccess<{ counts: InventoryCountSummary[] }>>("/inventory-counts/uat-history", { params: { branchId } })).data.data.counts;

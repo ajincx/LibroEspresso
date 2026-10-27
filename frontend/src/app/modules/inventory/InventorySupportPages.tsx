@@ -44,6 +44,21 @@ export const filterInventoryCountHistory = (
   );
 };
 
+export const filterIngredientUsageItems = (items: ExpectedInventoryItem[], search: string) => {
+  const query = search.trim().toLocaleLowerCase();
+  return query
+    ? items.filter((item) => item.itemName.toLocaleLowerCase().includes(query) || item.sku.toLocaleLowerCase().includes(query))
+    : items;
+};
+export const INGREDIENT_USAGE_NO_MATCH_TITLE = "No matching ingredients found";
+
+export function IngredientUsageSearch({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return <div className="mb-3 flex flex-wrap items-center gap-2">
+    <SearchInput placeholder="Search ingredient name or SKU..." width={300} value={value} onChange={onChange}/>
+    {value && <Btn variant="ghost" size="sm" icon={X} onClick={() => onChange("")}>Clear Search</Btn>}
+  </div>;
+}
+
 const today = businessDate();
 const number = (value: number) => Number(value).toLocaleString("en-PH", { maximumFractionDigits: 4 });
 
@@ -65,6 +80,7 @@ export function ExpectedInventoryPage({ role, view, scopeBranchId = "ALL" }: { r
   const [branchId, setBranchId] = useState(scopeBranchId === "ALL" ? "" : scopeBranchId);
   const [countDate, setCountDate] = useState(today);
   const [items, setItems] = useState<ExpectedInventoryItem[]>([]);
+  const [usageSearch, setUsageSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -100,6 +116,7 @@ export function ExpectedInventoryPage({ role, view, scopeBranchId = "ALL" }: { r
     ? ["SKU", "Ingredient", "Previous Stock Count", "Received", "Expected Usage", "Unit"]
     : ["SKU", "Ingredient", "Previous Actual", "Received", "Expected Usage", "Adjustments", "Expected Stock", "Unit"];
   const colCount = cols.length;
+  const visibleItems = useMemo(() => isUsage ? filterIngredientUsageItems(items, usageSearch) : items, [isUsage, items, usageSearch]);
 
   return (
     <div className="p-4 md:p-6 space-y-5">
@@ -113,7 +130,7 @@ export function ExpectedInventoryPage({ role, view, scopeBranchId = "ALL" }: { r
         badge={
           items.length > 0 ? (
             <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-[var(--app-primary-faint)] text-[var(--app-primary)]">
-              {items.length} records
+              {isUsage && usageSearch.trim() ? `${visibleItems.length} of ${items.length}` : items.length} records
             </span>
           ) : undefined
         }
@@ -129,6 +146,7 @@ export function ExpectedInventoryPage({ role, view, scopeBranchId = "ALL" }: { r
           </>
         }
       >
+        {isUsage && <IngredientUsageSearch value={usageSearch} onChange={setUsageSearch}/>}
         <TableWrapper minWidth={840}>
           <THead cols={cols} />
           <tbody>
@@ -155,8 +173,15 @@ export function ExpectedInventoryPage({ role, view, scopeBranchId = "ALL" }: { r
                 title="No calculation records"
                 subtitle="No inventory calculation is available for the selected branch and date."
               />
+            ) : visibleItems.length === 0 ? (
+              <TableEmptyRow
+                colSpan={colCount}
+                icon={Search}
+                title={INGREDIENT_USAGE_NO_MATCH_TITLE}
+                subtitle="Try another ingredient name or SKU."
+              />
             ) : (
-              items.map((item) => (
+              visibleItems.map((item) => (
                 <TR key={item.inventoryItemId}>
                   <TD mono muted>{item.sku}</TD>
                   <TD bold>{item.itemName}</TD>
@@ -176,7 +201,7 @@ export function ExpectedInventoryPage({ role, view, scopeBranchId = "ALL" }: { r
   );
 }
 
-export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCount, onOperationalCountsLoaded }: { role: AppRole; scopeBranchId?: string; onEditCount?: (countId: string) => void; onOperationalCountsLoaded?: (counts: InventoryCountSummary[]) => void }) {
+export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCount, onOperationalCountsLoaded }: { role: AppRole; scopeBranchId?: string; onEditCount?: (count: {id:string;countType:"OPENING"|"CLOSING"|"FULL"}) => void; onOperationalCountsLoaded?: (counts: InventoryCountSummary[]) => void }) {
   const owner = role === "owner";
   const navigate = useNavigate();
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -336,8 +361,9 @@ export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCo
                         size="sm"
                         icon={Edit3}
                         onClick={() => {
-                          onEditCount?.(item.id);
-                          navigate(`/inventory/physical-count?editCount=${encodeURIComponent(item.id)}`);
+                          const selectedCountType=item.countType??"FULL";
+                          if (onEditCount) onEditCount({ id:item.id, countType:selectedCountType });
+                          else navigate(`/inventory/physical-count?editCount=${encodeURIComponent(item.id)}&countType=${selectedCountType}`);
                         }}
                         title="Reopen count for correction"
                       >

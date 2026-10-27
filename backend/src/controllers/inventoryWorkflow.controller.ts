@@ -2132,8 +2132,14 @@ export const listInventoryCounts: RequestHandler = async (req, res) => {
   );
   const result = await pool.query(
     `SELECT ic.id,ic.count_no "countNo",ic.count_date::text "countDate",ic.count_type "countType",ic.submitted_at "submittedAt",b.id "branchId",b.name "branchName",
-              (ic.submitted_by=$1 AND NOT EXISTS(SELECT 1 FROM inventory_counts newer WHERE newer.branch_id=ic.branch_id AND NOT newer.is_test_data AND (newer.count_date,newer.submitted_at)>(ic.count_date,ic.submitted_at))
-                AND NOT EXISTS(SELECT 1 FROM inventory_count_items ci JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ci.id WHERE ci.inventory_count_id=ic.id AND sr.status<>'DETECTED')) "canEdit",
+              (ic.submitted_by=$1
+                AND NOT EXISTS(SELECT 1 FROM inventory_counts newer WHERE newer.branch_id=ic.branch_id AND newer.id<>ic.id AND NOT newer.is_test_data
+                  AND (newer.count_date>ic.count_date OR (newer.count_date=ic.count_date AND COALESCE(newer.effective_at,newer.submitted_at)>COALESCE(ic.effective_at,ic.submitted_at))))
+                AND NOT EXISTS(SELECT 1 FROM inventory_movements movement WHERE movement.branch_id=ic.branch_id AND NOT movement.is_test_data
+                  AND movement.occurred_at>COALESCE(ic.effective_at,ic.submitted_at))
+                AND NOT EXISTS(SELECT 1 FROM pos_imports imported WHERE imported.branch_id=ic.branch_id AND NOT imported.is_test_data AND imported.voided_at IS NULL
+                  AND (imported.business_date>ic.count_date OR (imported.business_date=ic.count_date AND imported.imported_at>ic.submitted_at)))
+                AND NOT EXISTS(SELECT 1 FROM inventory_count_items ci JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ci.id WHERE ci.inventory_count_id=ic.id)) "canEdit",
               concat(u.first_name,' ',u.last_name) "submittedBy",count(ici.id)::int "itemCount",count(*) OVER()::int "__total",
               (count(ici.id) FILTER (WHERE ic.count_type<>'OPENING' AND abs(COALESCE(correction.corrected_variance_quantity,ici.variance_quantity))>0.0001))::int "varianceCount"
        FROM inventory_counts ic JOIN branches b ON b.id=ic.branch_id JOIN users u ON u.id=ic.submitted_by
@@ -2189,8 +2195,24 @@ export const getInventoryCount: RequestHandler = async (req, res) => {
   const branchId = getEffectiveBranchId(req.user!);
   const count = await pool.query(
     `SELECT ic.id,ic.count_no "countNo",ic.count_date::text "countDate",ic.count_type "countType",ic.branch_id "branchId",
-      (ic.submitted_by=$3 AND NOT EXISTS(SELECT 1 FROM inventory_counts n WHERE n.branch_id=ic.branch_id AND NOT n.is_test_data AND (n.count_date,n.submitted_at)>(ic.count_date,ic.submitted_at))
-       AND NOT EXISTS(SELECT 1 FROM inventory_count_items ci JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ci.id WHERE ci.inventory_count_id=ic.id AND sr.status<>'DETECTED')) "canEdit"
+      (ic.submitted_by=$3
+       AND NOT EXISTS(SELECT 1 FROM inventory_counts n WHERE n.branch_id=ic.branch_id AND n.id<>ic.id AND NOT n.is_test_data
+         AND (n.count_date>ic.count_date OR (n.count_date=ic.count_date AND COALESCE(n.effective_at,n.submitted_at)>COALESCE(ic.effective_at,ic.submitted_at))))
+       AND NOT EXISTS(SELECT 1 FROM inventory_movements movement WHERE movement.branch_id=ic.branch_id AND NOT movement.is_test_data
+         AND movement.occurred_at>COALESCE(ic.effective_at,ic.submitted_at))
+       AND NOT EXISTS(SELECT 1 FROM pos_imports imported WHERE imported.branch_id=ic.branch_id AND NOT imported.is_test_data AND imported.voided_at IS NULL
+         AND (imported.business_date>ic.count_date OR (imported.business_date=ic.count_date AND imported.imported_at>ic.submitted_at)))
+       AND NOT EXISTS(SELECT 1 FROM inventory_count_items ci JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ci.id WHERE ci.inventory_count_id=ic.id)) "canEdit"
+      ,CASE
+        WHEN ic.submitted_by<>$3 THEN 'Only the Manager who submitted this count can correct it.'
+        WHEN EXISTS(SELECT 1 FROM inventory_counts n WHERE n.branch_id=ic.branch_id AND n.id<>ic.id AND NOT n.is_test_data
+          AND (n.count_date>ic.count_date OR (n.count_date=ic.count_date AND COALESCE(n.effective_at,n.submitted_at)>COALESCE(ic.effective_at,ic.submitted_at)))) THEN 'A later inventory count already depends on this count.'
+        WHEN EXISTS(SELECT 1 FROM inventory_movements movement WHERE movement.branch_id=ic.branch_id AND NOT movement.is_test_data
+          AND movement.occurred_at>COALESCE(ic.effective_at,ic.submitted_at)) THEN 'A later receipt or inventory movement already depends on this count.'
+        WHEN EXISTS(SELECT 1 FROM pos_imports imported WHERE imported.branch_id=ic.branch_id AND NOT imported.is_test_data AND imported.voided_at IS NULL
+          AND (imported.business_date>ic.count_date OR (imported.business_date=ic.count_date AND imported.imported_at>ic.submitted_at))) THEN 'A later accepted POS import already depends on this count.'
+        WHEN EXISTS(SELECT 1 FROM inventory_count_items ci JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ci.id WHERE ci.inventory_count_id=ic.id) THEN 'A variance investigation is already linked to this count.'
+        ELSE NULL END "editBlockReason"
      FROM inventory_counts ic WHERE ic.id=$1 AND NOT ic.is_test_data AND ($2::uuid IS NULL OR ic.branch_id=$2)`, [id,branchId ?? null,req.user!.id]);
   if (!count.rows[0]) throw new AppError(404,"INVENTORY_COUNT_NOT_FOUND","Count not found for your branch");
   const items = await pool.query(`SELECT ici.id,ici.inventory_item_id "inventoryItemId",ii.sku,ii.name "itemName",ici.unit,

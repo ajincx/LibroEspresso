@@ -28,6 +28,7 @@ import {
   getEffectiveDashboardBranchId,
   inventoryValueColor,
   prioritizeInventoryAlerts,
+  productSalesSharePercent,
   rankDashboardProductSales,
   readDashboardUserRange,
   recordStockCountUrl,
@@ -125,12 +126,30 @@ describe("dashboard presentation helpers",()=>{
     expect(rankDashboardProductSales(products).highest.map(({name})=>name)).toEqual(["Latte","Espresso","Mocha","Americano","Cocoa"]);
     expect(rankDashboardProductSales(products).lowest.map(({name})=>name)).toEqual(["Tea","Cocoa","Americano","Mocha","Espresso"]);
   });
+  it("renders responsive ranked progress lists with accurate sales-share percentages",()=>{
+    const products=[
+      {id:"1",name:"Café Latte with a deliberately long product name",unitsSold:30},
+      {id:"2",name:"Espresso",unitsSold:20},
+      {id:"3",name:"Tea",unitsSold:10},
+    ];
+    const markup=renderToStaticMarkup(React.createElement(ProductSalesRankingChart,{products}));
+    expect(productSalesSharePercent(30,60)).toBe(50);
+    expect(markup).toContain("Top 5 Highest-Selling Menu Products");
+    expect(markup).toContain("Top 5 Lowest-Selling Menu Products");
+    expect(markup).toContain("50.0%");
+    expect(markup).toContain("33.3%");
+    expect(markup).toContain('role="meter"');
+    expect(markup).toContain("break-words");
+    expect(markup).toContain("motion-reduce:transition-none");
+    expect(markup.match(/data-product-ranking-row/g)).toHaveLength(6);
+  });
   it("shows honest empty and zero-sales product ranking states",()=>{
     const empty=renderToStaticMarkup(React.createElement(ProductSalesRankingChart,{products:[]}));
     const zero=renderToStaticMarkup(React.createElement(ProductSalesRankingChart,{products:[{id:"1",name:"Tea",unitsSold:0}]}));
     expect(empty).toContain("No active menu products are available");
     expect(zero).toContain("No accepted sales were recorded");
     expect(zero).toContain("Tea");
+    expect(zero).toContain("0.0%");
   });
   it("routes Record Stock Count into Inventory Management with the current branch and date",()=>{
     expect(recordStockCountUrl("branch-2","2026-10-13")).toBe("/inventory?tab=counts&countIntent=record&countDate=2026-10-13&branchId=branch-2");

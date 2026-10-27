@@ -372,7 +372,11 @@ export const canOpenClosingCount = (context: DailyInventoryCountContext | null) 
 export const startingStockOperationStatus = (setup: StartingStockSetup | null) => setup?.status === "INITIALIZED" || (setup?.status === "BLOCKED" && Boolean(setup.baseline)) ? "Completed" : "Setup Required";
 export const closingCountOperationStatus = (context: DailyInventoryCountContext | null) => context?.closingCount
   ? "Recorded"
-  : canOpenClosingCount(context) ? "Ready to Record" : "Not Yet Available";
+  : !context?.openingCount
+    ? "Not Yet Available"
+    : context.posDayComplete
+      ? "Ready to Record"
+      : "Awaiting POS Import";
 export const fullCountOperationStatus = (context: FullInventoryCountContext | null) => context?.fullCount
   ? "Recorded"
   : !context?.closingCount
@@ -386,21 +390,32 @@ export const dailyCountShortcutDestination = (context: DailyInventoryCountContex
 });
 export const stockOperationSelectionAfterDailySubmit = (): StockOperationId | null => null;
 
-function DailyStockCountWorkflow({role,countType,onSubmitted}:{role:Role;countType:"OPENING"|"CLOSING";onSubmitted:()=>void}){
+type CountCorrectionTarget = { id:string; countType:"OPENING"|"CLOSING"|"FULL" };
+export const countCorrectionOperation = (countType:CountCorrectionTarget["countType"]):StockOperationId => countType==="FULL"?"full":"daily";
+export const dailyCountCorrectionTarget = (count:DailyInventoryCountContext["openingCount"]|DailyInventoryCountContext["closingCount"],countType:"OPENING"|"CLOSING"):CountCorrectionTarget|null => count?{id:count.id,countType}:null;
+
+function DailyStockCountWorkflow({role,countType,editCountId,onSubmitted,onBackToHistory}:{role:Role;countType:"OPENING"|"CLOSING";editCountId?:string|null;onSubmitted:()=>void;onBackToHistory?:()=>void}){
   const [revision,setRevision]=useState(0);
   if(role!=="manager") return <div className="p-4 md:p-6"><p className="rounded-xl bg-[var(--app-surface-muted)] p-4 text-sm text-[var(--app-text-muted)]">Daily Opening and Closing Counts are recorded by the assigned Branch Manager. Review submitted entries in Stock History.</p></div>;
-  return <InventoryCountPage key={`${countType}-${revision}`} countType={countType} embedded onSubmitted={()=>{setRevision((value)=>value+1);onSubmitted();}}/>;
+  return <InventoryCountPage key={`${countType}-${editCountId??"new"}-${revision}`} countType={countType} editCountId={editCountId} embedded onBackToHistory={onBackToHistory} onSubmitted={()=>{setRevision((value)=>value+1);onSubmitted();}}/>;
 }
 
-export function StockOperations({ role, scopeBranchId = "ALL", initialOperation = null, initialDailyCountType = "OPENING" }: { role: Role; scopeBranchId?: string; initialOperation?: StockOperationId | null; initialDailyCountType?: "OPENING" | "CLOSING" }) {
+export function StockOperations({ role, scopeBranchId = "ALL", initialOperation = null, initialDailyCountType = "OPENING", correctionTarget=null, onCorrectionExit }: { role: Role; scopeBranchId?: string; initialOperation?: StockOperationId | null; initialDailyCountType?: "OPENING" | "CLOSING"; correctionTarget?:CountCorrectionTarget|null; onCorrectionExit?:()=>void }) {
   const [selected, setSelected] = useState<StockOperationId | null>(initialOperation);
   const [dailyCountType,setDailyCountType]=useState<"OPENING"|"CLOSING">(initialDailyCountType);
+  const [localCorrectionTarget,setLocalCorrectionTarget]=useState<CountCorrectionTarget|null>(null);
   const [dailyContext,setDailyContext]=useState<DailyInventoryCountContext|null>(null);
   const [fullContext,setFullContext]=useState<FullInventoryCountContext|null>(null);
   const [startingSetup,setStartingSetup]=useState<StartingStockSetup|null>(null);
   const [dailyRefresh,setDailyRefresh]=useState(0);
+  const activeCorrection=correctionTarget??localCorrectionTarget;
   useEffect(() => setSelected(initialOperation), [initialOperation]);
   useEffect(() => setDailyCountType(initialDailyCountType), [initialDailyCountType]);
+  useEffect(()=>{
+    if(!correctionTarget)return;
+    setSelected(countCorrectionOperation(correctionTarget.countType));
+    if(correctionTarget.countType!=="FULL")setDailyCountType(correctionTarget.countType);
+  },[correctionTarget]);
   useEffect(()=>{
     if(role!=="manager") return;
     let active=true;
@@ -414,6 +429,8 @@ export function StockOperations({ role, scopeBranchId = "ALL", initialOperation 
   },[dailyRefresh,role,scopeBranchId,selected]);
   const cards = stockOperationCards(role);
   const fullStatus=fullCountOperationStatus(fullContext);
+  const leaveCorrection=()=>{setLocalCorrectionTarget(null);onCorrectionExit?.();};
+  const finishCount=()=>{setDailyRefresh((value)=>value+1);if(activeCorrection)leaveCorrection();else setSelected(stockOperationSelectionAfterDailySubmit());};
   return <div className="p-4 md:p-6 space-y-5">
     {!selected&&<SectionHeader title="Stock Operations" sub="Use the existing inventory workflows for branch setup and verified physical counting."/>}
     {shouldShowStockOperationCards(selected)&&<div className="grid gap-4 md:grid-cols-3">
@@ -422,26 +439,28 @@ export function StockOperations({ role, scopeBranchId = "ALL", initialOperation 
         return <section key={card.id} className="flex min-h-56 flex-col rounded-2xl border p-5 bg-[var(--app-surface)] border-[var(--app-border)]">
           <div className="flex items-start justify-between gap-3"><span className="flex h-11 w-11 items-center justify-center rounded-xl bg-[var(--app-primary-faint)] text-[var(--app-primary)]"><Icon size={21}/></span><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${card.enabled ? "bg-[var(--app-success-bg)] text-[var(--app-success)]" : "bg-[var(--app-surface-muted)] text-[var(--app-text-muted)]"}`}>{role!=="manager"?"Read only":card.id==="starting"?startingStockOperationStatus(startingSetup):card.id==="daily"?"Daily workflow":fullStatus}</span></div>
           <h2 className="mt-4 text-lg font-bold">{card.title}</h2><p className="mt-2 flex-1 text-sm leading-6 text-[var(--app-text-muted)]">{card.description}</p>
-          {card.id==="daily"&&role==="manager"?<div className="mt-5 grid grid-cols-2 gap-3"><div className="flex flex-col gap-2"><p className="text-center text-xs font-semibold">Opening Count</p><Btn className="w-full" variant="outline" title="Open today's Opening Count" onClick={()=>{setDailyCountType("OPENING");setSelected("daily");}}>{dailyCountStatusLabel(dailyContext?.openingCount??null)}</Btn></div><div className="flex flex-col gap-2"><p className="text-center text-xs font-semibold">Closing Count</p><Btn className="w-full" variant="outline" title="Open today's Closing Count" disabled={!dailyContext?.closingCount&&!canOpenClosingCount(dailyContext)} onClick={()=>{setDailyCountType("CLOSING");setSelected("daily");}}>{closingCountOperationStatus(dailyContext)}</Btn></div></div>:card.id==="full"&&role==="manager"?<Btn className="mt-5 w-full" variant="outline" disabled={fullStatus!=="Ready to Record"&&fullStatus!=="Recorded"} onClick={() => setSelected(card.id)}>{fullStatus==="Recorded"?"View Full Count":"Record Full Count"}</Btn>:<Btn className="mt-5 w-full" variant="outline" disabled={!card.enabled} onClick={() => setSelected(card.id)}>{card.action}</Btn>}
+          {card.id==="daily"&&role==="manager"?<div className="mt-5 grid grid-cols-2 gap-3"><div className="flex flex-col gap-2"><p className="text-center text-xs font-semibold">Opening Count</p><Btn className="w-full" variant="outline" title={dailyContext?.openingCount?"Correct today's Opening Count":"Record today's Opening Count"} onClick={()=>{setDailyCountType("OPENING");setLocalCorrectionTarget(dailyCountCorrectionTarget(dailyContext?.openingCount??null,"OPENING"));setSelected("daily");}}>{dailyCountStatusLabel(dailyContext?.openingCount??null)}</Btn></div><div className="flex flex-col gap-2"><p className="text-center text-xs font-semibold">Closing Count</p><Btn className="w-full" variant="outline" title={dailyContext?.closingCount?"Correct today's Closing Count":closingCountOperationStatus(dailyContext)} disabled={!dailyContext?.closingCount&&!canOpenClosingCount(dailyContext)} onClick={()=>{setDailyCountType("CLOSING");setLocalCorrectionTarget(dailyCountCorrectionTarget(dailyContext?.closingCount??null,"CLOSING"));setSelected("daily");}}>{closingCountOperationStatus(dailyContext)}</Btn></div></div>:card.id==="full"&&role==="manager"?<Btn className="mt-5 w-full" variant="outline" disabled={fullStatus!=="Ready to Record"&&fullStatus!=="Recorded"} onClick={() => setSelected(card.id)}>{fullStatus==="Recorded"?"View Full Count":"Record Full Count"}</Btn>:<Btn className="mt-5 w-full" variant="outline" disabled={!card.enabled} onClick={() => setSelected(card.id)}>{card.action}</Btn>}
         </section>;
       })}
     </div>}
     {selected && <section className="overflow-hidden rounded-2xl border bg-[var(--app-surface)] border-[var(--app-border)]">
-      <div className="flex flex-col gap-3 border-b p-4 sm:flex-row sm:items-center sm:justify-between border-[var(--app-border)]"><div><p className="text-xs font-semibold uppercase tracking-wide text-[var(--app-primary)]">Stock Operations</p><h2 className="mt-1 font-bold">{cards.find((card) => card.id === selected)?.title}</h2></div><Btn variant="outline" size="sm" icon={ArrowLeft} onClick={() => setSelected(null)}>Back to Operations</Btn></div>
+      <div className="flex flex-col gap-3 border-b p-4 sm:flex-row sm:items-center sm:justify-between border-[var(--app-border)]"><div><p className="text-xs font-semibold uppercase tracking-wide text-[var(--app-primary)]">Stock Operations</p><h2 className="mt-1 font-bold">{activeCorrection?`Correct ${activeCorrection.countType === "OPENING" ? "Opening Count" : activeCorrection.countType === "CLOSING" ? "Closing Count" : "Full Physical Count"}`:cards.find((card) => card.id === selected)?.title}</h2></div><Btn variant="outline" size="sm" icon={ArrowLeft} onClick={()=>activeCorrection?leaveCorrection():setSelected(null)}>{activeCorrection?"Back to Count History":"Back to Operations"}</Btn></div>
       {selected === "starting"
         ? <Suspense fallback={<ModuleLoadingFallback/>}><OpeningInventoryBaselinePage role={role} scopeBranchId={scopeBranchId}/></Suspense>
         : selected === "daily"
-          ? <Suspense fallback={<ModuleLoadingFallback/>}><DailyStockCountWorkflow role={role} countType={dailyCountType} onSubmitted={()=>{setDailyRefresh((value)=>value+1);setSelected(stockOperationSelectionAfterDailySubmit());}}/></Suspense>
+          ? <Suspense fallback={<ModuleLoadingFallback/>}><DailyStockCountWorkflow role={role} countType={dailyCountType} editCountId={activeCorrection?.countType!=="FULL"?activeCorrection?.id:null} onBackToHistory={activeCorrection?leaveCorrection:undefined} onSubmitted={finishCount}/></Suspense>
         : selected === "full"
-          ? <PhysicalCountsModule role={role} initialTab={fullStatus==="Recorded"?"history":"record"} scopeBranchId={scopeBranchId} embedded onOperationalCountSubmitted={()=>setDailyRefresh((value)=>value+1)}/>
+          ? activeCorrection?.countType==="FULL"
+            ? <Suspense fallback={<ModuleLoadingFallback/>}><InventoryCountPage countType="FULL" editCountId={activeCorrection.id} embedded onBackToHistory={leaveCorrection} onSubmitted={finishCount}/></Suspense>
+            : <PhysicalCountsModule role={role} initialTab={fullStatus==="Recorded"?"history":"record"} scopeBranchId={scopeBranchId} embedded onOperationalCountSubmitted={()=>setDailyRefresh((value)=>value+1)}/>
           : null}
     </section>}
     {!selected && <div className="rounded-xl border p-4 text-sm border-[var(--app-border)] bg-[var(--app-surface-muted)] text-[var(--app-text-muted)]">Choose the stock operation that matches the branch task. Starting Stock is one-time setup; Daily Count is Opening/Closing; Full Physical Count remains the complete inventory workflow.</div>}
   </div>;
 }
 
-export function StockHistory({ role, scopeBranchId = "ALL" }: { role: Role; scopeBranchId?: string }) {
-  return <Suspense fallback={<ModuleLoadingFallback/>}><PhysicalCountHistoryPage role={role} scopeBranchId={scopeBranchId}/></Suspense>;
+export function StockHistory({ role, scopeBranchId = "ALL", onEditCount }: { role: Role; scopeBranchId?: string; onEditCount?:(count:CountCorrectionTarget)=>void }) {
+  return <Suspense fallback={<ModuleLoadingFallback/>}><PhysicalCountHistoryPage role={role} scopeBranchId={scopeBranchId} onEditCount={onEditCount}/></Suspense>;
 }
 
 export type PhysicalCountInitialView = "record" | "expected" | "history";
@@ -459,6 +478,8 @@ export function resolveInventoryCountHistoryVisibility(current: boolean, initial
 export function PhysicalCountsModule({ role, initialTab = "history", scopeBranchId = "ALL", embedded=false, onOperationalCountSubmitted }: { role: Role; initialTab?: PhysicalCountInitialView; scopeBranchId?: string; embedded?:boolean; onOperationalCountSubmitted?:()=>void }) {
   const [searchParams] = useSearchParams();
   const editCountId = searchParams.get("editCount");
+  const requestedCountType=searchParams.get("countType");
+  const [correctionTarget,setCorrectionTarget]=useState<CountCorrectionTarget|null>(editCountId?{id:editCountId,countType:requestedCountType==="OPENING"||requestedCountType==="CLOSING"?requestedCountType:"FULL"}:null);
   const shortcutDate = searchParams.get("countIntent") === "record" ? searchParams.get("countDate") : null;
   const shortcutBranchId = searchParams.get("branchId");
   const [showHistory, setShowHistory] = useState(shouldShowInventoryCountHistory(initialTab, editCountId));
@@ -473,9 +494,9 @@ export function PhysicalCountsModule({ role, initialTab = "history", scopeBranch
     <AnimatedTabPanel panelKey={showHistory ? "history" : "current"}>
       <Suspense fallback={<ModuleLoadingFallback/>}>
         {showHistory
-          ? <PhysicalCountHistoryPage role={role} scopeBranchId={scopeBranchId} onOperationalCountsLoaded={resolveShortcut} onEditCount={() => setShowHistory(false)}/>
+          ? <PhysicalCountHistoryPage role={role} scopeBranchId={scopeBranchId} onOperationalCountsLoaded={resolveShortcut} onEditCount={(count) => {setCorrectionTarget(count);setShowHistory(false);}}/>
           : role === "manager"
-            ? <InventoryCountPage embedded={embedded} onSubmitted={() => {setShowHistory(true);onOperationalCountSubmitted?.();}} onBackToHistory={() => setShowHistory(true)}/>
+            ? <InventoryCountPage countType={correctionTarget?.countType??"FULL"} editCountId={correctionTarget?.id??editCountId} embedded={embedded} onSubmitted={() => {setCorrectionTarget(null);setShowHistory(true);onOperationalCountSubmitted?.();}} onBackToHistory={() => {setCorrectionTarget(null);setShowHistory(true);}}/>
             : <ExpectedInventoryPage role={role} view="expected" scopeBranchId={scopeBranchId}/>}
       </Suspense>
     </AnimatedTabPanel>
@@ -492,8 +513,11 @@ export function InventoryManagementModule({ role, initialTab = "overview", scope
     : searchParams.get("countIntent") === "record" || initialTab === "counts" ? "full" : null;
   const [activeTab, setActiveTab] = useState<"overview" | "operations" | "history">(requestedTab);
   const [overviewDailyCountType, setOverviewDailyCountType] = useState<"OPENING" | "CLOSING" | null>(null);
+  const [correctionTarget,setCorrectionTarget]=useState<CountCorrectionTarget|null>(null);
   useEffect(() => setActiveTab(requestedTab), [requestedTab]);
-  const changeTab = (tab: "overview" | "operations" | "history") => { setOverviewDailyCountType(null); setActiveTab(tab); };
+  const changeTab = (tab: "overview" | "operations" | "history") => { setOverviewDailyCountType(null); setCorrectionTarget(null); setActiveTab(tab); };
   const openDailyStockCount = (countType: "OPENING" | "CLOSING") => { setOverviewDailyCountType(countType); setActiveTab("operations"); };
-  return <div><ModuleTabSwitcher tabs={inventoryTabs} active={activeTab} onChange={changeTab}/><AnimatedTabPanel panelKey={activeTab}>{activeTab === "overview" ? <InventoryOverview role={role} scopeBranchId={scopeBranchId} onDailyStockCount={openDailyStockCount}/> : activeTab === "operations" ? <StockOperations role={role} scopeBranchId={scopeBranchId} initialOperation={overviewDailyCountType ? "daily" : requestedOperation} initialDailyCountType={overviewDailyCountType ?? "OPENING"}/> : <StockHistory role={role} scopeBranchId={scopeBranchId}/>}</AnimatedTabPanel></div>;
+  const editCount=(count:CountCorrectionTarget)=>{setCorrectionTarget(count);setOverviewDailyCountType(count.countType==="FULL"?null:count.countType);setActiveTab("operations");};
+  const returnToHistory=()=>{setCorrectionTarget(null);setOverviewDailyCountType(null);setActiveTab("history");};
+  return <div><ModuleTabSwitcher tabs={inventoryTabs} active={activeTab} onChange={changeTab}/><AnimatedTabPanel panelKey={activeTab}>{activeTab === "overview" ? <InventoryOverview role={role} scopeBranchId={scopeBranchId} onDailyStockCount={openDailyStockCount}/> : activeTab === "operations" ? <StockOperations role={role} scopeBranchId={scopeBranchId} initialOperation={correctionTarget?countCorrectionOperation(correctionTarget.countType):overviewDailyCountType ? "daily" : requestedOperation} initialDailyCountType={correctionTarget?.countType==="OPENING"||correctionTarget?.countType==="CLOSING"?correctionTarget.countType:overviewDailyCountType ?? "OPENING"} correctionTarget={correctionTarget} onCorrectionExit={returnToHistory}/> : <StockHistory role={role} scopeBranchId={scopeBranchId} onEditCount={editCount}/>}</AnimatedTabPanel></div>;
 }

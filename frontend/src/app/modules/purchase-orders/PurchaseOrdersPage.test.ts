@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { PurchaseOrder } from "../../types/operations";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { canAuthorizePurchaseOrderTest, canDeletePurchaseOrderTest, convertedPurchaseQuantity, isCompletePurchaseOrderItem, isPhysicalCountRequiredError, OrderDetail, PhysicalCountRequiredNotice, PURCHASE_ORDER_STOCK_TIMING_GUIDANCE, PurchaseOrderManageButton, purchaseOrderFormValidationError, receiptDateError, standardPurchaseConversionFactor } from "./PurchaseOrdersPage";
+import { canAuthorizePurchaseOrderTest, canDeletePurchaseOrderTest, convertedPurchaseQuantity, CreatePurchaseOrder, isCompletePurchaseOrderItem, isPhysicalCountRequiredError, OrderDetail, PhysicalCountRequiredNotice, PURCHASE_ORDER_STOCK_TIMING_GUIDANCE, PurchaseOrderCorrectionDialog, purchaseOrderCorrectionReady, PurchaseOrderManageButton, purchaseOrderDraftSummary, purchaseOrderFormValidationError, receiptDateError, standardPurchaseConversionFactor } from "./PurchaseOrdersPage";
+import { purchaseOrderLifecyclePayload } from "../../services/controlledAction.service";
 
 const order=(patch:Partial<PurchaseOrder>={}):PurchaseOrder=>({
   id:"po-1",poNo:"PO-TEST",branchId:"branch-1",branchName:"Gulod",createdByUserId:"manager-1",createdByName:"Manager",
@@ -66,6 +67,60 @@ describe("purchase-order Manage UI",()=>{
     for(const value of ["PO-TEST","Branch","Gulod","Supplier","Test Supplier","Created By","Manager","SKU","Ingredient","Ordered","Received","Unit Cost","Total","Total Amount","RM-001","Beans"]){
       expect(markup).toContain(value);
     }
+  });
+});
+
+describe("received-order correction dialog",()=>{
+  it("renders the focused audited-correction layout without a PIN field",()=>{
+    const markup=renderToStaticMarkup(React.createElement(PurchaseOrderCorrectionDialog,{order:order({status:"RECEIVED"}),reason:"Incorrect received quantity",busy:false,onReasonChange:vi.fn(),onCancel:vi.fn(),onConfirm:vi.fn()}));
+    expect(markup).toContain("Correct received order PO-TEST?");
+    expect(markup).toContain("Audited correction");
+    expect(markup).toContain("Correction reason");
+    expect(markup).toContain("Confirm Correction");
+    expect(markup).toContain("Close correction dialog");
+    expect(markup).not.toContain("Verification PIN");
+    expect(markup).not.toContain('type="password"');
+  });
+
+  it("requires a non-whitespace reason and submits no PIN for correction",()=>{
+    expect(purchaseOrderCorrectionReady("")).toBe(false);
+    expect(purchaseOrderCorrectionReady("   ")).toBe(false);
+    expect(purchaseOrderCorrectionReady("Wrong received amount")).toBe(true);
+    expect(purchaseOrderLifecyclePayload("REVERSE",{reason:"Wrong received amount",verificationPin:"should-not-be-sent"})).toEqual({action:"REVERSE",reason:"Wrong received amount"});
+    expect(purchaseOrderLifecyclePayload("CANCEL",{reason:"Cancel duplicate order",verificationPin:"12345"})).toEqual({action:"CANCEL",reason:"Cancel duplicate order",verificationPin:"12345"});
+  });
+
+  it("disables confirmation for whitespace-only reasons",()=>{
+    const markup=renderToStaticMarkup(React.createElement(PurchaseOrderCorrectionDialog,{order:order({status:"RECEIVED"}),reason:"   ",busy:false,onReasonChange:vi.fn(),onCancel:vi.fn(),onConfirm:vi.fn()}));
+    expect(markup).toContain('disabled=""');
+    expect(markup).toContain(">Confirm Correction</button>");
+  });
+});
+
+describe("new purchase-order item layout",()=>{
+  it("keeps every item control in a dedicated responsive grid area",()=>{
+    const markup=renderToStaticMarkup(React.createElement(CreatePurchaseOrder,{
+      inventory:[{id:"item-1",sku:"RM-001",name:"Extra Long Espresso Blend Ingredient Name",category:"Coffee",unit:"g",unitCost:2,reorderLevel:10,status:"ACTIVE",itemScope:"GLOBAL",originBranchId:null}],
+      suppliers:["Supplier"],initialItem:{ingredientId:"item-1",quantity:"2"},onInventoryCreated:vi.fn(),onClose:vi.fn(),onGoToInventoryCount:vi.fn(),onCreated:vi.fn(),
+    }));
+    for(const label of ["Ingredient","Purchase Quantity","Purchase Unit","Inventory Conversion","Cost per Purchase Unit","Remove item"]){
+      expect(markup).toContain(label);
+    }
+    expect(markup).toContain("grid-cols-1");
+    expect(markup).toContain("xl:grid-cols-[minmax(220px,1fr)_110px_100px_130px_170px_44px]");
+    expect(markup).toContain("min-w-0");
+    expect(markup).not.toContain("position:absolute");
+    expect(markup).toContain("Notes <span");
+    expect(markup).toContain("(Optional)");
+    expect(markup).toContain("View Drafts (0)");
+    expect(markup).toContain("Save Temporary Draft");
+    expect(markup).toContain("Create Official PO Draft");
+  });
+
+  it("allows an incomplete browser-only draft summary without weakening official validation",()=>{
+    const draft={supplierChoice:"",otherSupplier:"",orderDate:"2026-10-27",expectedDeliveryDate:"",notes:"",rows:[{inventoryItemId:"",quantityOrdered:"",unitCost:"",purchaseUom:"g",conversionFactor:"1"}]};
+    expect(purchaseOrderDraftSummary(draft)).toBe("Supplier not selected · 0 items");
+    expect(purchaseOrderFormValidationError({supplierName:"",orderDate:"2026-10-27",expectedDeliveryDate:"",rowCount:1,validRowCount:0})).not.toBeNull();
   });
 });
 

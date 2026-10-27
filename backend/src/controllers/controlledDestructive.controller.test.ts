@@ -69,6 +69,11 @@ describe("controlled destructive actions", () => {
     expect(statements).toContain("COMMIT");
   });
 
+  it("keeps received-order correction Manager-only without opening a transaction", async () => {
+    await expect(applyPurchaseOrderLifecycle(request({ ...manager, role: "STAFF" }, { reason: "Incorrect received quantities", action: "REVERSE" }), response() as never, vi.fn())).rejects.toMatchObject({ status: 403, code: "FORBIDDEN" });
+    expect(mocks.connect).not.toHaveBeenCalled();
+  });
+
   it("blocks a received-PO reversal when a later physical count depends on it", async () => {
     const statements: string[] = [];
     const client = { query: vi.fn(async (statement: unknown) => {
@@ -78,7 +83,7 @@ describe("controlled destructive actions", () => {
       return { rows: [] };
     }), release: vi.fn() };
     mocks.connect.mockResolvedValue(client);
-    await expect(applyPurchaseOrderLifecycle(request(manager, { ...input, action: "REVERSE" }), response() as never, vi.fn())).rejects.toMatchObject({ status: 409, code: "PO_REVERSAL_COUNT_DEPENDENCY" });
+    await expect(applyPurchaseOrderLifecycle(request(manager, { reason: input.reason, action: "REVERSE" }), response() as never, vi.fn())).rejects.toMatchObject({ status: 409, code: "PO_REVERSAL_COUNT_DEPENDENCY" });
     expect(statements).toContain("ROLLBACK");
     expect(statements.some((sql) => sql.includes("INSERT INTO inventory_movements"))).toBe(false);
   });
@@ -99,13 +104,13 @@ describe("controlled destructive actions", () => {
     mocks.connect.mockResolvedValue(client);
     const res = response();
 
-    await applyPurchaseOrderLifecycle(request(manager, { ...input, action: "REVERSE" }), res as never, vi.fn());
+    await applyPurchaseOrderLifecycle(request(manager, { reason: input.reason, action: "REVERSE" }), res as never, vi.fn());
 
     expect(statements.filter((sql) => sql.includes("INSERT INTO inventory_movements") && sql.includes("APPROVED_ADJUSTMENT_DECREASE"))).toHaveLength(2);
     expect(statements.some((sql) => sql.includes("UPDATE purchase_order_items"))).toBe(false);
     expect(statements.some((sql) => sql.includes("UPDATE inventory_balances"))).toBe(false);
     expect(statements.some((sql) => sql.includes("UPDATE purchase_orders SET status='CANCELLED'"))).toBe(true);
-    expect(mocks.writeAudit).toHaveBeenCalledWith(manager, "CONTROLLED_REVERSE", "PURCHASE_ORDER", itemId, expect.any(String), expect.objectContaining({ branchId: "branch-1", priorStatus: "RECEIVED", verificationResult: "VERIFIED" }), client);
+    expect(mocks.writeAudit).toHaveBeenCalledWith(manager, "CONTROLLED_REVERSE", "PURCHASE_ORDER", itemId, expect.any(String), expect.objectContaining({ branchId: "branch-1", priorStatus: "RECEIVED", verificationResult: "NOT_REQUIRED" }), client);
     expect(statements).toContain("COMMIT");
     expect(res.json).toHaveBeenCalledWith({ success: true, data: { id: itemId, action: "REVERSED" } });
   });

@@ -18,6 +18,7 @@ vi.mock("../services/businessTime.service.js", () => ({
 
 import {
   assertInventoryCountDateNotFuture,
+  getInventoryCount,
   getExpectedInventory,
   submitInventoryCount,
   updateInventoryCount,
@@ -102,5 +103,21 @@ describe("inventory physical-count future-date protection", () => {
     });
     expect(client.query).toHaveBeenCalledWith("ROLLBACK");
     expect(client.release).toHaveBeenCalledOnce();
+  });
+
+  it("reports correction eligibility using the same later-activity and investigation safeguards as save", async () => {
+    mocks.poolQuery
+      .mockResolvedValueOnce({ rows: [{ id:countId, countNo:"IC-2026-00001", countDate:"2026-10-01", countType:"OPENING", branchId, canEdit:true }] })
+      .mockResolvedValueOnce({ rows: [] });
+    const json=vi.fn();
+
+    await getInventoryCount({ params:{id:countId}, user } as never,{ json } as never,vi.fn());
+
+    const eligibilityQuery=String(mocks.poolQuery.mock.calls[0]?.[0]);
+    expect(eligibilityQuery).toContain("inventory_movements");
+    expect(eligibilityQuery).toContain("pos_imports");
+    expect(eligibilityQuery).toContain("shrinkage_reports");
+    expect(eligibilityQuery).toContain('"editBlockReason"');
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({success:true}));
   });
 });

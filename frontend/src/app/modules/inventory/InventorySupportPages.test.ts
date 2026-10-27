@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { filterInventoryCountHistory, inventoryCountHistoryActions, inventoryCountHistoryModes, PhysicalCountHistoryHeaderActions } from "./InventorySupportPages";
-import type { InventoryCountSummary } from "../../types/inventoryWorkflow";
+import { filterIngredientUsageItems, filterInventoryCountHistory, IngredientUsageSearch, INGREDIENT_USAGE_NO_MATCH_TITLE, inventoryCountHistoryActions, inventoryCountHistoryModes, PhysicalCountHistoryHeaderActions } from "./InventorySupportPages";
+import type { ExpectedInventoryItem, InventoryCountSummary } from "../../types/inventoryWorkflow";
 
 describe("inventory-count history role actions", () => {
   it("keeps Owner history read-only while exposing count details", () => {
@@ -46,5 +46,37 @@ describe("Stock History filters", () => {
 
   it("combines search, date, and type filters without changing branch-scoped data", () => {
     expect(filterInventoryCountHistory(counts, "Gulod", "2026-10-15", "CLOSING").map((item) => item.id)).toEqual(["IC-2"]);
+  });
+});
+
+describe("Ingredient Usage search", () => {
+  const item = (inventoryItemId: string, sku: string, itemName: string): ExpectedInventoryItem => ({
+    inventoryItemId, sku, itemName, unit: "g", unitCost: 1, previousActualQuantity: 10,
+    stockReceived: 2, expectedConsumption: 3, approvedAdjustments: 0, expectedQuantity: 9,
+    baselineDate: "2026-10-27", baselineSource: "DAILY_OPENING",
+  });
+  const branchItems = [item("beans", "RM-002", "Espresso Blend Beans"), item("milk", "ING-17", "Fresh Milk")];
+
+  it("matches ingredient names and SKU codes case-insensitively", () => {
+    expect(filterIngredientUsageItems(branchItems, "ESPRESSO").map((entry) => entry.inventoryItemId)).toEqual(["beans"]);
+    expect(filterIngredientUsageItems(branchItems, "ing-17").map((entry) => entry.inventoryItemId)).toEqual(["milk"]);
+    expect(filterIngredientUsageItems(branchItems, "missing")).toEqual([]);
+    expect(INGREDIENT_USAGE_NO_MATCH_TITLE).toBe("No matching ingredients found");
+  });
+
+  it("filters only the already authorized branch dataset", () => {
+    expect(filterIngredientUsageItems([branchItems[0]!], "milk")).toEqual([]);
+    expect(filterIngredientUsageItems([branchItems[0]!], "")).toEqual([branchItems[0]]);
+  });
+
+  it("shows Clear Search only for entered text and clears through the controlled callback", () => {
+    const onChange = vi.fn();
+    const populated = IngredientUsageSearch({ value: "beans", onChange }) as React.ReactElement<{ children: React.ReactNode }>;
+    const children = React.Children.toArray(populated.props.children);
+    const clear = children[1] as React.ReactElement<{ onClick: () => void }>;
+    expect(renderToStaticMarkup(populated)).toContain("Clear Search");
+    clear.props.onClick();
+    expect(onChange).toHaveBeenCalledWith("");
+    expect(renderToStaticMarkup(React.createElement(IngredientUsageSearch, { value: "", onChange }))).not.toContain("Clear Search");
   });
 });

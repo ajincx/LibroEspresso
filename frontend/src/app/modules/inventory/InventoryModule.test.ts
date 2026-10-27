@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { branchReorderSettingsInput, canConfigureBranchReorderPolicy, canOpenClosingCount, canSetIngredientInitialStock, closingCountOperationStatus, connectedProductStatusLabel, dailyCountShortcutDestination, dailyCountStatusLabel, fullCountOperationStatus, inventoryAdjustmentValidationError, InventoryOverview, inventoryOverviewColumns, inventoryTabs, movementCategoryLabel, projectedAdjustmentStock, recordCountShortcutDestination, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, shouldShowStockOperationCards, startingStockOperationStatus, stockOperationCards, stockOperationSelectionAfterDailySubmit, subscribeToInventoryDataChanges } from "./InventoryModule";
+import { branchReorderSettingsInput, canConfigureBranchReorderPolicy, canOpenClosingCount, canSetIngredientInitialStock, closingCountOperationStatus, connectedProductStatusLabel, countCorrectionOperation, dailyCountCorrectionTarget, dailyCountShortcutDestination, dailyCountStatusLabel, fullCountOperationStatus, inventoryAdjustmentValidationError, InventoryOverview, inventoryOverviewColumns, inventoryTabs, movementCategoryLabel, projectedAdjustmentStock, recordCountShortcutDestination, resolveInventoryCountHistoryVisibility, shouldShowInventoryCountHistory, shouldShowStockOperationCards, startingStockOperationStatus, stockOperationCards, stockOperationSelectionAfterDailySubmit, subscribeToInventoryDataChanges } from "./InventoryModule";
 import type { InventoryCountSummary } from "../../types/inventoryWorkflow";
 
 afterEach(() => vi.useRealTimers());
@@ -92,11 +92,20 @@ describe("Inventory Management terminology", () => {
     expect(startingStockOperationStatus({status:"BLOCKED",baseline:{id:"legacy-uat"}} as never)).toBe("Completed");
     expect(dailyCountStatusLabel(null)).toBe("Pending");
     expect(closingCountOperationStatus(daily)).toBe("Not Yet Available");
+    expect(closingCountOperationStatus({...daily,openingCount:{id:"opening",countNo:"IC-O",countType:"OPENING",submittedAt:"now"}})).toBe("Awaiting POS Import");
     expect(closingCountOperationStatus({...daily,openingCount:{id:"opening",countNo:"IC-O",countType:"OPENING",submittedAt:"now"},posDayComplete:true})).toBe("Ready to Record");
     expect(fullCountOperationStatus({countType:"FULL",closingCount:null,fullCount:null,sameDayClosingItems:[],weeklyFullCount:0,weeklyFullLimit:3})).toBe("Closing Required");
     expect(fullCountOperationStatus({countType:"FULL",closingCount:{id:"closing",countNo:"IC-C",countType:"CLOSING",submittedAt:"now"},fullCount:null,sameDayClosingItems:[],weeklyFullCount:2,weeklyFullLimit:3})).toBe("Ready to Record");
     expect(fullCountOperationStatus({countType:"FULL",closingCount:{id:"closing",countNo:"IC-C",countType:"CLOSING",submittedAt:"now"},fullCount:null,sameDayClosingItems:[],weeklyFullCount:3,weeklyFullLimit:3})).toBe("Weekly Limit Reached");
     expect(fullCountOperationStatus({countType:"FULL",closingCount:{id:"closing",countNo:"IC-C",countType:"CLOSING",submittedAt:"now"},fullCount:{id:"full",countNo:"IC-F",countType:"FULL",submittedAt:"now"},sameDayClosingItems:[],weeklyFullCount:3,weeklyFullLimit:3})).toBe("Recorded");
+  });
+
+  it("routes each Stock History correction through its matching existing workflow",()=>{
+    expect(dailyCountCorrectionTarget({id:"opening-1",countNo:"IC-O",countType:"OPENING",submittedAt:"now"},"OPENING")).toEqual({id:"opening-1",countType:"OPENING"});
+    expect(dailyCountCorrectionTarget(null,"OPENING")).toBeNull();
+    expect(countCorrectionOperation("OPENING")).toBe("daily");
+    expect(countCorrectionOperation("CLOSING")).toBe("daily");
+    expect(countCorrectionOperation("FULL")).toBe("full");
   });
 
   it("does not render a duplicate Record Stock Count action in Inventory Overview", () => {

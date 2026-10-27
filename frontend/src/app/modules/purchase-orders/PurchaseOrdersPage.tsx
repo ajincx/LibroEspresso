@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
-import { Inbox, PackageCheck, Pencil, Plus, RefreshCw, Send, Settings, ShieldCheck, ShoppingCart, Trash2, X } from "lucide-react";
+import { AlertTriangle, FilePenLine, FolderOpen, Inbox, PackageCheck, Pencil, Plus, RefreshCw, Save, Send, Settings, ShieldCheck, ShoppingCart, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { Btn, C, CalendarDateField, KPICard, SearchInput, SectionHeader, Select, SkeletonBlock, StatusChip, TableCard, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
 import { masterDataService } from "../../services/masterData.service";
@@ -13,6 +13,8 @@ import { formatAppCurrency, formatAppDate } from "../../utils/appPreferences";
 import { businessDate } from "../../utils/businessDate";
 import { ControlledActionDialog, type ControlledActionValue } from "../../components/ControlledActionDialog";
 import { controlledActionService } from "../../services/controlledAction.service";
+import { useOptionalAuth } from "../../contexts/AuthContext";
+import { useLocalDraftCollection } from "../../hooks/useLocalDraft";
 
 const peso = formatAppCurrency;
 const chip: Record<PurchaseOrderStatus, string> = { DRAFT: "draft", ORDERED: "ordered", PARTIALLY_RECEIVED: "partially_received", RECEIVED: "received", CANCELLED: "cancelled" };
@@ -68,6 +70,12 @@ export const convertedPurchaseQuantity = (quantity: string, purchaseUom: string,
     ? numericQuantity * factor
     : null;
 };
+
+type PurchaseOrderFormRow={inventoryItemId:string;quantityOrdered:string;unitCost:string;purchaseUom:string;conversionFactor:string};
+export type PurchaseOrderTemporaryDraft={supplierChoice:string;otherSupplier:string;orderDate:string;expectedDeliveryDate:string;notes:string;rows:PurchaseOrderFormRow[]};
+const isPurchaseOrderTemporaryDraft=(value:unknown):value is PurchaseOrderTemporaryDraft=>Boolean(value&&typeof value==="object"&&typeof (value as PurchaseOrderTemporaryDraft).supplierChoice==="string"&&typeof (value as PurchaseOrderTemporaryDraft).otherSupplier==="string"&&typeof (value as PurchaseOrderTemporaryDraft).orderDate==="string"&&typeof (value as PurchaseOrderTemporaryDraft).expectedDeliveryDate==="string"&&typeof (value as PurchaseOrderTemporaryDraft).notes==="string"&&Array.isArray((value as PurchaseOrderTemporaryDraft).rows)&&(value as PurchaseOrderTemporaryDraft).rows.every((row)=>row&&typeof row.inventoryItemId==="string"&&typeof row.quantityOrdered==="string"&&typeof row.unitCost==="string"&&typeof row.purchaseUom==="string"&&typeof row.conversionFactor==="string"));
+const formatTemporaryDraftDate=(savedAt:number)=>new Intl.DateTimeFormat("en-PH",{dateStyle:"medium",timeStyle:"short",timeZone:"Asia/Manila"}).format(new Date(savedAt));
+export const purchaseOrderDraftSummary=(draft:PurchaseOrderTemporaryDraft)=>`${draft.supplierChoice&&draft.supplierChoice!=="__OTHER__"?draft.supplierChoice:draft.otherSupplier.trim()||"Supplier not selected"} · ${draft.rows.filter((row)=>row.inventoryItemId).length} item${draft.rows.filter((row)=>row.inventoryItemId).length===1?"":"s"}`;
 
 export const PURCHASE_ORDER_STOCK_TIMING_GUIDANCE =
   "Creating a purchase order does not increase inventory. Stock increases only after received quantities are confirmed.";
@@ -317,9 +325,32 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
     />}
     {authorizeTestTarget&&<TestPurchaseOrderDialog mode="authorize" order={authorizeTestTarget} reason={testActionReason} busy={testActionBusy} onReasonChange={setTestActionReason} onClose={()=>{if(!testActionBusy){setAuthorizeTestTarget(null);setTestActionReason("");}}} onConfirm={()=>void authorizeTestOrder()}/>}
     {deleteTestTarget&&<TestPurchaseOrderDialog mode="delete" order={deleteTestTarget} reason={testActionReason} busy={testActionBusy} onReasonChange={setTestActionReason} onClose={()=>{if(!testActionBusy){setDeleteTestTarget(null);setTestActionReason("");}}} onConfirm={()=>void deleteTestOrder()}/>}
-    {role==="manager"&&lifecycleTarget&&lifecycleAction(lifecycleTarget)&&(
-      <ControlledActionDialog title={`${lifecycleAction(lifecycleTarget)==="CANCEL"?"Cancel order":"Correct received order"} ${lifecycleTarget.poNo}?`} description={lifecycleAction(lifecycleTarget)==="REVERSE"?"This does not edit historical quantities. It reverses the audited receipt with compensating stock movements, preserves the original evidence, and cancels the PO. A later physical count blocks correction.":"The purchase order remains in history. The server rechecks received quantities and dependencies."} confirmLabel={lifecycleAction(lifecycleTarget)==="CANCEL"?"Cancel Order":"Reverse Receipt for Correction"} value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setLifecycleTarget(null)} onConfirm={()=>void applyLifecycle()}/>
+    {role==="manager"&&lifecycleTarget&&lifecycleAction(lifecycleTarget)==="REVERSE"&&(
+      <PurchaseOrderCorrectionDialog order={lifecycleTarget} reason={controlledValue.reason} busy={controlledBusy} onReasonChange={(reason)=>setControlledValue({reason,verificationPin:""})} onCancel={()=>setLifecycleTarget(null)} onConfirm={()=>void applyLifecycle()}/>
     )}
+    {role==="manager"&&lifecycleTarget&&lifecycleAction(lifecycleTarget)==="CANCEL"&&(
+      <ControlledActionDialog title={`Cancel order ${lifecycleTarget.poNo}?`} description="The purchase order remains in history. The server rechecks received quantities and dependencies." confirmLabel="Cancel Order" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setLifecycleTarget(null)} onConfirm={()=>void applyLifecycle()}/>
+    )}
+  </div>;
+}
+
+export const purchaseOrderCorrectionReady = (reason: string) => reason.trim().length > 0;
+
+export function PurchaseOrderCorrectionDialog({order,reason,busy,onReasonChange,onCancel,onConfirm}:{order:PurchaseOrder;reason:string;busy:boolean;onReasonChange:(reason:string)=>void;onCancel:()=>void;onConfirm:()=>void}) {
+  const ready=purchaseOrderCorrectionReady(reason);
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-5" role="dialog" aria-modal="true" aria-labelledby="po-correction-title" onMouseDown={(event)=>{if(event.target===event.currentTarget&&!busy)onCancel();}}>
+    <div className="w-full max-w-xl overflow-hidden rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-2xl">
+      <div className="flex items-start justify-between gap-4 border-b border-[var(--app-border)] p-5 sm:p-6">
+        <div className="flex min-w-0 items-start gap-3"><div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--app-danger-bg)] text-[var(--app-danger)]"><AlertTriangle size={21}/></div><div className="min-w-0"><p className="text-xs font-bold uppercase tracking-wider text-[var(--app-danger)]">Audited correction</p><h2 id="po-correction-title" className="mt-1 break-words text-lg font-bold sm:text-xl">Correct received order {order.poNo}?</h2></div></div>
+        <button type="button" aria-label="Close correction dialog" disabled={busy} onClick={onCancel} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] disabled:opacity-50"><X size={16}/></button>
+      </div>
+      <div className="space-y-4 p-5 sm:p-6">
+        <p className="text-sm leading-6 text-[var(--app-text-muted)]">This does not edit historical quantities directly. It reverses the audited receipt through compensating stock movements, preserves the original receipt evidence, and cancels the purchase order.</p>
+        <label className="block text-sm font-semibold text-[var(--app-text)]">Correction reason <span className="text-[var(--app-danger)]">*</span><textarea autoFocus className="field mt-2 min-h-28 w-full resize-y" maxLength={500} value={reason} onChange={(event)=>onReasonChange(event.target.value)} placeholder="Explain why this received order must be corrected"/></label>
+        <div className="rounded-xl border border-[var(--app-warning)] bg-[var(--app-warning-bg)] px-4 py-3 text-xs leading-5 text-[var(--app-text-muted)]">Your Manager role, branch access, receipt state, and dependent physical counts are rechecked before any correction is applied.</div>
+      </div>
+      <div className="flex flex-col-reverse gap-2 border-t border-[var(--app-border)] p-4 sm:flex-row sm:justify-end sm:px-6"><Btn variant="outline" disabled={busy} onClick={onCancel}>Cancel</Btn><Btn variant="danger" disabled={busy||!ready} onClick={onConfirm}>{busy?"Correcting…":"Confirm Correction"}</Btn></div>
+    </div>
   </div>;
 }
 
@@ -336,7 +367,7 @@ export function TestPurchaseOrderDialog({mode,order,reason,busy,onReasonChange,o
   </ModalShell>;
 }
 
-function CreatePurchaseOrder({
+export function CreatePurchaseOrder({
   inventory,
   suppliers,
   initialItem,
@@ -353,6 +384,7 @@ function CreatePurchaseOrder({
   onGoToInventoryCount: (countDate: string) => void;
   onCreated: () => void;
 }) {
+  const user=useOptionalAuth()?.user;
   const [supplierChoice, setSupplierChoice] = useState("");
   const [otherSupplier, setOtherSupplier] = useState("");
   const [orderDate, setOrderDate] = useState(businessDate());
@@ -388,6 +420,14 @@ function CreatePurchaseOrder({
   const [error, setError] = useState("");
   const [physicalCountRequired, setPhysicalCountRequired] = useState(false);
   const [ingredientTarget, setIngredientTarget] = useState<number | null>(null);
+  const [activeDraftId,setActiveDraftId]=useState<string|null>(null);
+  const [draftsOpen,setDraftsOpen]=useState(false);
+  const drafts=useLocalDraftCollection<PurchaseOrderTemporaryDraft>({userId:user?.id,branchId:user?.branchId,form:"purchase-order-form"},isPurchaseOrderTemporaryDraft);
+  const temporaryDraftValue=():PurchaseOrderTemporaryDraft=>({supplierChoice,otherSupplier,orderDate,expectedDeliveryDate,notes,rows});
+  const resetTemporaryForm=()=>{setSupplierChoice("");setOtherSupplier("");setOrderDate(businessDate());setExpectedDeliveryDate("");setNotes("");setRows([{inventoryItemId:"",quantityOrdered:"",unitCost:"",purchaseUom:"g",conversionFactor:"1"}]);setError("");setPhysicalCountRequired(false);setActiveDraftId(null);};
+  const saveTemporaryDraft=()=>{const id=drafts.save(temporaryDraftValue(),activeDraftId??undefined);if(!id)return toast.error("Unable to save this temporary draft in your browser.");setActiveDraftId(id);toast.success("Temporary purchase order draft saved on this device.");};
+  const continueTemporaryDraft=(id:string)=>{const entry=drafts.read(id);if(!entry)return toast.error("This draft is unavailable or expired.");const draft=entry.value;setSupplierChoice(draft.supplierChoice);setOtherSupplier(draft.otherSupplier);setOrderDate(draft.orderDate);setExpectedDeliveryDate(draft.expectedDeliveryDate);setNotes(draft.notes);setRows(draft.rows.length?draft.rows:[{inventoryItemId:"",quantityOrdered:"",unitCost:"",purchaseUom:"g",conversionFactor:"1"}]);setError("");setPhysicalCountRequired(false);setActiveDraftId(id);setDraftsOpen(false);};
+  const deleteTemporaryDraft=(id:string)=>{if(!window.confirm("Delete this temporary purchase order draft?"))return;drafts.remove(id);if(activeDraftId===id)setActiveDraftId(null);};
   const update = (index: number, patch: Partial<(typeof rows)[number]>) => setRows((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row));
   const save = async (status: "DRAFT" | "ORDERED") => {
     const supplierName = supplierChoice === "__OTHER__" ? otherSupplier.trim() : supplierChoice.trim();
@@ -395,19 +435,21 @@ function CreatePurchaseOrder({
     const validationError = purchaseOrderFormValidationError({ supplierName, orderDate, expectedDeliveryDate, rowCount: rows.length, validRowCount: validRows.length });
     if (validationError) { setPhysicalCountRequired(false); setError(validationError); return; }
     setSaving(true); setError(""); setPhysicalCountRequired(false);
-    try { await operationsService.createPurchaseOrder({ supplierName: supplierName.trim(), orderDate, expectedDeliveryDate, status, notes: notes.trim() || undefined, items: validRows }); toast.success(status === "DRAFT" ? "Purchase order saved as draft" : "Purchase order created"); onCreated(); }
+    try { await operationsService.createPurchaseOrder({ supplierName: supplierName.trim(), orderDate, expectedDeliveryDate, status, notes: notes.trim() || undefined, items: validRows }); if(activeDraftId)drafts.remove(activeDraftId);toast.success(status === "DRAFT" ? "Official purchase order draft created" : "Purchase order created"); onCreated(); }
     catch (cause) {
       if (isPhysicalCountRequiredError(cause)) { setPhysicalCountRequired(true); setError(""); }
       else setError(cause instanceof Error ? cause.message : "Unable to create purchase order.");
     }
     finally { setSaving(false); }
   };
-  return <ModalShell title="New Purchase Order" onClose={onClose} wide><div className="grid gap-4 sm:grid-cols-2">
+  return <ModalShell title="New Purchase Order" onClose={onClose} wide><div className="mb-5 flex flex-wrap items-center gap-2"><Btn variant="outline" icon={FolderOpen} onClick={()=>setDraftsOpen((open)=>!open)}>View Drafts ({drafts.list().length})</Btn><Btn variant="outline" icon={Save} onClick={saveTemporaryDraft}>Save Temporary Draft</Btn>{activeDraftId&&<span className="text-xs text-[var(--app-text-muted)]">Editing a saved temporary form draft</span>}</div>
+  {draftsOpen&&<section aria-label="Temporary purchase order drafts" className="mb-5 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-4"><div className="flex items-center justify-between gap-3"><div><h3 className="font-semibold">Temporary Purchase Order Drafts</h3><p className="text-xs text-[var(--app-text-muted)]">Browser-only unfinished forms; these are not official PO records.</p></div><button type="button" onClick={()=>{resetTemporaryForm();setDraftsOpen(false);}} className="rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs font-semibold">Start New</button></div>{drafts.list().length===0?<p className="py-6 text-center text-sm text-[var(--app-text-muted)]">No saved purchase order form drafts.</p>:<ul className="mt-3 space-y-2">{drafts.list().map((draft)=><li key={draft.id} className="flex flex-col gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 sm:flex-row sm:items-center sm:justify-between"><div className="min-w-0"><p className="truncate text-sm font-semibold">{purchaseOrderDraftSummary(draft.value)}</p><p className="mt-1 text-xs text-[var(--app-text-muted)]">Last edited {formatTemporaryDraftDate(draft.savedAt)}</p></div><div className="flex shrink-0 gap-2"><button type="button" onClick={()=>continueTemporaryDraft(draft.id)} className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] px-2.5 py-1.5 text-xs font-semibold text-[var(--app-primary)]"><FilePenLine size={13}/>Continue/Edit</button><button type="button" onClick={()=>deleteTemporaryDraft(draft.id)} className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] px-2.5 py-1.5 text-xs font-semibold text-[var(--app-danger)]"><Trash2 size={13}/>Delete Draft</button></div></li>)}</ul>}</section>}
+  <div className="grid gap-4 sm:grid-cols-2">
     <label className="sm:col-span-2 text-sm font-medium">Supplier Name<Select className="mt-1.5 w-full" value={supplierChoice} onChange={setSupplierChoice} options={[{value:"",label:"Select supplier"},...suppliers.map((name)=>({value:name,label:name})),{value:"__OTHER__",label:"Others"}]} searchable searchPlaceholder="Search suppliers…"/></label>
     {supplierChoice === "__OTHER__" && <label className="sm:col-span-2 text-sm font-medium">Specify Supplier<input className="field mt-1.5" value={otherSupplier} onChange={(e) => setOtherSupplier(e.target.value)} placeholder="Enter supplier name" maxLength={160}/></label>}
     <CalendarDateField label="Order Date" value={orderDate} onChange={setOrderDate}/>
     <CalendarDateField label="Expected Delivery" value={expectedDeliveryDate} min={orderDate} onChange={setExpectedDeliveryDate}/>
-    <label className="sm:col-span-2 text-sm font-medium">Notes<input className="field mt-1.5" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional"/></label>
+    <label className="sm:col-span-2 text-sm font-medium">Notes <span className="font-normal text-[var(--app-text-muted)]">(Optional)</span><input className="field mt-1.5" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional"/></label>
   </div><div className="mt-4 space-y-1 rounded-xl border px-4 py-3 text-xs" style={{ borderColor:C.amber,background:C.amberBg,color:C.secondary }}><p>A valid Full Physical Count from the selected Order Date&apos;s Monday-Sunday week must exist before this PO can be created.</p><p className="font-medium text-[var(--app-text)]">{PURCHASE_ORDER_STOCK_TIMING_GUIDANCE}</p></div><div className="mt-5 space-y-3">
     {rows.map((row, index) => {
       const stockItem=inventory.find((candidate)=>candidate.id===row.inventoryItemId);
@@ -424,7 +466,7 @@ function CreatePurchaseOrder({
       </div>;
     })}
     <Btn variant="outline" size="sm" icon={Plus} onClick={() => setRows((current) => [...current, { inventoryItemId: "", quantityOrdered: "", unitCost: "", purchaseUom: "g", conversionFactor: "1" }])}>Add Item</Btn>
-  </div><div className="mt-4 flex justify-between rounded-xl p-3 bg-[var(--app-surface-muted)]"><span className="text-sm">Estimated Total</span><strong>{peso(rows.reduce((sum, row) => sum + Number(row.quantityOrdered || 0) * Number(row.unitCost || 0), 0))}</strong></div>{physicalCountRequired ? <PhysicalCountRequiredNotice orderDate={orderDate} onGoToInventoryCount={() => onGoToInventoryCount(orderDate)}/> : error && <p className="text-sm mt-3 text-[var(--app-danger)]">{error}</p>}<div className="mt-5 flex justify-end gap-2"><Btn variant="outline" onClick={onClose}>Cancel</Btn><Btn variant="outline" disabled={saving} onClick={() => void save("DRAFT")}>Save Draft</Btn><Btn icon={Send} disabled={saving} onClick={() => void save("ORDERED")}>{saving ? "Saving…" : "Create Order"}</Btn></div>{ingredientTarget!==null&&<IngredientEditorModal categories={Array.from(new Set(inventory.map((item)=>item.category))).sort()} onClose={()=>setIngredientTarget(null)} onCreated={(item)=>{onInventoryCreated(item);update(ingredientTarget,{inventoryItemId:item.id,unitCost:String(item.unitCost),purchaseUom:item.unit,conversionFactor:"1"});setIngredientTarget(null);}}/>}</ModalShell>;
+  </div><div className="mt-4 flex justify-between rounded-xl p-3 bg-[var(--app-surface-muted)]"><span className="text-sm">Estimated Total</span><strong>{peso(rows.reduce((sum, row) => sum + Number(row.quantityOrdered || 0) * Number(row.unitCost || 0), 0))}</strong></div>{physicalCountRequired ? <PhysicalCountRequiredNotice orderDate={orderDate} onGoToInventoryCount={() => onGoToInventoryCount(orderDate)}/> : error && <p className="text-sm mt-3 text-[var(--app-danger)]">{error}</p>}<div className="mt-5 flex flex-wrap justify-end gap-2"><Btn variant="outline" onClick={onClose}>Cancel</Btn><Btn variant="outline" disabled={saving} onClick={() => void save("DRAFT")}>Create Official PO Draft</Btn><Btn icon={Send} disabled={saving} onClick={() => void save("ORDERED")}>{saving ? "Saving…" : "Create Order"}</Btn></div>{ingredientTarget!==null&&<IngredientEditorModal categories={Array.from(new Set(inventory.map((item)=>item.category))).sort()} onClose={()=>setIngredientTarget(null)} onCreated={(item)=>{onInventoryCreated(item);update(ingredientTarget,{inventoryItemId:item.id,unitCost:String(item.unitCost),purchaseUom:item.unit,conversionFactor:"1"});setIngredientTarget(null);}}/>}</ModalShell>;
 }
 
 export function OrderDetail({ order, role, onClose, onOrder, onCancel, onCorrectReceipt, onReceive, onAuthorizeTest, onDeleteTest }: { order: PurchaseOrder; role: Role; onClose: () => void; onOrder: () => void; onCancel: () => void; onCorrectReceipt: () => void; onReceive: () => void; onAuthorizeTest?: () => void; onDeleteTest?: () => void }) {

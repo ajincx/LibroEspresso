@@ -253,7 +253,7 @@ export const archiveIncidentReport: RequestHandler = async (req, res) => {
 export const applyPurchaseOrderLifecycle: RequestHandler = async (req, res) => {
   requireRole(req.user!, ["BRANCH_MANAGER"]);
   const { id } = idParams.parse(req.params); const input = purchaseOrderLifecycleInput.parse(req.body);
-  await verifyDestructiveAction(req.user!, input.verificationPin, { module: "PURCHASE_ORDER", action: input.action, recordId: id, reason: input.reason });
+  if (input.action === "CANCEL") await verifyDestructiveAction(req.user!, input.verificationPin, { module: "PURCHASE_ORDER", action: input.action, recordId: id, reason: input.reason });
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -279,7 +279,7 @@ export const applyPurchaseOrderLifecycle: RequestHandler = async (req, res) => {
       for (const item of items.rows) await client.query(`INSERT INTO inventory_movements (branch_id,inventory_item_id,movement_type,quantity,occurred_at,reference_no,notes,approved_by,created_by,is_test_data) VALUES ($1,$2,'APPROVED_ADJUSTMENT_DECREASE',$3,now(),$4,$5,$6,$6,$7)`, [order.branchId, item.inventoryItemId, item.stockQuantity, `REVERSAL-${order.poNo}`, `Controlled reversal: ${input.reason}`, req.user!.id, order.isTestData]);
       await client.query(`UPDATE purchase_orders SET status='CANCELLED',reversed_at=now(),reversed_by=$2,reversal_reason=$3,updated_at=now() WHERE id=$1`, [id, req.user!.id, input.reason]);
     }
-    await writeDestructiveActionAudit(req.user!, { module: "PURCHASE_ORDER", action: input.action, recordId: id, reason: input.reason }, `${input.action.toLowerCase()} action applied to ${order.poNo}`, { branchId: order.branchId, priorStatus: order.status }, client);
+    await writeDestructiveActionAudit(req.user!, { module: "PURCHASE_ORDER", action: input.action, recordId: id, reason: input.reason }, `${input.action.toLowerCase()} action applied to ${order.poNo}`, { branchId: order.branchId, priorStatus: order.status }, client, input.action === "REVERSE" ? "NOT_REQUIRED" : "VERIFIED");
     await client.query("COMMIT"); res.json({ success: true, data: { id, action: input.action === "CANCEL" ? "CANCELLED" : "REVERSED" } });
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 };

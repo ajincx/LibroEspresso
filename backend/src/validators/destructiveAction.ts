@@ -15,6 +15,10 @@ export const incidentLifecycleInput = destructiveActionInput.extend({
   action: z.enum(["CANCEL", "ARCHIVE"]),
 });
 
-export const purchaseOrderLifecycleInput = destructiveActionInput.extend({
-  action: z.enum(["CANCEL", "REVERSE"]),
-});
+export const purchaseOrderLifecycleInput = z.discriminatedUnion("action", [
+  destructiveActionInput.extend({ action: z.literal("CANCEL") }),
+  z.object({
+    action: z.literal("REVERSE"),
+    reason: z.string().trim().min(1, "A correction reason is required").max(500),
+  }),
+]);

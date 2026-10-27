@@ -203,10 +203,10 @@ export function PhysicalCountBackAction({ onBack, label="Back to Count History" 
   return <Btn variant="outline" size="sm" icon={ArrowLeft} onClick={onBack}>{label}</Btn>;
 }
 
-export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FULL", embedded=false }: { onSubmitted?: () => void; onBackToHistory?: () => void; countType?:InventoryCountType; embedded?:boolean }) {
+export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FULL", embedded=false, editCountId=null }: { onSubmitted?: () => void; onBackToHistory?: () => void; countType?:InventoryCountType; embedded?:boolean; editCountId?:string|null }) {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
-  const requestedCountId = params.get("editCount");
+  const requestedCountId = editCountId ?? params.get("editCount");
   const currentBusinessDate = businessDate();
   const [countDate, setCountDate] = useState(() => countType === "FULL" ? initialPhysicalCountDate(params.get("countDate"), currentBusinessDate) : currentBusinessDate);
   const [expected, setExpected] = useState<ExpectedInventoryItem[]>([]);
@@ -240,7 +240,8 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
     try {
       if (requestedCountId) {
         const count = await inventoryWorkflowService.count(requestedCountId);
-        if (!count.canEdit) throw new Error("This count is locked. A newer count or submitted investigation prevents correction.");
+        if (count.countType !== countType) throw new Error(`This is a ${count.countType.toLowerCase()} count. Open it from Stock History to use the correct correction form.`);
+        if (!count.canEdit) throw new Error(count.editBlockReason??"This count is locked because newer inventory activity or a linked investigation prevents correction.");
         setCountDate(count.countDate); setExpected(count.items);
         setEntries(Object.fromEntries(count.items.map(item => [item.inventoryItemId,physicalCountEntryFromCanonical(item.actualQuantity, item.unit)])));
         setEditingCountId(count.id);
@@ -271,8 +272,17 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
   useEffect(() => { void loadExpected(); }, [countDate, requestedCountId, countType]);
 
   const cancelEdit = () => {
+    if (!canLeavePhysicalCountEntry(hasUnsavedChanges, () => window.confirm("Discard unsaved physical-count changes and return?"))) return;
     setEditingCountId(null);
-    setParams({}, { replace: true });
+    const nextParams = new URLSearchParams(params);
+    nextParams.delete("editCount");
+    nextParams.delete("countType");
+    setParams(nextParams, { replace: true });
+    setHasUnsavedChanges(false);
+    if (onBackToHistory) {
+      onBackToHistory();
+      return;
+    }
     setCountDate(businessDate());
   };
 
@@ -280,6 +290,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
     if (!canLeavePhysicalCountEntry(hasUnsavedChanges, () => window.confirm("Discard unsaved physical-count changes and return?"))) return;
     const nextParams = new URLSearchParams(params);
     nextParams.delete("editCount");
+    nextParams.delete("countType");
     nextParams.delete("countDate");
     setParams(nextParams, { replace: true });
     setHasUnsavedChanges(false);
@@ -339,7 +350,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
         </button>
         {requestedCountId && (
           <button onClick={cancelEdit} className="inline-flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-semibold text-white" style={{ background: "var(--app-primary)" }}>
-            Return to New Count
+            Back to Count History
           </button>
         )}
         {!embedded&&<PhysicalCountBackAction onBack={backToHistory} label={countType==="FULL"?"Back to Count History":"Back to Operations"}/>}
