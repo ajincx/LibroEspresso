@@ -1,6 +1,6 @@
 import { api } from "./api";
 
-export type ControlledActionInput = { reason: string; verificationPin: string };
+export type ControlledActionInput = { reason: string; currentPassword: string };
 export type ControlledActionResult = { id: string; action: string };
 export const purchaseOrderLifecyclePayload = (action: "CANCEL"|"REVERSE", input: ControlledActionInput) =>
   action === "REVERSE" ? { action, reason: input.reason } : { ...input, action };

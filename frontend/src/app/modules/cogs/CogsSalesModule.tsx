@@ -174,7 +174,7 @@ export function PosMappingActions({mapping,busy,canApprove,reviewNote,onEdit,onR
   return <div className="flex flex-wrap items-center gap-2">{canEditPosMapping(mapping)&&<button type="button" disabled={busy} className={`${actionClass} border-[var(--app-border)]`} onClick={onEdit}>Edit Mapping</button>}<button type="button" disabled={busy||!canApprove} className={`${actionClass} border-[var(--app-success)] bg-[var(--app-success)] text-white`} onClick={()=>onReview("APPROVED")}>Approve</button><button type="button" disabled={busy||!reviewNote.trim()} className={`${actionClass} border-[var(--app-border)]`} onClick={()=>onReview("REJECTED")}>Reject</button><button type="button" disabled={busy||!reviewNote.trim()} className={`${actionClass} border-[var(--app-border)]`} onClick={()=>onReview("AMBIGUOUS")}>Ambiguous</button></div>;
 }
 
-export function PosImportDeleteDialog({target,deleting,reason,verificationPin="",onReasonChange,onPinChange=()=>undefined,onCancel,onConfirm}:{target:PosImportRecord;deleting:boolean;reason:string;verificationPin?:string;onReasonChange:(value:string)=>void;onPinChange?:(value:string)=>void;onCancel:()=>void;onConfirm:()=>void}) {
+export function PosImportDeleteDialog({target,deleting,reason,currentPassword="",onReasonChange,onPasswordChange=()=>undefined,onCancel,onConfirm}:{target:PosImportRecord;deleting:boolean;reason:string;currentPassword?:string;onReasonChange:(value:string)=>void;onPasswordChange?:(value:string)=>void;onCancel:()=>void;onConfirm:()=>void}) {
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-labelledby="delete-pos-import-title">
     <div className="w-full max-w-lg rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-6 shadow-2xl">
       <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-[var(--app-danger-bg)] text-[var(--app-danger)]"><Trash2 size={20}/></div>
@@ -182,8 +182,8 @@ export function PosImportDeleteDialog({target,deleting,reason,verificationPin=""
       <dl className="mt-4 grid grid-cols-[120px_1fr] gap-x-3 gap-y-2 text-sm"><dt className="text-[var(--app-text-muted)]">File</dt><dd className="font-semibold break-all">{target.sourceFilename}</dd><dt className="text-[var(--app-text-muted)]">Branch</dt><dd className="font-semibold">{target.branchName}</dd><dt className="text-[var(--app-text-muted)]">Business Date</dt><dd className="font-semibold">{formatAppDate(target.businessDate)}</dd></dl>
       <p className="mt-4 rounded-xl bg-[var(--app-surface-muted)] p-3 text-sm leading-6 text-[var(--app-text-muted)]">Cleanup is controlled by the backend lifecycle policy. It removes this import, its sales rows, and recipe-derived usage after dependency checks. Production cleanup remains disabled.</p>
       <label className="mt-4 block text-sm font-medium">Cleanup reason<textarea className="field mt-1.5 min-h-20" value={reason} onChange={(event)=>onReasonChange(event.target.value)} maxLength={500} placeholder="Explain why this import is being removed"/></label>
-      <label className="mt-4 block text-sm font-medium">Verification PIN<input className="field mt-1.5" type="password" inputMode="numeric" value={verificationPin} onChange={(event)=>onPinChange(event.target.value)} placeholder="Enter verification PIN"/></label>
-      <div className="mt-6 flex justify-end gap-2"><Btn variant="outline" disabled={deleting} onClick={onCancel}>Cancel</Btn><Btn variant="danger" disabled={deleting||reason.trim().length<10||!verificationPin.trim()} onClick={onConfirm}>{deleting?"Deleting…":"Clean Up Import"}</Btn></div>
+      <label className="mt-4 block text-sm font-medium">Current password<input className="field mt-1.5" type="password" autoComplete="current-password" value={currentPassword} onChange={(event)=>onPasswordChange(event.target.value)} placeholder="Enter your current password"/></label>
+      <div className="mt-6 flex justify-end gap-2"><Btn variant="outline" disabled={deleting} onClick={onCancel}>Cancel</Btn><Btn variant="danger" disabled={deleting||reason.trim().length<10||!currentPassword} onClick={onConfirm}>{deleting?"Deleting…":"Clean Up Import"}</Btn></div>
     </div>
   </div>;
 }
@@ -438,7 +438,7 @@ export const requestedPosFormatRequest=(requests:PosFormatSetupRequest[],request
 
 export function PosMappingSetup({ role = "owner", initialSourceId = "", initialFormatRequestId = "" }: { role?: Role | string; initialSourceId?: string; initialFormatRequestId?: string } = {}) {
   const [deleteSourceTarget, setDeleteSourceTarget] = useState<PosSource | null>(null);
-  const [deleteSourceValue, setDeleteSourceValue] = useState({ reason: "", verificationPin: "" });
+  const [deleteSourceValue, setDeleteSourceValue] = useState({ reason: "", currentPassword: "" });
   const [deletingSource, setDeletingSource] = useState(false);
   const [open, setOpen] = useState(Boolean(initialSourceId||initialFormatRequestId));
   const [sources, setSources] = useState<PosSource[]>([]);
@@ -714,7 +714,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "", initialF
                             className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs font-semibold text-[var(--app-danger)] transition-colors hover:bg-[var(--app-danger-bg)]"
                             onClick={() => {
                               setDeleteSourceTarget(selectedSource);
-                              setDeleteSourceValue({ reason: "", verificationPin: "" });
+                              setDeleteSourceValue({ reason: "", currentPassword: "" });
                             }}
                           >
                             <Trash2 size={13} />
@@ -909,7 +909,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "", initialF
         onChange={setDeleteSourceValue}
         onCancel={() => {
           setDeleteSourceTarget(null);
-          setDeleteSourceValue({ reason: "", verificationPin: "" });
+          setDeleteSourceValue({ reason: "", currentPassword: "" });
         }}
         onConfirm={async () => {
           setDeletingSource(true);
@@ -917,7 +917,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "", initialF
             await controlledActionService.deletePosSource(deleteSourceTarget.id, deleteSourceValue);
             toast.success(`Deleted POS system configuration ${deleteSourceTarget.displayName}`);
             setDeleteSourceTarget(null);
-            setDeleteSourceValue({ reason: "", verificationPin: "" });
+            setDeleteSourceValue({ reason: "", currentPassword: "" });
             setSourceId("");
             await refresh();
           } catch (err) {
@@ -961,7 +961,7 @@ function SalesAnalysis({ role, scopeBranchId, scopeBranchName = "All Branches" }
   const [viewImportTarget,setViewImportTarget]=useState<PosImportRecord|null>(null);
   const [deleteTarget, setDeleteTarget] = useState<PosImportRecord|null>(null);
   const [deleteReason, setDeleteReason] = useState("");
-  const [deletePin, setDeletePin] = useState("");
+  const [deletePassword, setDeletePassword] = useState("");
   const [deletingImport, setDeletingImport] = useState(false);
   const [voidTarget,setVoidTarget]=useState<PosImportRecord|null>(null);
   const [voidReason,setVoidReason]=useState("");
@@ -1043,14 +1043,14 @@ function SalesAnalysis({ role, scopeBranchId, scopeBranchName = "All Branches" }
     return matchesCategory && (!query || product.name.toLowerCase().includes(query));
   });
   const deleteImport=async()=>{
-    if(!deleteTarget||!canDeletePosImport(effectiveRole,deleteTarget)||deleteReason.trim().length<10||!deletePin.trim())return;
+    if(!deleteTarget||!canDeletePosImport(effectiveRole,deleteTarget)||deleteReason.trim().length<10||!deletePassword)return;
     setDeletingImport(true);
     try{
-      await inventoryWorkflowService.deletePosImport(deleteTarget.id,deleteReason.trim(),deletePin.trim());
+      await inventoryWorkflowService.deletePosImport(deleteTarget.id,deleteReason.trim(),deletePassword);
       toast.success("POS import deleted");
       setDeleteTarget(null);
       setDeleteReason("");
-      setDeletePin("");
+      setDeletePassword("");
       setPosHistoryPage(1);
       setHistoryRefresh(value=>value+1);
       window.dispatchEvent(new CustomEvent("libro-data-changed"));
@@ -1280,7 +1280,7 @@ function SalesAnalysis({ role, scopeBranchId, scopeBranchName = "All Branches" }
                         onDelete={() => {
                           setDeleteTarget(row);
                           setDeleteReason("");
-                          setDeletePin("");
+                          setDeletePassword("");
                         }}
                         onVoid={()=>{setVoidTarget(row);setVoidReason("");setVoidConfirmed(false);}}
                       />
@@ -1297,7 +1297,7 @@ function SalesAnalysis({ role, scopeBranchId, scopeBranchName = "All Branches" }
       {voidTarget&&canVoidPosImport(effectiveRole,voidTarget)&&<PosImportVoidDialog target={voidTarget} busy={voidingImport} reason={voidReason} confirmed={voidConfirmed} onReasonChange={setVoidReason} onConfirmedChange={setVoidConfirmed} onCancel={()=>{setVoidTarget(null);setVoidReason("");setVoidConfirmed(false);}} onConfirm={()=>void voidImport()}/>}
       {authorizeTarget&&canAuthorizePosImportCleanup(effectiveRole,authorizeTarget)&&<PosImportCleanupAuthorizationDialog target={authorizeTarget} busy={authorizingImport} reason={authorizeReason} onReasonChange={setAuthorizeReason} onCancel={()=>{setAuthorizeTarget(null);setAuthorizeReason("");}} onConfirm={()=>void authorizeImportCleanup()}/>}
       {deleteTarget&&canDeletePosImport(effectiveRole,deleteTarget)&&(
-        <PosImportDeleteDialog target={deleteTarget} deleting={deletingImport} reason={deleteReason} verificationPin={deletePin} onReasonChange={setDeleteReason} onPinChange={setDeletePin} onCancel={()=>{setDeleteTarget(null);setDeleteReason("");setDeletePin("");}} onConfirm={()=>void deleteImport()}/>
+        <PosImportDeleteDialog target={deleteTarget} deleting={deletingImport} reason={deleteReason} currentPassword={deletePassword} onReasonChange={setDeleteReason} onPasswordChange={setDeletePassword} onCancel={()=>{setDeleteTarget(null);setDeleteReason("");setDeletePassword("");}} onConfirm={()=>void deleteImport()}/>
       )}
 
       <SalesPosImportModal

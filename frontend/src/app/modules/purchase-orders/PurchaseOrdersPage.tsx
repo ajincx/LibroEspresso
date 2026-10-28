@@ -173,7 +173,7 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
   const [testActionReason,setTestActionReason]=useState("");
   const [testActionBusy,setTestActionBusy]=useState(false);
   const [lifecycleTarget,setLifecycleTarget]=useState<PurchaseOrder|null>(null);
-  const [controlledValue,setControlledValue]=useState<ControlledActionValue>({reason:"",verificationPin:""});
+  const [controlledValue,setControlledValue]=useState<ControlledActionValue>({reason:"",currentPassword:""});
   const [controlledBusy,setControlledBusy]=useState(false);
 
   useEffect(() => {
@@ -229,7 +229,7 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
     catch (cause) { toast.error(cause instanceof Error ? cause.message : "Unable to update purchase order."); }
   };
   const lifecycleAction=(order:PurchaseOrder):"CANCEL"|"REVERSE"|null=>order.status==="DRAFT"||order.status==="ORDERED"?"CANCEL":order.status==="PARTIALLY_RECEIVED"||order.status==="RECEIVED"?"REVERSE":null;
-  const applyLifecycle=async()=>{if(!lifecycleTarget)return;const action=lifecycleAction(lifecycleTarget);if(!action)return;setControlledBusy(true);try{await controlledActionService.purchaseOrderLifecycle(lifecycleTarget.id,action,controlledValue);toast.success(action==="CANCEL"?"Purchase order cancelled":"Receipt reversed with compensating stock movements");setLifecycleTarget(null);setSelected(null);setControlledValue({reason:"",verificationPin:""});await load();}catch(cause){toast.error(cause instanceof Error?cause.message:"Unable to apply purchase order action");}finally{setControlledBusy(false);}};
+  const applyLifecycle=async()=>{if(!lifecycleTarget)return;const action=lifecycleAction(lifecycleTarget);if(!action)return;setControlledBusy(true);try{await controlledActionService.purchaseOrderLifecycle(lifecycleTarget.id,action,controlledValue);toast.success(action==="CANCEL"?"Purchase order cancelled":"Receipt reversed with compensating stock movements");setLifecycleTarget(null);setSelected(null);setControlledValue({reason:"",currentPassword:""});await load();}catch(cause){toast.error(cause instanceof Error?cause.message:"Unable to apply purchase order action");}finally{setControlledBusy(false);}};
   const authorizeTestOrder=async()=>{
     if(!authorizeTestTarget||testActionReason.trim().length<10)return;
     setTestActionBusy(true);
@@ -316,8 +316,8 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
         role={role}
         onClose={() => setSelected(null)}
         onOrder={() => void setOrderStatus(selected, "ORDERED")}
-        onCancel={() => {setLifecycleTarget(selected);setControlledValue({reason:"",verificationPin:""});}}
-        onCorrectReceipt={() => {setLifecycleTarget(selected);setControlledValue({reason:"",verificationPin:""});}}
+        onCancel={() => {setLifecycleTarget(selected);setControlledValue({reason:"",currentPassword:""});}}
+        onCorrectReceipt={() => {setLifecycleTarget(selected);setControlledValue({reason:"",currentPassword:""});}}
         onReceive={() => { setReceiving(selected); setSelected(null); }}
         onAuthorizeTest={canAuthorizePurchaseOrderTest(role,selected,testDataActionsEnabled)?()=>{setAuthorizeTestTarget(selected);setTestActionReason("");}:undefined}
         onDeleteTest={canDeletePurchaseOrderTest(role,selected,testDataActionsEnabled)?()=>{setDeleteTestTarget(selected);setTestActionReason("");}:undefined}
@@ -331,7 +331,7 @@ export function PurchaseOrders({ role, scopeBranchId = "ALL" }: { role: Role; sc
     {authorizeTestTarget&&<TestPurchaseOrderDialog mode="authorize" order={authorizeTestTarget} reason={testActionReason} busy={testActionBusy} onReasonChange={setTestActionReason} onClose={()=>{if(!testActionBusy){setAuthorizeTestTarget(null);setTestActionReason("");}}} onConfirm={()=>void authorizeTestOrder()}/>}
     {deleteTestTarget&&<TestPurchaseOrderDialog mode="delete" order={deleteTestTarget} reason={testActionReason} busy={testActionBusy} onReasonChange={setTestActionReason} onClose={()=>{if(!testActionBusy){setDeleteTestTarget(null);setTestActionReason("");}}} onConfirm={()=>void deleteTestOrder()}/>}
     {role==="manager"&&lifecycleTarget&&lifecycleAction(lifecycleTarget)==="REVERSE"&&(
-      <PurchaseOrderCorrectionDialog order={lifecycleTarget} reason={controlledValue.reason} busy={controlledBusy} onReasonChange={(reason)=>setControlledValue({reason,verificationPin:""})} onCancel={()=>setLifecycleTarget(null)} onConfirm={()=>void applyLifecycle()}/>
+      <PurchaseOrderCorrectionDialog order={lifecycleTarget} reason={controlledValue.reason} busy={controlledBusy} onReasonChange={(reason)=>setControlledValue({reason,currentPassword:""})} onCancel={()=>setLifecycleTarget(null)} onConfirm={()=>void applyLifecycle()}/>
     )}
     {role==="manager"&&lifecycleTarget&&lifecycleAction(lifecycleTarget)==="CANCEL"&&(
       <ControlledActionDialog title={`Cancel order ${lifecycleTarget.poNo}?`} description="The purchase order remains in history. The server rechecks received quantities and dependencies." confirmLabel="Cancel Order" value={controlledValue} busy={controlledBusy} onChange={setControlledValue} onCancel={()=>setLifecycleTarget(null)} onConfirm={()=>void applyLifecycle()}/>

@@ -51,7 +51,7 @@ export const inventoryWorkflowService = {
   async uatCount(id: string) {
     return (await api.get<ApiSuccess<{ count: { id: string; countNo: string; countDate: string; branchId: string; branchName: string; canEdit: false; isTestData: true; items: (CountVarianceItem & ExpectedInventoryItem)[] } }>>(`/inventory-counts/uat-history/${id}`)).data.data.count;
   },
-  async classifyCountAsUatTest(id: string, input: { reason: string; verificationPin: string }) {
+  async classifyCountAsUatTest(id: string, input: { reason: string; currentPassword: string }) {
     return (await api.post<ApiSuccess<{ id: string; countNo: string; classified: true; balanceRowsClassified: number; shrinkageReportNo: string }>>(`/inventory-counts/${id}/classify-uat-test`, { ...input, confirmed: true })).data.data;
   },
   async openingBaselines(branchId?: string) {
@@ -126,7 +126,7 @@ export const inventoryWorkflowService = {
   async rejectPosFormatRequest(id: string, reason: string) {
     return (await api.post<ApiSuccess<{ requestId:string;status:"REJECTED" }>>(`/pos-sales/format-requests/${id}/reject`, { reason })).data.data;
   },
-  async deletePosSource(id: string, input: { reason: string; verificationPin: string }) {
+  async deletePosSource(id: string, input: { reason: string; currentPassword: string }) {
     return (await api.delete<ApiSuccess<{ id: string; action: string }>>(`/pos-sales/sources/${id}`, { data: input })).data.data;
   },
   async posMappings(posSourceId: string, reviewStatus?: PosMappingReviewStatus) {
@@ -156,8 +156,8 @@ export const inventoryWorkflowService = {
   async posImports(filters?: { branchId?: string; search?: string; page?: number; pageSize?: number }) {
     return (await api.get<ApiSuccess<{ imports: PosImportRecord[]; pagination: { page:number;pageSize:number;total:number;totalPages:number } }>>("/pos-sales", { params: filters })).data.data;
   },
-  async deletePosImport(id:string, reason:string, verificationPin:string) {
-    return (await api.delete<ApiSuccess<{ id:string;deleted:true }>>(`/pos-sales/${id}`, { data: { reason, verificationPin } })).data.data;
+  async deletePosImport(id:string, reason:string, currentPassword:string) {
+    return (await api.delete<ApiSuccess<{ id:string;deleted:true }>>(`/pos-sales/${id}`, { data: { reason, currentPassword } })).data.data;
   },
   async voidPosImport(id:string,reason:string){
     return (await api.post<ApiSuccess<{id:string;voided:true;voidedAt:string;eodConfirmationInvalidated:boolean}>>(`/pos-sales/${id}/void`,{reason,confirmed:true})).data.data;

@@ -50,8 +50,47 @@ jobs:
         run: npm run db:seed
         working-directory: backend
       - name: Check and test backend
-        run: npm run typecheck && npm run build && npm test
+        run: npm run typecheck && npm run build && npm test -- --exclude "**/*.pg.test.ts"
         working-directory: backend
+      - name: Create isolated PostgreSQL integration databases
+        env:
+          PGPASSWORD: postgres
+        run: |
+          set -euo pipefail
+          for database in libro_phasec_final_ci_e2e libro_phasec_anomaly_ci_e2e libro_phase3fix12_password_ci_e2e libro_fix12_email_reminder_ci_e2e; do
+            psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${database}"
+            DATABASE_URL="postgresql://postgres:postgres@localhost:5432/${database}" npm run db:migrate
+          done
+        working-directory: backend
+      - name: Run required PostgreSQL integration suites
+        run: |
+          set -euo pipefail
+          run_required_suite() {
+            local variable="$1"
+            local database="$2"
+            local test_file="$3"
+            local output
+            output="$(env "${variable}=postgresql://postgres:postgres@localhost:5432/${database}" npx vitest run "${test_file}" --reporter=verbose --no-color 2>&1)" || { echo "${output}"; return 1; }
+            echo "${output}"
+            echo "${output}" | grep -Eq 'Tests[[:space:]]+[1-9][0-9]* passed'
+            if echo "${output}" | grep -Eq 'Tests.*[1-9][0-9]* skipped'; then
+              echo "Required PostgreSQL suite was skipped: ${test_file}" >&2
+              return 1
+            fi
+          }
+          run_required_suite PHASE_C_E2E_DATABASE_URL libro_phasec_final_ci_e2e src/controllers/inventoryWorkflow.finalWorkflow.pg.test.ts
+          run_required_suite PHASE_C_E2E_DATABASE_URL libro_phasec_anomaly_ci_e2e src/controllers/inventoryWorkflow.anomalyIntegration.pg.test.ts
+          run_required_suite PASSWORD_RESET_E2E_DATABASE_URL libro_phase3fix12_password_ci_e2e src/services/passwordReset.pg.test.ts
+          run_required_suite POS_REMINDER_E2E_DATABASE_URL libro_fix12_email_reminder_ci_e2e src/services/posImportReminderEmail.pg.test.ts
+        working-directory: backend
+      - name: Remove isolated PostgreSQL integration databases
+        if: always()
+        env:
+          PGPASSWORD: postgres
+        run: |
+          for database in libro_phasec_final_ci_e2e libro_phasec_anomaly_ci_e2e libro_phase3fix12_password_ci_e2e libro_fix12_email_reminder_ci_e2e; do
+            dropdb -h localhost -U postgres --if-exists --force "${database}"
+          done
       - name: Install frontend
         run: npm ci
         working-directory: frontend

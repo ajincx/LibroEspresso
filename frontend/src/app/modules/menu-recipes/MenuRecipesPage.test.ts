@@ -42,8 +42,8 @@ describe("Menu category guidance and permissions",()=>{
   });
 
   it("uses a reason-only product deletion confirmation and rejects a blank reason",()=>{
-    const blank=renderToStaticMarkup(createElement(MenuProductDeleteDialog,{product:{name:"Café Latte"},busy:false,value:{reason:"",verificationPin:""},onChange:vi.fn(),onCancel:vi.fn(),onConfirm:vi.fn()}));
-    const ready=renderToStaticMarkup(createElement(MenuProductDeleteDialog,{product:{name:"Café Latte"},busy:false,value:{reason:"Remove unused menu product",verificationPin:""},onChange:vi.fn(),onCancel:vi.fn(),onConfirm:vi.fn()}));
+    const blank=renderToStaticMarkup(createElement(MenuProductDeleteDialog,{product:{name:"Café Latte"},busy:false,value:{reason:"",currentPassword:""},onChange:vi.fn(),onCancel:vi.fn(),onConfirm:vi.fn()}));
+    const ready=renderToStaticMarkup(createElement(MenuProductDeleteDialog,{product:{name:"Café Latte"},busy:false,value:{reason:"Remove unused menu product",currentPassword:""},onChange:vi.fn(),onCancel:vi.fn(),onConfirm:vi.fn()}));
     expect(blank).toContain("Delete Menu Product?");
     expect(blank).toContain("Item: Café Latte");
     expect(blank).not.toContain("Verification PIN");

@@ -61,8 +61,8 @@ describe("persistent login protection", () => {
     mocks.compare.mockResolvedValue(false);
 
     await expect(authenticateCredentials("manager@libro.com", "wrong-password", { ipAddress: "127.0.0.1" }, now)).rejects.toMatchObject({
-      code: "INVALID_PASSWORD",
-      message: "Incorrect password. Please try again.",
+      code: "INVALID_CREDENTIALS",
+      message: "Unable to sign in with those credentials.",
     });
 
     expect(calls.find(({ sql }) => sql.includes("failed_login_attempts=$2"))?.values).toEqual([userRow.id, 1, null]);
@@ -71,7 +71,7 @@ describe("persistent login protection", () => {
     expect(calls.at(-1)?.sql).toBe("COMMIT");
   });
 
-  it("classifies an unknown email separately while retaining the dummy-hash timing check", async () => {
+  it("returns the same public failure for an unknown email while retaining the dummy-hash timing check", async () => {
     const { client, calls } = loginClient(null);
     mocks.connect.mockResolvedValue(client);
     mocks.compare.mockResolvedValue(false);
@@ -79,8 +79,8 @@ describe("persistent login protection", () => {
     const unknown = authenticateCredentials("unknown@example.com", "wrong-password", {}, now);
     await expect(unknown).rejects.toMatchObject({
       status: 401,
-      code: "ACCOUNT_NOT_FOUND",
-      message: "Account not found. Please check your email address.",
+      code: "INVALID_CREDENTIALS",
+      message: "Unable to sign in with those credentials.",
     });
 
     expect(mocks.compare).toHaveBeenCalledWith("wrong-password", expect.any(String));
@@ -95,8 +95,8 @@ describe("persistent login protection", () => {
 
     await expect(authenticateCredentials("unknown@example.com", "correct-password", {}, now)).rejects.toMatchObject({
       status: 401,
-      code: "ACCOUNT_NOT_FOUND",
-      message: "Account not found. Please check your email address.",
+      code: "INVALID_CREDENTIALS",
+      message: "Unable to sign in with those credentials.",
     });
   });
 

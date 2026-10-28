@@ -23,11 +23,8 @@ export function loginErrorMessage(reason: unknown) {
   const error = reason as { message?: unknown; response?: { data?: { error?: { code?: unknown } } } } | null;
   const code = typeof error?.response?.data?.error?.code === "string" ? error.response.data.error.code : "";
   const message = typeof error?.message === "string" ? error.message : "";
-  if (code === "ACCOUNT_NOT_FOUND") {
-    return "Account not found. Please check your email address.";
-  }
-  if (code === "INVALID_PASSWORD") {
-    return "Incorrect password. Please try again.";
+  if (code === "INVALID_CREDENTIALS" || code === "ACCOUNT_NOT_FOUND" || code === "INVALID_PASSWORD") {
+    return "Unable to sign in with those credentials.";
   }
   if (code === "ACCOUNT_INACTIVE" || message.toLowerCase().includes("account is inactive")) {
     return "This account is inactive. Please contact your administrator.";

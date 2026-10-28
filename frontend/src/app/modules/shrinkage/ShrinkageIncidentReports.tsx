@@ -20,7 +20,7 @@ export function ShrinkageIncidentReports({ owner, branchId }: { owner: boolean; 
   const [loading, setLoading] = useState(true);
   const [reviewing, setReviewing] = useState(false);
   const [archiveTarget,setArchiveTarget]=useState<IncidentReport|null>(null);
-  const [controlledValue,setControlledValue]=useState<ControlledActionValue>({reason:"",verificationPin:""});
+  const [controlledValue,setControlledValue]=useState<ControlledActionValue>({reason:"",currentPassword:""});
   const [controlledBusy,setControlledBusy]=useState(false);
   const load = useCallback(async () => {
     setLoading(true);
@@ -44,7 +44,7 @@ export function ShrinkageIncidentReports({ owner, branchId }: { owner: boolean; 
     catch (error) { toast.error(error instanceof Error ? error.message : "Unable to review incident report."); }
     finally { setReviewing(false); }
   };
-  const archive=async()=>{if(!archiveTarget)return;setControlledBusy(true);try{await controlledActionService.incidentLifecycle(archiveTarget.id,"ARCHIVE",controlledValue);toast.success("Incident report archived");setArchiveTarget(null);setControlledValue({reason:"",verificationPin:""});await load();}catch(error){toast.error(error instanceof Error?error.message:"Unable to archive incident");}finally{setControlledBusy(false);}};
+  const archive=async()=>{if(!archiveTarget)return;setControlledBusy(true);try{await controlledActionService.incidentLifecycle(archiveTarget.id,"ARCHIVE",controlledValue);toast.success("Incident report archived");setArchiveTarget(null);setControlledValue({reason:"",currentPassword:""});await load();}catch(error){toast.error(error instanceof Error?error.message:"Unable to archive incident");}finally{setControlledBusy(false);}};
   return <>
     <TableCard
       title="Staff Incident Reports"
@@ -91,7 +91,7 @@ export function ShrinkageIncidentReports({ owner, branchId }: { owner: boolean; 
                   >
                     <Eye size={15} /> View
                   </button>
-                  {!owner&&<button type="button" onClick={()=>{setArchiveTarget(report);setControlledValue({reason:"",verificationPin:""});}} className="p-2 rounded-lg border border-[var(--app-border)] text-[var(--app-danger)]" title="Archive incident" aria-label="Archive incident"><Archive size={15}/></button>}
+                  {!owner&&<button type="button" onClick={()=>{setArchiveTarget(report);setControlledValue({reason:"",currentPassword:""});}} className="p-2 rounded-lg border border-[var(--app-border)] text-[var(--app-danger)]" title="Archive incident" aria-label="Archive incident"><Archive size={15}/></button>}
                   </div>
                 </TD>
               </TR>

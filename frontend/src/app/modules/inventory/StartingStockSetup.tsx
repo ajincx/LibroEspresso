@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { CheckCircle2, ClipboardCheck, FileWarning, Save, Search, X } from "lucide-react";
 import { toast } from "sonner";
 import { Btn, Select, SkeletonBlock, TableEmptyRow, TableLoadingRow, TableWrapper, TD, THead, TR } from "../../components/ModuleUi";
+import { useAuth } from "../../contexts/AuthContext";
+import { useLocalDraft } from "../../hooks/useLocalDraft";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
 import type { OpeningInventoryBaseline, StartingStockSetup, StartingStockSetupItem } from "../../types/inventoryWorkflow";
 import { compatibleUnits, type MeasurementUnit } from "../../utils/units";
@@ -11,8 +13,13 @@ export type StartingStockEntry = { quantity: string; enteredUnit: MeasurementUni
 const unitFactor = (unit: MeasurementUnit) => unit === "kg" || unit === "L" ? 1000 : 1;
 const unitLabel = (unit: string) => unit === "ml" ? "mL" : unit === "pc" ? "pcs" : unit;
 const quantityLabel = (value: number) => value.toLocaleString("en-PH", { maximumFractionDigits: 4 });
-export const startingStockDraftKey = (branchId: string) => `libro.starting-stock.draft.${branchId}`;
+export const startingStockDraftKey = (userId: string, branchId: string) => `libro.draft.v1.${userId}.${branchId}.starting-stock.new`;
 export const startingStockStatusLabel = (confirmed:boolean) => confirmed ? "Confirmed" : "Not Yet Set Up";
+export const isStartingStockDraft = (value: unknown): value is Record<string, StartingStockEntry> =>
+  Boolean(value && typeof value === "object" && !Array.isArray(value) && Object.values(value).every((entry) =>
+    entry && typeof entry === "object"
+      && typeof (entry as StartingStockEntry).quantity === "string"
+      && ["g", "kg", "ml", "L", "pc"].includes((entry as StartingStockEntry).enteredUnit)));
 
 export function allowedStartingStockUnits(canonicalUnit: string): MeasurementUnit[] {
   return compatibleUnits(canonicalUnit);
@@ -45,13 +52,6 @@ function initialEntries(items: StartingStockSetupItem[], draft: Record<string, S
   }));
 }
 
-function loadDraft(branchId: string): Record<string, StartingStockEntry> {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(startingStockDraftKey(branchId)) ?? "{}");
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch { return {}; }
-}
-
 function BaselineReadOnly({ baseline }: { baseline: OpeningInventoryBaseline }) {
   return <section className="rounded-2xl border bg-[var(--app-surface)] border-[var(--app-border)] overflow-hidden">
     <div className="border-b border-[var(--app-border)] bg-[var(--app-primary-faint)] p-5">
@@ -62,6 +62,8 @@ function BaselineReadOnly({ baseline }: { baseline: OpeningInventoryBaseline }) 
 }
 
 export function StartingStockSetupPage() {
+  const { user } = useAuth();
+  const draft = useLocalDraft<Record<string, StartingStockEntry>>({ userId: user?.id, branchId: user?.branchId, form: "starting-stock" }, isStartingStockDraft);
   const [setup, setSetup] = useState<StartingStockSetup | null>(null);
   const [entries, setEntries] = useState<Record<string, StartingStockEntry>>({});
   const [search, setSearch] = useState("");
@@ -69,21 +71,22 @@ export function StartingStockSetupPage() {
   const [saving, setSaving] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const [error, setError] = useState("");
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true); setError("");
     try {
       const next = await inventoryWorkflowService.startingStockSetup();
+      try { localStorage.removeItem(`libro.starting-stock.draft.${next.branchId}`); } catch { /* storage may be unavailable */ }
       setSetup(next);
-      setEntries(next.status === "READY" ? initialEntries(next.items, loadDraft(next.branchId)) : {});
+      setEntries(next.status === "READY" ? initialEntries(next.items, draft.read() ?? {}) : {});
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to load Starting Stock setup."); }
     finally { setLoading(false); }
-  };
-  useEffect(() => { void load(); }, []);
+  }, [draft]);
+  useEffect(() => { void load(); }, [load]);
   const completion = useMemo(() => startingStockCompletion(setup?.items ?? [], entries), [entries, setup?.items]);
   const visibleItems = useMemo(() => (setup?.items ?? []).filter((item) => `${item.sku} ${item.name} ${item.category}`.toLowerCase().includes(search.trim().toLowerCase())), [search, setup?.items]);
   const saveDraft = () => {
     if (!setup) return;
-    localStorage.setItem(startingStockDraftKey(setup.branchId), JSON.stringify(entries));
+    draft.save(entries);
     toast.success("Starting Stock draft saved on this device");
   };
   const confirm = async () => {
@@ -95,7 +98,7 @@ export function StartingStockSetupPage() {
         quantity: Number(entries[item.inventoryItemId]!.quantity),
         enteredUnit: entries[item.inventoryItemId]!.enteredUnit,
       })));
-      localStorage.removeItem(startingStockDraftKey(setup.branchId));
+      draft.clear();
       setSetup({ ...setup, status: "INITIALIZED", message: "Starting Stock is established for this branch.", baseline });
       setReviewing(false);
       toast.success("Starting Stock confirmed");

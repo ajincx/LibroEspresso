@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { purchaseOrderLifecycleInput } from "./destructiveAction.js";
 
 describe("purchase order lifecycle validation",()=>{
-  const verification={reason:"Preserve this purchase order as historical evidence",verificationPin:"12345"};
-  it("requires PIN verification for cancellation",()=>{
+  const verification={reason:"Preserve this purchase order as historical evidence",currentPassword:"correct password"};
+  it("requires current-password verification for cancellation",()=>{
     expect(purchaseOrderLifecycleInput.parse({...verification,action:"CANCEL"}).action).toBe("CANCEL");
     expect(()=>purchaseOrderLifecycleInput.parse({reason:verification.reason,action:"CANCEL"})).toThrow();
   });

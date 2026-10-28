@@ -113,7 +113,7 @@ describe("access controls", () => {
     const classification = await request(app)
       .post("/api/inventory-counts/9c084a0a-2283-4d4a-b333-b985a3126ff3/classify-uat-test")
       .set("Cookie", cookie)
-      .send({ reason: "Known UAT placeholder count", verificationPin: "12345", confirmed: true });
+      .send({ reason: "Known UAT placeholder count", currentPassword: "correct password", confirmed: true });
     expect(history.status).toBe(403);
     expect(classification.status).toBe(403);
   });

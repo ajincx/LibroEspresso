@@ -231,9 +231,9 @@ export function PhysicalCountCorrectionDialog({countType,reason,error,busy,onRea
     description="You are correcting an existing physical count. The original evidence remains preserved and this correction will be recorded in the audit history."
     confirmLabel="Confirm Correction"
     confirmVariant="primary"
-    value={{reason,verificationPin:""}}
+    value={{reason,currentPassword:""}}
     busy={busy}
-    requireVerificationPin={false}
+    requireCurrentPassword={false}
     minReasonLength={1}
     maxReasonLength={1000}
     reasonLabel="Reason for Correction"

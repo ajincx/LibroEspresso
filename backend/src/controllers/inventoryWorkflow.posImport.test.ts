@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   connect: vi.fn(),
   poolQuery: vi.fn(),
   writeAudit: vi.fn(),
+  verify: vi.fn(),
+  writeControlledAudit: vi.fn(),
   env: {NODE_ENV:"test",DATA_LIFECYCLE_ENV:"DEVELOPMENT" as "DEVELOPMENT"|"UAT"|"PRODUCTION",BENCHMARK_MODE:false},
 }));
 
@@ -16,6 +18,10 @@ vi.mock("../config/database.js", () => ({
   pool: { connect: mocks.connect, query: mocks.poolQuery },
 }));
 vi.mock("../services/audit.service.js", () => ({ writeAudit: mocks.writeAudit }));
+vi.mock("../services/destructiveAction.service.js", () => ({
+  verifyDestructiveAction: mocks.verify,
+  writeDestructiveActionAudit: mocks.writeControlledAudit,
+}));
 vi.mock("../config/env.js",()=>({env:mocks.env}));
 
 import { authorizePosImportCleanup, configurePosFormatRequest, deletePosImport, importPosSales, listPosFormatSetupRequests, listPosImportApprovals, listPosImports, previewPosSales, rejectPosFormatRequest, requestPosFormatSetup, requestPosImportApproval, reviewPosImportApproval, voidPosImport } from "./inventoryWorkflow.controller.js";
@@ -116,7 +122,7 @@ function response() {
   return res;
 }
 
-const deleteRequest = (id=importId) => ({params:{id},body:{reason:"Reset an explicitly authorized development fixture",verificationPin:"12345"},user:{id:"owner-1",role:"OWNER",branchId:null}}) as never;
+const deleteRequest = (id=importId) => ({params:{id},body:{reason:"Reset an explicitly authorized development fixture",currentPassword:"correct password"},user:{id:"owner-1",role:"OWNER",branchId:null}}) as never;
 
 function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate" | "overlap-after-lock" | "reconciliation" | "baseline", mappingVersion?: string,
   variantRows?: Array<{id:string;menuItemId:string;name:string;status:"ACTIVE"|"INACTIVE";recipeVersionId:string|null;recipeUnits:Array<{recipeUnit:string;inventoryUnit:string}>}>,
@@ -220,7 +226,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.env.DATA_LIFECYCLE_ENV="DEVELOPMENT";
   mocks.poolQuery.mockResolvedValue({ rows: [] });
+  mocks.verify.mockResolvedValue(undefined);
   mocks.writeAudit.mockResolvedValue(undefined);
+  mocks.writeControlledAudit.mockImplementation((user, context, description, metadata, client, verificationResult = "VERIFIED") =>
+    mocks.writeAudit(user, `CONTROLLED_${context.action}`, context.module, context.recordId, description, { ...metadata, reason: context.reason, verificationResult }, client));
 });
 
 describe("Owner POS import voiding",()=>{

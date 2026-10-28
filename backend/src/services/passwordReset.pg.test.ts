@@ -32,7 +32,7 @@ suite("password reset PostgreSQL lifecycle",()=>{
     const state=await pool.query<{password_hash:string;tokens:string;sessions:string;audits:string}>(`SELECT u.password_hash,(SELECT count(*) FROM password_reset_tokens WHERE user_id=u.id AND consumed_at IS NOT NULL)::text tokens,(SELECT count(*) FROM auth_sessions WHERE user_id=u.id AND revoked_at IS NOT NULL)::text sessions,(SELECT count(*) FROM audit_logs WHERE user_id=u.id AND action='PASSWORD_RESET')::text audits FROM users u WHERE u.id=$1`,[userId]);
     expect(await bcrypt.compare("Replacement-password-456",state.rows[0]!.password_hash)).toBe(true);expect(await bcrypt.compare("Original-password-123",state.rows[0]!.password_hash)).toBe(false);expect(state.rows[0]).toMatchObject({tokens:"1",sessions:"1",audits:"1"});
     expect((await authenticateCredentials(resetEmail,"Replacement-password-456",{})).user.id).toBe(userId);
-    await expect(authenticateCredentials(resetEmail,"Original-password-123",{})).rejects.toMatchObject({code:"INVALID_PASSWORD"});
+    await expect(authenticateCredentials(resetEmail,"Original-password-123",{})).rejects.toMatchObject({code:"INVALID_CREDENTIALS"});
   });
   it("rejects expired tokens and tokens belonging to inactive accounts",async()=>{
     const expired="expired-token";await pool.query("INSERT INTO password_reset_tokens(user_id,token_hash,created_at,expires_at) VALUES($1,$2,now()-interval '2 hours',now()-interval '1 hour')",[userId,createHash("sha256").update(expired).digest("hex")]);

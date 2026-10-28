@@ -24,7 +24,7 @@ export function MasterDataPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [removeTarget,setRemoveTarget]=useState<InventoryItem|null>(null);
-  const [controlledValue,setControlledValue]=useState<ControlledActionValue>({reason:"",verificationPin:""});
+  const [controlledValue,setControlledValue]=useState<ControlledActionValue>({reason:"",currentPassword:""});
   const [controlledBusy,setControlledBusy]=useState(false);
 
   const load = async () => {
@@ -48,7 +48,7 @@ export function MasterDataPage() {
     } catch (reason) { toast.error(reason instanceof Error ? reason.message : "Unable to create inventory item"); }
     finally { setSaving(false); }
   };
-  const remove=async()=>{if(!removeTarget)return;setControlledBusy(true);try{const result=await controlledActionService.removeInventoryItem(removeTarget.id,controlledValue);toast.success(result.action==="DELETED"?"Unused inventory item deleted":"Used inventory item deactivated; history was preserved");setRemoveTarget(null);setControlledValue({reason:"",verificationPin:""});await load();}catch(reason){toast.error(reason instanceof Error?reason.message:"Unable to remove inventory item");}finally{setControlledBusy(false);}};
+  const remove=async()=>{if(!removeTarget)return;setControlledBusy(true);try{const result=await controlledActionService.removeInventoryItem(removeTarget.id,controlledValue);toast.success(result.action==="DELETED"?"Unused inventory item deleted":"Used inventory item deactivated; history was preserved");setRemoveTarget(null);setControlledValue({reason:"",currentPassword:""});await load();}catch(reason){toast.error(reason instanceof Error?reason.message:"Unable to remove inventory item");}finally{setControlledBusy(false);}};
 
   return <div className="p-4 md:p-6 space-y-5">
     <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
@@ -98,7 +98,7 @@ export function MasterDataPage() {
                 <TD right><span className="font-semibold">₱{item.unitCost.toFixed(4)}</span></TD>
                 <TD right muted>{item.reorderLevel}</TD>
                 <TD center><StatusChip status={item.status === "ACTIVE" ? "active" : "inactive"} /></TD>
-                <TD center>{canRemoveBranchInventoryItem(user?.role,item.itemScope)&&<button aria-label={`Remove ${item.name}`} className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--app-border)] text-[var(--app-danger)]" onClick={()=>{setRemoveTarget(item);setControlledValue({reason:"",verificationPin:""});}}><Trash2 size={14}/></button>}</TD>
+                <TD center>{canRemoveBranchInventoryItem(user?.role,item.itemScope)&&<button aria-label={`Remove ${item.name}`} className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--app-border)] text-[var(--app-danger)]" onClick={()=>{setRemoveTarget(item);setControlledValue({reason:"",currentPassword:""});}}><Trash2 size={14}/></button>}</TD>
               </TR>
             ))
           )}

@@ -86,8 +86,8 @@ describe("received-order correction dialog",()=>{
     expect(purchaseOrderCorrectionReady("")).toBe(false);
     expect(purchaseOrderCorrectionReady("   ")).toBe(false);
     expect(purchaseOrderCorrectionReady("Wrong received amount")).toBe(true);
-    expect(purchaseOrderLifecyclePayload("REVERSE",{reason:"Wrong received amount",verificationPin:"should-not-be-sent"})).toEqual({action:"REVERSE",reason:"Wrong received amount"});
-    expect(purchaseOrderLifecyclePayload("CANCEL",{reason:"Cancel duplicate order",verificationPin:"12345"})).toEqual({action:"CANCEL",reason:"Cancel duplicate order",verificationPin:"12345"});
+    expect(purchaseOrderLifecyclePayload("REVERSE",{reason:"Wrong received amount",currentPassword:"should-not-be-sent"})).toEqual({action:"REVERSE",reason:"Wrong received amount"});
+    expect(purchaseOrderLifecyclePayload("CANCEL",{reason:"Cancel duplicate order",currentPassword:"correct password"})).toEqual({action:"CANCEL",reason:"Cancel duplicate order",currentPassword:"correct password"});
   });
 
   it("disables confirmation for whitespace-only reasons",()=>{

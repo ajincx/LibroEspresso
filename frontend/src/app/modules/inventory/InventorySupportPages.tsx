@@ -244,7 +244,7 @@ export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCo
   const [historyMode, setHistoryMode] = useState<"operational" | "uat">("operational");
   const [uatControlsEnabled, setUatControlsEnabled] = useState(false);
   const [classifyTarget, setClassifyTarget] = useState<InventoryCountSummary | null>(null);
-  const [classification, setClassification] = useState<ControlledActionValue>({ reason: "", verificationPin: "" });
+  const [classification, setClassification] = useState<ControlledActionValue>({ reason: "", currentPassword: "" });
   const [classifying, setClassifying] = useState(false);
 
   useEffect(() => {
@@ -304,7 +304,7 @@ export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCo
       await inventoryWorkflowService.classifyCountAsUatTest(classifyTarget.id, classification);
       toast.success(`${classifyTarget.countNo} classified as UAT/Test Data`);
       setClassifyTarget(null);
-      setClassification({ reason: "", verificationPin: "" });
+      setClassification({ reason: "", currentPassword: "" });
       await load();
     } catch (reason) {
       toast.error(reason instanceof Error ? reason.message : "Unable to classify the physical count");
@@ -437,7 +437,7 @@ export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCo
           value={classification}
           busy={classifying}
           onChange={setClassification}
-          onCancel={() => { setClassifyTarget(null); setClassification({ reason: "", verificationPin: "" }); }}
+          onCancel={() => { setClassifyTarget(null); setClassification({ reason: "", currentPassword: "" }); }}
           onConfirm={() => void classifyAsUatTest()}
         />
       )}

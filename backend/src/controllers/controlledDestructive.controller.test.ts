@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ connect: vi.fn(), poolQuery: vi.fn(), writeAudit: vi.fn() }));
+const mocks = vi.hoisted(() => ({ connect: vi.fn(), poolQuery: vi.fn(), writeAudit: vi.fn(), verify: vi.fn(), writeControlledAudit: vi.fn() }));
 vi.mock("../config/database.js", () => ({ pool: { connect: mocks.connect, query: mocks.poolQuery } }));
 vi.mock("../services/audit.service.js", () => ({ writeAudit: mocks.writeAudit }));
+vi.mock("../services/destructiveAction.service.js", () => ({
+  verifyDestructiveAction: mocks.verify,
+  writeDestructiveActionAudit: mocks.writeControlledAudit,
+}));
 
 import { applyPurchaseOrderLifecycle, archiveIncidentReport, deletePosSourceConfiguration, removeInventoryItem, retireTestDataProductChain } from "./controlledDestructive.controller.js";
 
@@ -14,10 +18,10 @@ const testRecipeId = "18532e4d-960f-4cf2-a6df-0f086568ccd5";
 const testIngredientId = "9dd929ed-0416-4bf0-9cb9-b114956f3beb";
 const owner = { id: "00000000-0000-4000-8000-000000000001", role: "OWNER", branchId: null } as const;
 const manager = { id: "00000000-0000-4000-8000-000000000002", role: "BRANCH_MANAGER", branchId: "branch-1" } as const;
-const input = { reason: "Remove duplicate demonstration ingredient", verificationPin: "12345" };
+const input = { reason: "Remove duplicate demonstration ingredient", currentPassword: "correct password" };
 const request = (user: unknown = manager, body: unknown = input) => ({ params: { id: itemId }, body, user }) as never;
 const posSourceRequest = (user: unknown = owner, body: unknown = input) => ({ params: { id: posSourceId }, body, user }) as never;
-const retirementInput = { reason: "Retire the approved UAT-only product chain", verificationPin: "12345", confirmed: true };
+const retirementInput = { reason: "Retire the approved UAT-only product chain", currentPassword: "correct password", confirmed: true };
 const retirementRequest = (user: unknown = owner, body: unknown = retirementInput) => ({ params: { id: testProductId }, body, user }) as never;
 const response = () => { const res = { json: vi.fn() }; return res; };
 
@@ -32,7 +36,13 @@ function clientWithDependency(used: boolean) {
   return { client, statements };
 }
 
-beforeEach(() => { vi.clearAllMocks(); mocks.writeAudit.mockResolvedValue(undefined); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.verify.mockResolvedValue(undefined);
+  mocks.writeAudit.mockResolvedValue(undefined);
+  mocks.writeControlledAudit.mockImplementation((user, context, description, metadata, client, verificationResult = "VERIFIED") =>
+    mocks.writeAudit(user, `CONTROLLED_${context.action}`, context.module, context.recordId, description, { ...metadata, reason: context.reason, verificationResult }, client));
+});
 
 describe("controlled destructive actions", () => {
   it("rejects an unauthorized role before opening a transaction", async () => {
@@ -41,13 +51,13 @@ describe("controlled destructive actions", () => {
   });
 
   it("requires a reason", async () => {
-    await expect(removeInventoryItem(request(manager, { reason: "", verificationPin: "12345" }), response() as never, vi.fn())).rejects.toBeTruthy();
+    await expect(removeInventoryItem(request(manager, { reason: "", currentPassword: "correct password" }), response() as never, vi.fn())).rejects.toBeTruthy();
     expect(mocks.connect).not.toHaveBeenCalled();
   });
 
-  it("rejects a wrong PIN and records the failed verification", async () => {
-    await expect(removeInventoryItem(request(manager, { ...input, verificationPin: "00000" }), response() as never, vi.fn())).rejects.toMatchObject({ status: 403, code: "DESTRUCTIVE_ACTION_VERIFICATION_FAILED" });
-    expect(mocks.writeAudit).toHaveBeenCalledWith(manager, "DESTRUCTIVE_ACTION_VERIFICATION_FAILED", "INVENTORY_ITEM", itemId, expect.any(String), expect.objectContaining({ verificationResult: "FAILED" }), expect.anything());
+  it("rejects failed current-password verification before the business transaction", async () => {
+    mocks.verify.mockRejectedValueOnce(Object.assign(new Error("Verification failed"), { status: 403, code: "DESTRUCTIVE_ACTION_VERIFICATION_FAILED" }));
+    await expect(removeInventoryItem(request(manager, { ...input, currentPassword: "wrong password" }), response() as never, vi.fn())).rejects.toMatchObject({ status: 403, code: "DESTRUCTIVE_ACTION_VERIFICATION_FAILED" });
     expect(mocks.connect).not.toHaveBeenCalled();
   });
 
@@ -124,7 +134,7 @@ describe("controlled destructive actions", () => {
       return{rows:[]};
     }),release:vi.fn()};
     mocks.connect.mockResolvedValue(client);
-    await expect(archiveIncidentReport({params:{id:itemId},body:{action:"CANCEL",reason:"Entered against the wrong item",verificationPin:"12345"},user:{id:"staff-1",role:"STAFF",branchId:"branch-1"}} as never,response() as never,vi.fn())).rejects.toMatchObject({code:"INCIDENT_DATE_FINALIZED"});
+    await expect(archiveIncidentReport({params:{id:itemId},body:{action:"CANCEL",reason:"Entered against the wrong item",currentPassword:"correct password"},user:{id:"staff-1",role:"STAFF",branchId:"branch-1"}} as never,response() as never,vi.fn())).rejects.toMatchObject({code:"INCIDENT_DATE_FINALIZED"});
     expect(statements.findIndex((sql)=>sql.includes("pg_advisory_xact_lock"))).toBeLessThan(statements.findIndex((sql)=>sql.includes('SELECT ir.branch_id "branchId"')));
     expect(statements.some((sql)=>sql.includes("UPDATE incident_reports SET archived_at"))).toBe(false);
     expect(statements).toContain("ROLLBACK");

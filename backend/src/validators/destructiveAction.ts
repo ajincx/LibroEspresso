@@ -2,7 +2,7 @@ import { z } from "zod";
 
 export const destructiveActionInput = z.object({
   reason: z.string().trim().min(10, "A reason of at least 10 characters is required").max(500),
-  verificationPin: z.string().trim().min(1, "Verification PIN is required"),
+  currentPassword: z.string().min(1, "Current password is required").max(128),
 });
 
 export const reasonedDeletionInput = z.object({

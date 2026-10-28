@@ -45,11 +45,13 @@ describe("login input validation", () => {
 });
 
 describe("login authentication errors", () => {
-  it("distinguishes an unknown email from an incorrect password using stable backend codes", () => {
+  it("does not distinguish an unknown email from an incorrect password", () => {
     const unknownEmail = { response: { data: { error: { code: "ACCOUNT_NOT_FOUND" } } } };
     const wrongPassword = { response: { data: { error: { code: "INVALID_PASSWORD" } } } };
-    expect(loginErrorMessage(unknownEmail)).toBe("Account not found. Please check your email address.");
-    expect(loginErrorMessage(wrongPassword)).toBe("Incorrect password. Please try again.");
+    expect(loginErrorMessage(unknownEmail)).toBe("Unable to sign in with those credentials.");
+    expect(loginErrorMessage(wrongPassword)).toBe("Unable to sign in with those credentials.");
+    expect(loginErrorMessage({ response: { data: { error: { code: "INVALID_CREDENTIALS" } } } }))
+      .toBe("Unable to sign in with those credentials.");
   });
 
   it("preserves the existing inactive-account and lockout presentations", () => {
@@ -63,10 +65,6 @@ describe("login authentication errors", () => {
     expect(loginErrorMessage(new Error("Network Error"))).toBe("Unable to sign in. Please try again.");
   });
 
-  it("does not silently accept the removed INVALID_CREDENTIALS contract", () => {
-    expect(loginErrorMessage({ response: { data: { error: { code: "INVALID_CREDENTIALS" } } } }))
-      .toBe("Unable to sign in. Please try again.");
-  });
 });
 
 describe("rendered login errors", () => {
@@ -105,12 +103,12 @@ describe("rendered login errors", () => {
     [
       "ACCOUNT_NOT_FOUND",
       { response: { data: { error: { code: "ACCOUNT_NOT_FOUND" } } } },
-      "Account not found. Please check your email address.",
+      "Unable to sign in with those credentials.",
     ],
     [
       "INVALID_PASSWORD",
       { response: { data: { error: { code: "INVALID_PASSWORD" } } } },
-      "Incorrect password. Please try again.",
+      "Unable to sign in with those credentials.",
     ],
     [
       "ACCOUNT_INACTIVE",

@@ -28,7 +28,7 @@ export const retireTestDataProductChain: RequestHandler = async (req, res) => {
   requireRole(req.user!, ["OWNER"]);
   const { id } = idParams.parse(req.params);
   const input = testDataProductRetirementInput.parse(req.body);
-  await verifyDestructiveAction(req.user!, input.verificationPin, {
+  await verifyDestructiveAction(req.user!, input.currentPassword, {
     module: "MENU_ITEM",
     action: "TEST_DATA_PRODUCT_RETIREMENT",
     recordId: id,
@@ -167,7 +167,7 @@ export const retireTestDataProductChain: RequestHandler = async (req, res) => {
 export const removeInventoryItem: RequestHandler = async (req, res) => {
   requireRole(req.user!, ["BRANCH_MANAGER"]);
   const { id } = idParams.parse(req.params); const input = destructiveActionInput.parse(req.body);
-  await verifyDestructiveAction(req.user!, input.verificationPin, { module: "INVENTORY_ITEM", action: "REMOVE", recordId: id, reason: input.reason });
+  await verifyDestructiveAction(req.user!, input.currentPassword, { module: "INVENTORY_ITEM", action: "REMOVE", recordId: id, reason: input.reason });
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -193,7 +193,7 @@ export const removeInventoryItem: RequestHandler = async (req, res) => {
 export const voidVarianceRecord: RequestHandler = async (req, res) => {
   requireRole(req.user!, ["BRANCH_MANAGER"]);
   const { id } = idParams.parse(req.params); const input = destructiveActionInput.parse(req.body);
-  await verifyDestructiveAction(req.user!, input.verificationPin, { module: "INVENTORY_VARIANCE", action: "VOID", recordId: id, reason: input.reason });
+  await verifyDestructiveAction(req.user!, input.currentPassword, { module: "INVENTORY_VARIANCE", action: "VOID", recordId: id, reason: input.reason });
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -209,7 +209,7 @@ export const voidVarianceRecord: RequestHandler = async (req, res) => {
 export const archiveShrinkageReport: RequestHandler = async (req, res) => {
   requireRole(req.user!, ["BRANCH_MANAGER"]);
   const { id } = idParams.parse(req.params); const input = destructiveActionInput.parse(req.body);
-  await verifyDestructiveAction(req.user!, input.verificationPin, { module: "SHRINKAGE_REPORT", action: "ARCHIVE", recordId: id, reason: input.reason });
+  await verifyDestructiveAction(req.user!, input.currentPassword, { module: "SHRINKAGE_REPORT", action: "ARCHIVE", recordId: id, reason: input.reason });
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -224,7 +224,7 @@ export const archiveShrinkageReport: RequestHandler = async (req, res) => {
 export const archiveIncidentReport: RequestHandler = async (req, res) => {
   requireRole(req.user!, ["BRANCH_MANAGER", "STAFF"]);
   const { id } = idParams.parse(req.params); const input = incidentLifecycleInput.parse(req.body);
-  await verifyDestructiveAction(req.user!, input.verificationPin, { module: "INCIDENT_REPORT", action: input.action, recordId: id, reason: input.reason });
+  await verifyDestructiveAction(req.user!, input.currentPassword, { module: "INCIDENT_REPORT", action: input.action, recordId: id, reason: input.reason });
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -253,7 +253,7 @@ export const archiveIncidentReport: RequestHandler = async (req, res) => {
 export const applyPurchaseOrderLifecycle: RequestHandler = async (req, res) => {
   requireRole(req.user!, ["BRANCH_MANAGER"]);
   const { id } = idParams.parse(req.params); const input = purchaseOrderLifecycleInput.parse(req.body);
-  if (input.action === "CANCEL") await verifyDestructiveAction(req.user!, input.verificationPin, { module: "PURCHASE_ORDER", action: input.action, recordId: id, reason: input.reason });
+  if (input.action === "CANCEL") await verifyDestructiveAction(req.user!, input.currentPassword, { module: "PURCHASE_ORDER", action: input.action, recordId: id, reason: input.reason });
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -288,7 +288,7 @@ export const deletePosSourceConfiguration: RequestHandler = async (req, res) => 
   requireRole(req.user!, ["OWNER"]);
   const { id } = idParams.parse(req.params);
   const input = destructiveActionInput.parse(req.body);
-  await verifyDestructiveAction(req.user!, input.verificationPin, {
+  await verifyDestructiveAction(req.user!, input.currentPassword, {
     module: "POS_SOURCE",
     action: "DELETE",
     recordId: id,

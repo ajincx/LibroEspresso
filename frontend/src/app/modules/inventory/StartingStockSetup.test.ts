@@ -3,6 +3,7 @@ import {
   allowedStartingStockUnits,
   changeStartingStockUnit,
   normalizeStartingStockEntry,
+  isStartingStockDraft,
   startingStockCompletion,
   startingStockDraftKey,
   startingStockStatusLabel,
@@ -55,8 +56,16 @@ describe("Starting Stock entry normalization", () => {
     }).complete).toBe(true);
   });
 
-  it("scopes saved drafts to the selected branch", () => {
-    expect(startingStockDraftKey("gulod")).not.toBe(startingStockDraftKey("lipa"));
+  it("scopes saved drafts to the authenticated user and selected branch", () => {
+    expect(startingStockDraftKey("manager-a", "gulod")).not.toBe(startingStockDraftKey("manager-b", "gulod"));
+    expect(startingStockDraftKey("manager-a", "gulod")).not.toBe(startingStockDraftKey("manager-a", "lipa"));
+  });
+
+  it("accepts valid recoverable drafts and rejects corrupt storage values", () => {
+    expect(isStartingStockDraft({ espresso: { quantity: "1.5", enteredUnit: "kg" } })).toBe(true);
+    expect(isStartingStockDraft({ espresso: { quantity: 1.5, enteredUnit: "kg" } })).toBe(false);
+    expect(isStartingStockDraft({ espresso: { quantity: "1.5", enteredUnit: "invalid" } })).toBe(false);
+    expect(isStartingStockDraft(null)).toBe(false);
   });
 
   it("uses clear confirmed and unconfirmed status labels",()=>{

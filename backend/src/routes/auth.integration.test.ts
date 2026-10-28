@@ -107,7 +107,7 @@ describe("POST /api/auth/login response contract", () => {
     expect(mocks.connect).not.toHaveBeenCalled();
   });
 
-  it("serializes ACCOUNT_NOT_FOUND for an unknown email", async () => {
+  it("serializes the same generic response for an unknown email and a wrong password", async () => {
     const response = await request(app)
       .post("/api/auth/login")
       .send({ identifier: "unknown@example.com", password: "arbitrary-password" });
@@ -115,8 +115,8 @@ describe("POST /api/auth/login response contract", () => {
     expectSerializedError(
       response,
       401,
-      "ACCOUNT_NOT_FOUND",
-      "Account not found. Please check your email address.",
+      "INVALID_CREDENTIALS",
+      "Unable to sign in with those credentials.",
     );
     expect(mocks.compare).toHaveBeenCalledWith(
       "arbitrary-password",
@@ -125,7 +125,7 @@ describe("POST /api/auth/login response contract", () => {
     expect(mocks.queries.some(({ values }) => values?.[2] === "LOGIN_FAILED")).toBe(true);
   });
 
-  it("serializes INVALID_PASSWORD for an existing account with the wrong password", async () => {
+  it("does not expose a different response for an existing account with the wrong password", async () => {
     mocks.selectedUser = testUser;
     const response = await request(app)
       .post("/api/auth/login")
@@ -134,11 +134,29 @@ describe("POST /api/auth/login response contract", () => {
     expectSerializedError(
       response,
       401,
-      "INVALID_PASSWORD",
-      "Incorrect password. Please try again.",
+      "INVALID_CREDENTIALS",
+      "Unable to sign in with those credentials.",
     );
     expect(mocks.queries.some(({ sql }) => sql.includes("failed_login_attempts=$2"))).toBe(true);
     expect(mocks.queries.some(({ values }) => values?.[2] === "LOGIN_FAILED")).toBe(true);
+  });
+
+  it("keeps unknown-user and wrong-password public response contracts identical", async () => {
+    const unknown = await request(app)
+      .post("/api/auth/login")
+      .send({ identifier: "missing@example.com", password: "wrong-password" });
+    mocks.selectedUser = testUser;
+    const wrongPassword = await request(app)
+      .post("/api/auth/login")
+      .send({ identifier: testUser.email, password: "wrong-password" });
+
+    const publicContract = (response: request.Response) => ({
+      status: response.status,
+      success: response.body.success,
+      code: response.body.error?.code,
+      message: response.body.error?.message,
+    });
+    expect(publicContract(unknown)).toEqual(publicContract(wrongPassword));
   });
 
   it("serializes ACCOUNT_INACTIVE with the existing inactive-account message", async () => {

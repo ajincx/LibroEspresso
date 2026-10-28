@@ -44,7 +44,7 @@ export const isControlledTestProductRetirement=(role:string|undefined,product:Pi
 export function CategoryLabel({name}:{name:string}){return <span>{name}</span>;}
 
 export function MenuProductDeleteDialog({product,busy,value,onChange,onCancel,onConfirm}:{product:Pick<MenuProduct,"name">;busy:boolean;value:ControlledActionValue;onChange:(value:ControlledActionValue)=>void;onCancel:()=>void;onConfirm:()=>void}){
-  return <ControlledActionDialog title="Delete Menu Product?" description={`Item: ${product.name}. Unused products are permanently deleted. If historical sales, mappings, recipes, incidents, COGS, or inventory evidence depend on this product, it will be deactivated instead.`} confirmLabel="Confirm Delete" value={value} busy={busy} requireVerificationPin={false} onChange={onChange} onCancel={onCancel} onConfirm={onConfirm}/>;
+  return <ControlledActionDialog title="Delete Menu Product?" description={`Item: ${product.name}. Unused products are permanently deleted. If historical sales, mappings, recipes, incidents, COGS, or inventory evidence depend on this product, it will be deactivated instead.`} confirmLabel="Confirm Delete" value={value} busy={busy} requireCurrentPassword={false} onChange={onChange} onCancel={onCancel} onConfirm={onConfirm}/>;
 }
 export function MenuProductsSkeleton() {
   const headings = ["Product Code", "Product Name", "Scope", "Category", "Selling Price", "Ingredients", "Recipe Cost", "Margin", "Status", "Actions"];
@@ -129,7 +129,7 @@ export function MenuRecipesPage() {
   const [productDraftError,setProductDraftError]=useState("");
   const [actionProductId, setActionProductId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<MenuProduct | null>(null);
-  const [deleteConfirmation,setDeleteConfirmation]=useState<ControlledActionValue>({reason:"",verificationPin:""});
+  const [deleteConfirmation,setDeleteConfirmation]=useState<ControlledActionValue>({reason:"",currentPassword:""});
   const [reviewTarget, setReviewTarget] = useState<MenuProduct | null>(null);
   const [reviewComment, setReviewComment] = useState("");
   const [error, setError] = useState("");
@@ -242,7 +242,7 @@ export function MenuRecipesPage() {
         toast.success(result.action==="DELETED"?`${deleteTarget.name} was deleted`:`${deleteTarget.name} was deactivated because history depends on it`);
       }
       setDeleteTarget(null);
-      setDeleteConfirmation({reason:"",verificationPin:""});
+      setDeleteConfirmation({reason:"",currentPassword:""});
       setSelected(null);
       await load();
     } catch (reason) {
@@ -318,7 +318,7 @@ export function MenuRecipesPage() {
     {productExitOpen&&<ProductDraftExitDialog error={productDraftError} onKeepEditing={()=>{setProductExitOpen(false);setProductDraftError("");}} onSaveDraft={saveProductDraftAndExit} onExit={exitProductWithoutSaving}/>}
     {productDeleteDraftId&&<ProductDraftDeleteDialog onCancel={()=>setProductDeleteDraftId(null)} onConfirm={confirmDeleteProductDraft}/>}
     {categoryManagerOpen&&canManageMenuCategories(user?.role)&&<CategoryManagerModal categories={categories} onClose={()=>setCategoryManagerOpen(false)} onChanged={load}/>}
-    {deleteTarget && (isControlledTestProductRetirement(user?.role,deleteTarget)?<ControlledActionDialog title={`Retire ${deleteTarget.name} as test data?`} description="This preserves the product, Standard variant, recipe, recipe quantities, and history while making the approved UAT product chain non-operational. ING-00073 and its reorder settings are not changed." confirmLabel="Retire Test Product" value={deleteConfirmation} busy={Boolean(actionProductId)} onChange={setDeleteConfirmation} onCancel={()=>{setDeleteTarget(null);setDeleteConfirmation({reason:"",verificationPin:""});}} onConfirm={()=>void deleteProduct()}/>:<MenuProductDeleteDialog product={deleteTarget} value={deleteConfirmation} busy={Boolean(actionProductId)} onChange={setDeleteConfirmation} onCancel={()=>{setDeleteTarget(null);setDeleteConfirmation({reason:"",verificationPin:""});}} onConfirm={()=>void deleteProduct()}/>)}
+    {deleteTarget && (isControlledTestProductRetirement(user?.role,deleteTarget)?<ControlledActionDialog title={`Retire ${deleteTarget.name} as test data?`} description="This preserves the product, Standard variant, recipe, recipe quantities, and history while making the approved UAT product chain non-operational. ING-00073 and its reorder settings are not changed." confirmLabel="Retire Test Product" value={deleteConfirmation} busy={Boolean(actionProductId)} onChange={setDeleteConfirmation} onCancel={()=>{setDeleteTarget(null);setDeleteConfirmation({reason:"",currentPassword:""});}} onConfirm={()=>void deleteProduct()}/>:<MenuProductDeleteDialog product={deleteTarget} value={deleteConfirmation} busy={Boolean(actionProductId)} onChange={setDeleteConfirmation} onCancel={()=>{setDeleteTarget(null);setDeleteConfirmation({reason:"",currentPassword:""});}} onConfirm={()=>void deleteProduct()}/>)}
   </div>;
 }
 

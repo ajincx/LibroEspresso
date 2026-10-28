@@ -36,7 +36,7 @@ function request(role = "OWNER", body: Record<string, unknown> = {}) {
   return {
     params: { id: countId },
     query: {},
-    body: { reason: "Known UAT placeholder count", verificationPin: "12345", confirmed: true, ...body },
+    body: { reason: "Known UAT placeholder count", currentPassword: "correct password", confirmed: true, ...body },
     user: { id: "owner-1", role, branchId: role === "OWNER" ? null : gulodId },
   } as never;
 }

@@ -1085,7 +1085,7 @@ export const deletePosImport: RequestHandler = async (req, res) => {
   if(env.DATA_LIFECYCLE_ENV==="PRODUCTION") throw new AppError(403,"POS_CLEANUP_DISABLED","POS import cleanup is disabled in production.");
   const { id } = idParams.parse(req.params);
   const input=destructiveActionInput.parse(req.body);
-  await verifyDestructiveAction(req.user!,input.verificationPin,{module:"POS_IMPORT",action:"DELETE",recordId:id,reason:input.reason});
+  await verifyDestructiveAction(req.user!,input.currentPassword,{module:"POS_IMPORT",action:"DELETE",recordId:id,reason:input.reason});
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -2349,7 +2349,7 @@ export const classifyInventoryCountAsTestData: RequestHandler = async (req, res)
   const target = GULOD_UAT_PLACEHOLDER_COUNTS.get(id);
   if (!target) throw new AppError(403, "INVENTORY_COUNT_TEST_CLASSIFICATION_NOT_ALLOWED", "This physical count is not authorized for UAT/Test classification");
   const input = inventoryCountTestClassificationInput.parse(req.body);
-  await verifyDestructiveAction(req.user!, input.verificationPin, {
+  await verifyDestructiveAction(req.user!, input.currentPassword, {
     module: "INVENTORY_COUNT",
     action: "CLASSIFY_UAT_TEST",
     recordId: id,

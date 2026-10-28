@@ -709,7 +709,7 @@ export const createPurchaseOrder: RequestHandler = async (req, res) => {
 export const updatePurchaseOrderStatus: RequestHandler = async (req, res) => {
   const { id } = idParams.parse(req.params);
   const input = purchaseOrderStatusInput.parse(req.body);
-  if (input.status === "CANCELLED") throw new AppError(409, "CONTROLLED_CANCELLATION_REQUIRED", "Use the controlled purchase-order cancellation action and provide a reason and verification PIN");
+  if (input.status === "CANCELLED") throw new AppError(409, "CONTROLLED_CANCELLATION_REQUIRED", "Use the controlled purchase-order cancellation action and provide a reason and current password");
   const branchId = requiredBranchId(req.user!);
   const allowedCurrent =
     input.status === "ORDERED" ? ["DRAFT"] : ["DRAFT", "ORDERED"];
