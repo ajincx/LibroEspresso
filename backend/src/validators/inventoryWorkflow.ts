@@ -15,6 +15,7 @@ export const posPreviewInput = posCsvSourceInput.extend({ posSourceId: z.string(
 export const posImportInput = posCsvSourceInput.extend({
   expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/i, "Preview the CSV again before importing"),
   expectedResolutionFingerprint: z.string().regex(/^[a-f0-9]{64}$/i),
+  expectedInventoryAccountingTreatment: z.enum(["OPERATIONAL", "HISTORICAL_REPORTING_CUTOVER"]),
   posSourceId: z.string().uuid(),
   confirmDayComplete: z.boolean().optional().default(false),
 });

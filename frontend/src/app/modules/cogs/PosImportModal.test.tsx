@@ -2,7 +2,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { PosSource } from "../../types/inventoryWorkflow";
-import { activePosSourcesForBranch, canValidatePosImport, hasInvalidCsvEncoding, isSupportedPosFilename, managerPosSourceLabel, MANAGER_POS_FORMAT_REQUEST_MESSAGE, POS_FORMAT_REQUEST_SENT_MESSAGE, PosImportModal, PosSourceField, resolvedPosSourceId } from "./PosImportModal";
+import { activePosSourcesForBranch, canValidatePosImport, hasInvalidCsvEncoding, isSupportedPosFilename, managerPosSourceLabel, MANAGER_POS_FORMAT_REQUEST_MESSAGE, POS_FORMAT_REQUEST_SENT_MESSAGE, posInventoryTreatmentDisclosure, PosImportModal, PosSourceField, resolvedPosSourceId } from "./PosImportModal";
 import { posSourceReadiness, PosMappingRecoveryNotice } from "./posImportPresentation";
 
 const source = (id: string, branchId: string, displayName: string, status: PosSource["status"] = "ACTIVE"): PosSource => ({
@@ -21,6 +21,17 @@ const source = (id: string, branchId: string, displayName: string, status: PosSo
 });
 
 describe("Import POS Sales source selection", () => {
+  it("discloses provisional operational and historical inventory treatments accurately", () => {
+    expect(posInventoryTreatmentDisclosure("OPERATIONAL")).toEqual({
+      primary: "Regular sales import — Ingredient consumption will be included in operational inventory calculations.",
+      cost: null,
+    });
+    expect(posInventoryTreatmentDisclosure("HISTORICAL_REPORTING_CUTOVER")).toEqual({
+      primary: "Historical sales import — Sales will be included in Dashboard, COGS, ingredient usage, and forecasting. This import will not deduct from current operational inventory.",
+      cost: "Historical COGS is estimated using configured ingredient costs, not verified historical purchase costs.",
+    });
+  });
+
   it("renders the one shared Select File, Validate, Import workflow", () => {
     const markup = renderToStaticMarkup(<PosImportModal
       open

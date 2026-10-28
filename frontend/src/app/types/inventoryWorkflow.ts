@@ -173,6 +173,7 @@ export interface PosImportPreview {
       estimatedCost: number;
     }>;
   };
+  inventoryAccounting: PosInventoryAccountingTreatment | null;
 }
 
 export type PosImportApprovalStatus = "PENDING" | "APPROVED" | "REJECTED" | "CONSUMED";

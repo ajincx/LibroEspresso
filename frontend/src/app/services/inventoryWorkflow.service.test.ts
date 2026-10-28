@@ -91,6 +91,7 @@ describe("POS preview and confirmation API workflow", () => {
       csvText: "product_code,quantity,price,date\nLATTE-L,1,190,2026-09-08",
       expectedContentHash: "b".repeat(64),
       expectedResolutionFingerprint: "c".repeat(64),
+      expectedInventoryAccountingTreatment: "OPERATIONAL" as const,
       posSourceId: "source-1",
     };
     const imported = { importId: "import-1", rowsImported: 1 };
@@ -119,13 +120,14 @@ describe("POS preview and confirmation API workflow", () => {
     const expectedContentHash = "d".repeat(64);
     const imported = { importId: "import-2", rowsImported: 2 };
     const post = vi.spyOn(api, "post").mockResolvedValue({ data: { success: true, data: imported } });
-    await expect(inventoryWorkflowService.importPosSales({ sourceFilename: file.name, file, posSourceId: "source-1", expectedContentHash, expectedResolutionFingerprint: "e".repeat(64) })).resolves.toBe(imported);
+    await expect(inventoryWorkflowService.importPosSales({ sourceFilename: file.name, file, posSourceId: "source-1", expectedContentHash, expectedResolutionFingerprint: "e".repeat(64), expectedInventoryAccountingTreatment: "OPERATIONAL" })).resolves.toBe(imported);
     expect(post).toHaveBeenCalledWith("/pos-sales/import", file, { headers: {
       "Content-Type": "application/octet-stream",
       "X-POS-Filename": "sales.xls",
       "X-POS-Source-Id": "source-1",
       "X-POS-Content-Hash": expectedContentHash,
       "X-POS-Resolution-Fingerprint": "e".repeat(64),
+      "X-POS-Inventory-Treatment": "OPERATIONAL",
     } });
   });
 
@@ -134,8 +136,8 @@ describe("POS preview and confirmation API workflow", () => {
     const post = vi.spyOn(api, "post").mockResolvedValue({ data: { success: true, data: { preview: {} } } });
     await inventoryWorkflowService.previewPosSales({ sourceFilename: file.name, file, posSourceId: "source-1" });
     expect(post).toHaveBeenLastCalledWith("/pos-sales/preview", file, { headers: expect.objectContaining({ "X-POS-Source-Id": "source-1" }) });
-    await inventoryWorkflowService.importPosSales({ sourceFilename: file.name, file, posSourceId: "source-1", expectedContentHash: "a".repeat(64), expectedResolutionFingerprint: "b".repeat(64) });
-    expect(post).toHaveBeenLastCalledWith("/pos-sales/import", file, { headers: expect.objectContaining({ "X-POS-Source-Id": "source-1", "X-POS-Resolution-Fingerprint": "b".repeat(64) }) });
+    await inventoryWorkflowService.importPosSales({ sourceFilename: file.name, file, posSourceId: "source-1", expectedContentHash: "a".repeat(64), expectedResolutionFingerprint: "b".repeat(64), expectedInventoryAccountingTreatment: "HISTORICAL_REPORTING_CUTOVER" });
+    expect(post).toHaveBeenLastCalledWith("/pos-sales/import", file, { headers: expect.objectContaining({ "X-POS-Source-Id": "source-1", "X-POS-Resolution-Fingerprint": "b".repeat(64), "X-POS-Inventory-Treatment": "HISTORICAL_REPORTING_CUTOVER" }) });
     expect(post.mock.calls.at(-1)?.[2]).not.toEqual(expect.objectContaining({ headers: expect.objectContaining({ "X-POS-Approval-Id": expect.anything() }) }));
   });
 });

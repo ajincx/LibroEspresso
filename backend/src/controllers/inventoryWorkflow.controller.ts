@@ -132,6 +132,7 @@ type PosImportSource =
 type ConfirmedPosImportSource = PosImportSource & {
   expectedContentHash: string;
   expectedResolutionFingerprint?: string;
+  expectedInventoryAccountingTreatment: "OPERATIONAL" | "HISTORICAL_REPORTING_CUTOVER";
   confirmDayComplete: boolean;
 };
 
@@ -202,13 +203,17 @@ function posRequestSource(req: Request, confirmation: boolean) {
     const expectedContentHash = req.headers["x-pos-content-hash"];
     const posSourceId = req.headers["x-pos-source-id"];
     const expectedResolutionFingerprint = req.headers["x-pos-resolution-fingerprint"];
+    const expectedInventoryAccountingTreatment = req.headers["x-pos-inventory-treatment"];
     const confirmDayComplete = req.headers["x-pos-day-complete"] === "true";
     if (typeof posSourceId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(posSourceId)) throw new AppError(422, "POS_SOURCE_INVALID", "Select a valid POS source.");
     if (expectedResolutionFingerprint !== undefined && (typeof expectedResolutionFingerprint !== "string" || !/^[a-f0-9]{64}$/i.test(expectedResolutionFingerprint))) throw new AppError(422, "POS_RESOLUTION_INVALID", "Preview the POS file again before importing.");
+    if (confirmation && (expectedInventoryAccountingTreatment !== "OPERATIONAL" && expectedInventoryAccountingTreatment !== "HISTORICAL_REPORTING_CUTOVER")) {
+      throw new AppError(422, "POS_INVENTORY_TREATMENT_REQUIRED", "Preview the POS file again before importing.");
+    }
     if (confirmation && (typeof expectedContentHash !== "string" || !/^[a-f0-9]{64}$/i.test(expectedContentHash))) {
       throw new AppError(422, "POS_PREVIEW_REQUIRED", "Preview the POS file again before importing.");
     }
-    return { sourceFilename, fileBuffer: req.body, posSourceId, ...(confirmation ? { expectedContentHash, expectedResolutionFingerprint, confirmDayComplete } : {}) };
+    return { sourceFilename, fileBuffer: req.body, posSourceId, ...(confirmation ? { expectedContentHash, expectedResolutionFingerprint, expectedInventoryAccountingTreatment, confirmDayComplete } : {}) };
   }
   return confirmation ? posImportInput.parse(req.body) : posPreviewInput.parse(req.body);
 }
@@ -384,6 +389,14 @@ export async function buildPosPreview(
     )
     : { rows: [] as PosSimulationRecipeItem[] };
   const simulation = calculatePosImportSimulation(simulationLines, simulationRecipeItems.rows);
+  const inventoryAccounting = summary.canImport && parsed.businessDate
+    ? await resolveHistoricalPosInventoryTreatment(
+      client,
+      branchId,
+      parsed.businessDate,
+      simulation.ingredientConsumption.map((item) => item.inventoryItemId),
+    )
+    : null;
   const fallbackPricingRows = rows.filter((row) => row.pricingSource === "MENU_VARIANT_CAPSTONE_FALLBACK").length;
   const pricing = {
     method: fallbackPricingRows > 0 ? "MENU_VARIANT_CAPSTONE_FALLBACK" as const : "SUPPLIER_ITEM_PRICE" as const,
@@ -417,6 +430,7 @@ export async function buildPosPreview(
     summary,
     pricing,
     simulation: { ...simulation, complete: summary.canImport, validResolvedRows: simulationLines.length },
+    inventoryAccounting,
     benchmark: { parseMs, productLookupMs, matchAndValidationMs, duplicateCheckMs, previewTotalMs: performance.now() - previewStartedAt },
   };
 }
@@ -538,6 +552,9 @@ async function executePosImport(
     if (preview.importBlockedReason) throw new AppError(422, "POS_FORMAT_IMPORT_BLOCKED", preview.importBlockedReason);
     if (!preview.summary.canImport || !preview.businessDate) throw new AppError(422, "POS_IMPORT_INVALID", "POS import was not completed because the preview contains invalid or unmatched rows.");
     if (!input.expectedResolutionFingerprint || preview.resolutionFingerprint !== input.expectedResolutionFingerprint) throw new AppError(409, "POS_MAPPING_CHANGED", "POS source or product/variant mapping changed after preview. Preview the file again.");
+    if (!preview.inventoryAccounting || preview.inventoryAccounting.inventoryAccountingTreatment !== input.expectedInventoryAccountingTreatment) {
+      throw new AppError(409, "POS_INVENTORY_TREATMENT_CHANGED", "Inventory accounting conditions changed after preview. Validate the POS file again before importing.");
+    }
     await lockBranchInventoryOperation(client, branchId);
     const inventoryAccounting = await resolveHistoricalPosInventoryTreatment(
       client,
@@ -545,6 +562,9 @@ async function executePosImport(
       preview.businessDate,
       preview.simulation.ingredientConsumption.map((item) => item.inventoryItemId),
     );
+    if (inventoryAccounting.inventoryAccountingTreatment !== input.expectedInventoryAccountingTreatment) {
+      throw new AppError(409, "POS_INVENTORY_TREATMENT_CHANGED", "Inventory accounting conditions changed after preview. Validate the POS file again before importing.");
+    }
     const duplicateAfterLock = await client.query(
       `SELECT 1 FROM pos_imports WHERE branch_id=$1 AND content_hash=$2 AND voided_at IS NULL LIMIT 1`,
       [branchId, preview.contentHash],
@@ -919,7 +939,8 @@ export const configurePosFormatRequest: RequestHandler = async (req, res) => {
       return res.json({success:true,data:{requestId:id,status:"BLOCKED",imported:false,validationIssues:issues,preview}});
     }
     const importer = {id:pending.requestedBy,role:pending.requesterRole,branchId:pending.requesterBranchId};
-    const imported = await executePosImport(client,importer,pending.branchId,{...source,expectedContentHash:preview.contentHash,expectedResolutionFingerprint:preview.resolutionFingerprint,confirmDayComplete:false});
+    if (!preview.inventoryAccounting) throw new AppError(409,"POS_INVENTORY_TREATMENT_CHANGED","Inventory accounting conditions changed after preview. Validate the POS file again before importing.");
+    const imported = await executePosImport(client,importer,pending.branchId,{...source,expectedContentHash:preview.contentHash,expectedResolutionFingerprint:preview.resolutionFingerprint,expectedInventoryAccountingTreatment:preview.inventoryAccounting.inventoryAccountingTreatment,confirmDayComplete:false});
     await client.query(`UPDATE pos_format_setup_requests SET status='COMPLETED',pos_import_id=$2,completed_at=now(),validation_issues=NULL,updated_at=now() WHERE id=$1`,[id,imported.importId]);
     await client.query(`INSERT INTO notifications(recipient_user_id,branch_id,type,title,message,entity_type,entity_id)
       VALUES($1,$2,'POS_FORMAT_SETUP_COMPLETED','POS Format Setup Completed',$3,'POS_FORMAT_SETUP_REQUEST',$4)`,

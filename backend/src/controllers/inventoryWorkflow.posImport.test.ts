@@ -40,13 +40,14 @@ const csvResolutionFingerprint = posResolutionFingerprint(sourceId, [{
   itemClassification: "SELLABLE_ITEM", menuItemId: "menu-1", menuItemVariantId: variantId,
   mappingId: "map-1", mappingVersion: `map-1:${mappingRow.updatedAt}`, recipeVersionId: "recipe-v1",
 }]);
-const request = () =>
+const request = (expectedInventoryAccountingTreatment: "OPERATIONAL" | "HISTORICAL_REPORTING_CUTOVER" = "OPERATIONAL") =>
   ({
     body: {
       sourceFilename: "sales.csv",
       csvText,
       expectedContentHash: parsePosCsv(csvText).contentHash,
       expectedResolutionFingerprint: csvResolutionFingerprint,
+      expectedInventoryAccountingTreatment,
       posSourceId: sourceId,
       branchId: "00000000-0000-4000-8000-000000000099",
     },
@@ -103,13 +104,14 @@ function customWorkbookBuffer() {
   return Buffer.from(XLSX.write(workbook,{type:"buffer",bookType:"xlsx"}));
 }
 
-function excelRequest(fileBuffer: Buffer, filename: string, expectedContentHash?: string, expectedResolutionFingerprint?: string, posSourceId?: string) {
+function excelRequest(fileBuffer: Buffer, filename: string, expectedContentHash?: string, expectedResolutionFingerprint?: string, posSourceId?: string, expectedInventoryAccountingTreatment: "OPERATIONAL" | "HISTORICAL_REPORTING_CUTOVER" = "OPERATIONAL") {
   return ({
     body: fileBuffer,
     headers: {
       "x-pos-filename": encodeURIComponent(filename),
       ...(expectedContentHash ? { "x-pos-content-hash": expectedContentHash } : {}),
       ...(expectedResolutionFingerprint ? { "x-pos-resolution-fingerprint": expectedResolutionFingerprint } : {}),
+      ...(expectedContentHash ? { "x-pos-inventory-treatment": expectedInventoryAccountingTreatment } : {}),
       ...(posSourceId ? { "x-pos-source-id": posSourceId } : {}),
     },
     user: { id: "manager-1", role: "BRANCH_MANAGER", branchId },
@@ -124,11 +126,12 @@ function response() {
 
 const deleteRequest = (id=importId) => ({params:{id},body:{reason:"Reset an explicitly authorized development fixture",currentPassword:"correct password"},user:{id:"owner-1",role:"OWNER",branchId:null}}) as never;
 
-function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate" | "overlap-after-lock" | "reconciliation" | "baseline", mappingVersion?: string,
+function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate" | "overlap-after-lock" | "reconciliation" | "baseline" | "treatment-change", mappingVersion?: string,
   variantRows?: Array<{id:string;menuItemId:string;name:string;status:"ACTIVE"|"INACTIVE";recipeVersionId:string|null;recipeUnits:Array<{recipeUnit:string;inventoryUnit:string}>}>,
   sourceFormat = "CANONICAL_CSV", lateHistorical = false, finalizedType?: "CLOSING" | "FULL", uncoveredFinalizedIngredient = false) {
   const queries: Array<{ sql: string; values?: unknown[] }> = [];
   let overlapChecks = 0;
+  let treatmentChecks = 0;
   const query = vi.fn(async (statement: unknown, values?: unknown[]) => {
     const sql = String(statement);
     queries.push({ sql, values });
@@ -157,8 +160,12 @@ function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate" | "over
     if (sql.includes("FROM pos_import_approvals WHERE")) return { rows: [{id:approvalId,sourceSalesTotal:380,sourceQuantity:2}] };
     if (sql.includes("FROM pos_sources WHERE")) return { rows: [{ id: sourceId, sourceCode: "VERIFIED", displayName: "Verified POS", supportedFormat: sourceFormat }] };
     if (sql.includes("FROM pos_product_variant_mappings pm")) return { rows: [{ ...mappingRow, sourceProductCode: sourceFormat === "CANONICAL_CSV" ? "LATTE-L" : null, updatedAt: mappingVersion ?? mappingRow.updatedAt }] };
-    if (sql.includes("WITH affected_inventory_items AS")) return { rows: uncoveredFinalizedIngredient ? [{ inventoryItemId: "ingredient-1" }] : [] };
-    if (sql.includes("count_record.count_type IN ('CLOSING','FULL')")) return { rows: finalizedType ? [{ countNo: "IC-2026-00009", countType: finalizedType }] : [] };
+    if (sql.includes("WITH affected_inventory_items AS")) return { rows: uncoveredFinalizedIngredient || failAt === "treatment-change" ? [{ inventoryItemId: "ingredient-1" }] : [] };
+    if (sql.includes("count_record.count_type IN ('CLOSING','FULL')")) {
+      treatmentChecks += 1;
+      if (failAt === "treatment-change") return { rows: treatmentChecks > 1 ? [{ countNo: "IC-2026-00009", countType: "CLOSING" }] : [] };
+      return { rows: finalizedType ? [{ countNo: "IC-2026-00009", countType: finalizedType }] : [] };
+    }
     if (sql.includes("SELECT id FROM pos_imports")) return { rows: [] };
     if (sql.includes("FROM pos_sale_items existing")) {
       overlapChecks += 1;
@@ -319,8 +326,9 @@ describe("Excel POS preview and canonical import integration", () => {
 
     await previewPosSales(csvPreviewRequest(sourceId), res as never, vi.fn());
 
-    const preview = (res.json.mock.calls[0]?.[0] as { data: { preview: { posSourceId: string; rows: Array<{ mappingStatus: string; menuItemVariantId: string }>; summary: { canImport: boolean } } } }).data.preview;
+    const preview = (res.json.mock.calls[0]?.[0] as { data: { preview: { posSourceId: string; rows: Array<{ mappingStatus: string; menuItemVariantId: string }>; summary: { canImport: boolean }; inventoryAccounting: { inventoryAccountingTreatment: string } } } }).data.preview;
     expect(preview).toMatchObject({ posSourceId: sourceId, summary: { canImport: true } });
+    expect(preview.inventoryAccounting).toMatchObject({ inventoryAccountingTreatment: "OPERATIONAL" });
     expect(preview.rows[0]).toMatchObject({ mappingStatus: "APPROVED", menuItemVariantId: variantId });
     const sourceLookup = queries.find(({ sql }) => sql.includes("FROM pos_sources WHERE"));
     expect(sourceLookup?.values).toEqual([sourceId, branchId]);
@@ -328,6 +336,22 @@ describe("Excel POS preview and canonical import integration", () => {
     expect(duplicateLookup?.sql).toContain("branch_id=$1 AND business_date=$2 AND content_hash=$3");
     expect(duplicateLookup?.sql).toContain("voided_at IS NULL");
     expect(duplicateLookup?.values).toEqual([branchId, "2026-09-08", parsePosCsv(csvText).contentHash]);
+  });
+
+  it("discloses a provisional historical reporting cutover in preview", async () => {
+    const previewClient = createClient(undefined, undefined, undefined, "CANONICAL_CSV", true, "CLOSING", true);
+    mocks.poolQuery.mockImplementation(previewClient.client.query);
+    const res = response();
+
+    await previewPosSales(csvPreviewRequest(sourceId), res as never, vi.fn());
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ data: { preview: expect.objectContaining({
+      inventoryAccounting: expect.objectContaining({
+        inventoryAccountingTreatment: "HISTORICAL_REPORTING_CUTOVER",
+        uncoveredIngredientCount: 1,
+        accountingReason: expect.stringContaining("excluded from live stock calculations"),
+      }),
+    }) } }));
   });
 
   it.each([
@@ -752,7 +776,7 @@ describe("transactional POS import persistence", () => {
     mocks.connect.mockResolvedValue(client);
     const res = response();
 
-    await importPosSales(request(), res as never, vi.fn());
+    await importPosSales(request("HISTORICAL_REPORTING_CUTOVER"), res as never, vi.fn());
 
     const inserted = queries.find(({ sql }) => sql.includes("INSERT INTO pos_imports"));
     expect(inserted?.values?.slice(-3)).toEqual([
@@ -769,6 +793,19 @@ describe("transactional POS import persistence", () => {
         uncoveredIngredientCount:1,
       }),
     })}));
+  });
+
+  it("rolls back when the locked accounting treatment differs from the confirmed preview", async () => {
+    const { client, queries } = createClient("treatment-change");
+    mocks.connect.mockResolvedValue(client);
+
+    await expect(importPosSales(request("OPERATIONAL"), response() as never, vi.fn())).rejects.toMatchObject({
+      status: 409,
+      code: "POS_INVENTORY_TREATMENT_CHANGED",
+    });
+
+    expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_imports"))).toBe(false);
+    expect(queries.some(({ sql }) => sql === "ROLLBACK")).toBe(true);
   });
 
   it("rolls back every imported row when a recipe ingredient has no effective baseline", async () => {

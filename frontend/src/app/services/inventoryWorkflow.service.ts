@@ -6,15 +6,16 @@ import { api } from "./api";
 type PosPreviewSource =
   | { sourceFilename: string; csvText: string; file?: never; posSourceId: string }
   | { sourceFilename: string; file: File; csvText?: never; posSourceId: string };
-type PosImportSource = PosPreviewSource & { expectedContentHash: string; expectedResolutionFingerprint: string; confirmDayComplete?: boolean };
+type PosImportSource = PosPreviewSource & { expectedContentHash: string; expectedResolutionFingerprint: string; expectedInventoryAccountingTreatment: "OPERATIONAL" | "HISTORICAL_REPORTING_CUTOVER"; confirmDayComplete?: boolean };
 
-function excelHeaders(sourceFilename: string, posSourceId?: string, expectedContentHash?: string, expectedResolutionFingerprint?: string, confirmDayComplete?: boolean) {
+function excelHeaders(sourceFilename: string, posSourceId?: string, expectedContentHash?: string, expectedResolutionFingerprint?: string, expectedInventoryAccountingTreatment?: "OPERATIONAL" | "HISTORICAL_REPORTING_CUTOVER", confirmDayComplete?: boolean) {
   return {
     "Content-Type": "application/octet-stream",
     "X-POS-Filename": encodeURIComponent(sourceFilename),
     ...(posSourceId ? { "X-POS-Source-Id": posSourceId } : {}),
     ...(expectedContentHash ? { "X-POS-Content-Hash": expectedContentHash } : {}),
     ...(expectedResolutionFingerprint ? { "X-POS-Resolution-Fingerprint": expectedResolutionFingerprint } : {}),
+    ...(expectedInventoryAccountingTreatment ? { "X-POS-Inventory-Treatment": expectedInventoryAccountingTreatment } : {}),
     ...(confirmDayComplete ? { "X-POS-Day-Complete": "true" } : {}),
   };
 }
@@ -95,8 +96,8 @@ export const inventoryWorkflowService = {
   },
   async importPosSales(input: PosImportSource) {
     const response = input.file
-      ? await api.post<ApiSuccess<{ importId: string; branchId: string; businessDate: string; rowsImported: number; productsMatched: number; totalQuantitySold: number; totalSales: number; fingerprintIndicator: string; quality: "COMPLETE" | "NEEDS_REVIEW"; pricing: PosImportPreview["pricing"]; reconciliation:PosImportReconciliation; inventoryDateAssessment:PosInventoryDateAssessment; inventoryAccounting:PosInventoryAccountingTreatment; consumption: { inventoryItemId: string; sku: string; name: string; unit: string; expectedConsumption: number }[] }>>("/pos-sales/import", input.file, { headers: excelHeaders(input.sourceFilename,input.posSourceId,input.expectedContentHash,input.expectedResolutionFingerprint,input.confirmDayComplete) })
-      : await api.post<ApiSuccess<{ importId: string; branchId: string; businessDate: string; rowsImported: number; productsMatched: number; totalQuantitySold: number; totalSales: number; fingerprintIndicator: string; quality: "COMPLETE" | "NEEDS_REVIEW"; pricing: PosImportPreview["pricing"]; reconciliation:PosImportReconciliation; inventoryDateAssessment:PosInventoryDateAssessment; inventoryAccounting:PosInventoryAccountingTreatment; consumption: { inventoryItemId: string; sku: string; name: string; unit: string; expectedConsumption: number }[] }>>("/pos-sales/import", { sourceFilename: input.sourceFilename, csvText: input.csvText, expectedContentHash: input.expectedContentHash, expectedResolutionFingerprint: input.expectedResolutionFingerprint, posSourceId: input.posSourceId, confirmDayComplete:input.confirmDayComplete });
+      ? await api.post<ApiSuccess<{ importId: string; branchId: string; businessDate: string; rowsImported: number; productsMatched: number; totalQuantitySold: number; totalSales: number; fingerprintIndicator: string; quality: "COMPLETE" | "NEEDS_REVIEW"; pricing: PosImportPreview["pricing"]; reconciliation:PosImportReconciliation; inventoryDateAssessment:PosInventoryDateAssessment; inventoryAccounting:PosInventoryAccountingTreatment; consumption: { inventoryItemId: string; sku: string; name: string; unit: string; expectedConsumption: number }[] }>>("/pos-sales/import", input.file, { headers: excelHeaders(input.sourceFilename,input.posSourceId,input.expectedContentHash,input.expectedResolutionFingerprint,input.expectedInventoryAccountingTreatment,input.confirmDayComplete) })
+      : await api.post<ApiSuccess<{ importId: string; branchId: string; businessDate: string; rowsImported: number; productsMatched: number; totalQuantitySold: number; totalSales: number; fingerprintIndicator: string; quality: "COMPLETE" | "NEEDS_REVIEW"; pricing: PosImportPreview["pricing"]; reconciliation:PosImportReconciliation; inventoryDateAssessment:PosInventoryDateAssessment; inventoryAccounting:PosInventoryAccountingTreatment; consumption: { inventoryItemId: string; sku: string; name: string; unit: string; expectedConsumption: number }[] }>>("/pos-sales/import", { sourceFilename: input.sourceFilename, csvText: input.csvText, expectedContentHash: input.expectedContentHash, expectedResolutionFingerprint: input.expectedResolutionFingerprint, expectedInventoryAccountingTreatment:input.expectedInventoryAccountingTreatment, posSourceId: input.posSourceId, confirmDayComplete:input.confirmDayComplete });
     return response.data.data;
   },
   async posSources() {

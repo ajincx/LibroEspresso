@@ -25,6 +25,7 @@ describe("Inventory Workflow Input Validation (QA Suite)", () => {
         csvText,
         expectedContentHash: "a".repeat(64),
         expectedResolutionFingerprint: "b".repeat(64),
+        expectedInventoryAccountingTreatment: "OPERATIONAL",
         posSourceId: sampleUuid1,
       });
       expect(parsed.expectedContentHash).toHaveLength(64);
