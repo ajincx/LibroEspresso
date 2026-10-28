@@ -15,13 +15,21 @@ export interface ForecastAccuracySummary {
 
 export interface PredictiveForecast {
   scope: { branchId: string | null; branchName: string; forecastStart: string; forecastEnd: string };
+  readiness: {
+    status: "READY" | "PRELIMINARY";
+    minimumSalesDays: number;
+    observedSalesDays: number;
+    comparisonPeriodAvailable: boolean;
+    recommendationsActionable: boolean;
+    reason: string | null;
+  };
   methodology: {
     historicalStart: string; historicalEnd: string; observedSalesDays: number;
     confidence: ForecastUrgency; insightSource: "GOOGLE_GEMINI" | "SYSTEM_ANALYSIS"; disclaimer: string;
     salesMaeMethod: string; cogsMaeMethod: string; ingredientMaeMethod: string; shrinkageRateMethod: string; stockProjectionAssumption: string;
   };
   summary: {
-    forecastSales: number; demandChange: number; criticalItems: number; projectedCogs: number;
+    forecastSales: number; demandChange: number | null; criticalItems: number; projectedCogs: number;
     projectedShrinkageRate: number | null; projectedShrinkageCost: number | null;
     shrinkageForecastStatus: "AVAILABLE" | "INSUFFICIENT_HISTORICAL_DATA" | "UNSUPPORTED_HORIZON";
     recommendedReorders: number;

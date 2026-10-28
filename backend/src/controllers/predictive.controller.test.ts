@@ -5,7 +5,7 @@ vi.mock("../config/database.js", () => ({ pool: { query: mocks.poolQuery } }));
 vi.mock("../services/geminiInsights.service.js", () => ({ generateGeminiInsights: mocks.generateGeminiInsights }));
 vi.mock("../services/businessTime.service.js", () => ({ manilaBusinessDate: () => "2026-10-02" }));
 
-import { buildPredictiveForecast } from "./predictive.controller.js";
+import { buildBranchSalesProjection, buildPredictiveForecast, summarizeInventoryPredictions } from "./predictive.controller.js";
 
 const managerBranchId = "00000000-0000-4000-8000-000000000002";
 const otherBranchId = "00000000-0000-4000-8000-000000000099";
@@ -23,7 +23,7 @@ function installDatabaseFixture(shrinkageRows: { branchId: string; branchName: s
   mocks.poolQuery.mockImplementation((sqlValue: unknown, params: unknown[] = []) => {
     const sql = String(sqlValue);
     if (sql.includes('SELECT name "branchName" FROM branches')) return Promise.resolve({ rows: [{ branchName: "Gulod / Main Branch" }] });
-    if (sql.includes("costs.cogs")) return Promise.resolve({ rows: [{ date: "2026-10-01", sales: 1_000, cogs: 320 }] });
+    if (sql.includes("costs.cogs")) return Promise.resolve({ rows: evaluationRows });
     if (sql.includes("CROSS JOIN inventory_items")) return Promise.resolve({ rows: [{ branchId: managerBranchId, branchName: "Gulod / Main Branch", inventoryItemId: "item-1", sku: "RM-002", name: "Espresso Blend Beans", unit: "g", unitCost: 0.82, reorderLevel: 10, reorderDays: 7, systemStock: 100, dailyUsage: 5, outstandingQuantity: 0 }] });
     if (sql.includes("WITH candidate_count_weeks")) return Promise.resolve({ rows: shrinkageRows });
     if (sql.includes('GROUP BY pi.branch_id,b.name,pi.business_date')) return Promise.resolve({ rows: evaluationRows });
@@ -53,6 +53,48 @@ beforeEach(() => {
 });
 
 describe("predictive controller Gemini boundaries", () => {
+  it("counts the full inventory-risk population before limiting details", () => {
+    const fixture = Array.from({ length: 66 }, (_, index) => ({
+      dailyUsage: 1,
+      systemStock: 1,
+      reorderLevel: 1,
+      urgency: index < 34 ? "HIGH" : "MEDIUM",
+      recommendedReorder: index < 65 ? 1 : 0,
+    }));
+    expect(summarizeInventoryPredictions(fixture)).toMatchObject({
+      criticalItems: 34,
+      recommendedReorders: 65,
+      details: expect.any(Array),
+    });
+    expect(summarizeInventoryPredictions(fixture).details).toHaveLength(20);
+  });
+
+  it("distinguishes unavailable comparison evidence from a genuine zero trend", () => {
+    const twoDays = [
+      { date: "2026-09-16", value: 35_490 },
+      { date: "2026-10-01", value: 8_635 },
+    ];
+    const preliminary = buildBranchSalesProjection(twoDays, "2026-10-02", "2026-10-29", "2026-10-02");
+    expect(preliminary).toMatchObject({ forecastReady: false, comparisonReady: false });
+
+    const stable = Array.from({ length: 56 }, (_, index) => ({
+      date: new Date(Date.UTC(2026, 7, 1 + index)).toISOString().slice(0, 10),
+      value: 1_000,
+    }));
+    const ready = buildBranchSalesProjection(stable, "2026-10-02", "2026-10-29", "2026-10-02");
+    expect(ready).toMatchObject({ forecastReady: true, comparisonReady: true, baseline: 1_000, forecastSales: 28_000, flatBaselineSales: 28_000 });
+  });
+
+  it("aggregates Owner forecasts from independent branch projections instead of pooled dates", () => {
+    const branchA = buildBranchSalesProjection([{ date: "2026-09-16", value: 1_000 }], "2026-10-02", "2026-10-29", "2026-10-02");
+    const branchB = buildBranchSalesProjection([{ date: "2026-09-17", value: 3_000 }], "2026-10-02", "2026-10-29", "2026-10-02");
+    const pooled = buildBranchSalesProjection([
+      { date: "2026-09-16", value: 1_000 },
+      { date: "2026-09-17", value: 3_000 },
+    ], "2026-10-02", "2026-10-29", "2026-10-02");
+    expect(branchA.forecastSales + branchB.forecastSales).not.toBe(pooled.forecastSales);
+  });
+
   it("keeps every official numeric result identical when Gemini succeeds or falls back", async () => {
     mocks.generateGeminiInsights.mockResolvedValueOnce([{ title: "Gemini", description: "Validated narrative", recommendation: "Review", urgency: "LOW" }]);
     const withGemini = await buildPredictiveForecast(manager, { branchId: otherBranchId, startDate: "2026-10-02", endDate: "2026-10-31" });

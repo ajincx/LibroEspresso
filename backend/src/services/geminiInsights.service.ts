@@ -51,7 +51,7 @@ export const geminiFindingsSchema = z.object({
   observedSalesDays: z.number().int().nonnegative(),
   baselineDailySales: z.number().finite(),
   forecastSales: z.number().finite(),
-  demandChangePercent: z.number().finite(),
+  demandChangePercent: z.number().finite().nullable(),
   historicalCogsRatePercent: z.number().finite(),
   salesMae: z.number().finite().nullable(),
   evaluatedSalesDays: z.number().int().nonnegative(),

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { PredictiveForecast } from "../../types/predictive";
-import { PredictiveAnalyticsSkeleton, predictiveDataSufficiency, predictiveInsightSourceLabel, shouldApplyPredictiveResponse } from "./PredictiveAnalyticsPage";
+import { PredictiveAnalyticsSkeleton, predictiveDataSufficiency, predictiveInsightSourceLabel, predictiveScopeLabel, PROJECTED_COGS_DISCLOSURE, shouldApplyPredictiveResponse } from "./PredictiveAnalyticsPage";
 
 const forecastContext = (
   observedSalesDays: number,
@@ -12,12 +12,20 @@ const forecastContext = (
   branchName = "Gulod / Main Branch",
 ) => ({
   scope: { branchId: "branch-1", branchName, forecastStart: "2026-10-02", forecastEnd: "2026-10-31" },
+  readiness: {
+    status: observedSalesDays >= 28 ? "READY" as const : "PRELIMINARY" as const,
+    minimumSalesDays: 28,
+    observedSalesDays,
+    comparisonPeriodAvailable: observedSalesDays >= 56,
+    recommendationsActionable: observedSalesDays >= 28,
+    reason: observedSalesDays >= 28 ? null : "At least 28 recorded sales days are required.",
+  },
   methodology: {
     historicalStart: "2025-10-02", historicalEnd: "2026-10-01", observedSalesDays, confidence,
     insightSource: "SYSTEM_ANALYSIS" as const, disclaimer: "", salesMaeMethod: "", cogsMaeMethod: "", ingredientMaeMethod: "", shrinkageRateMethod: "", stockProjectionAssumption: "",
   },
   summary: {
-    forecastSales: 0, demandChange: 0, criticalItems: 0, projectedCogs: 0,
+    forecastSales: 0, demandChange: observedSalesDays >= 56 ? 0 : null, criticalItems: 0, projectedCogs: 0,
     projectedShrinkageRate: 0, projectedShrinkageCost: 0,
     shrinkageForecastStatus: "AVAILABLE" as PredictiveForecast["summary"]["shrinkageForecastStatus"], recommendedReorders: 0,
   },
@@ -64,12 +72,23 @@ describe("Predictive Analytics insight source", () => {
   it("labels deterministic fallback insights without implying Gemini generated them", () => {
     expect(predictiveInsightSourceLabel("SYSTEM_ANALYSIS")).toBe("Generated from calculated system findings");
   });
+
+  it("uses the authoritative response scope for Managers and preserves Owner all-branch scope", () => {
+    expect(predictiveScopeLabel("manager", "Gulod / Main Branch", "All Branches")).toBe("Gulod / Main Branch");
+    expect(predictiveScopeLabel("manager", undefined, "All Branches")).toBe("Assigned Branch");
+    expect(predictiveScopeLabel("owner", undefined, "All Branches")).toBe("All Branches");
+  });
+
+  it("discloses that projected COGS is not verified historical procurement cost", () => {
+    expect(PROJECTED_COGS_DISCLOSURE).toContain("configured ingredient costs");
+    expect(PROJECTED_COGS_DISCLOSURE).toContain("not verified historical purchase costs");
+  });
 });
 
 describe("Predictive Analytics data sufficiency messaging", () => {
   it("explains LOW confidence when only one sales observation exists", () => {
     const result = predictiveDataSufficiency(forecastContext(1, "LOW", null, 0));
-    expect(result.lowHistoryMessage).toBe("Low confidence — only 1 recorded sales day is available. Historical data is insufficient to validate forecast accuracy.");
+    expect(result.lowHistoryMessage).toBe("Preliminary forecast — only 1 recorded sales day is available; 28 are required before projections and reorder suggestions are actionable.");
   });
 
   it("explains why MAE is unavailable", () => {

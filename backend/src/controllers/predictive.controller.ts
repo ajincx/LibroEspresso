@@ -29,7 +29,7 @@ const round = (value: number, digits = 2) => Number(value.toFixed(digits));
 const average = (values: number[]) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
-type SalesRow = { date: string; sales: number; cogs: number };
+type SalesRow = { branchId: string; branchName: string; date: string; sales: number; cogs: number };
 type InventoryRow = {
   branchId: string; branchName: string; inventoryItemId: string; sku: string; name: string; unit: string;
   unitCost: number; reorderLevel: number; reorderDays: number; dailyUsage: number; outstandingQuantity: number;
@@ -65,42 +65,77 @@ function groupForecast(rows: { date: string; value: number }[], horizonDays: num
   }));
 }
 
+const MIN_FORECAST_HISTORY_DAYS = 28;
+const COMPARISON_WINDOW_DAYS = 28;
+
+export function buildBranchSalesProjection(
+  rows: { date: string; value: number }[],
+  startDate: string,
+  endDate: string,
+  today: string,
+) {
+  const sorted = [...rows].sort((left, right) => left.date.localeCompare(right.date));
+  const recent = sorted.slice(-MIN_FORECAST_HISTORY_DAYS).map((row) => row.value);
+  const prior = sorted.slice(-(MIN_FORECAST_HISTORY_DAYS + COMPARISON_WINDOW_DAYS), -MIN_FORECAST_HISTORY_DAYS).map((row) => row.value);
+  const baseline = average(recent);
+  const priorAverage = average(prior) || baseline;
+  const trend = priorAverage > 0 ? clamp((baseline - priorAverage) / priorAverage, -0.25, 0.25) : 0;
+  const overallAverage = average(sorted.map((row) => row.value));
+  const weekdayAverages = Array.from({ length: 7 }, (_, weekday) => average(
+    sorted.filter((row) => utcDate(row.date).getUTCDay() === weekday).map((row) => row.value),
+  ));
+  const days = differenceInDays(startDate, endDate) + 1;
+  const daily = Array.from({ length: days }, (_, index) => {
+    const date = addDays(startDate, index);
+    const weekdayAverage = weekdayAverages[utcDate(date).getUTCDay()] || overallAverage || baseline;
+    const weekdayFactor = overallAverage > 0 ? clamp(weekdayAverage / overallAverage, 0.6, 1.4) : 1;
+    const offset = differenceInDays(today, date);
+    const attenuatedTrend = 1 + trend * Math.min(Math.max(offset, 0) / 28, 4);
+    return { date, value: Math.max(0, baseline * weekdayFactor * Math.max(0.25, attenuatedTrend)) };
+  });
+  return {
+    observedDays: sorted.length,
+    baseline,
+    recentDays: recent.length,
+    priorDays: prior.length,
+    forecastReady: recent.length >= MIN_FORECAST_HISTORY_DAYS,
+    comparisonReady: recent.length === MIN_FORECAST_HISTORY_DAYS && prior.length === COMPARISON_WINDOW_DAYS,
+    daily,
+    forecastSales: daily.reduce((sum, row) => sum + row.value, 0),
+    flatBaselineSales: baseline * days,
+  };
+}
+
+export function summarizeInventoryPredictions<T extends { dailyUsage: number; systemStock: number; reorderLevel: number; urgency: string; recommendedReorder: number }>(inventory: T[]) {
+  const eligible = inventory.filter((row) => row.dailyUsage > 0 || row.systemStock <= row.reorderLevel);
+  return {
+    details: eligible.slice(0, 20),
+    criticalItems: eligible.filter((row) => row.urgency === "HIGH").length,
+    recommendedReorders: eligible.filter((row) => row.recommendedReorder > 0).length,
+  };
+}
+
 function forecastSalesTotalForRange(
   rows: { date: string; value: number }[],
   startDate: string,
   endDate: string,
   today: string,
 ) {
-  const recent = rows.slice(-28).map((row) => row.value);
-  const prior = rows.slice(-56, -28).map((row) => row.value);
-  const baseline = average(recent);
-  const priorAverage = average(prior) || baseline;
-  const trend = priorAverage > 0 ? clamp((baseline - priorAverage) / priorAverage, -0.25, 0.25) : 0;
-  const overallAverage = average(rows.map((row) => row.value));
-  const weekdayAverages = Array.from({ length: 7 }, (_, weekday) => average(
-    rows.filter((row) => utcDate(row.date).getUTCDay() === weekday).map((row) => row.value),
-  ));
-  const days = differenceInDays(startDate, endDate) + 1;
-  return Array.from({ length: days }, (_, index) => {
-    const date = addDays(startDate, index);
-    const weekdayAverage = weekdayAverages[utcDate(date).getUTCDay()] || overallAverage || baseline;
-    const weekdayFactor = overallAverage > 0 ? clamp(weekdayAverage / overallAverage, 0.6, 1.4) : 1;
-    const offset = differenceInDays(today, date);
-    const attenuatedTrend = 1 + trend * Math.min(Math.max(offset, 0) / 28, 4);
-    return Math.max(0, baseline * weekdayFactor * Math.max(0.25, attenuatedTrend));
-  }).reduce((sum, value) => sum + value, 0);
+  return buildBranchSalesProjection(rows, startDate, endDate, today).forecastSales;
 }
 
 function analyticalInsights(input: {
-  demandChange: number; forecastDays: number; confidence: string; observedSalesDays: number;
+  demandChange: number | null; forecastDays: number; confidence: string; observedSalesDays: number;
   salesMae: number | null; predictions: { name: string; branchName: string; daysToStockout: number | null; recommendedReorder: number; unit: string }[];
 }): DecisionInsight[] {
-  const direction = input.demandChange > 1 ? "increase" : input.demandChange < -1 ? "decrease" : "remain broadly stable";
+  const direction = (input.demandChange ?? 0) > 1 ? "increase" : (input.demandChange ?? 0) < -1 ? "decrease" : "remain broadly stable";
   const insights: DecisionInsight[] = [{
     title: "Projected demand pattern",
-    description: `Recorded sales patterns suggest demand may ${direction} by approximately ${Math.abs(input.demandChange).toFixed(1)}% across the selected ${input.forecastDays}-day period. This is an estimate, not a guaranteed outcome.`,
+    description: input.demandChange === null
+      ? `A demand-change percentage is unavailable because a complete earlier comparison window has not yet been recorded for the selected scope.`
+      : `Recorded sales patterns suggest demand may ${direction} by approximately ${Math.abs(input.demandChange).toFixed(1)}% across the selected ${input.forecastDays}-day period. This is an estimate, not a guaranteed outcome.`,
     recommendation: "Compare the projection with promotions, holidays, weather, and planned branch events before making purchasing decisions.",
-    urgency: Math.abs(input.demandChange) >= 15 ? "HIGH" : Math.abs(input.demandChange) >= 5 ? "MEDIUM" : "LOW",
+    urgency: input.demandChange !== null && Math.abs(input.demandChange) >= 15 ? "HIGH" : input.demandChange !== null && Math.abs(input.demandChange) >= 5 ? "MEDIUM" : "LOW",
   }];
   const atRisk = input.predictions.find((item) => item.daysToStockout !== null && item.daysToStockout <= 7);
   if (atRisk) insights.push({
@@ -148,15 +183,17 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
   const [scope, salesResult, inventoryResult, shrinkageWeeklyResult, evaluationSalesResult, ingredientUsageResult, incomingOrderResult] = await Promise.all([
     branchId ? pool.query<{ branchName: string }>(`SELECT name "branchName" FROM branches WHERE id=$1 AND status='ACTIVE'`, [branchId]) : Promise.resolve({ rows: [] }),
     pool.query<SalesRow>(
-      `SELECT pi.business_date::text date, sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price))::float8 sales,
+      `SELECT pi.branch_id "branchId",b.name "branchName",pi.business_date::text date,
+              sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price))::float8 sales,
               coalesce(sum(costs.cogs),0)::float8 cogs
-         FROM pos_imports pi JOIN pos_sources source ON source.id=pi.pos_source_id
+         FROM pos_imports pi JOIN branches b ON b.id=pi.branch_id
+         JOIN pos_sources source ON source.id=pi.pos_source_id
          JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
          JOIN menu_items mi ON mi.id=psi.menu_item_id
          LEFT JOIN LATERAL (SELECT sum(u.quantity_consumed*u.unit_cost_snapshot)::float8 cogs
            FROM pos_sale_ingredient_usage u WHERE u.pos_sale_item_id=psi.id) costs ON true
         WHERE NOT pi.is_test_data AND pi.voided_at IS NULL AND pi.business_date BETWEEN $1::date AND $2::date ${salesBranchClause}
-        GROUP BY pi.business_date ORDER BY pi.business_date`, scopeParams),
+        GROUP BY pi.branch_id,b.name,pi.business_date ORDER BY pi.branch_id,pi.business_date`, scopeParams),
     pool.query<InventoryRow>(
       `SELECT b.id "branchId",b.name "branchName",ii.id "inventoryItemId",ii.sku,ii.name,ii.unit,
               coalesce(bis.current_unit_cost,ii.unit_cost)::float8 "unitCost",
@@ -309,20 +346,27 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
 
   const branchName = branchId ? scope.rows[0]?.branchName ?? "Assigned Branch" : "All Branches";
   const salesRows = salesResult.rows.map((row) => ({ ...row, sales: Number(row.sales), cogs: Number(row.cogs) }));
-  const salesGroups = new Map<string, { branchId: string; branchName: string; rows: { date: string; value: number }[]; financialRows: { date: string; sales: number; cogs: number }[] }>();
+  const forecastSalesGroups = new Map<string, { branchId: string; branchName: string; rows: { date: string; value: number }[]; financialRows: { date: string; sales: number; cogs: number }[] }>();
+  salesRows.forEach((row) => {
+    const group = forecastSalesGroups.get(row.branchId) ?? { branchId: row.branchId, branchName: row.branchName, rows: [], financialRows: [] };
+    group.rows.push({ date: row.date, value: row.sales });
+    group.financialRows.push({ date: row.date, sales: row.sales, cogs: row.cogs });
+    forecastSalesGroups.set(row.branchId, group);
+  });
+  const evaluationSalesGroups = new Map<string, { branchId: string; branchName: string; rows: { date: string; value: number }[]; financialRows: { date: string; sales: number; cogs: number }[] }>();
   evaluationSalesResult.rows.forEach((row) => {
-    const group = salesGroups.get(row.branchId) ?? { branchId: row.branchId, branchName: row.branchName, rows: [], financialRows: [] };
+    const group = evaluationSalesGroups.get(row.branchId) ?? { branchId: row.branchId, branchName: row.branchName, rows: [], financialRows: [] };
     group.rows.push({ date: row.date, value: Number(row.sales) });
     group.financialRows.push({ date: row.date, sales: Number(row.sales), cogs: Number(row.cogs) });
-    salesGroups.set(row.branchId, group);
+    evaluationSalesGroups.set(row.branchId, group);
   });
-  const salesAccuracyByBranch = [...salesGroups.values()].map((group) => ({
+  const salesAccuracyByBranch = [...evaluationSalesGroups.values()].map((group) => ({
     branchId: group.branchId,
     branchName: group.branchName,
     ...evaluateSalesMae(group.rows),
   }));
   const overallSalesAccuracy = combineAccuracySummaries(salesAccuracyByBranch);
-  const cogsAccuracyByBranch = [...salesGroups.values()].map((group) => ({
+  const cogsAccuracyByBranch = [...evaluationSalesGroups.values()].map((group) => ({
     branchId: group.branchId,
     branchName: group.branchName,
     ...evaluateCogsMae(group.financialRows),
@@ -364,28 +408,30 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
     deliveries.push({ expectedDeliveryDate: row.expectedDeliveryDate, quantity: Number(row.quantity) });
     incomingByItem.set(key, deliveries);
   });
-  const observedSalesDays = salesRows.length;
   // --- SALES FORECAST LOGIC ---
-  // Uses recent sales history, previous sales period,
-  // weekday behavior, trend adjustment, and forecast horizon.
-  const recent = salesRows.slice(-28).map((row) => row.sales);
-  const prior = salesRows.slice(-56, -28).map((row) => row.sales);
-  const baselineDailySales = average(recent);
-  const priorDailySales = average(prior) || baselineDailySales;
-  const periodTrend = priorDailySales > 0 ? clamp((baselineDailySales - priorDailySales) / priorDailySales, -0.25, 0.25) : 0;
-  const weekdayAverages = Array.from({ length: 7 }, (_, weekday) => average(salesRows.filter((row) => utcDate(row.date).getUTCDay() === weekday).map((row) => row.sales)));
-  const overallAverage = average(salesRows.map((row) => row.sales));
+  // Each branch is projected independently so uneven branch coverage cannot
+  // distort an Owner all-branch forecast. The resulting daily values are summed.
   const forecastDays = differenceInDays(input.startDate, input.endDate) + 1;
   const inventoryCoverageDays = Math.max(1, differenceInDays(today, input.endDate) + 1);
-  const futureDaily = Array.from({ length: forecastDays }, (_, index) => {
-    const date = addDays(input.startDate, index);
-    const offset = differenceInDays(today, date);
-    const weekdayAverage = weekdayAverages[utcDate(date).getUTCDay()] || overallAverage || baselineDailySales;
-    const weekdayFactor = overallAverage > 0 ? clamp(weekdayAverage / overallAverage, 0.6, 1.4) : 1;
-    const attenuatedTrend = 1 + periodTrend * Math.min(Math.max(offset, 0) / 28, 4);
-    return { date, value: Math.max(0, baselineDailySales * weekdayFactor * Math.max(0.25, attenuatedTrend)) };
+  const branchSalesProjections = [...forecastSalesGroups.values()].map((group) => {
+    const projection = buildBranchSalesProjection(group.rows, input.startDate, input.endDate, today);
+    const sales = group.financialRows.reduce((sum, row) => sum + row.sales, 0);
+    const cogs = group.financialRows.reduce((sum, row) => sum + row.cogs, 0);
+    return { ...group, ...projection, cogsRate: sales > 0 ? cogs / sales : 0 };
   });
-  const forecastSales = futureDaily.reduce((sum, row) => sum + row.value, 0);
+  const observedSalesDays = branchSalesProjections.length
+    ? Math.min(...branchSalesProjections.map((row) => row.observedDays))
+    : 0;
+  const forecastReady = branchSalesProjections.length > 0 && branchSalesProjections.every((row) => row.forecastReady);
+  const priorComparisonAvailable = branchSalesProjections.length > 0 && branchSalesProjections.every((row) => row.comparisonReady);
+  const baselineDailySales = branchSalesProjections.reduce((sum, row) => sum + row.baseline, 0);
+  const futureByDate = new Map<string, number>();
+  branchSalesProjections.forEach((branch) => branch.daily.forEach((row) => {
+    futureByDate.set(row.date, (futureByDate.get(row.date) ?? 0) + row.value);
+  }));
+  const futureDaily = [...futureByDate.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([date, value]) => ({ date, value }));
+  const forecastSales = branchSalesProjections.reduce((sum, row) => sum + row.forecastSales, 0);
+  const projectedCogs = branchSalesProjections.reduce((sum, row) => sum + row.forecastSales * row.cogsRate, 0);
   const shrinkageGroups = new Map<string, { branchId: string; branchName: string; observations: { weekStart: string; sales: number; shrinkageCost: number }[] }>();
   shrinkageWeeklyResult.rows.forEach((row) => {
     const group = shrinkageGroups.get(row.branchId) ?? {
@@ -400,7 +446,7 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
     });
     shrinkageGroups.set(row.branchId, group);
   });
-  const shrinkageBranchForecasts = [...salesGroups.values()].map((salesGroup) => {
+  const shrinkageBranchForecasts = [...forecastSalesGroups.values()].map((salesGroup) => {
     const weekly = shrinkageGroups.get(salesGroup.branchId);
     const projectedSales = forecastSalesTotalForRange(
       salesGroup.rows,
@@ -448,12 +494,16 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
         0,
       ) / shrinkageMaeWeight
     : null;
-  const flatBaselineSales = baselineDailySales * forecastDays;
-  const demandChange = flatBaselineSales > 0 ? ((forecastSales - flatBaselineSales) / flatBaselineSales) * 100 : 0;
-  const historicalSales = salesRows.slice(-30).map((row) => ({
-    date: row.date,
-    label: new Intl.DateTimeFormat("en-PH", { month: "short", day: "numeric", timeZone: "UTC" }).format(utcDate(row.date)),
-    actualSales: round(row.sales),
+  const flatBaselineSales = branchSalesProjections.reduce((sum, row) => sum + row.flatBaselineSales, 0);
+  const demandChange = priorComparisonAvailable && flatBaselineSales > 0
+    ? ((forecastSales - flatBaselineSales) / flatBaselineSales) * 100
+    : null;
+  const historicalByDate = new Map<string, number>();
+  salesRows.forEach((row) => historicalByDate.set(row.date, (historicalByDate.get(row.date) ?? 0) + row.sales));
+  const historicalSales = [...historicalByDate.entries()].sort(([left], [right]) => left.localeCompare(right)).slice(-30).map(([date, sales]) => ({
+    date,
+    label: new Intl.DateTimeFormat("en-PH", { month: "short", day: "numeric", timeZone: "UTC" }).format(utcDate(date)),
+    actualSales: round(sales),
   }));
   const projectedDemand = groupForecast(futureDaily, forecastDays);
 
@@ -484,7 +534,8 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
       urgency: daysToStockout !== null && daysToStockout <= 7 ? "HIGH" as const : recommendedReorder > 0 ? "MEDIUM" as const : "LOW" as const,
     };
   }).sort((a, b) => (a.daysToStockout ?? Number.MAX_VALUE) - (b.daysToStockout ?? Number.MAX_VALUE));
-  const predictions = inventory.filter((row) => row.dailyUsage > 0 || row.systemStock <= row.reorderLevel).slice(0, 20);
+  const predictionSummary = summarizeInventoryPredictions(inventory);
+  const predictions = predictionSummary.details;
   const inventoryChartItems = predictions.slice(0, 3);
   const inventorySeries = projectedDemand.map((point) => {
     return {
@@ -509,7 +560,7 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
   const findings = {
     scope: branchName, forecastStart: input.startDate, forecastEnd: input.endDate, forecastDays,
     observedSalesDays, baselineDailySales: round(baselineDailySales), forecastSales: round(forecastSales),
-    demandChangePercent: round(demandChange), historicalCogsRatePercent: round(cogsRate * 100),
+    demandChangePercent: demandChange === null ? null : round(demandChange), historicalCogsRatePercent: round(cogsRate * 100),
     salesMae: overallSalesAccuracy.mae,
     evaluatedSalesDays: overallSalesAccuracy.evaluatedDays,
     cogsMae: overallCogsAccuracy.mae,
@@ -525,9 +576,9 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
       ? Math.max(...overallSalesAccuracy.observations.map((row) => row.absoluteError))
       : null,
     confidence,
-    stockRisks: predictions.slice(0, 5).map((row) => ({ branch: row.branchName, ingredient: row.name, daysToStockout: row.daysToStockout, suggestedReorder: row.recommendedReorder, unit: row.unit })),
+    stockRisks: forecastReady ? predictions.slice(0, 5).map((row) => ({ branch: row.branchName, ingredient: row.name, daysToStockout: row.daysToStockout, suggestedReorder: row.recommendedReorder, unit: row.unit })) : [],
   };
-  const fallbackInsights = analyticalInsights({ demandChange, forecastDays, confidence, observedSalesDays, salesMae: overallSalesAccuracy.mae, predictions });
+  const fallbackInsights = analyticalInsights({ demandChange, forecastDays, confidence, observedSalesDays, salesMae: overallSalesAccuracy.mae, predictions: forecastReady ? predictions : [] });
   const geminiInsights = options.includeGemini === false ? null : await generateGeminiInsights(findings);
 
   return {
@@ -542,13 +593,23 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
       stockProjectionAssumption: "Only unreceived quantities from ordered or partially received purchase orders are considered, and they affect projected supply no earlier than their expected delivery date. Overdue expected deliveries are not assumed available.",
       disclaimer: "Forecasts are estimates based on recorded historical patterns. They support, but do not replace, management judgment and do not automatically create purchase orders or change inventory.",
     },
+    readiness: {
+      status: forecastReady ? "READY" as const : "PRELIMINARY" as const,
+      minimumSalesDays: MIN_FORECAST_HISTORY_DAYS,
+      observedSalesDays,
+      comparisonPeriodAvailable: priorComparisonAvailable,
+      recommendationsActionable: forecastReady,
+      reason: forecastReady
+        ? null
+        : `At least ${MIN_FORECAST_HISTORY_DAYS} recorded sales days are required before projections and reorder suggestions are considered actionable.`,
+    },
     summary: {
-      forecastSales: round(forecastSales), demandChange: round(demandChange), criticalItems: predictions.filter((row) => row.urgency === "HIGH").length,
-      projectedCogs: round(forecastSales * cogsRate),
+      forecastSales: round(forecastSales), demandChange: demandChange === null ? null : round(demandChange), criticalItems: predictionSummary.criticalItems,
+      projectedCogs: round(projectedCogs),
       projectedShrinkageRate: projectedShrinkageRate === null ? null : round(projectedShrinkageRate, 4),
       projectedShrinkageCost: projectedShrinkageCost === null ? null : round(projectedShrinkageCost),
       shrinkageForecastStatus,
-      recommendedReorders: predictions.filter((row) => row.recommendedReorder > 0).length,
+      recommendedReorders: predictionSummary.recommendedReorders,
     },
     accuracy: {
       sales: { overall: overallSalesAccuracy, branches: salesAccuracyByBranch },
