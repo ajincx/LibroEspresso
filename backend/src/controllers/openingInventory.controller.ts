@@ -47,7 +47,8 @@ async function loadInitializationEvidence(db: InventoryDb, branchId: string) {
           FROM pos_sale_ingredient_usage usage
           JOIN pos_sale_items sale_item ON sale_item.id=usage.pos_sale_item_id
           JOIN pos_imports import_record ON import_record.id=sale_item.pos_import_id
-         WHERE import_record.branch_id=$1) "usageCount"`,
+         WHERE import_record.branch_id=$1
+           AND import_record.inventory_accounting_treatment='OPERATIONAL') "usageCount"`,
     [branchId],
   );
   return result.rows[0] ?? { baselineCount: 0, balanceCount: 0, countCount: 0, movementCount: 0, usageCount: 0 };
@@ -222,7 +223,8 @@ export const confirmIngredientInitialStock: RequestHandler = async (req, res) =>
           JOIN pos_sale_items sale_item ON sale_item.id=usage.pos_sale_item_id
           JOIN pos_imports import_record ON import_record.id=sale_item.pos_import_id
           WHERE import_record.branch_id=$1 AND usage.inventory_item_id=$2
-            AND NOT import_record.is_test_data AND import_record.voided_at IS NULL) consumption`,
+            AND NOT import_record.is_test_data AND import_record.voided_at IS NULL
+            AND import_record.inventory_accounting_treatment='OPERATIONAL') consumption`,
       [branchId, inventoryItemId],
     );
     const evidence = history.rows[0]!;

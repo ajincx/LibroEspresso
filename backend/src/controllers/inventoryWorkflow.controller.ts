@@ -14,7 +14,7 @@ import { getEffectiveBranchId } from "../services/branchScope.js";
 import { writeAudit } from "../services/audit.service.js";
 import { verifyDestructiveAction, writeDestructiveActionAudit } from "../services/destructiveAction.service.js";
 import { createIngredientUsageSnapshots } from "../services/recipeVersion.service.js";
-import { assessPosImportInventoryDates } from "../services/posInventoryDate.service.js";
+import { assessPosImportInventoryDates, resolveHistoricalPosInventoryTreatment } from "../services/posInventoryDate.service.js";
 import { calculatePosImportSimulation, type PosSimulationRecipeItem } from "../services/posImportSimulation.service.js";
 import { manilaBusinessDate } from "../services/businessTime.service.js";
 import { areUnitsCompatible, normalizeUnit } from "../services/unitConversion.service.js";
@@ -539,13 +539,12 @@ async function executePosImport(
     if (!preview.summary.canImport || !preview.businessDate) throw new AppError(422, "POS_IMPORT_INVALID", "POS import was not completed because the preview contains invalid or unmatched rows.");
     if (!input.expectedResolutionFingerprint || preview.resolutionFingerprint !== input.expectedResolutionFingerprint) throw new AppError(409, "POS_MAPPING_CHANGED", "POS source or product/variant mapping changed after preview. Preview the file again.");
     await lockBranchInventoryOperation(client, branchId);
-    const finalizedCheckpoint = await client.query<{ countNo:string;countType:string }>(
-      `SELECT count_no "countNo",count_type "countType" FROM inventory_counts
-        WHERE branch_id=$1 AND count_type IN ('CLOSING','FULL') AND NOT is_test_data AND count_date >= $2::date
-        ORDER BY count_date,submitted_at LIMIT 1`, [branchId,preview.businessDate]);
-    if (finalizedCheckpoint.rows[0]) {
-      throw new AppError(409,"POS_IMPORT_AFTER_FINAL_COUNT",`This sales report cannot be imported because ${finalizedCheckpoint.rows[0].countType === "FULL" ? "Full Physical" : "Closing"} Count ${finalizedCheckpoint.rows[0].countNo} already finalized inventory on or after ${preview.businessDate}. The submitted count and variance were not changed.`);
-    }
+    const inventoryAccounting = await resolveHistoricalPosInventoryTreatment(
+      client,
+      branchId,
+      preview.businessDate,
+      preview.simulation.ingredientConsumption.map((item) => item.inventoryItemId),
+    );
     const duplicateAfterLock = await client.query(
       `SELECT 1 FROM pos_imports WHERE branch_id=$1 AND content_hash=$2 AND voided_at IS NULL LIMIT 1`,
       [branchId, preview.contentHash],
@@ -560,9 +559,11 @@ async function executePosImport(
     const sourceSalesTotal=importRows.reduce((total,row)=>total+(typeof row.lineAmount==="number"?row.lineAmount:Number(row.quantitySold)*Number(row.unitPrice)),0);
     const sourceQuantity=importRows.reduce((total,row)=>total+Number(row.quantitySold),0);
     const imported = await client.query<{ id: string }>(
-      `INSERT INTO pos_imports (branch_id,business_date,source_filename,imported_by,content_hash,total_source_rows,valid_rows,warning_rows,invalid_rows,unmatched_rows,import_status,completed_at,pos_source_id,created_environment)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,0,0,$9,now(),$10,$11) RETURNING id`,
-      [branchId, preview.businessDate, input.sourceFilename, actor.id, preview.contentHash, preview.summary.totalSourceRows, preview.summary.validRows, preview.summary.warningRows, preview.summary.quality,preview.posSourceId,env.DATA_LIFECYCLE_ENV],
+      `INSERT INTO pos_imports (branch_id,business_date,source_filename,imported_by,content_hash,total_source_rows,valid_rows,warning_rows,invalid_rows,unmatched_rows,import_status,completed_at,pos_source_id,created_environment,inventory_accounting_treatment,inventory_accounting_reason,inventory_accounting_decided_by,inventory_accounting_decided_at,cogs_cost_basis)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,0,0,$9,now(),$10,$11,$12::varchar(40),$13,
+         CASE WHEN $12::varchar(40)='HISTORICAL_REPORTING_CUTOVER' THEN $4::uuid ELSE NULL END,
+         CASE WHEN $12::varchar(40)='HISTORICAL_REPORTING_CUTOVER' THEN now() ELSE NULL END,$14::varchar(50)) RETURNING id`,
+      [branchId, preview.businessDate, input.sourceFilename, actor.id, preview.contentHash, preview.summary.totalSourceRows, preview.summary.validRows, preview.summary.warningRows, preview.summary.quality,preview.posSourceId,env.DATA_LIFECYCLE_ENV,inventoryAccounting.inventoryAccountingTreatment,inventoryAccounting.accountingReason,inventoryAccounting.cogsCostBasis],
     );
     const importId = imported.rows[0]!.id;
     const salesInsertStartedAt = performance.now();
@@ -585,13 +586,15 @@ async function executePosImport(
         WHERE sale_item.pos_import_id=$1`,
       [importId],
     );
-    await assertOperationalInventoryBaselines(
-      client,
-      branchId,
-      usageItems.rows.map((item) => item.inventoryItemId),
-      preview.businessDate,
-      "POS import",
-    );
+    if (inventoryAccounting.inventoryAccountingTreatment === "OPERATIONAL") {
+      await assertOperationalInventoryBaselines(
+        client,
+        branchId,
+        usageItems.rows.map((item) => item.inventoryItemId),
+        preview.businessDate,
+        "POS import",
+      );
+    }
     const ingredientUsageMs = performance.now() - usageStartedAt;
     const inventoryDateAssessment = await assessPosImportInventoryDates(client, importId);
     const consumption = await client.query(
@@ -675,12 +678,15 @@ async function executePosImport(
       );
       if (inventoryDateAssessment.lateHistoricalImport) {
         const affectedCounts = inventoryDateAssessment.affectedCountPeriods.map((period) => period.countNo).join(", ") || "the applicable historical count period";
+        const treatmentNotice = inventoryAccounting.inventoryAccountingTreatment === "HISTORICAL_REPORTING_CUTOVER"
+          ? "Sales, recipe usage, and estimated COGS were retained for reporting; pre-cutover usage was excluded from live stock calculations."
+          : "All consumed ingredients were covered by later checkpoints, so chronological usage remains operational.";
         await client.query(
           `INSERT INTO notifications (recipient_user_id,branch_id,type,title,message,entity_type,entity_id)
            SELECT id,$1,'POS_LATE_HISTORICAL_IMPORT','Historical POS Import Needs Reconciliation',$2,'POS_IMPORT',$3
              FROM users
             WHERE status='ACTIVE' AND (role='OWNER' OR (role='BRANCH_MANAGER' AND branch_id=$1))`,
-          [branchId, `${input.sourceFilename} contains sales dated ${preview.businessDate}, on or before the ${inventoryDateAssessment.latestBaselineDate} inventory baseline. Current inventory was not changed. Review ${affectedCounts} for historical reconciliation.`, importId],
+          [branchId, `${input.sourceFilename} contains sales dated ${preview.businessDate}, on or before the ${inventoryDateAssessment.latestBaselineDate} inventory baseline. Current inventory was not changed. ${treatmentNotice} Review ${affectedCounts} for historical reconciliation.`, importId],
         );
       }
     }
@@ -690,7 +696,7 @@ async function executePosImport(
       "POS_IMPORT",
       importId,
       `Imported ${importRows.length} POS sales rows`,
-      { branchId, businessDate: preview.businessDate, rowCount: importRows.length, totalQuantity: meta?.unitsSold ?? 0, totalSales: meta?.totalSales ?? 0, fingerprintIndicator: preview.fingerprintIndicator, pricingMethod: preview.pricing.method, pricingNotice: preview.pricing.notice, fallbackPricingRows: preview.pricing.fallbackRows, createdEnvironment:env.DATA_LIFECYCLE_ENV, inventoryDateAssessment },
+      { branchId, businessDate: preview.businessDate, rowCount: importRows.length, totalQuantity: meta?.unitsSold ?? 0, totalSales: meta?.totalSales ?? 0, fingerprintIndicator: preview.fingerprintIndicator, pricingMethod: preview.pricing.method, pricingNotice: preview.pricing.notice, fallbackPricingRows: preview.pricing.fallbackRows, createdEnvironment:env.DATA_LIFECYCLE_ENV, inventoryDateAssessment, inventoryAccounting },
       client,
     );
     return {
@@ -708,6 +714,7 @@ async function executePosImport(
           consumption: consumption.rows,
           reconciliation,
           inventoryDateAssessment,
+          inventoryAccounting,
           ...(env.BENCHMARK_MODE ? { benchmark: { ...preview.benchmark, salesInsertMs, ingredientUsageMs, databaseTransactionMs: performance.now() - importStartedAt } } : {}),
     };
 }
@@ -943,6 +950,9 @@ export const listPosImports: RequestHandler = async (req, res) => {
             pi.valid_rows "validRows",pi.warning_rows "warningRows",pi.invalid_rows "invalidRows",pi.unmatched_rows "unmatchedRows",
             pi.created_environment "createdEnvironment",pi.cleanup_authorized_by "cleanupAuthorizedBy",
             pi.cleanup_authorized_at "cleanupAuthorizedAt",pi.cleanup_reason "cleanupReason",
+            pi.inventory_accounting_treatment "inventoryAccountingTreatment",
+            pi.inventory_accounting_reason "inventoryAccountingReason",
+            pi.cogs_cost_basis "cogsCostBasis",
             CASE WHEN pi.content_hash IS NULL THEN NULL ELSE left(pi.content_hash,12) END "fingerprintIndicator",
              source.display_name "posSourceName",source.source_code "posSourceCode",
             b.id "branchId",b.name "branchName",

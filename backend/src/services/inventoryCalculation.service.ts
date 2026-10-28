@@ -174,6 +174,7 @@ export async function calculateExpectedInventory(
        JOIN pos_imports pi ON pi.id=psi.pos_import_id
        JOIN pos_sources source ON source.id=pi.pos_source_id
       WHERE pi.branch_id=$1 AND usage.inventory_item_id=$2 AND NOT pi.is_test_data AND pi.voided_at IS NULL
+        AND pi.inventory_accounting_treatment='OPERATIONAL'
         AND (($5::text IN ('OPENING_BASELINE','DAILY_OPENING') AND pi.business_date >= $3::date)
           OR ($5::text NOT IN ('OPENING_BASELINE','DAILY_OPENING') AND pi.business_date > $3::date))
         AND (($6::text='OPENING' AND pi.business_date < $4::date) OR ($6::text<>'OPENING' AND pi.business_date <= $4::date))
@@ -297,6 +298,7 @@ export async function calculateExpectedInventoryBatch(
               COALESCE(sum(usage.quantity_consumed),0)::float8 "consumptionQuantity"
          FROM baselines baseline
          JOIN pos_imports pi ON pi.branch_id=$1 AND NOT pi.is_test_data AND pi.voided_at IS NULL
+          AND pi.inventory_accounting_treatment='OPERATIONAL'
           AND ((baseline."baselineSource" IN ('OPENING_BASELINE','DAILY_OPENING') AND pi.business_date >= baseline."baselineDate"::date)
             OR (baseline."baselineSource" NOT IN ('OPENING_BASELINE','DAILY_OPENING') AND pi.business_date > baseline."baselineDate"::date))
           AND (($3::text='OPENING' AND pi.business_date < $2::date) OR ($3::text<>'OPENING' AND pi.business_date <= $2::date))

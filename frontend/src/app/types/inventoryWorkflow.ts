@@ -86,6 +86,9 @@ export interface PosImportRecord {
   canCleanup: boolean;
   lateHistoricalImport?: boolean;
   latestBaselineDate?: string | null;
+  inventoryAccountingTreatment?: "OPERATIONAL" | "HISTORICAL_REPORTING_CUTOVER";
+  inventoryAccountingReason?: string | null;
+  cogsCostBasis?: "IMPORT_TIME_CONFIGURED_COST" | "HISTORICAL_CONFIGURED_COST_ESTIMATE";
 }
 
 export interface PosImportPreviewRow {
@@ -195,6 +198,17 @@ export interface PosInventoryDateAssessment {
     affectedItemCount: number;
     varianceCount: number;
   }>;
+}
+
+export interface PosInventoryAccountingTreatment {
+  laterInventoryCheckpoint: boolean;
+  firstCheckpoint: { countNo: string; countType: "OPENING" | "CLOSING" | "FULL" } | null;
+  affectedIngredientCount: number;
+  coveredIngredientCount: number;
+  uncoveredIngredientCount: number;
+  inventoryAccountingTreatment: "OPERATIONAL" | "HISTORICAL_REPORTING_CUTOVER";
+  cogsCostBasis: "IMPORT_TIME_CONFIGURED_COST" | "HISTORICAL_CONFIGURED_COST_ESTIMATE";
+  accountingReason: string | null;
 }
 
 export interface PosSource {

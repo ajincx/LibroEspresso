@@ -1266,7 +1266,9 @@ function SalesAnalysis({ role, scopeBranchId, scopeBranchName = "All Branches" }
                     ) : (
                       <StatusChip status={(row.status as string) === "REJECTED" ? "rejected" : "imported"} />
                     )}
-                    {row.lateHistoricalImport && <div className="mt-1 text-[10px] font-semibold" style={{color:C.amber}}>Late historical · reconcile inventory periods</div>}
+                    {row.inventoryAccountingTreatment==="HISTORICAL_REPORTING_CUTOVER"
+                      ? <div className="mt-1 text-[10px] font-semibold" style={{color:C.amber}}>Historical reporting · live stock excluded · estimated COGS</div>
+                      : row.lateHistoricalImport && <div className="mt-1 text-[10px] font-semibold" style={{color:C.amber}}>Late historical · later checkpoints cover stock</div>}
                   </TD>
                   <TD center>
                       <PosImportActions

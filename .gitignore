@@ -48,5 +48,8 @@ database-backups/
 *.backup
 *.dump
 
+# Local-only authorized POS workbook; never commit or deploy.
+/backend/POS.10.01.2026.xlsx
+
 .vercel
 .env*

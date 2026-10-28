@@ -64,6 +64,7 @@ describe("inventory stock ledger", () => {
     const ledger = await loadInventoryLedger({ query } as never, "gulod", "beans", "g");
     expect(statements.find((sql) => sql.includes("FROM pos_imports"))).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id");
     expect(statements.find((sql) => sql.includes("FROM pos_imports"))).not.toContain("source.status");
+    expect(statements.find((sql) => sql.includes("FROM pos_imports"))).toContain("pi.inventory_accounting_treatment='OPERATIONAL'");
     expect(statements.find((sql) => sql.includes("FROM inventory_counts"))).toContain("NOT ic.is_test_data");
     expect(ledger).toMatchObject({ startingStock: 5750, operationalPosConsumption: 696, calculatedBalance: 5054 });
   });
@@ -101,6 +102,7 @@ describe("inventory stock ledger", () => {
       expect(sql).not.toContain("source.status");
       expect(sql).toContain("NOT pi.is_test_data");
       expect(sql).toContain("pi.voided_at IS NULL");
+      expect(sql).toContain("pi.inventory_accounting_treatment='OPERATIONAL'");
       expect(sql).toContain("NOT ic.is_test_data");
       expect(sql).toContain("inventory_count_items historical_item");
       return { rows: [

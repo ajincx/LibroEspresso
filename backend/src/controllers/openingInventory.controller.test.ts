@@ -66,6 +66,7 @@ describe("opening inventory baseline workflow", () => {
     const json = vi.fn();
     await getStartingStockSetup({ user: { id: ownerId, role: "BRANCH_MANAGER", branchId }, query: { branchId: "00000000-0000-4000-8000-000000000099" } } as never, { json } as never, vi.fn());
     expect(json).toHaveBeenCalledWith(expect.objectContaining({ data: { setup: expect.objectContaining({ branchId, status: "BLOCKED" }) } }));
+    expect(String(mocks.poolQuery.mock.calls.find(([sql]) => String(sql).includes('"usageCount"'))?.[0])).toContain("inventory_accounting_treatment='OPERATIONAL'");
     expect(mocks.poolQuery.mock.calls.every(([, values]) => !Array.isArray(values) || !values.includes("00000000-0000-4000-8000-000000000099"))).toBe(true);
   });
 

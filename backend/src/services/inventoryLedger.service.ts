@@ -138,6 +138,7 @@ export async function loadInventoryLedger(
          JOIN pos_sale_items sale ON sale.pos_import_id=pi.id
          JOIN pos_sale_ingredient_usage usage ON usage.pos_sale_item_id=sale.id
         WHERE pi.branch_id=$1 AND usage.inventory_item_id=$2 AND NOT pi.is_test_data AND pi.voided_at IS NULL
+          AND pi.inventory_accounting_treatment='OPERATIONAL'
           AND (($4::text='OPENING' AND pi.business_date >= ($3::timestamptz AT TIME ZONE 'Asia/Manila')::date)
             OR ($4::text='BALANCE' AND pi.business_date > ($3::timestamptz AT TIME ZONE 'Asia/Manila')::date))
         GROUP BY pi.id,source.display_name,usage.unit
@@ -258,6 +259,7 @@ export async function loadInventoryLedgerBalances(
          concat(source.display_name,' · ',pi.source_filename),sum(usage.quantity_consumed)::float8,'POS_CONSUMPTION',usage.unit,pi.id::text,2
        FROM baselines b
        JOIN pos_imports pi ON pi.branch_id=b."branchId" AND NOT pi.is_test_data AND pi.voided_at IS NULL
+        AND pi.inventory_accounting_treatment='OPERATIONAL'
        JOIN pos_sources source ON source.id=pi.pos_source_id
        JOIN pos_sale_items sale ON sale.pos_import_id=pi.id
        JOIN pos_sale_ingredient_usage usage ON usage.pos_sale_item_id=sale.id AND usage.inventory_item_id=b."inventoryItemId"

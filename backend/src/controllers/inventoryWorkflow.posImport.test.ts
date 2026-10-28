@@ -126,7 +126,7 @@ const deleteRequest = (id=importId) => ({params:{id},body:{reason:"Reset an expl
 
 function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate" | "overlap-after-lock" | "reconciliation" | "baseline", mappingVersion?: string,
   variantRows?: Array<{id:string;menuItemId:string;name:string;status:"ACTIVE"|"INACTIVE";recipeVersionId:string|null;recipeUnits:Array<{recipeUnit:string;inventoryUnit:string}>}>,
-  sourceFormat = "CANONICAL_CSV", lateHistorical = false, finalizedType?: "CLOSING" | "FULL") {
+  sourceFormat = "CANONICAL_CSV", lateHistorical = false, finalizedType?: "CLOSING" | "FULL", uncoveredFinalizedIngredient = false) {
   const queries: Array<{ sql: string; values?: unknown[] }> = [];
   let overlapChecks = 0;
   const query = vi.fn(async (statement: unknown, values?: unknown[]) => {
@@ -157,7 +157,8 @@ function createClient(failAt?: "sale" | "usage" | "concurrent-duplicate" | "over
     if (sql.includes("FROM pos_import_approvals WHERE")) return { rows: [{id:approvalId,sourceSalesTotal:380,sourceQuantity:2}] };
     if (sql.includes("FROM pos_sources WHERE")) return { rows: [{ id: sourceId, sourceCode: "VERIFIED", displayName: "Verified POS", supportedFormat: sourceFormat }] };
     if (sql.includes("FROM pos_product_variant_mappings pm")) return { rows: [{ ...mappingRow, sourceProductCode: sourceFormat === "CANONICAL_CSV" ? "LATTE-L" : null, updatedAt: mappingVersion ?? mappingRow.updatedAt }] };
-    if (sql.includes("count_type IN ('CLOSING','FULL')")) return { rows: finalizedType ? [{ countNo: "IC-2026-00009", countType: finalizedType }] : [] };
+    if (sql.includes("WITH affected_inventory_items AS")) return { rows: uncoveredFinalizedIngredient ? [{ inventoryItemId: "ingredient-1" }] : [] };
+    if (sql.includes("count_record.count_type IN ('CLOSING','FULL')")) return { rows: finalizedType ? [{ countNo: "IC-2026-00009", countType: finalizedType }] : [] };
     if (sql.includes("SELECT id FROM pos_imports")) return { rows: [] };
     if (sql.includes("FROM pos_sale_items existing")) {
       overlapChecks += 1;
@@ -699,7 +700,8 @@ describe("transactional POS import persistence", () => {
     expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_imports"))).toBe(true);
     const importInsert=queries.find(({sql})=>sql.includes("INSERT INTO pos_imports"));
     expect(importInsert?.sql).toContain("created_environment");
-    expect(importInsert?.values?.at(-1)).toBe("DEVELOPMENT");
+    expect(importInsert?.values?.[10]).toBe("DEVELOPMENT");
+    expect(importInsert?.values?.slice(-3)).toEqual(["OPERATIONAL",null,"IMPORT_TIME_CONFIGURED_COST"]);
     expect(sale?.sql).toContain("pos_source_id");
     expect(queries.some(({sql})=>sql.includes("pos_test_fixture_authorizations"))).toBe(false);
     const duplicateCheck=queries.find(({sql})=>sql.includes("SELECT id FROM pos_imports"));
@@ -731,17 +733,42 @@ describe("transactional POS import persistence", () => {
     );
   });
 
-  it.each(["CLOSING", "FULL"] as const)("rejects an accepted import after a same-day %s checkpoint", async (countType) => {
-    const { client, queries } = createClient(undefined, undefined, undefined, "CANONICAL_CSV", false, countType);
+  it.each(["CLOSING", "FULL"] as const)("accepts a historical import after a finalized %s checkpoint covering every consumed ingredient", async (countType) => {
+    const { client, queries } = createClient(undefined, undefined, undefined, "CANONICAL_CSV", true, countType);
     mocks.connect.mockResolvedValue(client);
+    const res = response();
 
-    await expect(importPosSales(request(), response() as never, vi.fn())).rejects.toMatchObject({
-      status: 409,
-      code: "POS_IMPORT_AFTER_FINAL_COUNT",
-    });
+    await importPosSales(request(), res as never, vi.fn());
 
-    expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_imports"))).toBe(false);
-    expect(queries.at(-1)?.sql).toBe("ROLLBACK");
+    expect(queries.some(({ sql }) => sql.includes("WITH affected_inventory_items AS"))).toBe(true);
+    expect(queries.some(({ sql }) => sql.includes("INSERT INTO pos_imports"))).toBe(true);
+    expect(queries.some(({ sql }) => /(?:INSERT INTO|UPDATE) (?:branch_inventory_balances|inventory_counts|inventory_count_items|shrinkage_reports)/i.test(sql))).toBe(false);
+    expect(queries.at(-1)?.sql).toBe("COMMIT");
+    expect(res.status).toHaveBeenCalledWith(201);
+  });
+
+  it("accepts uncovered historical usage with an explicit reporting cutover", async () => {
+    const { client, queries } = createClient(undefined, undefined, undefined, "CANONICAL_CSV", true, "CLOSING", true);
+    mocks.connect.mockResolvedValue(client);
+    const res = response();
+
+    await importPosSales(request(), res as never, vi.fn());
+
+    const inserted = queries.find(({ sql }) => sql.includes("INSERT INTO pos_imports"));
+    expect(inserted?.values?.slice(-3)).toEqual([
+      "HISTORICAL_REPORTING_CUTOVER",
+      expect.stringContaining("excluded from live stock calculations"),
+      "HISTORICAL_CONFIGURED_COST_ESTIMATE",
+    ]);
+    expect(queries.some(({ sql }) => sql.includes("inventory_opening_baseline_items"))).toBe(false);
+    expect(queries.at(-1)?.sql).toBe("COMMIT");
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({data:expect.objectContaining({
+      inventoryAccounting:expect.objectContaining({
+        inventoryAccountingTreatment:"HISTORICAL_REPORTING_CUTOVER",
+        uncoveredIngredientCount:1,
+      }),
+    })}));
   });
 
   it("rolls back every imported row when a recipe ingredient has no effective baseline", async () => {
