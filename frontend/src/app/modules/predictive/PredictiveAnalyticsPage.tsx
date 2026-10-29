@@ -20,12 +20,18 @@ export const shouldApplyPredictiveResponse = (requestId: number, latestRequestId
 export const predictiveScopeLabel = (role: Role, responseScope: string | undefined, configuredScope: string) =>
   responseScope ?? (role === "manager" ? "Assigned Branch" : configuredScope);
 export const PROJECTED_COGS_DISCLOSURE = "configured ingredient costs, not verified historical purchase costs";
+export const predictiveCoverageLabel = (forecast: Pick<PredictiveForecast, "scope" | "readiness">) =>
+  forecast.scope.branchId === null
+    ? `Minimum branch coverage: ${forecast.readiness.observedSalesDays}/${forecast.readiness.minimumSalesDays} recorded sales days`
+    : `${forecast.readiness.observedSalesDays}/${forecast.readiness.minimumSalesDays} recorded sales days`;
 
 export function predictiveDataSufficiency(forecast: Pick<PredictiveForecast, "scope" | "methodology" | "readiness" | "summary" | "accuracy">) {
   const observedDays = forecast.methodology.observedSalesDays;
   const salesAccuracy = forecast.accuracy.sales.overall;
   const lowHistoryMessage = forecast.readiness.status === "PRELIMINARY"
-    ? `Preliminary forecast — only ${observedDays.toLocaleString()} recorded sales day${observedDays === 1 ? " is" : "s are"} available; ${forecast.readiness.minimumSalesDays} are required before projections and reorder suggestions are actionable.`
+    ? forecast.scope.branchId === null
+      ? `Preliminary forecast — the least-covered branch has only ${observedDays.toLocaleString()} recorded sales day${observedDays === 1 ? "" : "s"}; every included branch requires ${forecast.readiness.minimumSalesDays} days before projections and reorder suggestions are actionable.`
+      : `Preliminary forecast — only ${observedDays.toLocaleString()} recorded sales day${observedDays === 1 ? " is" : "s are"} available; ${forecast.readiness.minimumSalesDays} are required before projections and reorder suggestions are actionable.`
     : null;
   const maeMessage = salesAccuracy.mae === null
     ? "MAE unavailable — insufficient historical data for backtesting."
@@ -221,7 +227,7 @@ export function PredictiveAnalytics({
       ) : forecast && (
         <>
           <div className="predictive-kpi-grid grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6">
-            <KPICard label="Forecasted Sales" value={preliminary ? "Preliminary" : currency(forecast.summary.forecastSales)} sub={preliminary ? `Diagnostic estimate: ${currency(forecast.summary.forecastSales)} · ${forecast.readiness.observedSalesDays}/${forecast.readiness.minimumSalesDays} days` : `${formatDate(forecast.scope.forecastStart)} – ${formatDate(forecast.scope.forecastEnd)}`} icon={TrendingUp} color={C.blue} />
+            <KPICard label="Forecasted Sales" value={preliminary ? "Preliminary" : currency(forecast.summary.forecastSales)} sub={preliminary ? `Diagnostic estimate: ${currency(forecast.summary.forecastSales)} · ${predictiveCoverageLabel(forecast)}` : `${formatDate(forecast.scope.forecastStart)} – ${formatDate(forecast.scope.forecastEnd)}`} icon={TrendingUp} color={C.blue} />
             <KPICard label="Demand Change" value={forecast.summary.demandChange === null ? "Insufficient data" : `${forecast.summary.demandChange >= 0 ? "+" : ""}${forecast.summary.demandChange.toFixed(1)}%`} sub={forecast.summary.demandChange === null ? "A complete prior 28-day comparison period is required" : "Against recent daily baseline"} icon={Activity} color={C.green} />
             <KPICard label="Forecast Shrinkage Rate" value={shrinkageRateValue} sub={shrinkageRateSub} icon={AlertTriangle} color={C.red} />
             <KPICard label="Critical Items" value={`${forecast.summary.criticalItems} potential`} sub={preliminary ? "Preliminary risk count · insufficient sales history" : "Estimated stock-out within 7 days"} icon={AlertTriangle} color={C.red} />
@@ -423,7 +429,7 @@ export function PredictiveAnalytics({
               </div>
               <div className="text-[10px] leading-relaxed mt-4 pt-3 border-t space-y-1" style={{ borderColor: C.border, color: C.muted }}>
                 <p>Historical basis: {formatDate(forecast.methodology.historicalStart)} – {formatDate(forecast.methodology.historicalEnd)}</p>
-                <p>{forecast.methodology.observedSalesDays} recorded sales day(s) · {forecast.methodology.confidence.toLowerCase()} confidence</p>
+                <p>{predictiveCoverageLabel(forecast)} · {forecast.methodology.confidence.toLowerCase()} confidence</p>
                 <p>{forecast.methodology.disclaimer}</p>
               </div>
             </Card>

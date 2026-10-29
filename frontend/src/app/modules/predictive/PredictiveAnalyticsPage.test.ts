@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { PredictiveForecast } from "../../types/predictive";
-import { PredictiveAnalyticsSkeleton, predictiveDataSufficiency, predictiveInsightSourceLabel, predictiveScopeLabel, PROJECTED_COGS_DISCLOSURE, shouldApplyPredictiveResponse } from "./PredictiveAnalyticsPage";
+import { PredictiveAnalyticsSkeleton, predictiveCoverageLabel, predictiveDataSufficiency, predictiveInsightSourceLabel, predictiveScopeLabel, PROJECTED_COGS_DISCLOSURE, shouldApplyPredictiveResponse } from "./PredictiveAnalyticsPage";
 
 const forecastContext = (
   observedSalesDays: number,
@@ -11,7 +11,7 @@ const forecastContext = (
   evaluatedDays: number,
   branchName = "Gulod / Main Branch",
 ) => ({
-  scope: { branchId: "branch-1", branchName, forecastStart: "2026-10-02", forecastEnd: "2026-10-31" },
+  scope: { branchId: "branch-1" as string | null, branchName, forecastStart: "2026-10-02", forecastEnd: "2026-10-31" },
   readiness: {
     status: observedSalesDays >= 28 ? "READY" as const : "PRELIMINARY" as const,
     minimumSalesDays: 28,
@@ -86,6 +86,15 @@ describe("Predictive Analytics insight source", () => {
 });
 
 describe("Predictive Analytics data sufficiency messaging", () => {
+  it("identifies Owner all-branch coverage as the least-covered branch", () => {
+    const context = forecastContext(1, "LOW", null, 0);
+    context.scope.branchId = null;
+    context.scope.branchName = "All Branches";
+    expect(predictiveCoverageLabel(context)).toBe("Minimum branch coverage: 1/28 recorded sales days");
+    expect(predictiveDataSufficiency(context).lowHistoryMessage)
+      .toBe("Preliminary forecast — the least-covered branch has only 1 recorded sales day; every included branch requires 28 days before projections and reorder suggestions are actionable.");
+  });
+
   it("explains LOW confidence when only one sales observation exists", () => {
     const result = predictiveDataSufficiency(forecastContext(1, "LOW", null, 0));
     expect(result.lowHistoryMessage).toBe("Preliminary forecast — only 1 recorded sales day is available; 28 are required before projections and reorder suggestions are actionable.");
