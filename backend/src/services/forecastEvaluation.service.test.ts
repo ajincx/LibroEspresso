@@ -103,6 +103,17 @@ describe("forecast MAE", () => {
     expect(result.mae).toBe(10);
   });
 
+  it("keeps seven ingredient usage dates unavailable until an eighth actual date exists", () => {
+    const result = evaluateIngredientMae({
+      observations: series(7, () => 10),
+      units: ["g"],
+    });
+    expect(result.incompatibleUnits).toBe(false);
+    expect(result.evaluatedDays).toBe(0);
+    expect(result.mae).toBeNull();
+    expect(result.insufficientHistory).toBe(true);
+  });
+
   it("does not compare incompatible ingredient units", () => {
     const result = evaluateIngredientMae({
       observations: series(40, () => 10),

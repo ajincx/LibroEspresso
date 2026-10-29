@@ -5,7 +5,7 @@ vi.mock("../config/database.js", () => ({ pool: { query: mocks.poolQuery } }));
 vi.mock("../services/geminiInsights.service.js", () => ({ generateGeminiInsights: mocks.generateGeminiInsights }));
 vi.mock("../services/businessTime.service.js", () => ({ manilaBusinessDate: () => "2026-10-02" }));
 
-import { buildBranchSalesProjection, buildPredictiveForecast, summarizeInventoryPredictions } from "./predictive.controller.js";
+import { buildBranchSalesProjection, buildPredictiveForecast, summarizeBranchCoverage, summarizeInventoryPredictions } from "./predictive.controller.js";
 
 const managerBranchId = "00000000-0000-4000-8000-000000000002";
 const otherBranchId = "00000000-0000-4000-8000-000000000099";
@@ -22,7 +22,7 @@ function installDatabaseFixture(shrinkageRows: { branchId: string; branchName: s
   }));
   mocks.poolQuery.mockImplementation((sqlValue: unknown, params: unknown[] = []) => {
     const sql = String(sqlValue);
-    if (sql.includes('SELECT name "branchName" FROM branches')) return Promise.resolve({ rows: [{ branchName: "Gulod / Main Branch" }] });
+    if (sql.includes('SELECT id "branchId",name "branchName" FROM branches')) return Promise.resolve({ rows: [{ branchId: managerBranchId, branchName: "Gulod / Main Branch" }] });
     if (sql.includes("costs.cogs")) return Promise.resolve({ rows: evaluationRows });
     if (sql.includes("CROSS JOIN inventory_items")) return Promise.resolve({ rows: [{ branchId: managerBranchId, branchName: "Gulod / Main Branch", inventoryItemId: "item-1", sku: "RM-002", name: "Espresso Blend Beans", unit: "g", unitCost: 0.82, reorderLevel: 10, reorderDays: 7, systemStock: 100, dailyUsage: 5, outstandingQuantity: 0 }] });
     if (sql.includes("WITH candidate_count_weeks")) return Promise.resolve({ rows: shrinkageRows });
@@ -69,6 +69,16 @@ describe("predictive controller Gemini boundaries", () => {
     expect(summarizeInventoryPredictions(fixture).details).toHaveLength(20);
   });
 
+  it("discloses active Owner branches excluded for having no eligible sales history", () => {
+    expect(summarizeBranchCoverage([
+      { branchId: managerBranchId, branchName: "Gulod / Main Branch" },
+      { branchId: otherBranchId, branchName: "No History Branch" },
+    ], [managerBranchId])).toEqual({
+      included: [{ branchId: managerBranchId, branchName: "Gulod / Main Branch" }],
+      excluded: [{ branchId: otherBranchId, branchName: "No History Branch", reason: "NO_ELIGIBLE_SALES_HISTORY" }],
+    });
+  });
+
   it("distinguishes unavailable comparison evidence from a genuine zero trend", () => {
     const twoDays = [
       { date: "2026-09-16", value: 35_490 },
@@ -83,6 +93,30 @@ describe("predictive controller Gemini boundaries", () => {
     }));
     const ready = buildBranchSalesProjection(stable, "2026-10-02", "2026-10-29", "2026-10-02");
     expect(ready).toMatchObject({ forecastReady: true, comparisonReady: true, baseline: 1_000, forecastSales: 28_000, flatBaselineSales: 28_000 });
+  });
+
+  it.each([0, 1, 27])("uses zero trend with only %i prior comparison observations", (priorDays) => {
+    const rows = Array.from({ length: priorDays + 28 }, (_, index) => ({
+      date: new Date(Date.UTC(2026, 7, 1 + index)).toISOString().slice(0, 10),
+      value: index < priorDays ? 100 : 1_000,
+    }));
+    expect(buildBranchSalesProjection(rows, "2026-10-02", "2026-10-29", "2026-10-02")).toMatchObject({
+      priorDays,
+      comparisonReady: false,
+      trend: 0,
+    });
+  });
+
+  it("applies constrained trend only with exactly 28 prior observations", () => {
+    const rows = Array.from({ length: 56 }, (_, index) => ({
+      date: new Date(Date.UTC(2026, 7, 1 + index)).toISOString().slice(0, 10),
+      value: index < 28 ? 100 : 1_000,
+    }));
+    expect(buildBranchSalesProjection(rows, "2026-10-02", "2026-10-29", "2026-10-02")).toMatchObject({
+      priorDays: 28,
+      comparisonReady: true,
+      trend: 0.25,
+    });
   });
 
   it("aggregates Owner forecasts from independent branch projections instead of pooled dates", () => {
@@ -119,6 +153,7 @@ describe("predictive controller Gemini boundaries", () => {
       "baselineDailySales", "confidence", "demandChangePercent", "evaluatedSalesDays", "forecastDays", "forecastEnd",
       "forecastSales", "forecastStart", "historicalCogsRatePercent", "largestSalesError", "observedSalesDays", "salesMae", "cogsMae", "evaluatedCogsDays", "scope", "stockRisks",
       "projectedShrinkageCost", "projectedShrinkageRate", "shrinkageEligibleWeeks", "shrinkageForecastStatus", "shrinkageMaePercentagePoints",
+      "readinessStatus", "minimumSalesDays", "comparisonPeriodAvailable", "recommendationsActionable",
     ].sort());
     for (const forbidden of ["password", "token", "user", "customer", "transaction", "recipe", "physicalCount", "incident", "shrinkageClassification"]) {
       expect(JSON.stringify(findings).toLowerCase()).not.toContain(forbidden.toLowerCase());
@@ -145,6 +180,9 @@ describe("predictive controller Gemini boundaries", () => {
     expect(inventorySql).not.toContain("source.status");
     expect(inventorySql).toContain("NOT pi.is_test_data");
     expect(inventorySql).toContain("pi.voided_at IS NULL");
+    expect(inventorySql).toContain("SELECT DISTINCT pi.business_date");
+    expect(inventorySql).toContain("avg(coalesce(usage_by_day.daily_usage,0))");
+    expect(inventorySql).toContain("usage_import.business_date=known_sales_days.business_date");
     expect(ledgerSql).toContain("JOIN pos_sources source ON source.id=pi.pos_source_id");
     expect(ledgerSql).not.toContain("source.status");
     expect(ledgerSql).toContain("NOT pi.is_test_data");

@@ -2,7 +2,16 @@ import { describe, expect, it } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { PredictiveForecast } from "../../types/predictive";
-import { PredictiveAnalyticsSkeleton, predictiveCoverageLabel, predictiveDataSufficiency, predictiveInsightSourceLabel, predictiveScopeLabel, PROJECTED_COGS_DISCLOSURE, shouldApplyPredictiveResponse } from "./PredictiveAnalyticsPage";
+import { FORECAST_EVALUATION_DISCLOSURE, ingredientEvaluationStatus, ingredientEvaluationSummary, PredictiveAnalyticsSkeleton, predictiveCoverageLabel, predictiveDataSufficiency, predictiveInsightSourceLabel, predictiveScopeLabel, PROJECTED_COGS_DISCLOSURE, shouldApplyPredictiveResponse } from "./PredictiveAnalyticsPage";
+
+type IngredientAccuracy = PredictiveForecast["accuracy"]["ingredients"][number];
+
+const ingredientAccuracy = (overrides: Partial<IngredientAccuracy> = {}): IngredientAccuracy => ({
+  branchId: "gulod", branchName: "Gulod / Main Branch", inventoryItemId: "ingredient", name: "Ingredient", unit: "g",
+  evaluationStart: null, evaluationEnd: null, evaluatedDays: 0, observations: [], mae: null,
+  averageActual: null, averageForecast: null, insufficientHistory: true, incompatibleUnits: false,
+  ...overrides,
+});
 
 const forecastContext = (
   observedSalesDays: number,
@@ -11,7 +20,7 @@ const forecastContext = (
   evaluatedDays: number,
   branchName = "Gulod / Main Branch",
 ) => ({
-  scope: { branchId: "branch-1" as string | null, branchName, forecastStart: "2026-10-02", forecastEnd: "2026-10-31" },
+  scope: { branchId: "branch-1" as string | null, branchName, forecastStart: "2026-10-02", forecastEnd: "2026-10-31", branchCoverage: undefined as PredictiveForecast["scope"]["branchCoverage"] },
   readiness: {
     status: observedSalesDays >= 28 ? "READY" as const : "PRELIMINARY" as const,
     minimumSalesDays: 28,
@@ -82,6 +91,9 @@ describe("Predictive Analytics insight source", () => {
   it("discloses that projected COGS is not verified historical procurement cost", () => {
     expect(PROJECTED_COGS_DISCLOSURE).toContain("configured ingredient costs");
     expect(PROJECTED_COGS_DISCLOSURE).toContain("not verified historical purchase costs");
+    expect(FORECAST_EVALUATION_DISCLOSURE).toContain("retrospectively reconstructed");
+    expect(FORECAST_EVALUATION_DISCLOSURE).toContain("Backfilled or corrected imports");
+    expect(FORECAST_EVALUATION_DISCLOSURE).toContain("do not establish operational reliability");
   });
 });
 
@@ -93,6 +105,18 @@ describe("Predictive Analytics data sufficiency messaging", () => {
     expect(predictiveCoverageLabel(context)).toBe("Minimum branch coverage: 1/28 recorded sales days");
     expect(predictiveDataSufficiency(context).lowHistoryMessage)
       .toBe("Preliminary forecast — the least-covered branch has only 1 recorded sales day; every included branch requires 28 days before projections and reorder suggestions are actionable.");
+  });
+
+  it("names active branches excluded from an Owner forecast for absent eligible history", () => {
+    const context = forecastContext(1, "LOW", null, 0);
+    context.scope.branchId = null;
+    context.scope.branchName = "All Branches";
+    context.scope.branchCoverage = {
+      included: [{ branchId: "gulod", branchName: "Gulod / Main Branch" }],
+      excluded: [{ branchId: "empty", branchName: "No History Branch", reason: "NO_ELIGIBLE_SALES_HISTORY" }],
+    };
+    expect(predictiveDataSufficiency(context).branchCoverageMessage)
+      .toBe("Excluded for absent eligible sales history: No History Branch.");
   });
 
   it("explains LOW confidence when only one sales observation exists", () => {
@@ -129,5 +153,28 @@ describe("Predictive Analytics data sufficiency messaging", () => {
     unsupported.summary.shrinkageForecastStatus = "UNSUPPORTED_HORIZON";
     expect(predictiveDataSufficiency(unsupported).shrinkageMessage)
       .toContain("7 to 28 days");
+  });
+});
+
+describe("Ingredient Usage Forecast Evaluation display", () => {
+  it("reports Gulod's eligible ingredient and evaluated-day totals", () => {
+    const eligible = Array.from({ length: 23 }, (_, index) => ingredientAccuracy({
+      inventoryItemId: `eligible-${index}`,
+      evaluatedDays: index < 21 ? 2 : 1,
+      mae: 10,
+    }));
+    expect(ingredientEvaluationSummary([
+      ...eligible,
+      ingredientAccuracy({ inventoryItemId: "insufficient" }),
+    ])).toEqual({ eligibleIngredients: 23, evaluatedDays: 44 });
+  });
+
+  it("distinguishes a valid limited MAE from unavailable history", () => {
+    expect(ingredientEvaluationStatus(ingredientAccuracy({ evaluatedDays: 2, mae: 10 })))
+      .toBe("limited evaluation");
+    expect(ingredientEvaluationStatus(ingredientAccuracy()))
+      .toBe("insufficient history");
+    expect(ingredientEvaluationStatus(ingredientAccuracy({ incompatibleUnits: true })))
+      .toBe("incompatible units");
   });
 });

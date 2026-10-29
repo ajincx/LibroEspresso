@@ -44,6 +44,7 @@ type IncomingOrderRow = {
 type ShrinkageWeeklyRow = {
   branchId: string; branchName: string; weekStart: string; sales: number; shrinkageCost: number;
 };
+export type ActiveBranchRow = { branchId: string; branchName: string };
 
 function groupForecast(rows: { date: string; value: number }[], horizonDays: number) {
   const mode = horizonDays <= 62 ? "day" : horizonDays <= 366 ? "week" : "month";
@@ -78,8 +79,9 @@ export function buildBranchSalesProjection(
   const recent = sorted.slice(-MIN_FORECAST_HISTORY_DAYS).map((row) => row.value);
   const prior = sorted.slice(-(MIN_FORECAST_HISTORY_DAYS + COMPARISON_WINDOW_DAYS), -MIN_FORECAST_HISTORY_DAYS).map((row) => row.value);
   const baseline = average(recent);
-  const priorAverage = average(prior) || baseline;
-  const trend = priorAverage > 0 ? clamp((baseline - priorAverage) / priorAverage, -0.25, 0.25) : 0;
+  const comparisonReady = recent.length === MIN_FORECAST_HISTORY_DAYS && prior.length === COMPARISON_WINDOW_DAYS;
+  const priorAverage = comparisonReady ? average(prior) : baseline;
+  const trend = comparisonReady && priorAverage > 0 ? clamp((baseline - priorAverage) / priorAverage, -0.25, 0.25) : 0;
   const overallAverage = average(sorted.map((row) => row.value));
   const weekdayAverages = Array.from({ length: 7 }, (_, weekday) => average(
     sorted.filter((row) => utcDate(row.date).getUTCDay() === weekday).map((row) => row.value),
@@ -96,10 +98,11 @@ export function buildBranchSalesProjection(
   return {
     observedDays: sorted.length,
     baseline,
+    trend,
     recentDays: recent.length,
     priorDays: prior.length,
     forecastReady: recent.length >= MIN_FORECAST_HISTORY_DAYS,
-    comparisonReady: recent.length === MIN_FORECAST_HISTORY_DAYS && prior.length === COMPARISON_WINDOW_DAYS,
+    comparisonReady,
     daily,
     forecastSales: daily.reduce((sum, row) => sum + row.value, 0),
     flatBaselineSales: baseline * days,
@@ -112,6 +115,17 @@ export function summarizeInventoryPredictions<T extends { dailyUsage: number; sy
     details: eligible.slice(0, 20),
     criticalItems: eligible.filter((row) => row.urgency === "HIGH").length,
     recommendedReorders: eligible.filter((row) => row.recommendedReorder > 0).length,
+  };
+}
+
+export function summarizeBranchCoverage(activeBranches: ActiveBranchRow[], includedBranchIds: Iterable<string>) {
+  const includedIds = new Set(includedBranchIds);
+  return {
+    included: activeBranches.filter((row) => includedIds.has(row.branchId)),
+    excluded: activeBranches.filter((row) => !includedIds.has(row.branchId)).map((row) => ({
+      ...row,
+      reason: "NO_ELIGIBLE_SALES_HISTORY" as const,
+    })),
   };
 }
 
@@ -181,7 +195,10 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
   // --- HISTORICAL SALES DATA FOR FORECASTING ---
   // Uses historical POS sales and recipe-derived ingredient usage per branch.
   const [scope, salesResult, inventoryResult, shrinkageWeeklyResult, evaluationSalesResult, ingredientUsageResult, incomingOrderResult] = await Promise.all([
-    branchId ? pool.query<{ branchName: string }>(`SELECT name "branchName" FROM branches WHERE id=$1 AND status='ACTIVE'`, [branchId]) : Promise.resolve({ rows: [] }),
+    pool.query<ActiveBranchRow>(
+      `SELECT id "branchId",name "branchName" FROM branches WHERE status='ACTIVE' ${branchId ? "AND id=$1" : ""} ORDER BY name`,
+      branchId ? [branchId] : [],
+    ),
     pool.query<SalesRow>(
       `SELECT pi.branch_id "branchId",b.name "branchName",pi.business_date::text date,
               sum(psi.quantity_sold*coalesce(psi.unit_price_snapshot,mi.selling_price))::float8 sales,
@@ -199,18 +216,24 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
               coalesce(bis.current_unit_cost,ii.unit_cost)::float8 "unitCost",
               coalesce(bis.reorder_level,ii.reorder_level)::float8 "reorderLevel",
               coalesce(bis.reorder_days,7)::int "reorderDays",
-              coalesce((SELECT avg(recent.daily_usage) FROM (
+              coalesce((SELECT avg(coalesce(usage_by_day.daily_usage,0)) FROM (
+                SELECT DISTINCT pi.business_date
+                  FROM pos_imports pi
+                  JOIN pos_sources source ON source.id=pi.pos_source_id
+                  JOIN pos_sale_items sold ON sold.pos_import_id=pi.id
+                 WHERE pi.branch_id=b.id AND NOT pi.is_test_data AND pi.voided_at IS NULL
+                   AND pi.business_date BETWEEN $1::date AND $2::date
+                 ORDER BY pi.business_date DESC
+                 LIMIT 28
+              ) known_sales_days
+              LEFT JOIN LATERAL (
                 SELECT sum(u.quantity_consumed)::float8 daily_usage
                   FROM pos_sale_ingredient_usage u
                   JOIN pos_sale_items psi ON psi.id=u.pos_sale_item_id
-                  JOIN pos_imports pi ON pi.id=psi.pos_import_id
-                   JOIN pos_sources source ON source.id=pi.pos_source_id
-                 WHERE pi.branch_id=b.id AND u.inventory_item_id=ii.id AND NOT pi.is_test_data AND pi.voided_at IS NULL
-                   AND pi.business_date BETWEEN $1::date AND $2::date
-                 GROUP BY pi.business_date
-                 ORDER BY pi.business_date DESC
-                 LIMIT 28
-              ) recent),0)::float8 "dailyUsage",
+                  JOIN pos_imports usage_import ON usage_import.id=psi.pos_import_id
+                 WHERE usage_import.branch_id=b.id AND usage_import.business_date=known_sales_days.business_date
+                   AND u.inventory_item_id=ii.id AND NOT usage_import.is_test_data AND usage_import.voided_at IS NULL
+              ) usage_by_day ON true),0)::float8 "dailyUsage",
               coalesce((SELECT sum((poi.quantity_ordered-poi.quantity_received)*poi.conversion_factor) FROM purchase_order_items poi JOIN purchase_orders po ON po.id=poi.purchase_order_id WHERE po.branch_id=b.id AND NOT po.is_test_data AND poi.inventory_item_id=ii.id AND po.status IN ('ORDERED','PARTIALLY_RECEIVED')),0)::float8 "outstandingQuantity"
          FROM branches b CROSS JOIN inventory_items ii
          LEFT JOIN branch_inventory_settings bis ON bis.branch_id=b.id AND bis.inventory_item_id=ii.id
@@ -419,6 +442,7 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
     const cogs = group.financialRows.reduce((sum, row) => sum + row.cogs, 0);
     return { ...group, ...projection, cogsRate: sales > 0 ? cogs / sales : 0 };
   });
+  const branchCoverage = summarizeBranchCoverage(scope.rows, branchSalesProjections.map((row) => row.branchId));
   const observedSalesDays = branchSalesProjections.length
     ? Math.min(...branchSalesProjections.map((row) => row.observedDays))
     : 0;
@@ -576,18 +600,22 @@ export async function buildPredictiveForecast(user: TokenUser, rawInput: unknown
       ? Math.max(...overallSalesAccuracy.observations.map((row) => row.absoluteError))
       : null,
     confidence,
+    readinessStatus: forecastReady ? "READY" as const : "PRELIMINARY" as const,
+    minimumSalesDays: MIN_FORECAST_HISTORY_DAYS,
+    comparisonPeriodAvailable: priorComparisonAvailable,
+    recommendationsActionable: forecastReady,
     stockRisks: forecastReady ? predictions.slice(0, 5).map((row) => ({ branch: row.branchName, ingredient: row.name, daysToStockout: row.daysToStockout, suggestedReorder: row.recommendedReorder, unit: row.unit })) : [],
   };
   const fallbackInsights = analyticalInsights({ demandChange, forecastDays, confidence, observedSalesDays, salesMae: overallSalesAccuracy.mae, predictions: forecastReady ? predictions : [] });
   const geminiInsights = options.includeGemini === false ? null : await generateGeminiInsights(findings);
 
   return {
-    scope: { branchId: branchId ?? null, branchName, forecastStart: input.startDate, forecastEnd: input.endDate },
+    scope: { branchId: branchId ?? null, branchName, forecastStart: input.startDate, forecastEnd: input.endDate, branchCoverage },
     methodology: {
       historicalStart: historyStart, historicalEnd: historyEnd, observedSalesDays, confidence,
       insightSource: geminiInsights ? "GOOGLE_GEMINI" : "SYSTEM_ANALYSIS",
-      salesMaeMethod: "Each tested branch-day uses only sales records dated before that day; overall MAE uses all underlying branch observations.",
-      cogsMaeMethod: "Each tested branch-day forecasts sales from earlier records and applies the recipe-snapshot COGS rate observed before that day; no future records are used.",
+      salesMaeMethod: "MAE is a retrospective reconstruction: each tested branch-day uses only sales business dates before that day, but late backfills or corrections may not have existed when an original forecast would have been made.",
+      cogsMaeMethod: "COGS MAE is retrospectively reconstructed from earlier sales business dates and configured-cost snapshots; no future records by business date are used. These are estimates, not verified historical procurement costs, and late backfills or corrections may not have existed at the original forecast date.",
       ingredientMaeMethod: "Each tested ingredient day uses only earlier recipe-derived usage records with the same unit; dates without recorded actual usage are not inserted as zero.",
       shrinkageRateMethod: "Uses the eight latest eligible complete branch-weeks. Each weekly verified shrinkage rate is weighted by accepted sales and recency; missing or unresolved evidence is never inserted as zero.",
       stockProjectionAssumption: "Only unreceived quantities from ordered or partially received purchase orders are considered, and they affect projected supply no earlier than their expected delivery date. Overdue expected deliveries are not assumed available.",

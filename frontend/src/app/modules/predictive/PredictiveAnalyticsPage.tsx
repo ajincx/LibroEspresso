@@ -20,10 +20,30 @@ export const shouldApplyPredictiveResponse = (requestId: number, latestRequestId
 export const predictiveScopeLabel = (role: Role, responseScope: string | undefined, configuredScope: string) =>
   responseScope ?? (role === "manager" ? "Assigned Branch" : configuredScope);
 export const PROJECTED_COGS_DISCLOSURE = "configured ingredient costs, not verified historical purchase costs";
+export const FORECAST_EVALUATION_DISCLOSURE = "MAE is retrospectively reconstructed from recorded business dates. Backfilled or corrected imports may not have been available at the original forecast date; limited samples do not establish operational reliability.";
 export const predictiveCoverageLabel = (forecast: Pick<PredictiveForecast, "scope" | "readiness">) =>
   forecast.scope.branchId === null
     ? `Minimum branch coverage: ${forecast.readiness.observedSalesDays}/${forecast.readiness.minimumSalesDays} recorded sales days`
     : `${forecast.readiness.observedSalesDays}/${forecast.readiness.minimumSalesDays} recorded sales days`;
+
+type IngredientAccuracy = PredictiveForecast["accuracy"]["ingredients"][number];
+
+export const ingredientEvaluationStatus = (item: IngredientAccuracy) =>
+  item.incompatibleUnits
+    ? "incompatible units"
+    : item.mae === null
+      ? "insufficient history"
+      : item.insufficientHistory
+        ? "limited evaluation"
+        : "evaluated";
+
+export const ingredientEvaluationSummary = (items: IngredientAccuracy[]) => {
+  const eligible = items.filter((item) => item.mae !== null && !item.incompatibleUnits);
+  return {
+    eligibleIngredients: eligible.length,
+    evaluatedDays: eligible.reduce((sum, item) => sum + item.evaluatedDays, 0),
+  };
+};
 
 export function predictiveDataSufficiency(forecast: Pick<PredictiveForecast, "scope" | "methodology" | "readiness" | "summary" | "accuracy">) {
   const observedDays = forecast.methodology.observedSalesDays;
@@ -44,13 +64,18 @@ export function predictiveDataSufficiency(forecast: Pick<PredictiveForecast, "sc
     : forecast.summary.shrinkageForecastStatus === "UNSUPPORTED_HORIZON"
       ? "Shrinkage-rate forecasting supports future horizons from 7 to 28 days."
       : null;
+  const excludedBranches = forecast.scope.branchCoverage?.excluded ?? [];
+  const branchCoverageMessage = forecast.scope.branchId === null && excludedBranches.length
+    ? `Excluded for absent eligible sales history: ${excludedBranches.map((branch) => branch.branchName).join(", ")}.`
+    : null;
   return {
     scope: forecast.scope.branchName,
     lowHistoryMessage,
     maeMessage,
     evaluatedDaysMessage,
     shrinkageMessage,
-    showNotice: Boolean(lowHistoryMessage || maeMessage || evaluatedDaysMessage || shrinkageMessage),
+    branchCoverageMessage,
+    showNotice: Boolean(lowHistoryMessage || maeMessage || evaluatedDaysMessage || shrinkageMessage || branchCoverageMessage),
   };
 }
 
@@ -130,6 +155,7 @@ export function PredictiveAnalytics({
   const salesAccuracy = forecast?.accuracy.sales.overall;
   const cogsAccuracy = forecast?.accuracy.cogs.overall;
   const dataSufficiency = forecast ? predictiveDataSufficiency(forecast) : null;
+  const ingredientSummary = ingredientEvaluationSummary(forecast?.accuracy.ingredients ?? []);
   const accuracyChartData = useMemo(() => {
     const grouped = new Map<string, { date: string; actual: number; predicted: number }>();
     (salesAccuracy?.observations ?? []).forEach((row) => {
@@ -245,6 +271,7 @@ export function PredictiveAnalytics({
                   {dataSufficiency.maeMessage && <p>{dataSufficiency.maeMessage}</p>}
                   {dataSufficiency.evaluatedDaysMessage && <p>{dataSufficiency.evaluatedDaysMessage}</p>}
                   {dataSufficiency.shrinkageMessage && <p>{dataSufficiency.shrinkageMessage}</p>}
+                  {dataSufficiency.branchCoverageMessage && <p>{dataSufficiency.branchCoverageMessage}</p>}
                   <p>The forecast remains available and will become more reliable as recorded history grows.</p>
                 </div>
               </div>
@@ -255,6 +282,7 @@ export function PredictiveAnalytics({
             <div className="px-5 pt-5">
               <h3 className="text-sm font-semibold" style={{ color: C.primary }}>Forecast Accuracy</h3>
               <p className="text-xs mt-1" style={{ color: C.secondary }}>Lower MAE indicates that forecasted values are closer to actual recorded values.</p>
+              <p className="text-xs mt-1 max-w-4xl" style={{ color: C.muted }}>{FORECAST_EVALUATION_DISCLOSURE} Historical COGS uses configured-cost snapshots and is not verified procurement cost.</p>
             </div>
             <div className="grid lg:grid-cols-5 gap-4 p-5">
               <div className="lg:col-span-2 grid grid-cols-2 gap-3">
@@ -297,10 +325,13 @@ export function PredictiveAnalytics({
             </div>
           </Card>
 
-          <TableCard title="Ingredient Usage Forecast Evaluation" subtitle="Each ingredient is evaluated only against compatible units and earlier recipe-derived usage records.">
+          <TableCard
+            title="Ingredient Usage Forecast Evaluation"
+            subtitle={`${ingredientSummary.eligibleIngredients.toLocaleString()} ingredient${ingredientSummary.eligibleIngredients === 1 ? "" : "s"} with MAE results across ${ingredientSummary.evaluatedDays.toLocaleString()} evaluated ingredient-day${ingredientSummary.evaluatedDays === 1 ? "" : "s"}. Limited samples do not establish operational forecast reliability.`}
+          >
             <TableWrapper minWidth={820}>
               <THead cols={["Ingredient",...(role === "owner" ? ["Branch"] : []),"Unit","Evaluation Period","Days","Average Actual","Average Forecast","MAE","Status"]}/>
-              <tbody>{forecast.accuracy.ingredients.length ? forecast.accuracy.ingredients.map((item)=><TR key={`${item.branchId}-${item.inventoryItemId}`}><TD bold>{item.name}</TD>{role === "owner"&&<TD muted>{item.branchName}</TD>}<TD>{item.unit}</TD><TD muted>{item.evaluationStart&&item.evaluationEnd?`${formatDate(item.evaluationStart)} – ${formatDate(item.evaluationEnd)}`:"—"}</TD><TD right>{item.evaluatedDays}</TD><TD right>{item.averageActual===null?"—":`${item.averageActual.toLocaleString()} ${item.unit}`}</TD><TD right>{item.averageForecast===null?"—":`${item.averageForecast.toLocaleString()} ${item.unit}`}</TD><TD right bold>{item.mae===null?"N/A":`${item.mae.toLocaleString()} ${item.unit}`}</TD><TD center><StatusChip status={item.incompatibleUnits?"incompatible units":item.insufficientHistory?"insufficient history":"evaluated"}/></TD></TR>):<TableEmptyRow colSpan={role === "owner"?9:8} title="No ingredient evaluation available" subtitle="More recipe-derived ingredient usage history is required."/>}</tbody>
+              <tbody>{forecast.accuracy.ingredients.length ? forecast.accuracy.ingredients.map((item)=><TR key={`${item.branchId}-${item.inventoryItemId}`}><TD bold>{item.name}</TD>{role === "owner"&&<TD muted>{item.branchName}</TD>}<TD>{item.unit}</TD><TD muted>{item.evaluationStart&&item.evaluationEnd?`${formatDate(item.evaluationStart)} – ${formatDate(item.evaluationEnd)}`:"—"}</TD><TD right>{item.evaluatedDays}</TD><TD right>{item.averageActual===null?"—":`${item.averageActual.toLocaleString()} ${item.unit}`}</TD><TD right>{item.averageForecast===null?"—":`${item.averageForecast.toLocaleString()} ${item.unit}`}</TD><TD right bold>{item.mae===null?"N/A":`${item.mae.toLocaleString()} ${item.unit}`}</TD><TD center><StatusChip status={ingredientEvaluationStatus(item)}/></TD></TR>):<TableEmptyRow colSpan={role === "owner"?9:8} title="No ingredient evaluation available" subtitle="More recipe-derived ingredient usage history is required."/>}</tbody>
             </TableWrapper>
           </TableCard>
 

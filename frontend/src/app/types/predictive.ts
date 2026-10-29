@@ -14,7 +14,13 @@ export interface ForecastAccuracySummary {
 }
 
 export interface PredictiveForecast {
-  scope: { branchId: string | null; branchName: string; forecastStart: string; forecastEnd: string };
+  scope: {
+    branchId: string | null; branchName: string; forecastStart: string; forecastEnd: string;
+    branchCoverage?: {
+      included: { branchId: string; branchName: string }[];
+      excluded: { branchId: string; branchName: string; reason: "NO_ELIGIBLE_SALES_HISTORY" }[];
+    };
+  };
   readiness: {
     status: "READY" | "PRELIMINARY";
     minimumSalesDays: number;
