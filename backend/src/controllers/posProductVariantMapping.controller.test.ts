@@ -19,6 +19,7 @@ import {
   createPosSource,
   deactivateApprovedPosMapping,
   listPosSources,
+  reactivateApprovedPosMapping,
   revisePendingPosMapping,
   savePosSourceFieldMapping,
   updatePosMapping,
@@ -494,6 +495,79 @@ describe("pending POS mapping revision", () => {
     expect(preserved).toMatchObject({ status: "INACTIVE", reviewStatus: "APPROVED", reviewedBy: ownerId });
     expect(mocks.writeAudit).toHaveBeenCalledWith(expect.anything(), "DEACTIVATE_POS_MAPPING", "POS_MAPPING", sourceId,
       expect.any(String), expect.objectContaining({ preservedReviewStatus: "APPROVED" }), client);
+  });
+
+  it("reactivates an inactive Approved mapping without changing its identity or approval history", async () => {
+    const calls: Array<{ sql: string; values?: unknown[] }> = [];
+    const reviewedAt = "2026-09-25T02:00:00Z";
+    const preserved = { id: sourceId, status: "ACTIVE", reviewStatus: "APPROVED", reviewedBy: ownerId, reviewedAt };
+    const client = {
+      query: vi.fn(async (statement: unknown, values?: unknown[]) => {
+        const sql = String(statement); calls.push({ sql, values });
+        if (sql.includes("FROM pos_product_variant_mappings pm JOIN pos_sources")) return { rows: [{
+          branchId: null, status: "INACTIVE", reviewStatus: "APPROVED", reviewedBy: ownerId, reviewedAt,
+          posSourceId: sourceId, sourceBranchId: branchId, sourceStatus: "ACTIVE", formatVerifiedAt: reviewedAt,
+          sourceProductCode: null, normalizedSourceProductName: "aglio y olio", targetAvailable: true, recipeAvailable: true,
+        }], rowCount: 1 };
+        if (sql.includes("SELECT id FROM pos_product_variant_mappings")) return { rows: [], rowCount: 0 };
+        if (sql.includes("UPDATE pos_product_variant_mappings SET status='ACTIVE'")) return { rows: [preserved], rowCount: 1 };
+        return { rows: [], rowCount: 0 };
+      }),
+      release: vi.fn(),
+    };
+    mocks.connect.mockResolvedValue(client);
+    const res = response();
+
+    await reactivateApprovedPosMapping({ params: { id: sourceId }, user: { id: ownerId, role: "OWNER", branchId: null } } as never, res as never, vi.fn());
+
+    const update = calls.find(({ sql }) => sql.includes("UPDATE pos_product_variant_mappings SET status='ACTIVE'"));
+    expect(update?.sql).not.toMatch(/review_status=|reviewed_by=|reviewed_at=|menu_item_variant_id=|source_product_name=/);
+    expect(update?.values).toEqual([sourceId]);
+    expect(mocks.writeAudit).toHaveBeenCalledWith(expect.anything(), "REACTIVATE_POS_MAPPING", "POS_MAPPING", sourceId,
+      expect.any(String), expect.objectContaining({ posSourceId: sourceId, preservedReviewStatus: "APPROVED", preservedReviewedBy: ownerId }), client);
+    expect(calls.at(-1)?.sql).toBe("COMMIT");
+    expect(res.json).toHaveBeenCalledWith({ success: true, data: { mapping: preserved } });
+  });
+
+  it("rejects reactivation when the approved POS identity conflicts", async () => {
+    const calls: Array<{ sql: string; values?: unknown[] }> = [];
+    const client = {
+      query: vi.fn(async (statement: unknown, values?: unknown[]) => {
+        const sql = String(statement); calls.push({ sql, values });
+        if (sql.includes("FROM pos_product_variant_mappings pm JOIN pos_sources")) return { rows: [{
+          branchId: branchId, status: "INACTIVE", reviewStatus: "APPROVED", reviewedBy: ownerId, reviewedAt: "2026-09-25T02:00:00Z",
+          posSourceId: sourceId, sourceBranchId: branchId, sourceStatus: "ACTIVE", formatVerifiedAt: "2026-09-25T02:00:00Z",
+          sourceProductCode: null, normalizedSourceProductName: "breakfast pork tapa", targetAvailable: true, recipeAvailable: true,
+        }], rowCount: 1 };
+        if (sql.includes("SELECT id FROM pos_product_variant_mappings")) return { rows: [{ id: originalVariantId }], rowCount: 1 };
+        return { rows: [], rowCount: 0 };
+      }),
+      release: vi.fn(),
+    };
+    mocks.connect.mockResolvedValue(client);
+
+    await expect(reactivateApprovedPosMapping({ params: { id: sourceId }, user: { id: ownerId, role: "OWNER", branchId: null } } as never, response() as never, vi.fn()))
+      .rejects.toMatchObject({ code: "POS_MAPPING_CONFLICT" });
+    expect(calls.some(({ sql }) => sql.includes("UPDATE pos_product_variant_mappings"))).toBe(false);
+    expect(calls.at(-1)?.sql).toBe("ROLLBACK");
+  });
+
+  it("rejects reactivation when source, target scope, or recipe is no longer eligible", async () => {
+    const client = {
+      query: vi.fn(async (statement: unknown) => {
+        const sql = String(statement);
+        if (sql.includes("FROM pos_product_variant_mappings pm JOIN pos_sources")) return { rows: [{
+          branchId: null, status: "INACTIVE", reviewStatus: "APPROVED", reviewedBy: ownerId, reviewedAt: "2026-09-25T02:00:00Z",
+          posSourceId: sourceId, sourceBranchId: branchId, sourceStatus: "ACTIVE", formatVerifiedAt: "2026-09-25T02:00:00Z",
+          sourceProductCode: null, normalizedSourceProductName: "aglio y olio", targetAvailable: true, recipeAvailable: false,
+        }], rowCount: 1 };
+        return { rows: [], rowCount: 0 };
+      }),
+      release: vi.fn(),
+    };
+    mocks.connect.mockResolvedValue(client);
+    await expect(reactivateApprovedPosMapping({ params: { id: sourceId }, user: { id: ownerId, role: "OWNER", branchId: null } } as never, response() as never, vi.fn()))
+      .rejects.toMatchObject({ code: "POS_MAPPING_RECIPE_REQUIRED" });
   });
 });
 

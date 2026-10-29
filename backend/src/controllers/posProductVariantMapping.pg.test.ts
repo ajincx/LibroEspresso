@@ -15,10 +15,14 @@ suite("POS mapping Quick Assign PostgreSQL integration",()=>{
   const recipeId=crypto.randomUUID();
   const sourceId=crypto.randomUUID();
   const targetId=crypto.randomUUID();
+  const reactivationId=crypto.randomUUID();
+  const conflictingInactiveId=crypto.randomUUID();
+  const conflictingActiveId=crypto.randomUUID();
   let pool:pg.Pool;
   let appPool:pg.Pool;
   let copyMappings:Awaited<typeof import("./posProductVariantMapping.controller.js")>["copyApprovedGlobalPosMappings"];
   let confirmAndActivate:Awaited<typeof import("./posProductVariantMapping.controller.js")>["confirmAndActivatePosMappings"];
+  let reactivateApproved:Awaited<typeof import("./posProductVariantMapping.controller.js")>["reactivateApprovedPosMapping"];
 
   beforeAll(async()=>{
     if(!databaseUrl)throw new Error("POS_MAPPING_E2E_DATABASE_URL is required");
@@ -28,6 +32,7 @@ suite("POS mapping Quick Assign PostgreSQL integration",()=>{
     pool=new pg.Pool({connectionString:databaseUrl});
     const controller=await import("./posProductVariantMapping.controller.js");
     copyMappings=controller.copyApprovedGlobalPosMappings;confirmAndActivate=controller.confirmAndActivatePosMappings;
+    reactivateApproved=controller.reactivateApprovedPosMapping;
     appPool=(await import("../config/database.js")).pool;
     await pool.query(`INSERT INTO branches(id,code,name,location) VALUES
       ($1,$2,$3,'Disposable test'),($4,$5,$6,'Disposable test')`,
@@ -74,5 +79,32 @@ suite("POS mapping Quick Assign PostgreSQL integration",()=>{
     expect(concurrent.filter(result=>result.status==="fulfilled")).toHaveLength(1);
     expect(concurrent.filter(result=>result.status==="rejected")).toHaveLength(1);
     expect((concurrent.find(result=>result.status==="rejected") as PromiseRejectedResult).reason).toMatchObject({code:"POS_MAPPING_NONE_PENDING"});
+  });
+
+  it("reactivates the same approved row, preserves identity and approval, audits it, and blocks a conflicting identity",async()=>{
+    const reviewedAt="2026-09-25T02:00:00Z";
+    await pool.query(`INSERT INTO pos_product_variant_mappings
+      (id,pos_source_id,branch_id,source_product_name,source_product_code,menu_item_variant_id,status,review_status,reviewed_by,reviewed_at)
+      VALUES($1,$2,NULL,'Aglio Y Olio',NULL,$3,'INACTIVE','APPROVED',$4,$5)`,
+    [reactivationId,sourceId,variantId,ownerId,reviewedAt]);
+    const before=(await pool.query(`SELECT id,pos_source_id "posSourceId",branch_id "branchId",source_product_name "sourceProductName",
+      source_product_code "sourceProductCode",menu_item_variant_id "menuItemVariantId",review_status "reviewStatus",
+      reviewed_by "reviewedBy",reviewed_at "reviewedAt" FROM pos_product_variant_mappings WHERE id=$1`,[reactivationId])).rows[0];
+    const response=()=>{const result={status:()=>result,json:(body:unknown)=>{result.body=body;},body:undefined as unknown};return result;};
+    await reactivateApproved({params:{id:reactivationId},user:{id:ownerId,role:"OWNER",branchId:null}} as never,response() as never,(()=>undefined) as never);
+    const after=(await pool.query(`SELECT id,pos_source_id "posSourceId",branch_id "branchId",source_product_name "sourceProductName",
+      source_product_code "sourceProductCode",menu_item_variant_id "menuItemVariantId",review_status "reviewStatus",
+      reviewed_by "reviewedBy",reviewed_at "reviewedAt",status FROM pos_product_variant_mappings WHERE id=$1`,[reactivationId])).rows[0];
+    expect(after).toMatchObject({...before,status:"ACTIVE"});
+    expect((await pool.query(`SELECT count(*)::int count FROM audit_logs WHERE entity_id=$1 AND action='REACTIVATE_POS_MAPPING'`,[reactivationId])).rows[0].count).toBe(1);
+
+    await pool.query(`INSERT INTO pos_product_variant_mappings
+      (id,pos_source_id,branch_id,source_product_name,source_product_code,menu_item_variant_id,status,review_status,reviewed_by,reviewed_at)
+      VALUES($1,$2,NULL,'Breakfast Pork Tapa','DUP-${runId}',$3,'INACTIVE','APPROVED',$4,now()),
+            ($5,$2,NULL,'Conflicting Alias','DUP-${runId}',$3,'ACTIVE','APPROVED',$4,now())`,
+    [conflictingInactiveId,sourceId,variantId,ownerId,conflictingActiveId]);
+    await expect(reactivateApproved({params:{id:conflictingInactiveId},user:{id:ownerId,role:"OWNER",branchId:null}} as never,response() as never,(()=>undefined) as never))
+      .rejects.toMatchObject({code:"POS_MAPPING_CONFLICT"});
+    expect((await pool.query(`SELECT status FROM pos_product_variant_mappings WHERE id=$1`,[conflictingInactiveId])).rows[0].status).toBe("INACTIVE");
   });
 });

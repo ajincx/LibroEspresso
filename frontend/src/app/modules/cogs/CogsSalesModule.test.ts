@@ -332,7 +332,7 @@ describe("POS mapping revision presentation",()=>{
 
   it("shows Edit only for inactive Pending mappings",()=>{
     expect(canEditPosMapping(pending)).toBe(true);
-    const pendingMarkup=renderToStaticMarkup(React.createElement(PosMappingActions,{mapping:pending,busy:false,canApprove:true,reviewNote:"Needs correction",onEdit:()=>undefined,onReview:()=>undefined,onDeactivate:()=>undefined}));
+    const pendingMarkup=renderToStaticMarkup(React.createElement(PosMappingActions,{mapping:pending,busy:false,canApprove:true,reviewNote:"Needs correction",onEdit:()=>undefined,onReview:()=>undefined,onDeactivate:()=>undefined,onReactivate:()=>undefined}));
     expect(pendingMarkup).toContain("Edit Mapping");
     expect(pendingMarkup).toContain(">Approve</button>");
     expect(pendingMarkup).toContain("border-[var(--app-success)]");
@@ -344,12 +344,21 @@ describe("POS mapping revision presentation",()=>{
   it("locks Approved mappings and offers deactivation instead of Edit",()=>{
     const approved={...pending,status:"ACTIVE",reviewStatus:"APPROVED",reviewedBy:"owner-1",reviewedAt:"2026-09-25T02:00:00Z"} as PosMapping;
     expect(canEditPosMapping(approved)).toBe(false);
-    const markup=renderToStaticMarkup(React.createElement(PosMappingActions,{mapping:approved,busy:false,canApprove:true,reviewNote:"",onEdit:()=>undefined,onReview:()=>undefined,onDeactivate:()=>undefined}));
+    const markup=renderToStaticMarkup(React.createElement(PosMappingActions,{mapping:approved,busy:false,canApprove:true,reviewNote:"",onEdit:()=>undefined,onReview:()=>undefined,onDeactivate:()=>undefined,onReactivate:()=>undefined}));
     expect(markup).toContain(">Approved</button>");
     expect(markup).toContain("disabled");
     expect(markup).toContain("bg-[var(--app-surface-muted)]");
     expect(markup).toContain(">Deactivate</button>");
     expect(markup).toContain("border-[var(--app-danger)]");
+    expect(markup).not.toContain("Edit Mapping");
+  });
+
+  it("offers Reactivate only for an inactive Approved mapping",()=>{
+    const inactive={...pending,status:"INACTIVE",reviewStatus:"APPROVED",reviewedBy:"owner-1",reviewedAt:"2026-09-25T02:00:00Z"} as PosMapping;
+    const markup=renderToStaticMarkup(React.createElement(PosMappingActions,{mapping:inactive,busy:false,canApprove:true,reviewNote:"",onEdit:()=>undefined,onReview:()=>undefined,onDeactivate:()=>undefined,onReactivate:()=>undefined}));
+    expect(markup).toContain(">Reactivate</button>");
+    expect(markup).toContain("border-[var(--app-success)]");
+    expect(markup).not.toContain(">Deactivate</button>");
     expect(markup).not.toContain("Edit Mapping");
   });
 

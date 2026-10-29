@@ -201,7 +201,7 @@ describe("POS first-run review API workflow", () => {
     });
   });
 
-  it("saves a Pending mapping revision and can deactivate an Approved mapping", async () => {
+  it("saves a Pending mapping revision and can deactivate or reactivate an Approved mapping", async () => {
     const revised={id:"mapping-1",reviewStatus:"PENDING",status:"INACTIVE"};
     const put=vi.spyOn(api,"put").mockResolvedValue({data:{success:true,data:{mapping:revised}}});
     const post=vi.spyOn(api,"post").mockResolvedValue({data:{success:true,data:{mapping:{...revised,reviewStatus:"APPROVED"}}}});
@@ -211,6 +211,8 @@ describe("POS first-run review API workflow", () => {
     expect(revised.reviewStatus).toBe("PENDING");
     await inventoryWorkflowService.deactivatePosMapping("mapping-1");
     expect(post).toHaveBeenCalledWith("/pos-sales/mappings/mapping-1/deactivate");
+    await inventoryWorkflowService.reactivatePosMapping("mapping-1");
+    expect(post).toHaveBeenCalledWith("/pos-sales/mappings/mapping-1/reactivate");
   });
 });
 

@@ -154,6 +154,9 @@ export const inventoryWorkflowService = {
   async deactivatePosMapping(id: string) {
     return (await api.post<ApiSuccess<{ mapping: PosMapping }>>(`/pos-sales/mappings/${id}/deactivate`)).data.data.mapping;
   },
+  async reactivatePosMapping(id: string) {
+    return (await api.post<ApiSuccess<{ mapping: PosMapping }>>(`/pos-sales/mappings/${id}/reactivate`)).data.data.mapping;
+  },
   async posImports(filters?: { branchId?: string; search?: string; page?: number; pageSize?: number }) {
     return (await api.get<ApiSuccess<{ imports: PosImportRecord[]; pagination: { page:number;pageSize:number;total:number;totalPages:number } }>>("/pos-sales", { params: filters })).data.data;
   },

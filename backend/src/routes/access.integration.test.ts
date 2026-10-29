@@ -314,8 +314,11 @@ describe("access controls", () => {
       request(app).put(`/api/pos-sales/mappings/${mappingId}`).set("Cookie", staff).send({}),
       request(app).post(`/api/pos-sales/mappings/${mappingId}/deactivate`).set("Cookie", manager).send({}),
       request(app).post(`/api/pos-sales/mappings/${mappingId}/deactivate`).set("Cookie", staff).send({}),
+      request(app).post(`/api/pos-sales/mappings/${mappingId}/reactivate`).set("Cookie", manager).send({}),
+      request(app).post(`/api/pos-sales/mappings/${mappingId}/reactivate`).set("Cookie", staff).send({}),
+      request(app).post(`/api/pos-sales/mappings/${mappingId}/reactivate`).send({}),
     ]);
-    expect(revisionResponses.map((response) => response.status)).toEqual([403, 403, 403, 403]);
+    expect(revisionResponses.map((response) => response.status)).toEqual([403, 403, 403, 403, 403, 403, 401]);
   });
 
   it("requires a separate Owner review before activating new POS sources or mappings", async () => {

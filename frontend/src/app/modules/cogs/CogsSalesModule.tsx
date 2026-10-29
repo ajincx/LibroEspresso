@@ -164,12 +164,12 @@ export function PosMappingEditDialog({mapping,products,branches,busy,onCancel,on
   </div>;
 }
 
-export function PosMappingActions({mapping,busy,canApprove,reviewNote,onEdit,onReview,onDeactivate}:{
+export function PosMappingActions({mapping,busy,canApprove,reviewNote,onEdit,onReview,onDeactivate,onReactivate}:{
   mapping:PosMapping;busy:boolean;canApprove:boolean;reviewNote:string;onEdit:()=>void;
-  onReview:(status:PosMappingReviewStatus)=>void;onDeactivate:()=>void;
+  onReview:(status:PosMappingReviewStatus)=>void;onDeactivate:()=>void;onReactivate:()=>void;
 }) {
   const actionClass="inline-flex h-9 items-center justify-center rounded-lg border px-3 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50";
-  if(mapping.reviewStatus==="APPROVED") return <div className="flex flex-wrap items-center gap-2"><button type="button" disabled className={`${actionClass} border-[var(--app-border)] bg-[var(--app-surface-muted)] text-[var(--app-text-muted)]`}>Approved</button>{mapping.status==="ACTIVE"?<button type="button" disabled={busy} className={`${actionClass} border-[var(--app-danger)] text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)]`} onClick={onDeactivate}>Deactivate</button>:<span className="text-xs font-semibold" style={{color:C.secondary}}>Deactivated</span>}</div>;
+  if(mapping.reviewStatus==="APPROVED") return <div className="flex flex-wrap items-center gap-2"><button type="button" disabled className={`${actionClass} border-[var(--app-border)] bg-[var(--app-surface-muted)] text-[var(--app-text-muted)]`}>Approved</button>{mapping.status==="ACTIVE"?<button type="button" disabled={busy} className={`${actionClass} border-[var(--app-danger)] text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)]`} onClick={onDeactivate}>Deactivate</button>:<button type="button" disabled={busy} className={`${actionClass} border-[var(--app-success)] text-[var(--app-success)] hover:bg-[var(--app-success-bg)]`} onClick={onReactivate}>Reactivate</button>}</div>;
   if(mapping.reviewStatus==="REJECTED"||mapping.reviewStatus==="AMBIGUOUS") return <button type="button" disabled={busy} className={`${actionClass} border-[var(--app-border)]`} onClick={()=>onReview("PENDING")}>Return to Pending</button>;
   return <div className="flex flex-wrap items-center gap-2">{canEditPosMapping(mapping)&&<button type="button" disabled={busy} className={`${actionClass} border-[var(--app-border)]`} onClick={onEdit}>Edit Mapping</button>}<button type="button" disabled={busy||!canApprove} className={`${actionClass} border-[var(--app-success)] bg-[var(--app-success)] text-white`} onClick={()=>onReview("APPROVED")}>Approve</button><button type="button" disabled={busy||!reviewNote.trim()} className={`${actionClass} border-[var(--app-border)]`} onClick={()=>onReview("REJECTED")}>Reject</button><button type="button" disabled={busy||!reviewNote.trim()} className={`${actionClass} border-[var(--app-border)]`} onClick={()=>onReview("AMBIGUOUS")}>Ambiguous</button></div>;
 }
@@ -874,6 +874,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "", initialF
                             onEdit={()=>setEditMapping(mapping)}
                             onReview={(status)=>void run(()=>inventoryWorkflowService.reviewPosMapping(mapping.id,status,note))}
                             onDeactivate={()=>void run(()=>inventoryWorkflowService.deactivatePosMapping(mapping.id))}
+                            onReactivate={()=>void run(()=>inventoryWorkflowService.reactivatePosMapping(mapping.id))}
                           />
                         </div>
                       </td>

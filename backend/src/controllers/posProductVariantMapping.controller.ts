@@ -653,3 +653,66 @@ export const deactivateApprovedPosMapping: RequestHandler = async (req, res) => 
   } catch (error) { await client.query("ROLLBACK"); databaseConflict(error); }
   finally { client.release(); }
 };
+
+export const reactivateApprovedPosMapping: RequestHandler = async (req, res) => {
+  const { id } = idParam.parse(req.params);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    const current = await client.query<{
+      branchId: string | null; status: "ACTIVE" | "INACTIVE"; reviewStatus: string;
+      reviewedBy: string | null; reviewedAt: string | null; posSourceId: string;
+      sourceBranchId: string | null; sourceStatus: "ACTIVE" | "INACTIVE"; formatVerifiedAt: string | null;
+      sourceProductCode: string | null; normalizedSourceProductName: string;
+      targetAvailable: boolean; recipeAvailable: boolean;
+    }>(`SELECT pm.branch_id "branchId",pm.status,pm.review_status "reviewStatus",
+        pm.reviewed_by "reviewedBy",pm.reviewed_at "reviewedAt",pm.pos_source_id "posSourceId",
+        pm.source_product_code "sourceProductCode",pm.normalized_source_product_name "normalizedSourceProductName",
+        s.branch_id "sourceBranchId",s.status "sourceStatus",s.format_verified_at "formatVerifiedAt",
+        (v.status='ACTIVE' AND m.status='ACTIVE' AND m.approval_status='APPROVED' AND
+          ((pm.branch_id IS NULL AND m.product_scope='GLOBAL') OR
+           (pm.branch_id IS NOT NULL AND (m.product_scope='GLOBAL' OR m.origin_branch_id=pm.branch_id)))) "targetAvailable",
+        EXISTS(SELECT 1 FROM recipes r WHERE r.menu_item_variant_id=v.id AND r.status='ACTIVE'
+          AND r.effective_from<=CURRENT_DATE AND (r.effective_to IS NULL OR r.effective_to>CURRENT_DATE)
+          AND EXISTS(SELECT 1 FROM recipe_items ri WHERE ri.recipe_id=r.id)
+          AND NOT EXISTS(SELECT 1 FROM recipe_items ri JOIN inventory_items ii ON ii.id=ri.inventory_item_id
+            WHERE ri.recipe_id=r.id AND NOT (((ri.unit IN ('g','kg')) AND (ii.unit IN ('g','kg')))
+              OR ((ri.unit IN ('ml','L')) AND (ii.unit IN ('ml','L'))) OR (ri.unit='pc' AND ii.unit='pc')))) "recipeAvailable"
+      FROM pos_product_variant_mappings pm JOIN pos_sources s ON s.id=pm.pos_source_id
+      JOIN menu_item_variants v ON v.id=pm.menu_item_variant_id JOIN menu_items m ON m.id=v.menu_item_id
+      WHERE pm.id=$1 FOR UPDATE OF pm,s`, [id]);
+    const mapping = current.rows[0];
+    if (!mapping) throw new AppError(404, "POS_MAPPING_NOT_FOUND", "POS mapping not found.");
+    if (mapping.reviewStatus !== "APPROVED" || mapping.status !== "INACTIVE") {
+      throw new AppError(409, "POS_MAPPING_REACTIVATION_INVALID", "Only an inactive approved mapping can be reactivated.");
+    }
+    if (mapping.sourceStatus !== "ACTIVE" || !mapping.formatVerifiedAt || !mapping.sourceBranchId) {
+      throw new AppError(422, "POS_SOURCE_FORMAT_REVIEW_REQUIRED", "The POS source must be active, branch-assigned, and format-verified before reactivating mappings.");
+    }
+    if (!mapping.targetAvailable) {
+      throw new AppError(422, "POS_MAPPING_TARGET_INACTIVE", "The mapped product or variant is not active and approved for this scope.");
+    }
+    if (!mapping.recipeAvailable) {
+      throw new AppError(422, "POS_MAPPING_RECIPE_REQUIRED", "The mapped variant needs a valid active recipe before reactivation.");
+    }
+    const conflict = await client.query(`SELECT id FROM pos_product_variant_mappings
+      WHERE id<>$1 AND pos_source_id=$2
+        AND coalesce(branch_id,'00000000-0000-0000-0000-000000000000'::uuid)=coalesce($3::uuid,'00000000-0000-0000-0000-000000000000'::uuid)
+        AND status='ACTIVE' AND review_status='APPROVED'
+        AND (($4::text IS NOT NULL AND source_product_code IS NOT NULL AND lower(btrim(source_product_code))=lower(btrim($4)))
+          OR ($4::text IS NULL AND source_product_code IS NULL AND normalized_source_product_name=$5)) LIMIT 1`,
+    [id,mapping.posSourceId,mapping.branchId,mapping.sourceProductCode,mapping.normalizedSourceProductName]);
+    if (conflict.rows[0]) {
+      throw new AppError(409, "POS_MAPPING_CONFLICT", "An active approved mapping already uses this POS identity and scope.");
+    }
+    const result = await client.query(`UPDATE pos_product_variant_mappings SET status='ACTIVE',updated_at=now()
+      WHERE id=$1 RETURNING id,status,review_status "reviewStatus",reviewed_by "reviewedBy",reviewed_at "reviewedAt"`, [id]);
+    await writeAudit(req.user!, "REACTIVATE_POS_MAPPING", "POS_MAPPING", id, "Reactivated approved POS mapping", {
+      branchId: mapping.branchId, posSourceId: mapping.posSourceId, preservedReviewStatus: mapping.reviewStatus,
+      preservedReviewedBy: mapping.reviewedBy, preservedReviewedAt: mapping.reviewedAt,
+    }, client);
+    await client.query("COMMIT");
+    res.json({ success: true, data: { mapping: result.rows[0] } });
+  } catch (error) { await client.query("ROLLBACK"); databaseConflict(error); }
+  finally { client.release(); }
+};
