@@ -135,6 +135,27 @@ export const canApprovePosMapping = (
 ) => Boolean(mapping.recipeAvailable && source?.status === "ACTIVE" && source.formatVerifiedAt);
 export const canEditPosMapping = (mapping: Pick<PosMapping, "reviewStatus" | "status">) =>
   mapping.reviewStatus === "APPROVED" || (mapping.reviewStatus === "PENDING" && mapping.status === "INACTIVE");
+export function filterPosMappings(
+  mappings: readonly PosMapping[],
+  status: "ALL" | PosMappingReviewStatus,
+  query: string,
+) {
+  const normalizedQuery=query.trim().toLocaleLowerCase();
+  return mappings.filter(mapping=>{
+    if(status!=="ALL"&&mapping.reviewStatus!==status)return false;
+    if(!normalizedQuery)return true;
+    return [mapping.sourceProductName,mapping.sourceProductCode,mapping.menuItemName,mapping.variantName]
+      .some(value=>value?.toLocaleLowerCase().includes(normalizedQuery));
+  });
+}
+export function PosMappingSearch({value,onChange}:{value:string;onChange:(value:string)=>void}){
+  return <div className="relative w-full max-w-xl">
+    <Search aria-hidden="true" size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]"/>
+    <input aria-label="Search product mappings" type="search" value={value} onChange={event=>onChange(event.target.value)} placeholder="Search POS name, code, product, or variant" className="w-full rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] py-2 pl-9 pr-20 text-sm outline-none focus:border-[var(--app-primary)]"/>
+    {value&&<button type="button" aria-label="Clear mapping search" onClick={()=>onChange("")} className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg px-2 py-1 text-xs font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-muted)]">Clear</button>}
+  </div>;
+}
+export const posMappingEmptyMessage=(total:number)=>total===0?"No mappings found for this POS system.":"No matching mappings found";
 type MappingRevision = { sourceProductName:string;branchId:string|null;sourceProductCode:string|null;menuItemId:string;menuItemVariantId:string;revisionReason?:string;changeReason?:string;expectedUpdatedAt?:string;confirmed?:true };
 
 export function PosMappingEditDialog({mapping,products,branches,sourceBranchId,busy,serverError="",onCancel,onSave}:{
@@ -486,6 +507,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "", initialF
   const [variantId, setVariantId] = useState("");
   const [branchId, setBranchId] = useState("");
   const [mappingFilter, setMappingFilter] = useState<"ALL" | PosMappingReviewStatus>("ALL");
+  const [mappingSearch,setMappingSearch]=useState("");
   const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
   const [editMapping,setEditMapping]=useState<PosMapping|null>(null);
   const [sourceFormatConfirmed, setSourceFormatConfirmed] = useState(false);
@@ -517,11 +539,11 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "", initialF
   },[sourceId,sources]);
   useEffect(() => {
     if (!sourceId) { setMappings([]); return; }
-    void inventoryWorkflowService.posMappings(sourceId, mappingFilter === "ALL" ? undefined : mappingFilter).then(setMappings).catch(() => setError("Unable to load mappings."));
-  }, [sourceId, mappingFilter]);
+    void inventoryWorkflowService.posMappings(sourceId).then(setMappings).catch(() => setError("Unable to load mappings."));
+  }, [sourceId]);
   const run = async (action: () => Promise<unknown>) => {
     setBusy(true); setError("");
-    try { await action(); await refresh(); if (sourceId) setMappings(await inventoryWorkflowService.posMappings(sourceId, mappingFilter === "ALL" ? undefined : mappingFilter)); return true; }
+    try { await action(); await refresh(); if (sourceId) setMappings(await inventoryWorkflowService.posMappings(sourceId)); return true; }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to save POS setup."); return false; }
     finally { setBusy(false); }
   };
@@ -535,6 +557,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "", initialF
   const quickAssignSource=sameFormatSources.find(source=>source.id===copyFromSourceId)??null;
   const pendingMappingCount=mappings.filter(mapping=>mapping.reviewStatus==="PENDING").length;
   const reviewingQuickAssign=quickAssignResult?.targetSourceId===sourceId;
+  const filteredMappings=filterPosMappings(mappings,mappingFilter,mappingSearch);
   const mappingComplete = [fieldMapping.productName,fieldMapping.quantitySold,fieldMapping.transactionId,fieldMapping.businessDate,fieldMapping.status,fieldMapping.unitPrice].every(Boolean);
   const pendingFormatRequests=pendingPosFormatRequests(formatRequests);
   const selectedFormatRequestMapping=selectedFormatRequest?formatRequestMappings[selectedFormatRequest.id]??EMPTY_POS_FIELD_MAPPING:EMPTY_POS_FIELD_MAPPING;
@@ -805,8 +828,12 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "", initialF
           {selectedVariant && !selectedVariant.recipeId && <p role="status" className="mt-2 rounded-lg p-2 text-xs font-medium" style={{ color: C.red, background: "var(--app-danger-bg)" }}>This variant has no active recipe. It may be recorded for review, but it cannot be approved.</p>}
         </div>
 
+        <div className="mt-5">
+          <PosMappingSearch value={mappingSearch} onChange={setMappingSearch}/>
+        </div>
+
         {/* Status Filter Tabs */}
-        <div className="mt-5 flex flex-wrap items-center justify-between gap-2">
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap gap-2" aria-label="Mapping status filters">
             {(["ALL", "PENDING", "APPROVED", "REJECTED", "AMBIGUOUS"] as const).map((status) => (
               <button key={status} type="button" className="rounded-full border px-3 py-1 text-xs font-semibold transition-colors" style={{ borderColor: mappingFilter === status ? C.maroon : C.border, color: mappingFilter === status ? C.maroon : C.secondary, background: mappingFilter === status ? "var(--app-primary-soft)" : C.surface }} onClick={() => setMappingFilter(status)}>
@@ -814,14 +841,14 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "", initialF
               </button>
             ))}
           </div>
-          <div className="flex items-center gap-2"><span className="text-xs text-[var(--app-text-muted)]">Showing {mappings.length} {mappingFilter === "ALL" ? "" : mappingFilter.toLowerCase()} mapping(s)</span>{pendingMappingCount>0&&!reviewingQuickAssign&&<Btn size="sm" disabled={busy||selectedSource?.status!=="ACTIVE"||!selectedSource?.formatVerifiedAt} onClick={()=>setApproveAllOpen(true)}>Approve All</Btn>}</div>
+          <div className="flex items-center gap-2"><span className="text-xs text-[var(--app-text-muted)]">Showing {filteredMappings.length} of {mappings.length} mapping(s)</span>{pendingMappingCount>0&&!reviewingQuickAssign&&<Btn size="sm" disabled={busy||selectedSource?.status!=="ACTIVE"||!selectedSource?.formatVerifiedAt} onClick={()=>setApproveAllOpen(true)}>Approve All</Btn>}</div>
         </div>
         {pendingMappingCount>0&&selectedSource?.status!=="ACTIVE"&&!reviewingQuickAssign&&<p className="mt-2 text-xs text-[var(--app-text-muted)]">Activate and verify this POS source before approving its pending mappings. Approval does not activate the source automatically.</p>}
 
         {/* Mappings Table with Scenario C Branch Scope Highlighting */}
-        {mappings.length === 0 ? (
+        {filteredMappings.length === 0 ? (
           <p className="mt-3 rounded-xl border p-4 text-center text-xs" style={{ borderColor: C.border, color: C.secondary }}>
-            No {mappingFilter === "ALL" ? "" : `${mappingFilter.toLowerCase()} `}mappings found for this POS system.
+            {posMappingEmptyMessage(mappings.length)}
           </p>
         ) : (
           <TableWrapper minWidth={1120} className="mt-3 rounded-xl border" >
@@ -838,7 +865,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "", initialF
                 </tr>
               </thead>
               <tbody>
-                {mappings.map((mapping) => {
+                {filteredMappings.map((mapping) => {
                   const note = reviewNotes[mapping.id] ?? mapping.reviewComment ?? "";
                   return (
                     <tr key={mapping.id} className="border-t align-top" style={{ borderColor: C.border }}>

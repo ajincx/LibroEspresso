@@ -17,6 +17,8 @@ import {
   PosFormatRequestRejectDialog,
   PosMappingActions,
   PosMappingEditDialog,
+  PosMappingSearch,
+  posMappingEmptyMessage,
   PosMappingSetup,
   ApproveAllMappingsDialog,
   ConfirmAndActivatePosDialog,
@@ -28,6 +30,7 @@ import {
   canVoidPosImport,
   canDeletePosSource,
   canEditPosMapping,
+  filterPosMappings,
   clearCogsUserRange,
   dailyPosMonitoringView,
   dailyPosStatusLabel,
@@ -393,6 +396,46 @@ describe("POS mapping revision presentation",()=>{
     act(()=>form.props.onSubmit({preventDefault:()=>undefined}));
     expect(onSave).toHaveBeenCalledOnce();
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({sourceProductName:"H12 CAPPUCCINO",changeReason:"Correct exact alias",expectedUpdatedAt:approved.updatedAt,confirmed:true}));
+  });
+});
+
+describe("Product Mapping search",()=>{
+  const mapping=(id:string,reviewStatus:PosMapping["reviewStatus"],fields:Partial<PosMapping>={}):PosMapping=>({
+    id,posSourceId:"source-gulod",branchId:null,sourceProductName:`POS Item ${id}`,sourceProductCode:null,
+    menuItemVariantId:`variant-${id}`,menuItemId:`product-${id}`,menuItemName:`Menu Product ${id}`,variantName:"Standard",
+    status:"INACTIVE",reviewStatus,reviewComment:null,reviewedBy:null,reviewedAt:null,updatedAt:"2026-10-29T00:00:00.000000Z",
+    branchName:null,recipeId:"recipe-1",recipeVersion:1,recipeAvailable:true,...fields,
+  });
+  const mappings=[
+    mapping("aglio","APPROVED",{sourceProductName:"AGLIO Y OLIO",sourceProductCode:"PASTA-01",menuItemName:"Aglio Y Olio",variantName:"Standard",status:"ACTIVE"}),
+    mapping("noodles","PENDING",{sourceProductName:"ASIAN NOODLES LARGE",sourceProductCode:"NOOD-L",menuItemName:"Asian Noodles",variantName:"Large"}),
+    mapping("bangus","REJECTED",{sourceProductName:"BANGUS",menuItemName:"Annotated Bangus",variantName:"Single Meal"}),
+  ];
+
+  it("matches POS name, code, target product, and variant case-insensitively with trimmed input",()=>{
+    expect(filterPosMappings(mappings,"ALL","  aglio ").map(row=>row.id)).toEqual(["aglio"]);
+    expect(filterPosMappings(mappings,"ALL","pasta-01").map(row=>row.id)).toEqual(["aglio"]);
+    expect(filterPosMappings(mappings,"ALL","ANNOTATED").map(row=>row.id)).toEqual(["bangus"]);
+    expect(filterPosMappings(mappings,"ALL"," single meal ").map(row=>row.id)).toEqual(["bangus"]);
+  });
+
+  it("combines search with status without expanding the source-scoped dataset",()=>{
+    expect(filterPosMappings(mappings,"PENDING","noodles").map(row=>row.id)).toEqual(["noodles"]);
+    expect(filterPosMappings(mappings,"APPROVED","noodles")).toEqual([]);
+    expect(filterPosMappings(mappings,"ALL","")).toHaveLength(3);
+    expect(filterPosMappings(mappings,"AMBIGUOUS","")).toEqual([]);
+    expect(filterPosMappings(mappings.filter(row=>row.posSourceId==="source-gulod"),"ALL","item").every(row=>row.posSourceId==="source-gulod")).toBe(true);
+    expect(posMappingEmptyMessage(mappings.length)).toBe("No matching mappings found");
+    expect(posMappingEmptyMessage(0)).toBe("No mappings found for this POS system.");
+  });
+
+  it("clears the search immediately and exposes an accessible clear control",()=>{
+    const onChange=vi.fn();
+    const renderer=create(React.createElement(PosMappingSearch,{value:"aglio",onChange}));
+    const root=renderer.root;
+    expect(root.findByProps({"aria-label":"Search product mappings"}).props.value).toBe("aglio");
+    act(()=>root.findByProps({"aria-label":"Clear mapping search"}).props.onClick());
+    expect(onChange).toHaveBeenCalledWith("");
   });
 });
 
