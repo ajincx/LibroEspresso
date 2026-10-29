@@ -230,6 +230,21 @@ export function PosImportCleanupAuthorizationDialog({target,busy,reason,onReason
 }
 
 export function PosImportDetailsDialog({ record, onClose }: { record: PosImportRecord; onClose: () => void }) {
+  const accountingTreatment = record.inventoryAccountingTreatment === "HISTORICAL_REPORTING_CUTOVER"
+    ? "Historical Reporting"
+    : record.inventoryAccountingTreatment === "OPERATIONAL"
+      ? "Operational Inventory"
+      : "Not recorded";
+  const operationalStockTreatment = record.inventoryAccountingTreatment === "HISTORICAL_REPORTING_CUTOVER"
+    ? "Excluded"
+    : record.inventoryAccountingTreatment === "OPERATIONAL"
+      ? "Included"
+      : "Not recorded";
+  const cogsTreatment = record.cogsCostBasis === "HISTORICAL_CONFIGURED_COST_ESTIMATE"
+    ? "Estimated using configured ingredient costs"
+    : record.cogsCostBasis === "IMPORT_TIME_CONFIGURED_COST"
+      ? "Calculated using configured ingredient costs at import time"
+      : "Not recorded";
   const details = [
     ["Source filename", record.sourceFilename],
     ["POS source", record.posSourceName ?? record.posSourceCode ?? "Historical source"],
@@ -250,9 +265,30 @@ export function PosImportDetailsDialog({ record, onClose }: { record: PosImportR
     <div className="w-full max-w-2xl rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-6 shadow-2xl">
       <div className="flex items-start justify-between gap-4"><div><h3 id="pos-import-details-title" className="text-lg font-bold">POS Import Details</h3><p className="mt-1 text-sm text-[var(--app-text-muted)]">Read-only import and reconciliation summary.</p></div><button type="button" aria-label="Close POS import details" onClick={onClose}><X size={18}/></button></div>
       <dl className="mt-5 grid gap-x-5 gap-y-3 text-sm sm:grid-cols-2">{details.map(([label,value])=><div key={label} className="rounded-xl bg-[var(--app-surface-muted)] p-3"><dt className="text-xs text-[var(--app-text-muted)]">{label}</dt><dd className="mt-1 break-words font-semibold">{value}</dd></div>)}</dl>
+      <section aria-label="Inventory Accounting Treatment" className="mt-5 rounded-xl border border-[var(--app-border)] p-4">
+        <h4 className="text-sm font-semibold">Inventory Accounting Treatment</h4>
+        <dl className="mt-3 grid gap-x-5 gap-y-3 text-sm sm:grid-cols-2">
+          <div><dt className="text-xs text-[var(--app-text-muted)]">Treatment</dt><dd className="mt-1 font-semibold">{accountingTreatment}</dd></div>
+          <div><dt className="text-xs text-[var(--app-text-muted)]">Live Operational Stock</dt><dd className="mt-1 font-semibold">{operationalStockTreatment}</dd></div>
+          <div><dt className="text-xs text-[var(--app-text-muted)]">COGS</dt><dd className="mt-1 font-semibold">{cogsTreatment}</dd></div>
+          {record.inventoryAccountingReason && <div><dt className="text-xs text-[var(--app-text-muted)]">Reason</dt><dd className="mt-1 break-words font-semibold">{record.inventoryAccountingReason}</dd></div>}
+        </dl>
+      </section>
       <div className="mt-6 flex justify-end"><Btn variant="outline" onClick={onClose}>Close</Btn></div>
     </div>
   </div>;
+}
+
+export function PosImportStatusBadge({ record }: { record: Pick<PosImportRecord, "status"> }) {
+  if (record.status === "VOIDED") return <span className="inline-flex rounded-full border border-[var(--app-danger)] bg-[var(--app-danger-bg)] px-2.5 py-0.5 text-xs font-semibold text-[var(--app-danger)]">VOIDED</span>;
+  if (record.status === "NEEDS_REVIEW") return <span
+    className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold whitespace-nowrap border"
+    style={{ background: C.amberBg, color: C.amber, borderColor: `color-mix(in srgb, ${C.amber} 25%, transparent)` }}
+  >
+    <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: C.amber }} />
+    <span>Imported · Warnings</span>
+  </span>;
+  return <StatusChip status={(record.status as string) === "REJECTED" ? "rejected" : "imported"} />;
 }
 
 export function PosFormatRequestRejectDialog({target,busy,reason,onReasonChange,onCancel,onConfirm}:{
@@ -1296,26 +1332,7 @@ function SalesAnalysis({ role, scopeBranchId, scopeBranchName = "All Branches" }
                   <TD right>{row.unitsSold.toLocaleString()}</TD>
                   <TD right>{formatPeso(row.totalSales)}</TD>
                   <TD center mono>{row.fingerprintIndicator ?? "Legacy"}</TD>
-                  <TD center>
-                    {row.status === "VOIDED" ? <span className="inline-flex rounded-full border border-[var(--app-danger)] bg-[var(--app-danger-bg)] px-2.5 py-0.5 text-xs font-semibold text-[var(--app-danger)]">VOIDED</span> : row.status === "NEEDS_REVIEW" ? (
-                      <span
-                        className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold whitespace-nowrap border"
-                        style={{
-                          background: C.amberBg,
-                          color: C.amber,
-                          borderColor: `color-mix(in srgb, ${C.amber} 25%, transparent)`,
-                        }}
-                      >
-                        <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: C.amber }} />
-                        <span>Imported · Warnings</span>
-                      </span>
-                    ) : (
-                      <StatusChip status={(row.status as string) === "REJECTED" ? "rejected" : "imported"} />
-                    )}
-                    {row.inventoryAccountingTreatment==="HISTORICAL_REPORTING_CUTOVER"
-                      ? <div className="mt-1 text-[10px] font-semibold" style={{color:C.amber}}>Historical reporting · live stock excluded · estimated COGS</div>
-                      : row.lateHistoricalImport && <div className="mt-1 text-[10px] font-semibold" style={{color:C.amber}}>Late historical · later checkpoints cover stock</div>}
-                  </TD>
+                  <TD center><PosImportStatusBadge record={row}/></TD>
                   <TD center>
                       <PosImportActions
                         role={effectiveRole}

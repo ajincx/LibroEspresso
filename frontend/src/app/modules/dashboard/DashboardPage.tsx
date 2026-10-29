@@ -145,6 +145,16 @@ export function DashboardToolbar({ actions, filters }:{ actions?:ReactNode;filte
   </div>;
 }
 
+export function OwnerDashboardHeader({ greeting, subtitle, filters, onRefresh }: { greeting: string; subtitle: string; filters: ReactNode; onRefresh: () => void }) {
+  return <div data-owner-dashboard-header className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+    <div className="min-w-0 shrink-0"><h1 className="text-xl font-bold">{greeting}</h1><p className="text-sm text-[var(--app-text-muted)]">{subtitle}</p></div>
+    <div className="flex min-w-0 flex-wrap items-center gap-2 lg:justify-end">
+      <div className="min-w-0">{filters}</div>
+      <Btn variant="outline" icon={RefreshCw} onClick={onRefresh}>Refresh</Btn>
+    </div>
+  </div>;
+}
+
 export function DashboardManagerActions({ onRecordCount, onImportSales, onCreatePurchaseRequest }: {
   onRecordCount: () => void;
   onImportSales: () => void;
@@ -405,40 +415,49 @@ export function DashboardPage({ role, onNavigate, scopeBranchId, scopeBranchName
     navigate(`/purchase-orders?${params.toString()}`);
   };
   const salesUrl = "/sales?startDate=" + startDate + "&endDate=" + endDate;
+  const dashboardFilters = <DashboardFilters
+    range={range}
+    comparison={comparison}
+    customStart={customStart}
+    customEnd={customEnd}
+    customApplied={range === "custom" && userSelected}
+    onRangeChange={(nextRange) => {
+      setUserSelected(true);
+      setRange(nextRange);
+      saveDashboardUserRange({ range: nextRange, customStart, customEnd });
+    }}
+    onComparisonChange={setComparison}
+    onApplyCustom={(a, b) => {
+      setUserSelected(true);
+      setCustomStart(a);
+      setCustomEnd(b);
+      setRange("custom");
+      saveDashboardUserRange({ range: "custom", customStart: a, customEnd: b });
+    }}
+    onReset={() => {
+      setUserSelected(false);
+      clearDashboardUserRange();
+      setRange(DEFAULT_DASHBOARD_RANGE);
+      setComparison("previous");
+      setRefresh((v) => v + 1);
+    }}
+  />;
   return <div className="dashboard-page min-w-0 p-4 md:p-6 space-y-5">
-    <div className="flex flex-wrap items-start justify-between gap-3">
-      <div><h1 className="text-xl font-bold">{greeting}</h1><p className="text-sm text-[var(--app-text-muted)]">{scope} · {formatAppDate(startDate)} – {formatAppDate(endDate)}</p></div>
-      <div className="flex gap-2"><Btn variant="outline" icon={RefreshCw} onClick={() => setRefresh(v => v+1)}>Refresh</Btn></div>
-    </div>
-    <DashboardToolbar
-      actions={role === "manager" ? <DashboardManagerActions onRecordCount={() => navigate(recordStockCountUrl(branchId, today))} onImportSales={() => setImportOpen(true)} onCreatePurchaseRequest={() => createOrder()}/> : undefined}
-      filters={<DashboardFilters
-        range={range}
-        comparison={comparison}
-        customStart={customStart}
-        customEnd={customEnd}
-        customApplied={range === "custom" && userSelected}
-        onRangeChange={(nextRange) => {
-          setUserSelected(true);
-          setRange(nextRange);
-          saveDashboardUserRange({ range: nextRange, customStart, customEnd });
-        }}
-        onComparisonChange={setComparison}
-        onApplyCustom={(a, b) => {
-          setUserSelected(true);
-          setCustomStart(a);
-          setCustomEnd(b);
-          setRange("custom");
-          saveDashboardUserRange({ range: "custom", customStart: a, customEnd: b });
-        }}
-        onReset={() => {
-          setUserSelected(false);
-          clearDashboardUserRange();
-          setRange(DEFAULT_DASHBOARD_RANGE);
-          setComparison("previous");
-          setRefresh((v) => v + 1);
-        }}
-      />} />
+    {role === "owner" ? <OwnerDashboardHeader
+      greeting={greeting}
+      subtitle={`${scope} · ${formatAppDate(startDate)} – ${formatAppDate(endDate)}`}
+      filters={dashboardFilters}
+      onRefresh={() => setRefresh(v => v+1)}
+    /> : <>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div><h1 className="text-xl font-bold">{greeting}</h1><p className="text-sm text-[var(--app-text-muted)]">{scope} · {formatAppDate(startDate)} – {formatAppDate(endDate)}</p></div>
+        <div className="flex gap-2"><Btn variant="outline" icon={RefreshCw} onClick={() => setRefresh(v => v+1)}>Refresh</Btn></div>
+      </div>
+      <DashboardToolbar
+        actions={<DashboardManagerActions onRecordCount={() => navigate(recordStockCountUrl(branchId, today))} onImportSales={() => setImportOpen(true)} onCreatePurchaseRequest={() => createOrder()}/>}
+        filters={dashboardFilters}
+      />
+    </>}
     {error ? <Card><p role="alert" className="text-red-700">{error}</p><Btn onClick={() => setRefresh(v => v+1)}>Retry</Btn></Card> : !totals || !data ? <DashboardAnalyticsSkeleton role={role}/> : <>
       <div className="dashboard-kpis grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
         <KPICard label={role === "owner" ? "Total Sales" : "Branch Sales"} value={money(financials!.sales)} sub={totals.unitsSold + " units sold"} icon={ShoppingCart} change={changed(financials!.sales,data.previous.summary.sales)} onClick={() => navigate(salesUrl)}/>

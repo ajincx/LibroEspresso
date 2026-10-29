@@ -1,7 +1,7 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { missingInvestigationVariancePath, SHRINKAGE_STATUS_FILTER_OPTIONS, ShrinkageAiAnalysisPanel } from "./ShrinkagePage";
+import { AnomalyCaseViewButton, missingInvestigationVariancePath, SHRINKAGE_STATUS_FILTER_OPTIONS, ShrinkageAiAnalysisPanel } from "./ShrinkagePage";
 
 describe("System-Detected Anomaly filters", () => {
   it("consolidates every existing status into one dropdown option set", () => {
@@ -18,6 +18,18 @@ describe("System-Detected Anomaly filters", () => {
     expect(missingInvestigationVariancePath({ countDate: "2026-10-25", inventoryItemName: "Bacon & Eggs" })).toBe(
       "/variance?countDate=2026-10-25&query=Bacon%20%26%20Eggs",
     );
+  });
+
+  it("renders the existing anomaly action as a bordered Eye and View button", () => {
+    const markup = renderToStaticMarkup(React.createElement(AnomalyCaseViewButton, {
+      reportNo: "SR-2026-00067",
+      title: "View case",
+      onClick: () => undefined,
+    }));
+    expect(markup).toContain("lucide-eye");
+    expect(markup).toContain("View");
+    expect(markup).toContain("View case SR-2026-00067");
+    expect(markup).toContain("border-[var(--app-border)]");
   });
 });
 

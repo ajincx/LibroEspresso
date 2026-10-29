@@ -208,15 +208,11 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
                 <TD muted>{formatDate(report.investigatedAt)}</TD>
                 <TD right>
                   <div className="flex justify-end gap-1">
-                  <button
-                    type="button"
+                  <AnomalyCaseViewButton
+                    reportNo={report.reportNo}
                     onClick={() => openReport(report)}
-                    className="p-2 rounded-lg hover:bg-[var(--app-surface-muted)] transition-colors text-[var(--app-text-muted)] hover:text-[var(--app-primary)]"
                     title={report.status === "DETECTED" && !owner ? "Investigate anomaly" : "View case"}
-                    aria-label={`View case ${report.reportNo}`}
-                  >
-                    <Eye size={15} />
-                  </button>
+                  />
                   </div>
                 </TD>
               </TR>
@@ -263,6 +259,18 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
 
     {confirmReview && selected && !owner && <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.55)" }}><div role="dialog" aria-modal="true" aria-labelledby="confirm-shrinkage-review-title" className="w-full max-w-md p-6 rounded-2xl border" style={{ background: "var(--app-surface)", borderColor: "var(--app-border)" }}><h2 id="confirm-shrinkage-review-title" className="text-lg font-bold">Finalize these investigation findings?</h2><p className="text-sm mt-2" style={{ color: "var(--app-text-muted)" }}>This records your final Branch Manager verification and preserves the investigation history.</p><div className="flex gap-3 mt-6"><button onClick={() => setConfirmReview(false)} className="flex-1 py-2.5 rounded-xl border" style={{ borderColor: "var(--app-border)" }}>Cancel</button><button disabled={saving} onClick={() => void review()} className="flex-1 py-2.5 rounded-xl text-white font-semibold disabled:opacity-50" style={{ background: "var(--app-primary)" }}>{saving ? "Finalizing…" : "Finalize Verification"}</button></div></div></div>}
   </div>;
+}
+
+export function AnomalyCaseViewButton({ reportNo, onClick, title }: { reportNo: string; onClick: () => void; title: string }) {
+  return <button
+    type="button"
+    onClick={onClick}
+    className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] px-2 py-1 text-xs font-semibold text-[var(--app-text)] transition-colors hover:bg-[var(--app-surface-muted)] hover:text-[var(--app-primary)]"
+    title={title}
+    aria-label={`View case ${reportNo}`}
+  >
+    <Eye size={14} /> View
+  </button>;
 }
 
 export function ShrinkageAiAnalysisPanel({ result, loading }: { result: ShrinkageAiAnalysisResult | null; loading: boolean }) {

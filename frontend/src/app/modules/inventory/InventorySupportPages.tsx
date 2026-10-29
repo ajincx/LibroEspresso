@@ -51,6 +51,8 @@ export const filterIngredientUsageItems = (items: ExpectedInventoryItem[], searc
     : items;
 };
 export const INGREDIENT_USAGE_NO_MATCH_TITLE = "No matching ingredients found";
+export const INGREDIENT_CONSUMPTION_TITLE = "Ingredient Consumption";
+export const INGREDIENT_CONSUMPTION_SUBTITLE = "Recipe-based ingredient consumption calculated from validated POS sales.";
 export const ingredientUsageThroughDateError = (value:string, manilaToday=businessDate()) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return "Choose a valid usage-through date.";
   const parsed = new Date(`${value}T00:00:00Z`);
@@ -66,15 +68,17 @@ export function IngredientUsageSearch({ value, onChange }: { value: string; onCh
   </div>;
 }
 
-export function IngredientUsageToolbar({ date, search, onDateChange, onSearchChange }: {
+export function IngredientUsageToolbar({ date, search, branchFilter, onDateChange, onSearchChange }: {
   date: string;
   search: string;
+  branchFilter?: React.ReactNode;
   onDateChange: (value: string) => void;
   onSearchChange: (value: string) => void;
 }) {
   return <div data-ingredient-usage-toolbar className="flex w-full min-w-0 flex-col gap-3 md:w-auto md:flex-1 md:flex-row md:items-end">
-    <div className="shrink-0"><CalendarDateField label="Usage Through Date" value={date} max={today} onChange={onDateChange}/><p className="mt-1 max-w-64 text-[10px] text-[var(--app-text-muted)]">Shows ingredient consumption from validated POS sales up to this date.</p></div>
     <IngredientUsageSearch value={search} onChange={onSearchChange}/>
+    {branchFilter}
+    <div className="shrink-0"><CalendarDateField label="Usage Through Date" value={date} max={today} onChange={onDateChange}/></div>
   </div>;
 }
 
@@ -146,10 +150,10 @@ export function ExpectedInventoryPage({ role, view, scopeBranchId = "ALL" }: { r
   return (
     <div className="p-4 md:p-6 space-y-5">
       <TableCard
-        title={isUsage ? "Ingredient Usage" : "Expected Stock"}
+        title={isUsage ? INGREDIENT_CONSUMPTION_TITLE : "Expected Stock"}
         subtitle={
           isUsage
-            ? "Recipe-based ingredient consumption calculated from validated POS sales."
+            ? INGREDIENT_CONSUMPTION_SUBTITLE
             : "System stock calculated from prior counts, receipts, recipe consumption, and approved adjustments."
         }
         badge={
@@ -161,10 +165,9 @@ export function ExpectedInventoryPage({ role, view, scopeBranchId = "ALL" }: { r
         }
         toolbar={
           <>
-            <BranchScope owner={owner} branches={branches} branchId={branchId} onChange={setBranchId} />
             {isUsage
-              ? <div><IngredientUsageToolbar date={countDate} search={usageSearch} onDateChange={changeUsageThroughDate} onSearchChange={setUsageSearch}/>{usageDateError&&<p role="alert" className="mt-1 text-xs text-[var(--app-danger)]">{usageDateError}</p>}</div>
-              : <CalendarDateField label="As of date" value={countDate} onChange={setCountDate}/>}
+              ? <div><IngredientUsageToolbar date={countDate} search={usageSearch} branchFilter={<BranchScope owner={owner} branches={branches} branchId={branchId} onChange={setBranchId}/>} onDateChange={changeUsageThroughDate} onSearchChange={setUsageSearch}/>{usageDateError&&<p role="alert" className="mt-1 text-xs text-[var(--app-danger)]">{usageDateError}</p>}</div>
+              : <><BranchScope owner={owner} branches={branches} branchId={branchId} onChange={setBranchId}/><CalendarDateField label="As of date" value={countDate} onChange={setCountDate}/></>}
             <div className="ml-auto">
               <Btn variant="outline" size="sm" icon={RefreshCw} onClick={() => void load()}>
                 Refresh

@@ -11,6 +11,7 @@ import {
   OWNER_POS_IMPORT_HISTORY_COLUMNS,
   PosImportActions,
   PosImportDetailsDialog,
+  PosImportStatusBadge,
   PosImportCleanupAuthorizationDialog,
   PosImportDeleteDialog,
   PosImportVoidDialog,
@@ -292,13 +293,49 @@ describe("POS Import History controls",()=>{
       fingerprintIndicator: "abcdef", createdEnvironment: "PRODUCTION", cleanupPolicy: "PRODUCTION",
       cleanupAuthorizedBy: null, cleanupAuthorizedAt: null, cleanupReason: null,
       canAuthorizeCleanup: false, canCleanup: false,
+      inventoryAccountingTreatment: "HISTORICAL_REPORTING_CUTOVER",
+      inventoryAccountingReason: "Sales predate the operational inventory cutover.",
+      cogsCostBasis: "HISTORICAL_CONFIGURED_COST_ESTIMATE",
     } as PosImportRecord;
+    const statusMarkup = renderToStaticMarkup(React.createElement(PosImportStatusBadge, { record }));
+    expect(statusMarkup).toContain("Imported");
+    expect(statusMarkup).not.toContain("Historical Reporting");
+    expect(statusMarkup).not.toContain("Live Operational Stock");
+    expect(statusMarkup).not.toContain("Estimated using configured ingredient costs");
+
+    const onView = vi.fn();
+    const actions = create(React.createElement(PosImportActions, { role: "owner", record, onView }));
+    act(() => actions.root.findByProps({ "aria-label": "View sales.xlsx" }).props.onClick());
+    expect(onView).toHaveBeenCalledOnce();
+
     const markup = renderToStaticMarkup(React.createElement(PosImportDetailsDialog, { record, onClose: () => undefined }));
     expect(markup).toContain("POS Import Details");
     expect(markup).toContain("Main POS");
     expect(markup).toContain("Gulod / Main Branch");
     expect(markup).toContain("85 of 96");
     expect(markup).toContain("89");
+    expect(markup).toContain("Inventory Accounting Treatment");
+    expect(markup).toContain("Historical Reporting");
+    expect(markup).toContain("Live Operational Stock");
+    expect(markup).toContain("Excluded");
+    expect(markup).toContain("Estimated using configured ingredient costs");
+    expect(markup).toContain("Sales predate the operational inventory cutover.");
+
+    const voidedOperational = { ...record,
+      status: "VOIDED",
+      inventoryAccountingTreatment: "OPERATIONAL",
+      inventoryAccountingReason: "Applied to live inventory when imported.",
+      cogsCostBasis: "IMPORT_TIME_CONFIGURED_COST",
+      voidReason: "Incorrect source rows.",
+      voidedAt: "2026-09-17T10:00:00Z",
+    } as PosImportRecord;
+    const voidedStatusMarkup = renderToStaticMarkup(React.createElement(PosImportStatusBadge, { record: voidedOperational }));
+    expect(voidedStatusMarkup).toContain("VOIDED");
+    expect(voidedStatusMarkup).not.toContain("Operational Inventory");
+    const operationalDetails = renderToStaticMarkup(React.createElement(PosImportDetailsDialog, { record: voidedOperational, onClose: () => undefined }));
+    expect(operationalDetails).toContain("Operational Inventory");
+    expect(operationalDetails).toContain("Included");
+    expect(operationalDetails).toContain("Calculated using configured ingredient costs at import time");
   });
 
   it("requires a descriptive confirmation before deleting an entire import batch",()=>{

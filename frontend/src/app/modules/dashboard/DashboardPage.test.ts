@@ -20,6 +20,7 @@ import {
   ForecastReplenishmentPanel,
   GrossMarginInfoDialog,
   InventoryAlertActions,
+  OwnerDashboardHeader,
   ProductSalesRankingChart,
   adjustRangeForImport,
   clearDashboardUserRange,
@@ -96,6 +97,23 @@ describe("dashboard presentation helpers",()=>{
     expect(markup).toContain("flex-col");
     expect(markup).toContain("Record Stock Count");
     expect(markup).toContain("Today");
+  });
+  it("uses one compact responsive row for the Owner greeting, filters, range, and refresh",()=>{
+    const markup=renderToStaticMarkup(React.createElement(OwnerDashboardHeader,{
+      greeting:"Good evening, Owner 👋",
+      subtitle:"Gulod / Main Branch · September 30, 2026 – October 29, 2026",
+      filters:React.createElement("div",null,"Last 30 Days · vs Previous Period · September 30, 2026 – October 29, 2026"),
+      onRefresh:()=>undefined,
+    }));
+    expect(markup).toContain("data-owner-dashboard-header");
+    expect(markup).toContain("lg:flex-row");
+    expect(markup).toContain("lg:items-center");
+    expect(markup).toContain("Good evening, Owner 👋");
+    expect(markup).toContain("Last 30 Days");
+    expect(markup).toContain("vs Previous Period");
+    expect(markup).toContain("Refresh");
+    expect(markup.indexOf("Good evening, Owner 👋")).toBeLessThan(markup.indexOf("Last 30 Days"));
+    expect(markup.indexOf("Last 30 Days")).toBeLessThan(markup.indexOf("Refresh"));
   });
   it("keeps the main purchase request action and removes the duplicate inventory-alert reorder action",()=>{
     const primaryActions=renderToStaticMarkup(React.createElement(DashboardManagerActions,{onRecordCount:()=>undefined,onImportSales:()=>undefined,onCreatePurchaseRequest:()=>undefined}));

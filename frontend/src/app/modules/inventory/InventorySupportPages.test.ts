@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { filterIngredientUsageItems, filterInventoryCountHistory, ingredientUsageThroughDateError, IngredientUsageSearch, IngredientUsageToolbar, INGREDIENT_USAGE_NO_MATCH_TITLE, inventoryCountHistoryActions, inventoryCountHistoryModes, PhysicalCountHistoryHeaderActions } from "./InventorySupportPages";
+import { filterIngredientUsageItems, filterInventoryCountHistory, ingredientUsageThroughDateError, IngredientUsageSearch, IngredientUsageToolbar, INGREDIENT_CONSUMPTION_SUBTITLE, INGREDIENT_CONSUMPTION_TITLE, INGREDIENT_USAGE_NO_MATCH_TITLE, inventoryCountHistoryActions, inventoryCountHistoryModes, PhysicalCountHistoryHeaderActions } from "./InventorySupportPages";
 import type { ExpectedInventoryItem, InventoryCountSummary } from "../../types/inventoryWorkflow";
 
 describe("inventory-count history role actions", () => {
@@ -82,14 +82,18 @@ describe("Ingredient Usage search", () => {
 
   it("groups the Usage Through Date and search controls responsively",()=>{
     const markup=renderToStaticMarkup(React.createElement(IngredientUsageToolbar,{
-      date:"2026-10-27",search:"beans",onDateChange:vi.fn(),onSearchChange:vi.fn(),
+      date:"2026-10-27",search:"beans",branchFilter:React.createElement("div",{"data-branch-filter":true},"Branch Filter"),onDateChange:vi.fn(),onSearchChange:vi.fn(),
     }));
     expect(markup).toContain("data-ingredient-usage-toolbar");
     expect(markup).toContain("flex-col");
     expect(markup).toContain("md:flex-row");
     expect(markup).toContain("Usage Through Date");
-    expect(markup).toContain("validated POS sales up to this date");
     expect(markup).toContain("Search ingredient name or SKU");
+    expect(markup).not.toContain("Shows ingredient consumption from validated POS sales up to this date.");
+    expect(markup.indexOf("Search ingredient name or SKU")).toBeLessThan(markup.indexOf("Branch Filter"));
+    expect(markup.indexOf("Branch Filter")).toBeLessThan(markup.indexOf("Usage Through Date"));
+    expect(INGREDIENT_CONSUMPTION_TITLE).toBe("Ingredient Consumption");
+    expect(INGREDIENT_CONSUMPTION_SUBTITLE).toBe("Recipe-based ingredient consumption calculated from validated POS sales.");
   });
 
   it("accepts today and past Manila dates but rejects future and invalid input",()=>{
