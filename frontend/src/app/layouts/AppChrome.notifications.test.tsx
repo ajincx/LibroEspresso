@@ -28,7 +28,7 @@ const notifications: AppNotification[] = [
   },
 ];
 
-function textOf(node: ReactTestInstance) {
+function textOf(node: ReactTestInstance): string {
   return node.children
     .map((child) => (typeof child === "string" ? child : textOf(child)))
     .join("");
@@ -97,7 +97,10 @@ describe("notification deletion controls", () => {
     );
     act(() => findButton(renderer.root, "Delete notification")?.props.onClick());
 
-    await act(async () => findButton(renderer.root, "Proceed")?.props.onClick());
+    await act(async () => {
+      findButton(renderer.root, "Proceed")?.props.onClick();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
 
     expect(deleteOne).toHaveBeenCalledWith("notification-1");
     expect(textOf(renderer.root)).not.toContain("Count ready for review");
@@ -112,7 +115,10 @@ describe("notification deletion controls", () => {
     expect(textOf(renderer.root)).toContain(
       "Are you sure you want to delete all your notifications?",
     );
-    await act(async () => findButton(renderer.root, "Proceed")?.props.onClick());
+    await act(async () => {
+      findButton(renderer.root, "Proceed")?.props.onClick();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
 
     expect(deleteAll).toHaveBeenCalledOnce();
     expect(textOf(renderer.root)).toContain("No notifications");
@@ -129,7 +135,10 @@ describe("notification deletion controls", () => {
         .props.onClick(),
     );
     act(() => findButton(renderer.root, "Delete notification")?.props.onClick());
-    await act(async () => findButton(renderer.root, "Proceed")?.props.onClick());
+    await act(async () => {
+      findButton(renderer.root, "Proceed")?.props.onClick();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
 
     expect(textOf(renderer.root)).toContain("Delete failed");
     expect(textOf(renderer.root)).toContain("Count ready for review");
