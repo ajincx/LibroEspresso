@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import {
   LayoutDashboard, Package, TrendingDown, FileText, Sparkles, Users, Building2, Settings,
   LogOut, Bell, Search, ChevronDown, ChevronRight, X, Coffee, MapPin, Shield,
-  ChevronLeft, BarChart2, ClipboardList, Moon, Sun, MessageCircle, Lock, Info, Inbox, BookOpen, ShoppingCart,
+  ChevronLeft, BarChart2, ClipboardList, Moon, Sun, MessageCircle, Lock, Info, Inbox, BookOpen, ShoppingCart, MoreVertical, Trash2,
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import type { Page, Role } from "../types/navigation";
@@ -390,13 +390,42 @@ const notifIcons: Record<string, { Icon: React.ElementType; bg: string; color: s
   sales: { Icon: ShoppingCart, bg: C.softMaroonBg, color: C.maroon },
 };
 
-export function NotifDrawer({ open, onClose, notifs, markAllRead, onOpenNotification }: {
+export function NotificationDeleteConfirmation({all,busy,error,onCancel,onProceed}:{all:boolean;busy:boolean;error:string;onCancel:()=>void;onProceed:()=>void}){
+  return <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-label={all?"Delete all notifications confirmation":"Delete notification confirmation"} onMouseDown={event=>{if(isModalBackdropEvent(event)&&!busy)onCancel();}}>
+    <div className="w-full max-w-md rounded-2xl border bg-[var(--app-surface)] p-6 shadow-2xl" style={{borderColor:C.border}}>
+      <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--app-danger-bg)] text-[var(--app-danger)]"><Trash2 size={20}/></div>
+      <h3 className="mt-4 text-center text-lg font-bold">{all?"Delete all notifications?":"Delete notification?"}</h3>
+      <p className="mt-2 text-center text-sm text-[var(--app-text-muted)]">{all?"Are you sure you want to delete all your notifications?":"Are you sure you want to delete this notification?"}</p>
+      {error&&<p role="alert" className="mt-4 rounded-xl bg-[var(--app-danger-bg)] p-3 text-sm font-semibold text-[var(--app-danger)]">{error}</p>}
+      <div className="mt-6 flex justify-end gap-2"><Btn variant="outline" disabled={busy} onClick={onCancel}>Cancel</Btn><Btn variant="danger" disabled={busy} onClick={onProceed}>{busy?"Deleting…":"Proceed"}</Btn></div>
+    </div>
+  </div>;
+}
+
+export function NotifDrawer({ open, onClose, notifs, markAllRead, onOpenNotification, onDeleteNotification, onDeleteAllNotifications }: {
   open: boolean; onClose: () => void; notifs: AppNotification[]; markAllRead: () => void;
   onOpenNotification: (notification: AppNotification) => void;
+  onDeleteNotification:(id:string)=>Promise<void>;onDeleteAllNotifications:()=>Promise<void>;
 }) {
+  const [menuId,setMenuId]=useState<string|null>(null);
+  const [deleteTarget,setDeleteTarget]=useState<AppNotification|"ALL"|null>(null);
+  const [deleting,setDeleting]=useState(false);
+  const [deleteError,setDeleteError]=useState("");
+  useEffect(()=>{if(!open){setMenuId(null);setDeleteTarget(null);setDeleteError("");}},[open]);
   if (!open) return null;
+  const proceedDelete=async()=>{
+    if(!deleteTarget)return;
+    setDeleting(true);setDeleteError("");
+    try {
+      if(deleteTarget==="ALL")await onDeleteAllNotifications();
+      else await onDeleteNotification(deleteTarget.id);
+      setDeleteTarget(null);setMenuId(null);
+    } catch(error) {
+      setDeleteError(error instanceof Error?error.message:"Unable to delete notification. Please try again.");
+    } finally {setDeleting(false);}
+  };
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 backdrop-blur-sm" style={{ background:"rgba(24,10,14,.55)" }} onMouseDown={(event) => { if (isModalBackdropEvent(event)) onClose(); }}>
+    <><div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 backdrop-blur-sm" style={{ background:"rgba(24,10,14,.55)" }} onMouseDown={(event) => { if (isModalBackdropEvent(event)) onClose(); }}>
       <section role="dialog" aria-modal="true" aria-label="Notifications" className="w-full max-w-lg max-h-[82vh] overflow-hidden rounded-3xl border flex flex-col"
         style={{ background:"var(--app-surface)",borderColor:"var(--app-border)",boxShadow:"0 28px 80px rgba(43,14,22,.28)" }}>
         <div className="flex items-center justify-between px-5 sm:px-6 py-5 border-b" style={{ borderColor:"var(--app-border)",background:"linear-gradient(135deg,var(--app-primary-faint),var(--app-surface))" }}>
@@ -406,6 +435,7 @@ export function NotifDrawer({ open, onClose, notifs, markAllRead, onOpenNotifica
           </div>
           <div className="flex items-center gap-2">
             {notifs.some(n => !n.read) && <button className="rounded-xl px-3 py-2 text-xs font-semibold" style={{color:C.maroon,background:"var(--app-primary-subtle)"}} onClick={markAllRead}>Mark all read</button>}
+            <button type="button" disabled={notifs.length===0} onClick={()=>{setDeleteError("");setDeleteTarget("ALL");}} className="rounded-xl border px-3 py-2 text-xs font-semibold text-[var(--app-danger)] disabled:cursor-not-allowed disabled:opacity-40" style={{borderColor:"var(--app-danger)"}}>Delete All</button>
             <button onClick={onClose} className="w-9 h-9 rounded-xl flex items-center justify-center" style={{color:C.secondary,background:"var(--app-surface-muted)"}} aria-label="Close notifications">
               <X size={16} />
             </button>
@@ -417,9 +447,8 @@ export function NotifDrawer({ open, onClose, notifs, markAllRead, onOpenNotifica
           ) : notifs.map(n => {
             const ni = notifIcons[n.icon] || { Icon: Bell, bg: C.grayBg, color: C.secondary };
             return (
-              <button type="button" key={n.id} className="w-full text-left flex gap-3.5 px-4 py-3.5 rounded-2xl border cursor-pointer transition-all hover:-translate-y-0.5"
-                style={{borderColor:"var(--app-border)",background:!n.read?"var(--app-primary-faint)":"var(--app-surface-elevated)",boxShadow:"0 5px 16px rgba(43,14,22,.06)"}}
-                onClick={() => onOpenNotification(n)}>
+              <article key={n.id} className="relative flex w-full gap-2 rounded-2xl border p-2 transition-all hover:-translate-y-0.5" style={{borderColor:"var(--app-border)",background:!n.read?"var(--app-primary-faint)":"var(--app-surface-elevated)",boxShadow:"0 5px 16px rgba(43,14,22,.06)"}}>
+              <button type="button" className="min-w-0 flex flex-1 gap-3.5 px-2 py-1.5 text-left" onClick={() => {setMenuId(null);onOpenNotification(n);}}>
                 <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: ni.bg }}>
                   <ni.Icon size={15} style={{ color: ni.color }} />
                 </div>
@@ -433,11 +462,15 @@ export function NotifDrawer({ open, onClose, notifs, markAllRead, onOpenNotifica
                   <p className="text-xs mt-1.5" style={{ color: C.muted }}>{n.time}</p>
                 </div>
               </button>
+              <div className="relative shrink-0"><button type="button" aria-label={`Actions for ${n.title}`} aria-expanded={menuId===n.id} onClick={()=>setMenuId(current=>current===n.id?null:n.id)} className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--app-text-muted)] hover:bg-[var(--app-surface-muted)]"><MoreVertical size={17}/></button>
+                {menuId===n.id&&<div className="absolute right-0 top-9 z-10 w-44 rounded-xl border bg-[var(--app-surface)] p-1 shadow-xl" style={{borderColor:C.border}}><button type="button" onClick={()=>{setDeleteError("");setDeleteTarget(n);setMenuId(null);}} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)]"><Trash2 size={14}/>Delete notification</button></div>}
+              </div>
+              </article>
             );
           })}
         </div>
       </section>
-    </div>
+    </div>{deleteTarget&&<NotificationDeleteConfirmation all={deleteTarget==="ALL"} busy={deleting} error={deleteError} onCancel={()=>{if(!deleting){setDeleteTarget(null);setDeleteError("");}}} onProceed={()=>void proceedDelete()}/>}</>
   );
 }
 

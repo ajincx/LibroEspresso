@@ -2968,3 +2968,30 @@ export const markAllNotificationsRead: RequestHandler = async (req, res) => {
   );
   res.json({ success: true, data: { updated: result.rowCount ?? 0 } });
 };
+
+export const deleteNotification: RequestHandler = async (req, res) => {
+  const { id } = notificationIdParams.parse(req.params);
+  const result = await pool.query(
+    `DELETE FROM notifications WHERE id=$1 AND recipient_user_id=$2 RETURNING id`,
+    [id, req.user!.id],
+  );
+  res.json({ success: true, data: { id, deleted: Boolean(result.rows[0]) } });
+};
+
+export const deleteAllNotifications: RequestHandler = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query(
+      `DELETE FROM notifications WHERE recipient_user_id=$1`,
+      [req.user!.id],
+    );
+    await client.query("COMMIT");
+    res.json({ success: true, data: { deleted: result.rowCount ?? 0 } });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+};

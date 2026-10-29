@@ -15,6 +15,8 @@ import {
   getUatInventoryCount,
   listInventoryVariances,
   listNotifications,
+  deleteNotification,
+  deleteAllNotifications,
   markAllNotificationsRead,
   previewPosSales,
   listShrinkageReports,
@@ -113,3 +115,5 @@ notificationRouter.use(authenticate);
 notificationRouter.get("/", asyncHandler(listNotifications));
 notificationRouter.patch("/read-all", asyncHandler(markAllNotificationsRead));
 notificationRouter.patch("/:id/read", asyncHandler(markNotificationRead));
+notificationRouter.delete("/", asyncHandler(deleteAllNotifications));
+notificationRouter.delete("/:id", asyncHandler(deleteNotification));

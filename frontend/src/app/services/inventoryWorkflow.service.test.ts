@@ -223,6 +223,30 @@ describe("notification API workflow", () => {
     expect(patch).toHaveBeenCalledOnce();
     expect(patch).toHaveBeenCalledWith("/notifications/read-all");
   });
+
+  it("deletes one notification through its recipient-scoped endpoint", async () => {
+    const result = { id: "notification-1", deleted: true };
+    const remove = vi.spyOn(api, "delete").mockResolvedValue({
+      data: { success: true, data: result },
+    });
+
+    await expect(
+      inventoryWorkflowService.deleteNotification("notification-1"),
+    ).resolves.toBe(result);
+    expect(remove).toHaveBeenCalledWith("/notifications/notification-1");
+  });
+
+  it("deletes all notifications through the authenticated inbox endpoint", async () => {
+    const result = { deleted: 4 };
+    const remove = vi.spyOn(api, "delete").mockResolvedValue({
+      data: { success: true, data: result },
+    });
+
+    await expect(
+      inventoryWorkflowService.deleteAllNotifications(),
+    ).resolves.toBe(result);
+    expect(remove).toHaveBeenCalledWith("/notifications");
+  });
 });
 
 describe("opening inventory baseline API workflow", () => {

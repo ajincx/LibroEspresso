@@ -183,4 +183,16 @@ export const inventoryWorkflowService = {
   },
   async markNotificationRead(id: string) { await api.patch(`/notifications/${id}/read`); },
   async markAllNotificationsRead() { await api.patch("/notifications/read-all"); },
+  async deleteNotification(id: string) {
+    return (
+      await api.delete<ApiSuccess<{ id: string; deleted: boolean }>>(
+        `/notifications/${id}`,
+      )
+    ).data.data;
+  },
+  async deleteAllNotifications() {
+    return (
+      await api.delete<ApiSuccess<{ deleted: number }>>("/notifications")
+    ).data.data;
+  },
 };

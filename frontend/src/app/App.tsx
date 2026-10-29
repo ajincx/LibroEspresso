@@ -526,6 +526,36 @@ export default function App() {
             current.map((notification) => ({ ...notification, read: true })),
           );
         }}
+        onDeleteNotification={async (id) => {
+          try {
+            await inventoryWorkflowService.deleteNotification(id);
+            setNotifs((current) =>
+              current.filter((notification) => notification.id !== id),
+            );
+            toast.success("Notification deleted.");
+          } catch (error) {
+            toast.error(
+              error instanceof Error
+                ? error.message
+                : "Unable to delete notification.",
+            );
+            throw error;
+          }
+        }}
+        onDeleteAllNotifications={async () => {
+          try {
+            await inventoryWorkflowService.deleteAllNotifications();
+            setNotifs([]);
+            toast.success("All notifications deleted.");
+          } catch (error) {
+            toast.error(
+              error instanceof Error
+                ? error.message
+                : "Unable to delete notifications.",
+            );
+            throw error;
+          }
+        }}
         onOpenNotification={(notification) => {
           if (!notification.read)
             void inventoryWorkflowService.markNotificationRead(notification.id);
