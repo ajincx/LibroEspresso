@@ -260,7 +260,7 @@ type MappingState = {
   reviewStatus: "PENDING" | "APPROVED" | "REJECTED" | "AMBIGUOUS";
 };
 
-function mappingClient(state: MappingState, options: { targetValid?: boolean; duplicate?: boolean } = {}) {
+function mappingClient(state: MappingState, options: { targetValid?: boolean; duplicate?: boolean; currentBranchId?: string | null } = {}) {
   const calls: Array<{ sql: string; values?: unknown[] }> = [];
   const revised = {
     id: sourceId, posSourceId: sourceId, branchId, sourceProductName: "H12 CAPP", sourceProductCode: "POS-CAPP-H12",
@@ -273,19 +273,28 @@ function mappingClient(state: MappingState, options: { targetValid?: boolean; du
       calls.push({ sql, values });
       if (sql.includes("FROM pos_product_variant_mappings pm") && sql.includes("FOR UPDATE OF pm")) {
         return { rows: [{
-          id: sourceId, posSourceId: sourceId, branchId: null, sourceProductName: "H12 CAPP", sourceProductCode: null,
+          id: sourceId, posSourceId: sourceId, branchId: options.currentBranchId ?? null, sourceProductName: "H12 CAPP", sourceProductCode: null,
           menuItemId: productId, menuItemVariantId: originalVariantId, ...state,
           reviewComment: "Original review", reviewedBy: ownerId, reviewedAt: "2026-09-25T02:00:00Z",
+          updatedAt: "2026-10-20T02:00:00.000Z", sourceBranchId: branchId,
+          sourceStatus: "ACTIVE", formatVerifiedAt: "2026-10-01T00:00:00.000Z",
         }], rowCount: 1 };
       }
       if (sql.includes("SELECT m.product_scope")) {
         return { rows: options.targetValid === false ? [] : [{ productScope: "GLOBAL", originBranchId: null }], rowCount: options.targetValid === false ? 0 : 1 };
       }
+      if (sql.includes("SELECT EXISTS(") && sql.includes("FROM recipes")) {
+        return { rows: [{ ready: true }], rowCount: 1 };
+      }
       if (sql.includes("AND (status='ACTIVE' OR review_status='PENDING')")) {
         return { rows: options.duplicate ? [{ id: "66666666-6666-4666-8666-666666666666" }] : [], rowCount: options.duplicate ? 1 : 0 };
       }
-      if (sql.includes("UPDATE pos_product_variant_mappings SET") && sql.includes("branch_id=$2")) {
+      if (sql.includes("UPDATE pos_product_variant_mappings SET") && sql.includes("branch_id=$3")) {
         return { rows: [revised], rowCount: 1 };
+      }
+      if (sql.includes("UPDATE pos_product_variant_mappings SET") && sql.includes("updated_at=$6")) {
+        return { rows: [{ ...revised, status: state.status, reviewStatus: state.reviewStatus,
+          reviewedBy: ownerId, reviewedAt: "2026-09-25T02:00:00Z", updatedAt: "2026-10-29T02:00:00.000Z" }], rowCount: 1 };
       }
       return { rows: [], rowCount: 0 };
     }),
@@ -297,6 +306,7 @@ function mappingClient(state: MappingState, options: { targetValid?: boolean; du
 const revisionRequest = {
   params: { id: sourceId },
   body: {
+    sourceProductName: "H12 CAPP Corrected",
     branchId,
     sourceProductCode: "POS-CAPP-H12",
     menuItemId: productId,
@@ -427,8 +437,8 @@ describe("pending POS mapping revision", () => {
 
     const targetValidation = calls.find(({ sql }) => sql.includes("SELECT m.product_scope"));
     expect(targetValidation?.values).toEqual([variantId, productId]);
-    const update = calls.find(({ sql }) => sql.includes("branch_id=$2"));
-    expect(update?.values).toEqual([sourceId, branchId, "POS-CAPP-H12", variantId, "Corrected target"]);
+    const update = calls.find(({ sql }) => sql.includes("branch_id=$3"));
+    expect(update?.values).toEqual([sourceId, "H12 CAPP Corrected", branchId, "POS-CAPP-H12", variantId, "Corrected target"]);
     expect(update?.sql).toContain("review_status='PENDING'");
     expect(update?.sql).toContain("reviewed_by=NULL,reviewed_at=NULL");
     expect(revised).toMatchObject({ reviewStatus: "PENDING", status: "INACTIVE", reviewedBy: null, reviewedAt: null });
@@ -437,11 +447,55 @@ describe("pending POS mapping revision", () => {
     expect(calls.at(-1)?.sql).toBe("COMMIT");
   });
 
-  it("does not permit direct edits to an Approved mapping", async () => {
+  it("edits an Approved mapping in place while preserving approval evidence", async () => {
     const { client, calls } = mappingClient({ status: "ACTIVE", reviewStatus: "APPROVED" });
     mocks.connect.mockResolvedValue(client);
-    await expect(revisePendingPosMapping(revisionRequest, response() as never, vi.fn()))
-      .rejects.toMatchObject({ code: "POS_MAPPING_EDIT_LOCKED" });
+    const res=response();
+    await revisePendingPosMapping({params:{id:sourceId},body:{sourceProductName:"H12 CAPP Corrected",branchId,
+      sourceProductCode:"POS-CAPP-H12",menuItemId:productId,menuItemVariantId:variantId,
+      changeReason:"Corrected exact POS alias",expectedUpdatedAt:"2026-10-20T02:00:00.000Z",confirmed:true},
+      user:{id:ownerId,role:"OWNER",branchId:null}} as never, res as never, vi.fn());
+    const update=calls.find(({sql})=>sql.includes("updated_at=$6"));
+    expect(update?.values).toEqual([sourceId,branchId,"H12 CAPP Corrected","POS-CAPP-H12",variantId,"2026-10-20T02:00:00.000Z"]);
+    expect(update?.sql).not.toContain("review_status=");
+    expect(mocks.writeAudit).toHaveBeenCalledWith(expect.anything(),"EDIT_APPROVED_POS_MAPPING","POS_MAPPING",sourceId,
+      "Edited approved POS mapping",expect.objectContaining({reason:"Corrected exact POS alias",historicalRecordsChanged:false,
+        before:expect.objectContaining({reviewStatus:"APPROVED"}),after:expect.objectContaining({reviewStatus:"APPROVED"})}),client);
+    expect(res.json).toHaveBeenCalledWith({success:true,data:{mapping:expect.objectContaining({reviewStatus:"APPROVED",status:"ACTIVE",reviewedBy:ownerId})}});
+    expect(calls.at(-1)?.sql).toBe("COMMIT");
+  });
+
+  it("rejects a stale Approved mapping edit before changing its identity", async () => {
+    const { client, calls } = mappingClient({ status: "ACTIVE", reviewStatus: "APPROVED" });
+    mocks.connect.mockResolvedValue(client);
+    await expect(revisePendingPosMapping({params:{id:sourceId},body:{sourceProductName:"H12 CAPP Corrected",branchId,
+      sourceProductCode:"POS-CAPP-H12",menuItemId:productId,menuItemVariantId:variantId,
+      changeReason:"Corrected exact POS alias",expectedUpdatedAt:"2026-10-19T02:00:00.000Z",confirmed:true},
+      user:{id:ownerId,role:"OWNER",branchId:null}} as never, response() as never, vi.fn())).rejects.toMatchObject({code:"POS_MAPPING_STALE_EDIT"});
+    expect(calls.some(({sql})=>sql.includes("UPDATE pos_product_variant_mappings SET"))).toBe(false);
+    expect(calls.at(-1)?.sql).toBe("ROLLBACK");
+  });
+
+  it("preserves an inactive Approved mapping while changing branch scope back to global", async () => {
+    const {client,calls}=mappingClient({status:"INACTIVE",reviewStatus:"APPROVED"},{currentBranchId:branchId});
+    mocks.connect.mockResolvedValue(client);
+    await revisePendingPosMapping({params:{id:sourceId},body:{sourceProductName:"H12 CAPP",branchId:null,
+      sourceProductCode:null,menuItemId:productId,menuItemVariantId:variantId,changeReason:"Restore verified global scope",
+      expectedUpdatedAt:"2026-10-20T02:00:00.000Z",confirmed:true},user:{id:ownerId,role:"OWNER",branchId:null}} as never,
+    response() as never,vi.fn());
+    expect(calls.find(({sql})=>sql.includes("updated_at=$6"))?.values?.[1]).toBeNull();
+    expect(mocks.writeAudit).toHaveBeenCalledWith(expect.anything(),"EDIT_APPROVED_POS_MAPPING","POS_MAPPING",sourceId,
+      expect.any(String),expect.objectContaining({before:expect.objectContaining({branchId}),after:expect.objectContaining({branchId:null,status:"INACTIVE",reviewStatus:"APPROVED"})}),client);
+  });
+
+  it("rolls back an Approved edit when its new POS identity collides", async () => {
+    const {client,calls}=mappingClient({status:"ACTIVE",reviewStatus:"APPROVED"},{duplicate:true});
+    mocks.connect.mockResolvedValue(client);
+    await expect(revisePendingPosMapping({params:{id:sourceId},body:{sourceProductName:"Duplicate Alias",branchId,
+      sourceProductCode:"DUPLICATE",menuItemId:productId,menuItemVariantId:variantId,changeReason:"Correct external identity",
+      expectedUpdatedAt:"2026-10-20T02:00:00.000Z",confirmed:true},user:{id:ownerId,role:"OWNER",branchId:null}} as never,
+    response() as never,vi.fn())).rejects.toMatchObject({code:"POS_MAPPING_CONFLICT"});
+    expect(calls.some(({sql})=>sql.includes("updated_at=$6"))).toBe(false);
     expect(calls.at(-1)?.sql).toBe("ROLLBACK");
   });
 

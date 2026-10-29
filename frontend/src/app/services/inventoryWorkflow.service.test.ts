@@ -205,7 +205,7 @@ describe("POS first-run review API workflow", () => {
     const revised={id:"mapping-1",reviewStatus:"PENDING",status:"INACTIVE"};
     const put=vi.spyOn(api,"put").mockResolvedValue({data:{success:true,data:{mapping:revised}}});
     const post=vi.spyOn(api,"post").mockResolvedValue({data:{success:true,data:{mapping:{...revised,reviewStatus:"APPROVED"}}}});
-    const input={branchId:null,sourceProductCode:"CAPP-H12",menuItemId:"product-capp",menuItemVariantId:"variant-standard",revisionReason:"Corrected target product"};
+    const input={sourceProductName:"H12 CAPP",branchId:null,sourceProductCode:"CAPP-H12",menuItemId:"product-capp",menuItemVariantId:"variant-standard",revisionReason:"Corrected target product"};
     await expect(inventoryWorkflowService.revisePendingPosMapping("mapping-1",input)).resolves.toBe(revised);
     expect(put).toHaveBeenCalledWith("/pos-sales/mappings/mapping-1",input);
     expect(revised.reviewStatus).toBe("PENDING");

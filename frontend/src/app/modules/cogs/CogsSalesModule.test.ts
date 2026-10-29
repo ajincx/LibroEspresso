@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { act, create } from "react-test-renderer";
 import { C } from "../../components/ModuleUi";
 import {
   DAILY_POS_MONITORING_LOCATION,
@@ -328,7 +329,7 @@ describe("POS mapping activation safeguards",()=>{
 });
 
 describe("POS mapping revision presentation",()=>{
-  const pending={id:"mapping-1",posSourceId:"source-1",branchId:null,sourceProductName:"H12 CAPP",sourceProductCode:null,menuItemVariantId:"variant-spanish",menuItemId:"product-spanish",menuItemName:"Spanish Latte",variantName:"Standard",status:"INACTIVE",reviewStatus:"PENDING",reviewComment:null,reviewedBy:null,reviewedAt:null,branchName:null,recipeId:"recipe-1",recipeVersion:1,recipeAvailable:true} as PosMapping;
+  const pending={id:"mapping-1",posSourceId:"source-1",branchId:null,sourceProductName:"H12 CAPP",sourceProductCode:null,menuItemVariantId:"variant-spanish",menuItemId:"product-spanish",menuItemName:"Spanish Latte",variantName:"Standard",status:"INACTIVE",reviewStatus:"PENDING",reviewComment:null,reviewedBy:null,reviewedAt:null,updatedAt:"2026-10-20T02:00:00.000Z",branchName:null,recipeId:"recipe-1",recipeVersion:1,recipeAvailable:true} as PosMapping;
 
   it("shows Edit only for inactive Pending mappings",()=>{
     expect(canEditPosMapping(pending)).toBe(true);
@@ -341,16 +342,16 @@ describe("POS mapping revision presentation",()=>{
     expect(pendingMarkup).not.toContain("Deactivate");
   });
 
-  it("locks Approved mappings and offers deactivation instead of Edit",()=>{
+  it("offers audited editing and deactivation for an active Approved mapping",()=>{
     const approved={...pending,status:"ACTIVE",reviewStatus:"APPROVED",reviewedBy:"owner-1",reviewedAt:"2026-09-25T02:00:00Z"} as PosMapping;
-    expect(canEditPosMapping(approved)).toBe(false);
+    expect(canEditPosMapping(approved)).toBe(true);
     const markup=renderToStaticMarkup(React.createElement(PosMappingActions,{mapping:approved,busy:false,canApprove:true,reviewNote:"",onEdit:()=>undefined,onReview:()=>undefined,onDeactivate:()=>undefined,onReactivate:()=>undefined}));
     expect(markup).toContain(">Approved</button>");
     expect(markup).toContain("disabled");
     expect(markup).toContain("bg-[var(--app-surface-muted)]");
     expect(markup).toContain(">Deactivate</button>");
     expect(markup).toContain("border-[var(--app-danger)]");
-    expect(markup).not.toContain("Edit Mapping");
+    expect(markup).toContain("Edit Mapping");
   });
 
   it("offers Reactivate only for an inactive Approved mapping",()=>{
@@ -359,7 +360,7 @@ describe("POS mapping revision presentation",()=>{
     expect(markup).toContain(">Reactivate</button>");
     expect(markup).toContain("border-[var(--app-success)]");
     expect(markup).not.toContain(">Deactivate</button>");
-    expect(markup).not.toContain("Edit Mapping");
+    expect(markup).toContain("Edit Mapping");
   });
 
   it("reuses product and variant fields in the Pending edit dialog",()=>{
@@ -371,6 +372,27 @@ describe("POS mapping revision presentation",()=>{
     expect(markup).toContain("Target Variant");
     expect(markup).toContain("Pending Approval");
     expect(markup).toContain("Save Changes");
+  });
+
+  it("requires an approved-change reason and confirms old versus new values before one save",()=>{
+    const product={id:"product-spanish",name:"Spanish Latte",category:"Warm Tales",status:"ACTIVE",approvalStatus:"APPROVED",variants:[{id:"variant-spanish",name:"Standard",status:"ACTIVE",recipeId:"recipe-1",recipeVersion:1}]} as MenuProduct;
+    const approved={...pending,status:"ACTIVE",reviewStatus:"APPROVED",reviewedBy:"owner-1",reviewedAt:"2026-09-25T02:00:00Z"} as PosMapping;
+    const onSave=vi.fn();
+    const renderer=create(React.createElement(PosMappingEditDialog,{mapping:approved,products:[product],branches:[],busy:false,onCancel:()=>undefined,onSave}));
+    const root=renderer.root;
+    const form=root.findByType("form");
+    act(()=>form.props.onSubmit({preventDefault:()=>undefined}));
+    expect(root.findByProps({role:"alert"}).children.join("")).toContain("reason is required");
+    const posName=root.findByProps({"aria-label":"POS Name"});
+    const reason=root.findByProps({"aria-label":"Mapping revision note"});
+    act(()=>{posName.props.onChange({target:{value:"H12 CAPPUCCINO"}});reason.props.onChange({target:{value:"Correct exact alias"}});});
+    act(()=>form.props.onSubmit({preventDefault:()=>undefined}));
+    expect(root.findByProps({id:"edit-pos-mapping-title"}).children.join("")).toBe("Confirm Mapping Changes");
+    expect(root.findAllByType("strong").map(node=>node.children.join(" ")).join(" ")).toContain("H12 CAPPUCCINO");
+    expect(onSave).not.toHaveBeenCalled();
+    act(()=>form.props.onSubmit({preventDefault:()=>undefined}));
+    expect(onSave).toHaveBeenCalledOnce();
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({sourceProductName:"H12 CAPPUCCINO",changeReason:"Correct exact alias",expectedUpdatedAt:approved.updatedAt,confirmed:true}));
   });
 });
 

@@ -26,11 +26,22 @@ const mappingInput = z.object({
   status: z.enum(["ACTIVE", "INACTIVE"]).default("INACTIVE"),
 });
 const mappingRevisionInput = z.object({
+  sourceProductName: z.string().trim().min(1).max(240).optional(),
   branchId: z.string().uuid().nullable(),
   sourceProductCode: z.string().trim().min(1).max(160).nullable(),
   menuItemId: z.string().uuid(),
   menuItemVariantId: z.string().uuid(),
   revisionReason: z.string().trim().min(3).max(1000).optional(),
+});
+const approvedMappingEditInput = z.object({
+  sourceProductName: z.string().trim().min(1).max(240),
+  sourceProductCode: z.string().trim().min(1).max(160).nullable(),
+  branchId: z.string().uuid().nullable(),
+  menuItemId: z.string().uuid(),
+  menuItemVariantId: z.string().uuid(),
+  changeReason: z.string().trim().min(3).max(1000),
+  expectedUpdatedAt: z.string().datetime({ offset: true }),
+  confirmed: z.literal(true),
 });
 const mappingCopyInput = z.object({
   sourcePosSourceId: z.string().uuid(),
@@ -211,7 +222,8 @@ export const listPosMappings: RequestHandler = async (req, res) => {
       pm.source_product_name "sourceProductName",pm.source_product_code "sourceProductCode",
       pm.menu_item_variant_id "menuItemVariantId",m.id "menuItemId",m.name "menuItemName",v.name "variantName",
       pm.status,pm.review_status "reviewStatus",pm.review_comment "reviewComment",
-      pm.reviewed_by "reviewedBy",pm.reviewed_at "reviewedAt",b.name "branchName",
+      pm.reviewed_by "reviewedBy",pm.reviewed_at "reviewedAt",
+      to_char(pm.updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') "updatedAt",b.name "branchName",
       r.id "recipeId",r.version "recipeVersion",
       (r.id IS NOT NULL AND EXISTS(SELECT 1 FROM recipe_items ready_item WHERE ready_item.recipe_id=r.id)
        AND NOT EXISTS(SELECT 1 FROM recipe_items invalid_item JOIN inventory_items ii ON ii.id=invalid_item.inventory_item_id
@@ -573,42 +585,105 @@ export const updatePosMapping: RequestHandler = async (req, res) => {
 
 export const revisePendingPosMapping: RequestHandler = async (req, res) => {
   const { id } = idParam.parse(req.params);
-  const value = mappingRevisionInput.parse(req.body);
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
     const existing = await client.query<{
       id: string; posSourceId: string; branchId: string | null; sourceProductName: string;
       sourceProductCode: string | null; menuItemId: string; menuItemVariantId: string;
       status: "ACTIVE" | "INACTIVE"; reviewStatus: "PENDING" | "APPROVED" | "REJECTED" | "AMBIGUOUS";
-      reviewComment: string | null; reviewedBy: string | null; reviewedAt: string | null;
+      reviewComment: string | null; reviewedBy: string | null; reviewedAt: string | null; updatedAt: string;
+      sourceBranchId: string | null; sourceStatus: "ACTIVE" | "INACTIVE"; formatVerifiedAt: string | null;
     }>(`SELECT pm.id,pm.pos_source_id "posSourceId",pm.branch_id "branchId",
         pm.source_product_name "sourceProductName",pm.source_product_code "sourceProductCode",
         v.menu_item_id "menuItemId",pm.menu_item_variant_id "menuItemVariantId",pm.status,
         pm.review_status "reviewStatus",pm.review_comment "reviewComment",
-        pm.reviewed_by "reviewedBy",pm.reviewed_at "reviewedAt"
+        pm.reviewed_by "reviewedBy",pm.reviewed_at "reviewedAt",
+        to_char(pm.updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') "updatedAt",
+        s.branch_id "sourceBranchId",s.status "sourceStatus",s.format_verified_at "formatVerifiedAt"
       FROM pos_product_variant_mappings pm
       JOIN pos_sources s ON s.id=pm.pos_source_id
       JOIN menu_item_variants v ON v.id=pm.menu_item_variant_id
-      WHERE pm.id=$1 FOR UPDATE OF pm`, [id]);
+      WHERE pm.id=$1 FOR UPDATE OF pm,s`, [id]);
     const current = existing.rows[0];
     if (!current) throw new AppError(404, "POS_MAPPING_NOT_FOUND", "POS mapping not found.");
-    if (current.reviewStatus !== "PENDING" || current.status !== "INACTIVE") {
-      throw new AppError(409, "POS_MAPPING_EDIT_LOCKED", "Only inactive Pending mappings can be edited.");
+
+    if (current.reviewStatus === "APPROVED") {
+      const value = approvedMappingEditInput.parse(req.body);
+      if (new Date(current.updatedAt).getTime() !== new Date(value.expectedUpdatedAt).getTime()) {
+        throw new AppError(409, "POS_MAPPING_STALE_EDIT", "This mapping changed after the edit dialog opened. Refresh it before trying again.");
+      }
+      if (current.sourceStatus !== "ACTIVE" || !current.formatVerifiedAt || !current.sourceBranchId) {
+        throw new AppError(422, "POS_SOURCE_FORMAT_REVIEW_REQUIRED", "The POS source must be active, branch-assigned, and format-verified before editing approved mappings.");
+      }
+      if (value.branchId !== null && value.branchId !== current.sourceBranchId) {
+        throw new AppError(422, "POS_MAPPING_BRANCH_INVALID", "The mapping scope must be global or match the POS source branch.");
+      }
+      await verifyMappingTarget(value, client);
+      const recipe = await client.query<{ ready: boolean }>(`SELECT EXISTS(
+        SELECT 1 FROM recipes r WHERE r.menu_item_variant_id=$1 AND r.status='ACTIVE'
+          AND r.effective_from<=CURRENT_DATE AND (r.effective_to IS NULL OR r.effective_to>CURRENT_DATE)
+          AND EXISTS(SELECT 1 FROM recipe_items ri WHERE ri.recipe_id=r.id)
+          AND NOT EXISTS(SELECT 1 FROM recipe_items ri JOIN inventory_items ii ON ii.id=ri.inventory_item_id
+            WHERE ri.recipe_id=r.id AND NOT (((ri.unit IN ('g','kg')) AND (ii.unit IN ('g','kg')))
+              OR ((ri.unit IN ('ml','L')) AND (ii.unit IN ('ml','L'))) OR (ri.unit='pc' AND ii.unit='pc')))
+      ) ready`, [value.menuItemVariantId]);
+      if (!recipe.rows[0]?.ready) throw new AppError(422, "POS_MAPPING_RECIPE_REQUIRED", "The target variant needs a valid active recipe before saving this mapping.");
+      const duplicate = await client.query(`SELECT id FROM pos_product_variant_mappings
+        WHERE id<>$1 AND pos_source_id=$2 AND (status='ACTIVE' OR review_status='PENDING')
+          AND (branch_id IS NULL OR $3::uuid IS NULL OR branch_id=$3::uuid)
+          AND (($4::text IS NOT NULL AND source_product_code IS NOT NULL AND lower(btrim(source_product_code))=lower(btrim($4)))
+            OR ($4::text IS NULL AND source_product_code IS NULL
+              AND normalized_source_product_name=lower(regexp_replace(btrim($5), '[[:space:]]+', ' ', 'g')))) LIMIT 1`,
+      [id,current.posSourceId,value.branchId,value.sourceProductCode,value.sourceProductName]);
+      if (duplicate.rows[0]) throw new AppError(409, "POS_MAPPING_CONFLICT", "Another active or pending mapping already uses this POS identity in an overlapping scope.");
+      const result = await client.query(`UPDATE pos_product_variant_mappings SET
+          branch_id=$2,source_product_name=$3,source_product_code=$4,menu_item_variant_id=$5,updated_at=now()
+        WHERE id=$1 AND updated_at=$6::timestamptz
+        RETURNING id,pos_source_id "posSourceId",branch_id "branchId",source_product_name "sourceProductName",
+          source_product_code "sourceProductCode",menu_item_variant_id "menuItemVariantId",status,
+          review_status "reviewStatus",review_comment "reviewComment",reviewed_by "reviewedBy",
+          reviewed_at "reviewedAt",to_char(updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') "updatedAt"`,
+      [id,value.branchId,value.sourceProductName,value.sourceProductCode,value.menuItemVariantId,value.expectedUpdatedAt]);
+      if (!result.rows[0]) throw new AppError(409, "POS_MAPPING_STALE_EDIT", "This mapping changed while it was being saved. Refresh it before trying again.");
+      await writeAudit(req.user!, "EDIT_APPROVED_POS_MAPPING", "POS_MAPPING", id, "Edited approved POS mapping", {
+        reason: value.changeReason,
+        before: {
+          sourceProductName: current.sourceProductName, sourceProductCode: current.sourceProductCode,
+          branchId: current.branchId, menuItemId: current.menuItemId, menuItemVariantId: current.menuItemVariantId,
+          status: current.status, reviewStatus: current.reviewStatus,
+          reviewedBy: current.reviewedBy, reviewedAt: current.reviewedAt,
+        },
+        after: {
+          sourceProductName: value.sourceProductName, sourceProductCode: value.sourceProductCode,
+          branchId: value.branchId, menuItemId: value.menuItemId, menuItemVariantId: value.menuItemVariantId,
+          status: current.status, reviewStatus: current.reviewStatus,
+        },
+        historicalRecordsChanged: false,
+      }, client);
+      await client.query("COMMIT");
+      res.json({ success: true, data: { mapping: result.rows[0] } });
+      return;
     }
+
+    if (current.reviewStatus !== "PENDING" || current.status !== "INACTIVE") {
+      throw new AppError(409, "POS_MAPPING_EDIT_LOCKED", "Only Pending or Approved mappings can be edited.");
+    }
+    const value = mappingRevisionInput.parse(req.body);
     await verifyMappingTarget(value, client);
     await ensureNoOpenMappingConflict(client, {
       id, posSourceId: current.posSourceId, branchId: value.branchId,
-      sourceProductName: current.sourceProductName, sourceProductCode: value.sourceProductCode,
+      sourceProductName: value.sourceProductName ?? current.sourceProductName, sourceProductCode: value.sourceProductCode,
     });
     const result = await client.query(`UPDATE pos_product_variant_mappings SET
-        branch_id=$2,source_product_code=$3,menu_item_variant_id=$4,status='INACTIVE',review_status='PENDING',
-        review_comment=$5,reviewed_by=NULL,reviewed_at=NULL,updated_at=now()
+        source_product_name=$2,branch_id=$3,source_product_code=$4,menu_item_variant_id=$5,status='INACTIVE',review_status='PENDING',
+        review_comment=$6,reviewed_by=NULL,reviewed_at=NULL,updated_at=now()
       WHERE id=$1
       RETURNING id,pos_source_id "posSourceId",branch_id "branchId",source_product_name "sourceProductName",
         source_product_code "sourceProductCode",menu_item_variant_id "menuItemVariantId",status,
-        review_status "reviewStatus",review_comment "reviewComment",reviewed_by "reviewedBy",reviewed_at "reviewedAt"`,
-    [id, value.branchId, value.sourceProductCode, value.menuItemVariantId, value.revisionReason ?? null]);
+        review_status "reviewStatus",review_comment "reviewComment",reviewed_by "reviewedBy",reviewed_at "reviewedAt",
+        to_char(updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') "updatedAt"`,
+    [id, value.sourceProductName ?? current.sourceProductName, value.branchId, value.sourceProductCode, value.menuItemVariantId, value.revisionReason ?? null]);
     await writeAudit(req.user!, "REVISE_POS_MAPPING", "POS_MAPPING", id, "Revised Pending POS mapping", {
       branchId: value.branchId,
       before: {
@@ -618,6 +693,7 @@ export const revisePendingPosMapping: RequestHandler = async (req, res) => {
         reviewedBy: current.reviewedBy, reviewedAt: current.reviewedAt,
       },
       after: {
+        sourceProductName: value.sourceProductName ?? current.sourceProductName,
         branchId: value.branchId, sourceProductCode: value.sourceProductCode,
         menuItemId: value.menuItemId, menuItemVariantId: value.menuItemVariantId,
         reviewStatus: "PENDING", revisionReason: value.revisionReason ?? null,

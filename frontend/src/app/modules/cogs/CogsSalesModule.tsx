@@ -133,33 +133,49 @@ export const canApprovePosMapping = (
   mapping: Pick<PosMapping, "recipeAvailable">,
   source: Pick<PosSource, "status" | "formatVerifiedAt"> | null,
 ) => Boolean(mapping.recipeAvailable && source?.status === "ACTIVE" && source.formatVerifiedAt);
-export const canEditPosMapping = (mapping: Pick<PosMapping, "reviewStatus" | "status">) => mapping.reviewStatus === "PENDING" && mapping.status === "INACTIVE";
-type MappingRevision = { branchId:string|null;sourceProductCode:string|null;menuItemId:string;menuItemVariantId:string;revisionReason?:string };
+export const canEditPosMapping = (mapping: Pick<PosMapping, "reviewStatus" | "status">) =>
+  mapping.reviewStatus === "APPROVED" || (mapping.reviewStatus === "PENDING" && mapping.status === "INACTIVE");
+type MappingRevision = { sourceProductName:string;branchId:string|null;sourceProductCode:string|null;menuItemId:string;menuItemVariantId:string;revisionReason?:string;changeReason?:string;expectedUpdatedAt?:string;confirmed?:true };
 
-export function PosMappingEditDialog({mapping,products,branches,busy,onCancel,onSave}:{
-  mapping:PosMapping;products:MenuProduct[];branches:Branch[];busy:boolean;onCancel:()=>void;onSave:(input:MappingRevision)=>void;
+export function PosMappingEditDialog({mapping,products,branches,sourceBranchId,busy,serverError="",onCancel,onSave}:{
+  mapping:PosMapping;products:MenuProduct[];branches:Branch[];sourceBranchId?:string|null;busy:boolean;serverError?:string;onCancel:()=>void;onSave:(input:MappingRevision)=>void;
 }) {
   const [productId,setProductId]=useState(mapping.menuItemId);
   const [variantId,setVariantId]=useState(mapping.menuItemVariantId);
   const [branchId,setBranchId]=useState(mapping.branchId??"");
+  const [posName,setPosName]=useState(mapping.sourceProductName);
   const [posCode,setPosCode]=useState(mapping.sourceProductCode??"");
   const [revisionReason,setRevisionReason]=useState("");
+  const [confirming,setConfirming]=useState(false);
+  const [formError,setFormError]=useState("");
+  const approved=mapping.reviewStatus==="APPROVED";
   const eligibleProducts=products.filter(product=>product.status==="ACTIVE"&&product.approvalStatus==="APPROVED");
+  const scopeBranches=sourceBranchId?branches.filter(branch=>branch.id===sourceBranchId):branches;
   const selectedProduct=eligibleProducts.find(product=>product.id===productId);
   const variants=selectedProduct?.variants.filter(variant=>variant.status==="ACTIVE")??[];
+  const selectedVariant=variants.find(variant=>variant.id===variantId);
+  const oldProduct=products.find(product=>product.id===mapping.menuItemId);
+  const oldVariant=oldProduct?.variants.find(variant=>variant.id===mapping.menuItemVariantId);
+  const branchName=(value:string|null)=>value?(branches.find(branch=>branch.id===value)?.name??value):"All branches";
+  const submit=()=>onSave({sourceProductName:posName.trim(),branchId:branchId||null,sourceProductCode:posCode.trim()||null,menuItemId:productId,menuItemVariantId:variantId,...(approved?{changeReason:revisionReason.trim(),expectedUpdatedAt:mapping.updatedAt,confirmed:true as const}:revisionReason.trim()?{revisionReason:revisionReason.trim()}:{})});
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-labelledby="edit-pos-mapping-title" onMouseDown={(event)=>{if(isModalBackdropEvent(event))onCancel();}}>
-    <form className="w-full max-w-xl rounded-2xl border bg-[var(--app-surface)] p-6 shadow-2xl" style={{borderColor:C.border}} onSubmit={(event)=>{event.preventDefault();onSave({branchId:branchId||null,sourceProductCode:posCode.trim()||null,menuItemId:productId,menuItemVariantId:variantId,...(revisionReason.trim()?{revisionReason:revisionReason.trim()}:{})});}}>
-      <h3 id="edit-pos-mapping-title" className="text-lg font-bold">Edit Pending Mapping</h3>
-      <p className="mt-1 text-sm" style={{color:C.secondary}}>Saving returns this mapping to Pending Approval. It will not be activated automatically.</p>
-      <div className="mt-5 grid gap-4">
-        <label className="grid gap-1 text-sm font-semibold">POS Name<input aria-label="POS Name" readOnly value={mapping.sourceProductName} className="rounded-lg border bg-[var(--app-surface-muted)] p-2 font-normal"/></label>
+    <form className="w-full max-w-xl rounded-2xl border bg-[var(--app-surface)] p-6 shadow-2xl" style={{borderColor:C.border}} onSubmit={(event)=>{event.preventDefault();if(confirming){submit();return;}if(!posName.trim()){setFormError("POS name is required.");return;}if(!productId||!variantId){setFormError("Select a product and variant.");return;}if(approved&&!revisionReason.trim()){setFormError("A reason is required when editing an approved mapping.");return;}setFormError("");setConfirming(true);}}>
+      <div className="flex items-start justify-between gap-3"><div><h3 id="edit-pos-mapping-title" className="text-lg font-bold">{confirming?"Confirm Mapping Changes":approved?"Edit Approved Mapping":"Edit Pending Mapping"}</h3><p className="mt-1 text-sm" style={{color:C.secondary}}>{approved?(mapping.status==="ACTIVE"?"Approved changes apply to future POS resolution immediately. Existing sales and snapshots remain unchanged.":"Approval is preserved, but this inactive mapping will not resolve future sales until it is reactivated."):"The mapping remains Pending Approval and will not activate automatically."}</p></div><button type="button" aria-label="Close mapping editor" disabled={busy} onClick={onCancel} className="rounded-lg p-1.5 hover:bg-[var(--app-surface-muted)]"><X size={18}/></button></div>
+      {confirming?<div className="mt-5 space-y-3 rounded-xl border p-4 text-sm" style={{borderColor:C.border}}>
+        <p className="font-semibold">Review the exact mapping before applying it.</p>
+        {[["POS name",mapping.sourceProductName,posName.trim()],["POS code",mapping.sourceProductCode||"—",posCode.trim()||"—"],["Branch",branchName(mapping.branchId),branchName(branchId||null)],["Target",`${oldProduct?.name??mapping.menuItemName} / ${oldVariant?.name??mapping.variantName}`,`${selectedProduct?.name??productId} / ${selectedVariant?.name??variantId}`]].map(([label,before,after])=><div key={label} className="grid grid-cols-[92px_1fr] gap-2"><span style={{color:C.secondary}}>{label}</span><span><span className="line-through opacity-60">{before}</span><span className="mx-2">→</span><strong>{after}</strong></span></div>)}
+        <div className="grid grid-cols-[92px_1fr] gap-2"><span style={{color:C.secondary}}>Reason</span><strong>{revisionReason.trim()||"No note supplied"}</strong></div>
+      </div>:<div className="mt-5 grid gap-4">
+        <label className="grid gap-1 text-sm font-semibold">POS Name<input aria-label="POS Name" value={posName} onChange={event=>setPosName(event.target.value)} maxLength={255} className="rounded-lg border p-2 font-normal"/></label>
         <label className="grid gap-1 text-sm font-semibold">POS Code<input aria-label="Edit POS code" value={posCode} onChange={event=>setPosCode(event.target.value)} className="rounded-lg border p-2 font-normal" placeholder="Optional POS code"/></label>
-        <label className="grid gap-1 text-sm font-semibold">Branch Scope<Select aria-label="Edit mapping branch" value={branchId} onChange={setBranchId} options={[{value:"",label:"All branches"},...branches.map(branch=>({value:branch.id,label:branch.name}))]}/></label>
+        <label className="grid gap-1 text-sm font-semibold">Branch Scope<Select aria-label="Edit mapping branch" value={branchId} onChange={setBranchId} options={[{value:"",label:"All branches"},...scopeBranches.map(branch=>({value:branch.id,label:branch.name}))]}/></label>
         <label className="grid gap-1 text-sm font-semibold">Target Product<Select aria-label="Edit target product" value={productId} onChange={value=>{setProductId(value);setVariantId("");}} options={[{value:"",label:"Select product"},...eligibleProducts.map(product=>({value:product.id,label:`${product.category} / ${product.name}`}))]} searchable searchPlaceholder="Search products…"/></label>
         <label className="grid gap-1 text-sm font-semibold">Target Variant<Select aria-label="Edit target variant" value={variantId} onChange={setVariantId} options={[{value:"",label:"Select variant"},...variants.map(variant=>({value:variant.id,label:`${variant.name} — ${variant.recipeId?`Recipe v${variant.recipeVersion??1}`:"No recipe"}`}))]}/></label>
-        <label className="grid gap-1 text-sm font-semibold">Revision Note <span className="font-normal" style={{color:C.secondary}}>(optional)</span><textarea aria-label="Mapping revision note" value={revisionReason} onChange={event=>setRevisionReason(event.target.value)} className="min-h-20 rounded-lg border p-2 font-normal" placeholder="Why is this target being corrected?"/></label>
-      </div>
-      <div className="mt-6 flex justify-end gap-2"><Btn variant="outline" disabled={busy} onClick={onCancel}>Cancel</Btn><button disabled={busy||!productId||!variantId} type="submit" className="rounded-xl px-3.5 py-2 text-sm font-semibold text-white disabled:opacity-40" style={{background:C.maroon}}>Save Changes</button></div>
+        <label className="grid gap-1 text-sm font-semibold">{approved?"Change Reason":"Revision Note"} {!approved&&<span className="font-normal" style={{color:C.secondary}}>(optional)</span>}<textarea aria-label="Mapping revision note" value={revisionReason} onChange={event=>setRevisionReason(event.target.value)} maxLength={1000} className="min-h-20 rounded-lg border p-2 font-normal" placeholder="Why is this mapping being corrected?"/></label>
+      </div>}
+      {formError&&<p role="alert" className="mt-3 text-sm font-semibold" style={{color:C.red}}>{formError}</p>}
+      {serverError&&<p role="alert" className="mt-3 rounded-lg bg-[var(--app-danger-bg)] p-3 text-sm font-semibold" style={{color:C.red}}>{serverError}</p>}
+      <div className="mt-6 flex justify-end gap-2"><Btn variant="outline" disabled={busy} onClick={()=>{if(confirming){setConfirming(false);setFormError("");}else onCancel();}}>{confirming?"Back":"Cancel"}</Btn><button disabled={busy||!productId||!variantId} type="submit" className="rounded-xl px-3.5 py-2 text-sm font-semibold text-white disabled:opacity-40" style={{background:C.maroon}}>{busy?"Saving…":confirming?"Confirm Changes":"Save Changes"}</button></div>
     </form>
   </div>;
 }
@@ -169,7 +185,7 @@ export function PosMappingActions({mapping,busy,canApprove,reviewNote,onEdit,onR
   onReview:(status:PosMappingReviewStatus)=>void;onDeactivate:()=>void;onReactivate:()=>void;
 }) {
   const actionClass="inline-flex h-9 items-center justify-center rounded-lg border px-3 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50";
-  if(mapping.reviewStatus==="APPROVED") return <div className="flex flex-wrap items-center gap-2"><button type="button" disabled className={`${actionClass} border-[var(--app-border)] bg-[var(--app-surface-muted)] text-[var(--app-text-muted)]`}>Approved</button>{mapping.status==="ACTIVE"?<button type="button" disabled={busy} className={`${actionClass} border-[var(--app-danger)] text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)]`} onClick={onDeactivate}>Deactivate</button>:<button type="button" disabled={busy} className={`${actionClass} border-[var(--app-success)] text-[var(--app-success)] hover:bg-[var(--app-success-bg)]`} onClick={onReactivate}>Reactivate</button>}</div>;
+  if(mapping.reviewStatus==="APPROVED") return <div className="flex flex-wrap items-center gap-2"><button type="button" disabled={busy} className={`${actionClass} border-[var(--app-border)]`} onClick={onEdit}>Edit Mapping</button><button type="button" disabled className={`${actionClass} border-[var(--app-border)] bg-[var(--app-surface-muted)] text-[var(--app-text-muted)]`}>Approved</button>{mapping.status==="ACTIVE"?<button type="button" disabled={busy} className={`${actionClass} border-[var(--app-danger)] text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)]`} onClick={onDeactivate}>Deactivate</button>:<button type="button" disabled={busy} className={`${actionClass} border-[var(--app-success)] text-[var(--app-success)] hover:bg-[var(--app-success-bg)]`} onClick={onReactivate}>Reactivate</button>}</div>;
   if(mapping.reviewStatus==="REJECTED"||mapping.reviewStatus==="AMBIGUOUS") return <button type="button" disabled={busy} className={`${actionClass} border-[var(--app-border)]`} onClick={()=>onReview("PENDING")}>Return to Pending</button>;
   return <div className="flex flex-wrap items-center gap-2">{canEditPosMapping(mapping)&&<button type="button" disabled={busy} className={`${actionClass} border-[var(--app-border)]`} onClick={onEdit}>Edit Mapping</button>}<button type="button" disabled={busy||!canApprove} className={`${actionClass} border-[var(--app-success)] bg-[var(--app-success)] text-white`} onClick={()=>onReview("APPROVED")}>Approve</button><button type="button" disabled={busy||!reviewNote.trim()} className={`${actionClass} border-[var(--app-border)]`} onClick={()=>onReview("REJECTED")}>Reject</button><button type="button" disabled={busy||!reviewNote.trim()} className={`${actionClass} border-[var(--app-border)]`} onClick={()=>onReview("AMBIGUOUS")}>Ambiguous</button></div>;
 }
@@ -871,7 +887,7 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "", initialF
                             busy={busy}
                             canApprove={canApprovePosMapping(mapping,selectedSource)}
                             reviewNote={note}
-                            onEdit={()=>setEditMapping(mapping)}
+                            onEdit={()=>{setError("");setEditMapping(mapping);}}
                             onReview={(status)=>void run(()=>inventoryWorkflowService.reviewPosMapping(mapping.id,status,note))}
                             onDeactivate={()=>void run(()=>inventoryWorkflowService.deactivatePosMapping(mapping.id))}
                             onReactivate={()=>void run(()=>inventoryWorkflowService.reactivatePosMapping(mapping.id))}
@@ -895,7 +911,9 @@ export function PosMappingSetup({ role = "owner", initialSourceId = "", initialF
       mapping={editMapping}
       products={products}
       branches={branches}
+      sourceBranchId={selectedSource?.branchId}
       busy={busy}
+      serverError={error}
       onCancel={()=>setEditMapping(null)}
       onSave={(input)=>void run(()=>inventoryWorkflowService.revisePendingPosMapping(editMapping.id,input)).then(saved=>{if(saved)setEditMapping(null);})}
     />}

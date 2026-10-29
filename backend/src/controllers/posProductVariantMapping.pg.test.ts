@@ -1,5 +1,6 @@
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { loadPosMappings, resolvePosMapping } from "../services/posProductVariantMapping.service.js";
 
 const databaseUrl=process.env.POS_MAPPING_E2E_DATABASE_URL;
 const suite=databaseUrl?describe:describe.skip;
@@ -23,6 +24,7 @@ suite("POS mapping Quick Assign PostgreSQL integration",()=>{
   let copyMappings:Awaited<typeof import("./posProductVariantMapping.controller.js")>["copyApprovedGlobalPosMappings"];
   let confirmAndActivate:Awaited<typeof import("./posProductVariantMapping.controller.js")>["confirmAndActivatePosMappings"];
   let reactivateApproved:Awaited<typeof import("./posProductVariantMapping.controller.js")>["reactivateApprovedPosMapping"];
+  let reviseMapping:Awaited<typeof import("./posProductVariantMapping.controller.js")>["revisePendingPosMapping"];
 
   beforeAll(async()=>{
     if(!databaseUrl)throw new Error("POS_MAPPING_E2E_DATABASE_URL is required");
@@ -33,6 +35,7 @@ suite("POS mapping Quick Assign PostgreSQL integration",()=>{
     const controller=await import("./posProductVariantMapping.controller.js");
     copyMappings=controller.copyApprovedGlobalPosMappings;confirmAndActivate=controller.confirmAndActivatePosMappings;
     reactivateApproved=controller.reactivateApprovedPosMapping;
+    reviseMapping=controller.revisePendingPosMapping;
     appPool=(await import("../config/database.js")).pool;
     await pool.query(`INSERT INTO branches(id,code,name,location) VALUES
       ($1,$2,$3,'Disposable test'),($4,$5,$6,'Disposable test')`,
@@ -44,6 +47,8 @@ suite("POS mapping Quick Assign PostgreSQL integration",()=>{
     await pool.query(`INSERT INTO menu_items(id,code,name,category,selling_price,product_scope,approval_status)
       VALUES($1,$2,'Quick Latte','Coffee',100,'GLOBAL','APPROVED')`,[productId,`QP-${runId}`]);
     await pool.query(`INSERT INTO menu_item_variants(id,menu_item_id,name,selling_price,status) VALUES($1,$2,'Standard',100,'ACTIVE')`,[variantId,productId]);
+    await pool.query(`INSERT INTO menu_item_branches(menu_item_id,branch_id,availability_status,reviewed_by,reviewed_at,is_active)
+      VALUES($1,$2,'APPROVED',$3,now(),true),($1,$4,'APPROVED',$3,now(),true)`,[productId,sourceBranchId,ownerId,targetBranchId]);
     await pool.query(`INSERT INTO recipes(id,menu_item_id,menu_item_variant_id,name,yield_quantity,status,effective_from)
       VALUES($1,$2,$3,'Quick Recipe',1,'ACTIVE',CURRENT_DATE-1)`,[recipeId,productId,variantId]);
     await pool.query(`INSERT INTO recipe_items(recipe_id,inventory_item_id,quantity,unit) VALUES($1,$2,10,'ml')`,[recipeId,itemId]);
@@ -106,5 +111,54 @@ suite("POS mapping Quick Assign PostgreSQL integration",()=>{
     await expect(reactivateApproved({params:{id:conflictingInactiveId},user:{id:ownerId,role:"OWNER",branchId:null}} as never,response() as never,(()=>undefined) as never))
       .rejects.toMatchObject({code:"POS_MAPPING_CONFLICT"});
     expect((await pool.query(`SELECT status FROM pos_product_variant_mappings WHERE id=$1`,[conflictingInactiveId])).rows[0].status).toBe("INACTIVE");
+  });
+
+  it("edits one approved row in place, keeps historical business evidence immutable, and rejects a stale repeat",async()=>{
+    const before=(await pool.query(`SELECT id,source_product_name "sourceProductName",source_product_code "sourceProductCode",
+      menu_item_variant_id "menuItemVariantId",status,review_status "reviewStatus",reviewed_by "reviewedBy",
+      reviewed_at "reviewedAt",to_char(updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') "updatedAt" FROM pos_product_variant_mappings
+      WHERE pos_source_id=$1 AND source_product_code='QLAT'`,[sourceId])).rows[0];
+    const evidenceTables=["pos_imports","pos_sale_items","inventory_movements","inventory_counts","inventory_count_items","shrinkage_reports"];
+    const fingerprint=async(table:string)=>(await pool.query(`SELECT count(*)::int count,
+      coalesce(md5(string_agg(to_jsonb(t)::text,'' ORDER BY t.id::text)),'') hash FROM ${table} t`)).rows[0];
+    const evidenceBefore=Object.fromEntries(await Promise.all(evidenceTables.map(async table=>[table,await fingerprint(table)])));
+    const response=()=>{const result={status:()=>result,json:(body:unknown)=>{result.body=body;},body:undefined as unknown};return result;};
+    const result=response();
+    await reviseMapping({params:{id:before.id},body:{sourceProductName:"Quick Latte Corrected",sourceProductCode:"QLAT-CORRECTED",
+      branchId:null,menuItemId:productId,menuItemVariantId:variantId,changeReason:"Corrected exact external POS identity",
+      expectedUpdatedAt:before.updatedAt,confirmed:true},user:{id:ownerId,role:"OWNER",branchId:null}} as never,
+    result as never,(()=>undefined) as never);
+    const after=(await pool.query(`SELECT id,source_product_name "sourceProductName",source_product_code "sourceProductCode",
+      menu_item_variant_id "menuItemVariantId",status,review_status "reviewStatus",reviewed_by "reviewedBy",
+      reviewed_at "reviewedAt" FROM pos_product_variant_mappings WHERE id=$1`,[before.id])).rows[0];
+    expect(after).toMatchObject({id:before.id,sourceProductName:"Quick Latte Corrected",sourceProductCode:"QLAT-CORRECTED",
+      menuItemVariantId:before.menuItemVariantId,status:before.status,reviewStatus:before.reviewStatus,reviewedBy:before.reviewedBy});
+    expect(new Date(after.reviewedAt).toISOString()).toBe(new Date(before.reviewedAt).toISOString());
+    expect((await pool.query(`SELECT count(*)::int count FROM pos_product_variant_mappings WHERE pos_source_id=$1 AND source_product_code='QLAT-CORRECTED' AND status='ACTIVE'`,[sourceId])).rows[0].count).toBe(1);
+    expect((await pool.query(`SELECT count(*)::int count FROM pos_product_variant_mappings WHERE pos_source_id=$1 AND source_product_code='QLAT' AND status='ACTIVE'`,[sourceId])).rows[0].count).toBe(0);
+    const futureMappings=await loadPosMappings(pool as never,sourceId,sourceBranchId,new Date().toISOString().slice(0,10));
+    expect(resolvePosMapping({sourceProduct:"Quick Latte Corrected",sourceProductName:"Quick Latte Corrected",sourceProductId:"QLAT-CORRECTED"} as never,sourceBranchId,futureMappings)).toMatchObject({status:"APPROVED",mappingId:before.id,menuItemVariantId:variantId});
+    expect(resolvePosMapping({sourceProduct:"Quick Latte",sourceProductName:"Quick Latte",sourceProductId:"QLAT"} as never,sourceBranchId,futureMappings)).toMatchObject({status:"UNMATCHED",mappingId:null});
+    expect((await pool.query(`SELECT metadata->>'reason' reason,metadata->>'historicalRecordsChanged' "historicalRecordsChanged"
+      FROM audit_logs WHERE entity_id=$1 AND action='EDIT_APPROVED_POS_MAPPING'`,[before.id])).rows[0]).toEqual({reason:"Corrected exact external POS identity",historicalRecordsChanged:"false"});
+    const evidenceAfter=Object.fromEntries(await Promise.all(evidenceTables.map(async table=>[table,await fingerprint(table)])));
+    expect(evidenceAfter).toEqual(evidenceBefore);
+    await expect(reviseMapping({params:{id:before.id},body:{sourceProductName:"Stale Alias",sourceProductCode:"STALE",
+      branchId:null,menuItemId:productId,menuItemVariantId:variantId,changeReason:"Attempt stale overwrite",
+      expectedUpdatedAt:before.updatedAt,confirmed:true},user:{id:ownerId,role:"OWNER",branchId:null}} as never,
+    response() as never,(()=>undefined) as never)).rejects.toMatchObject({code:"POS_MAPPING_STALE_EDIT"});
+    expect((await pool.query(`SELECT source_product_code "sourceProductCode" FROM pos_product_variant_mappings WHERE id=$1`,[before.id])).rows[0].sourceProductCode).toBe("QLAT-CORRECTED");
+
+    const concurrencyToken=(await pool.query(`SELECT to_char(updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') token
+      FROM pos_product_variant_mappings WHERE id=$1`,[before.id])).rows[0].token;
+    const concurrent=await Promise.allSettled(["QLAT-CONCURRENT-A","QLAT-CONCURRENT-B"].map(code=>reviseMapping({params:{id:before.id},body:{
+      sourceProductName:code.replaceAll("-"," "),sourceProductCode:code,branchId:null,menuItemId:productId,menuItemVariantId:variantId,
+      changeReason:"Concurrent correction safety test",expectedUpdatedAt:concurrencyToken,confirmed:true},
+      user:{id:ownerId,role:"OWNER",branchId:null}} as never,response() as never,(()=>undefined) as never)));
+    expect(concurrent.filter(outcome=>outcome.status==="fulfilled")).toHaveLength(1);
+    expect(concurrent.filter(outcome=>outcome.status==="rejected")).toHaveLength(1);
+    expect(["POS_MAPPING_STALE_EDIT","POS_MAPPING_CONCURRENT_CHANGE"]).toContain((concurrent.find(outcome=>outcome.status==="rejected") as PromiseRejectedResult).reason.code);
+    expect(["QLAT-CONCURRENT-A","QLAT-CONCURRENT-B"]).toContain((await pool.query(`SELECT source_product_code "sourceProductCode"
+      FROM pos_product_variant_mappings WHERE id=$1`,[before.id])).rows[0].sourceProductCode);
   });
 });

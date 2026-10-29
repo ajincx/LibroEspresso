@@ -148,7 +148,7 @@ export const inventoryWorkflowService = {
   async reviewPosMapping(id: string, reviewStatus: PosMappingReviewStatus, reviewComment?: string) {
     return (await api.patch<ApiSuccess<{ id: string; status: string; reviewStatus: PosMappingReviewStatus }>>(`/pos-sales/mappings/${id}`, { reviewStatus, ...(reviewComment?.trim() ? { reviewComment: reviewComment.trim() } : {}) })).data.data;
   },
-  async revisePendingPosMapping(id: string, input: { branchId: string | null; sourceProductCode: string | null; menuItemId: string; menuItemVariantId: string; revisionReason?: string }) {
+  async revisePendingPosMapping(id: string, input: { sourceProductName: string; branchId: string | null; sourceProductCode: string | null; menuItemId: string; menuItemVariantId: string; revisionReason?: string; changeReason?: string; expectedUpdatedAt?: string; confirmed?: true }) {
     return (await api.put<ApiSuccess<{ mapping: PosMapping }>>(`/pos-sales/mappings/${id}`, input)).data.data.mapping;
   },
   async deactivatePosMapping(id: string) {

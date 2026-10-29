@@ -288,6 +288,7 @@ export interface PosMapping {
   reviewComment: string | null;
   reviewedBy: string | null;
   reviewedAt: string | null;
+  updatedAt: string;
   branchName: string | null;
   recipeId: string | null;
   recipeVersion: number | null;
