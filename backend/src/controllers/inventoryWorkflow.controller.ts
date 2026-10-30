@@ -1549,6 +1549,28 @@ export const getExpectedInventory: RequestHandler = async (req, res) => {
         WHERE ici.inventory_count_id=$1 AND ici.voided_at IS NULL`,
       [closingCount.id],
     ) : { rows: [] as { inventoryItemId: string; actualQuantity: number }[] };
+    const latestPhysicalCount = await pool.query<{
+      id:string;countNo:string;countType:"OPENING"|"CLOSING"|"FULL";countDate:string;effectiveAt:string|null;submittedAt:string;
+    }>(`SELECT id,count_no "countNo",count_type "countType",count_date::text "countDate",
+              effective_at "effectiveAt",submitted_at "submittedAt"
+         FROM inventory_counts candidate
+        WHERE candidate.branch_id=$1 AND NOT candidate.is_test_data
+          AND (candidate.count_date<$2::date OR (candidate.count_date=$2::date AND candidate.count_type<>'FULL'))
+          AND EXISTS(SELECT 1 FROM inventory_count_items valid_item
+            WHERE valid_item.inventory_count_id=candidate.id AND valid_item.voided_at IS NULL)
+        ORDER BY COALESCE(candidate.effective_at,
+                   (candidate.count_date::timestamp + interval '1 day') AT TIME ZONE 'Asia/Manila') DESC,
+                 candidate.submitted_at DESC
+        LIMIT 1`,[branchId,countDate]);
+    const latestPhysicalItems = latestPhysicalCount.rows[0] ? await pool.query<{ inventoryItemId:string;actualQuantity:number }>(
+      `SELECT ici.inventory_item_id "inventoryItemId",
+              COALESCE(correction.corrected_actual_quantity,ici.actual_quantity)::float8 "actualQuantity"
+         FROM inventory_count_items ici
+         LEFT JOIN LATERAL (SELECT corrected_actual_quantity FROM inventory_count_corrections
+           WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
+        WHERE ici.inventory_count_id=$1 AND ici.voided_at IS NULL
+        ORDER BY ici.inventory_item_id`,[latestPhysicalCount.rows[0].id],
+    ) : { rows: [] as { inventoryItemId:string;actualQuantity:number }[] };
     const weeklyFullCounts = await pool.query<{ count: number }>(
       `SELECT count(*)::int "count"
          FROM inventory_counts ic
@@ -1566,6 +1588,8 @@ export const getExpectedInventory: RequestHandler = async (req, res) => {
       closingCount,
       fullCount: sameDayCounts.rows.find((count) => count.countType === "FULL") ?? null,
       sameDayClosingItems: closingItems.rows,
+      latestPhysicalCount: latestPhysicalCount.rows[0] ?? null,
+      latestPhysicalItems: latestPhysicalItems.rows,
       weeklyFullCount: Number(weeklyFullCounts.rows[0]?.count ?? 0),
       weeklyFullLimit: 3,
     } });
@@ -1575,24 +1599,27 @@ export const getExpectedInventory: RequestHandler = async (req, res) => {
   }>(`SELECT id,count_no "countNo",count_type "countType",submitted_at "submittedAt"
         FROM inventory_counts WHERE branch_id=$1 AND count_date=$2 AND count_type IN ('OPENING','CLOSING') AND NOT is_test_data`,
       [branchId,countDate]);
-  const previousClosing = countType === "OPENING" ? await pool.query<{
-    inventoryItemId: string; actualQuantity: number; countDate: string; countType:"CLOSING"|"FULL";
+  const previousPhysical = countType === "OPENING" ? await pool.query<{
+    id:string;countNo:string;inventoryItemId:string;actualQuantity:number;countDate:string;
+    countType:"OPENING"|"CLOSING"|"FULL";effectiveAt:string|null;submittedAt:string;
   }>(`WITH previous_count AS (
-        SELECT id,count_date,count_type
+        SELECT id,count_no,count_date,count_type,effective_at,submitted_at
           FROM inventory_counts
-         WHERE branch_id=$1 AND count_type='CLOSING' AND count_date<$2 AND NOT is_test_data
+         WHERE branch_id=$1 AND count_date<$2 AND NOT is_test_data
            AND EXISTS(SELECT 1 FROM inventory_count_items valid_item
              WHERE valid_item.inventory_count_id=inventory_counts.id AND valid_item.voided_at IS NULL)
-         ORDER BY count_date DESC,COALESCE(effective_at,submitted_at) DESC,submitted_at DESC
+         ORDER BY COALESCE(effective_at,
+                    (count_date::timestamp + interval '1 day') AT TIME ZONE 'Asia/Manila') DESC,
+                  submitted_at DESC
          LIMIT 1
-      ) SELECT
+      ) SELECT ic.id,ic.count_no "countNo",
             ici.inventory_item_id "inventoryItemId",COALESCE(correction.corrected_actual_quantity,ici.actual_quantity)::float8 "actualQuantity",
-            ic.count_date::text "countDate",ic.count_type "countType"
+            ic.count_date::text "countDate",ic.count_type "countType",ic.effective_at "effectiveAt",ic.submitted_at "submittedAt"
         FROM previous_count ic JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id AND ici.voided_at IS NULL
         LEFT JOIN LATERAL (SELECT corrected_actual_quantity FROM inventory_count_corrections
           WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
        ORDER BY ici.inventory_item_id`,
-      [branchId,countDate]) : { rows: [] as {inventoryItemId:string;actualQuantity:number;countDate:string;countType:"CLOSING"|"FULL"}[] };
+      [branchId,countDate]) : { rows: [] as {id:string;countNo:string;inventoryItemId:string;actualQuantity:number;countDate:string;countType:"OPENING"|"CLOSING"|"FULL";effectiveAt:string|null;submittedAt:string}[] };
   const startingStock = countType === "OPENING" ? await pool.query<{
     id:string; baselineNo:string; effectiveAt:string; inventoryItemId:string; actualQuantity:number;
   }>(`SELECT baseline.id,baseline.baseline_no "baselineNo",baseline.effective_at "effectiveAt",
@@ -1621,16 +1648,19 @@ export const getExpectedInventory: RequestHandler = async (req, res) => {
               AND reconciliation.recipe_consumption_matches AND reconciliation.cogs_matches AND reconciliation.branch_isolated)
           )
      ) "complete"`, [branchId,countDate]);
-  const previousCheckpoint = [...previousClosing.rows].sort((left,right) =>
-    right.countDate.localeCompare(left.countDate)
-      || (right.countType === "FULL" ? 1 : 0) - (left.countType === "FULL" ? 1 : 0))[0];
+  const previousCheckpoint = previousPhysical.rows[0];
   res.json({ success: true, data: {
     branchId, countDate, countType, items, unavailableItems,
     openingCount: dailyCounts.rows.find((count)=>count.countType==="OPENING") ?? null,
     closingCount: dailyCounts.rows.find((count)=>count.countType==="CLOSING") ?? null,
-    previousClosingItems: previousClosing.rows,
+    previousClosingItems: previousPhysical.rows,
     previousClosingDate: previousCheckpoint?.countDate ?? null,
     previousClosingCountType: previousCheckpoint?.countType ?? null,
+    latestPhysicalCount: previousCheckpoint ? {
+      id:previousCheckpoint.id,countNo:previousCheckpoint.countNo,countType:previousCheckpoint.countType,
+      countDate:previousCheckpoint.countDate,effectiveAt:previousCheckpoint.effectiveAt,submittedAt:previousCheckpoint.submittedAt,
+    } : null,
+    latestPhysicalItems: previousPhysical.rows.map(({inventoryItemId,actualQuantity})=>({inventoryItemId,actualQuantity})),
     startingStockCopyEligible: startingStock.rows.length > 0,
     startingStockSource: startingStock.rows[0] ? {
       id:startingStock.rows[0].id,baselineNo:startingStock.rows[0].baselineNo,effectiveAt:startingStock.rows[0].effectiveAt,

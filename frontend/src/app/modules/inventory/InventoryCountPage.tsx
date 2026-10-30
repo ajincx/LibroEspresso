@@ -3,7 +3,7 @@ import { AlertTriangle, ArrowLeft, CheckCircle, ClipboardList, RefreshCw, Send }
 import { useNavigate, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { inventoryWorkflowService } from "../../services/inventoryWorkflow.service";
-import type { CountVarianceItem, DailyInventoryCountContext, ExpectedInventoryItem, FullInventoryCountContext, InventoryCountType, UnavailableInventoryCountItem } from "../../types/inventoryWorkflow";
+import type { CountVarianceItem, DailyInventoryCountContext, ExpectedInventoryItem, FullInventoryCountContext, InventoryCountType, PhysicalInventoryCountReference, UnavailableInventoryCountItem } from "../../types/inventoryWorkflow";
 import { CalendarDateField, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, TableLoadingRow, Btn, SearchInput, Select, SkeletonBlock } from "../../components/ModuleUi";
 import { ControlledActionDialog } from "../../components/ControlledActionDialog";
 
@@ -107,7 +107,10 @@ export const physicalCountVarianceLabel = (countType:InventoryCountType, varianc
 export const previousClosingCopyMessage = (countDate: string) =>
   `Values copied from the previous Closing Count on ${countDate}. Review and confirm them before submitting.`;
 
-export const fullCountCopySourceMessage = (source:NonNullable<FullInventoryCountContext["closingCount"]>,fallbackDate:string) =>
+export const previousPhysicalCopyMessage = (source:PhysicalInventoryCountReference) =>
+  `Values copied from ${source.countNo} (${source.countType === "FULL" ? "Full Physical" : source.countType === "CLOSING" ? "Closing" : "Opening"} Count) on ${source.countDate}. Review and confirm them before submitting.`;
+
+export const fullCountCopySourceMessage = (source:PhysicalInventoryCountReference,fallbackDate:string) =>
   `Copied from finalized ${source.countType} checkpoint ${source.countNo} · ${source.countDate ?? fallbackDate} · ${formatAppDate(source.effectiveAt ?? source.submittedAt,true)}. Blank ingredients were not in the source and must be entered. Copied values are not physically verified until you confirm below.`;
 
 export const copyPreviousClosingEntries = (
@@ -122,6 +125,9 @@ export const copyPreviousClosingEntries = (
       : blankPhysicalCountEntry(item.unit),
   ]));
 };
+
+export const confirmPhysicalCountCopy = (counted:number,confirmReplace:()=>boolean) =>
+  counted === 0 || confirmReplace();
 
 export const copySameDayClosingEntries = (
   items: ExpectedInventoryItem[],
@@ -276,7 +282,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
   const [dailyContext,setDailyContext]=useState<DailyInventoryCountContext|null>(null);
   const [fullContext,setFullContext]=useState<FullInventoryCountContext|null>(null);
   const [fullPhysicalVerificationConfirmed,setFullPhysicalVerificationConfirmed]=useState(false);
-  const [copiedClosingDate,setCopiedClosingDate]=useState<string|null>(null);
+  const [copiedPhysicalSource,setCopiedPhysicalSource]=useState<PhysicalInventoryCountReference|null>(null);
   const [copiedStartingStock,setCopiedStartingStock]=useState(false);
   const [openingQuantities,setOpeningQuantities]=useState<Record<string,number>>({});
   const [closingQuantities,setClosingQuantities]=useState<Record<string,number>>({});
@@ -301,7 +307,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
   const fullBlockReason=countType==="FULL"&&!editingCountId?fullCountSubmissionBlockReason(fullContext):null;
 
   const loadExpected = async () => {
-    setLoading(true); setError(""); setSubmitted(null); setEditingCountId(null); setUnavailable([]); setDailyContext(null); setFullContext(null); setFullPhysicalVerificationConfirmed(false);
+    setLoading(true); setError(""); setSubmitted(null); setEditingCountId(null); setUnavailable([]); setDailyContext(null); setFullContext(null); setFullPhysicalVerificationConfirmed(false); setCopiedPhysicalSource(null);
     try {
       if (requestedCountId) {
         const count = await inventoryWorkflowService.count(requestedCountId);
@@ -339,9 +345,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
       ]);
       setOpeningQuantities(savedCountQuantities(opening?.items ?? []));
       setClosingQuantities(savedCountQuantities(closing?.items ?? []));
-      setEntries(nextFullContext
-        ? copySameDayClosingEntries(data.items,nextFullContext.sameDayClosingItems)
-        : Object.fromEntries(data.items.map((item) => [item.inventoryItemId, blankPhysicalCountEntry(item.unit)])));
+      setEntries(Object.fromEntries(data.items.map((item) => [item.inventoryItemId, blankPhysicalCountEntry(item.unit)])));
       setCompletionFilter("ALL");
       setCopiedStartingStock(false);
       setHasUnsavedChanges(false);
@@ -563,8 +567,9 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
           <Select small value={completionFilter} onChange={(value) => setCompletionFilter(value as PhysicalCountCompletionFilter)} options={[{ value: "ALL", label: "All" }, { value: "COUNTED", label: "Counted" }, { value: "NOT_COUNTED", label: "Not Counted" }]}/>
           <span className="text-xs font-medium text-[var(--app-text-muted)]">Showing {visibleItems.length} of {expected.length} items</span>
           {search && <Btn variant="outline" size="sm" onClick={() => setSearch("")}>Clear search</Btn>}
-          {countType==="OPENING"&&dailyContext?.previousClosingItems.length&&!activeDailyCount&&!requestedCountId?<Btn variant="outline" size="sm" onClick={()=>{if(completion.counted>0&&!window.confirm("Replace the quantities currently entered with the previous Closing Count values?"))return;setEntries(copyPreviousClosingEntries(expected,dailyContext.previousClosingItems));setCopiedClosingDate(dailyContext.previousClosingDate);setCopiedStartingStock(false);setHasUnsavedChanges(true);setPreviewing(false);}}>Copy Previous Closing Stock</Btn>:null}
-          {countType==="OPENING"&&dailyContext?.startingStockCopyEligible&&!activeDailyCount&&!requestedCountId?<Btn variant="outline" size="sm" onClick={()=>{if(completion.counted>0&&!window.confirm("Replace the quantities currently entered with Starting Stock values?"))return;setEntries(copyPreviousClosingEntries(expected,(dailyContext.startingStockItems??[]).map((item)=>({...item,countDate:""}))));setCopiedStartingStock(true);setCopiedClosingDate(null);setHasUnsavedChanges(true);setPreviewing(false);}}>Copy Starting Stock</Btn>:null}
+          {countType==="OPENING"&&dailyContext?.latestPhysicalCount&&(dailyContext.latestPhysicalItems?.length??0)>0&&!activeDailyCount&&!requestedCountId?<Btn variant="outline" size="sm" onClick={()=>{if(!confirmPhysicalCountCopy(completion.counted,()=>window.confirm("Replace the quantities currently entered with the latest physical count values?")))return;setEntries(copyPreviousClosingEntries(expected,(dailyContext.latestPhysicalItems??[]).map((item)=>({...item,countDate:dailyContext.latestPhysicalCount!.countDate,countType:dailyContext.latestPhysicalCount!.countType}))));setCopiedPhysicalSource(dailyContext.latestPhysicalCount!);setCopiedStartingStock(false);setHasUnsavedChanges(true);setPreviewing(false);}}>Copy Latest Physical Count</Btn>:null}
+          {countType==="FULL"&&fullContext?.latestPhysicalCount&&(fullContext.latestPhysicalItems?.length??0)>0&&!editingCountId?<Btn variant="outline" size="sm" onClick={()=>{if(!confirmPhysicalCountCopy(completion.counted,()=>window.confirm("Replace the quantities currently entered with the latest physical count values?")))return;setEntries(copyPreviousClosingEntries(expected,(fullContext.latestPhysicalItems??[]).map((item)=>({...item,countDate:fullContext.latestPhysicalCount!.countDate,countType:fullContext.latestPhysicalCount!.countType}))));setCopiedPhysicalSource(fullContext.latestPhysicalCount!);setFullPhysicalVerificationConfirmed(false);setHasUnsavedChanges(true);setPreviewing(false);}}>Copy Latest Physical Count</Btn>:null}
+          {countType==="OPENING"&&dailyContext?.startingStockCopyEligible&&!activeDailyCount&&!requestedCountId?<Btn variant="outline" size="sm" onClick={()=>{if(completion.counted>0&&!window.confirm("Replace the quantities currently entered with Starting Stock values?"))return;setEntries(copyPreviousClosingEntries(expected,(dailyContext.startingStockItems??[]).map((item)=>({...item,countDate:""}))));setCopiedStartingStock(true);setCopiedPhysicalSource(null);setHasUnsavedChanges(true);setPreviewing(false);}}>Copy Starting Stock</Btn>:null}
           {openingSummary?<div className="ml-auto"><Btn disabled={!openingCanEdit} onClick={()=>void beginOpeningEdit()}>Edit Inventory</Btn></div>:<div className="ml-auto"><Btn icon={Send} disabled={saving || expected.length === 0 || Boolean(activeDailyCount) || (countType==="FULL"&&(Boolean(fullBlockReason)||completion.remaining > 0||(!editingCountId&&!fullPhysicalVerificationConfirmed))) || (countType==="CLOSING"&&(!dailyContext?.openingCount||!dailyContext.posDayComplete))} onClick={() => void submit()}>
             {saving ? "Saving…" : openingEditing ? "Submit Count" : editingCountId ? "Save Corrections" : previewing ? "Confirm and Submit" : activeDailyCount ? `${countType === "OPENING" ? "Opening" : "Closing"} Submitted` : "Submit Count"}
           </Btn></div>}
@@ -581,11 +586,11 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
             <div className="h-full rounded-full bg-[var(--app-primary)] transition-[width]" style={{ width: expected.length ? `${(completion.counted / expected.length) * 100}%` : "0%" }}/>
           </div>
           {countType==="FULL"&&completion.remaining > 0 && <p className="mt-2 text-xs text-[var(--app-text-muted)]">Complete the remaining physical quantities before submitting. Still needed: {completion.remainingItems.slice(0, 5).map((item) => item.itemName).join(", ")}{completion.remaining > 5 ? ` and ${completion.remaining - 5} more` : ""}.</p>}
-          {countType==="FULL"&&!editingCountId&&fullContext?.closingCount&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">{fullCountCopySourceMessage(fullContext.closingCount,countDate)}</p>}
-          {countType==="FULL"&&!editingCountId&&<label className="mt-3 flex items-start gap-2 text-xs font-medium text-[var(--app-text)]"><input className="mt-0.5" type="checkbox" checked={fullPhysicalVerificationConfirmed} onChange={(event)=>setFullPhysicalVerificationConfirmed(event.target.checked)}/><span>I physically verified every Full Count quantity, including values copied from Closing.</span></label>}
-          {copiedClosingDate&&countType==="OPENING"&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">{previousClosingCopyMessage(copiedClosingDate)}</p>}
+          {countType==="FULL"&&!editingCountId&&copiedPhysicalSource&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">{fullCountCopySourceMessage(copiedPhysicalSource,countDate)}</p>}
+          {countType==="FULL"&&!editingCountId&&<label className="mt-3 flex items-start gap-2 text-xs font-medium text-[var(--app-text)]"><input className="mt-0.5" type="checkbox" checked={fullPhysicalVerificationConfirmed} onChange={(event)=>setFullPhysicalVerificationConfirmed(event.target.checked)}/><span>I physically verified every Full Count quantity, including copied values.</span></label>}
+          {copiedPhysicalSource&&countType==="OPENING"&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">{previousPhysicalCopyMessage(copiedPhysicalSource)}</p>}
           {copiedStartingStock&&dailyContext?.startingStockSource&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">Values copied from preserved Starting Stock {dailyContext.startingStockSource.baselineNo} · {formatAppDate(dailyContext.startingStockSource.effectiveAt,true)}. Review and edit them before submitting; no count or stock movement has been created.</p>}
-          {countType==="OPENING"&&!requestedCountId&&dailyContext?.previousClosingItems.length===0&&<p className="mt-2 text-xs text-[var(--app-text-muted)]">No previous Closing Count is available. Enter quantities manually.</p>}
+          {countType==="OPENING"&&!requestedCountId&&!dailyContext?.latestPhysicalCount&&<p className="mt-2 text-xs text-[var(--app-text-muted)]">No previous physical count is available. Enter quantities manually.</p>}
           {countType!=="FULL"&&previewing&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">{countType==="OPENING"?"Review the entered Opening quantities, then choose Confirm and Submit. Only entered ingredients will establish checkpoints.":"Preview ready. Review the calculated variances, then choose Confirm and Submit. Only entered ingredients will establish checkpoints."}</p>}
         </div>
         <TableWrapper minWidth={countType==="FULL"?900:1120}>

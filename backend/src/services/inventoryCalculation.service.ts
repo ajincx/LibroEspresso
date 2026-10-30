@@ -111,9 +111,11 @@ export async function calculateExpectedInventory(
          WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
       WHERE ic.branch_id=$1 AND ici.inventory_item_id=$2 AND NOT ic.is_test_data AND ici.voided_at IS NULL
         AND (($4::text='OPENING' AND ic.count_date < $3::date) OR ($4::text<>'OPENING' AND ic.count_date <= $3::date))
-      ORDER BY ic.count_date DESC,
-               CASE ic.count_type WHEN 'CLOSING' THEN 0 WHEN 'FULL' THEN 1 ELSE 2 END,
-               COALESCE(ic.effective_at,ic.submitted_at) DESC LIMIT 1`,
+      ORDER BY COALESCE(
+                 ic.effective_at,
+                 (ic.count_date::timestamp + interval '1 day') AT TIME ZONE 'Asia/Manila'
+               ) DESC,
+               ic.submitted_at DESC LIMIT 1`,
     [branchId, inventoryItemId, countDate, calculationPhase],
   );
   const openingBaseline = await client.query<InventoryBaseline>(
@@ -263,7 +265,7 @@ export async function calculateExpectedInventoryBatch(
               ic.count_date::text "baselineDate",
               COALESCE(ic.effective_at,(ic.count_date::timestamp + interval '1 day') AT TIME ZONE 'Asia/Manila') "baselineAt",
               CASE ic.count_type WHEN 'OPENING' THEN 'DAILY_OPENING' WHEN 'CLOSING' THEN 'DAILY_CLOSING' ELSE 'PHYSICAL_COUNT' END::text "baselineSource",0 "sourcePriority",
-              CASE ic.count_type WHEN 'CLOSING' THEN 0 WHEN 'FULL' THEN 1 ELSE 2 END "checkpointPriority",ic.submitted_at "sourceOrderAt"
+              ic.submitted_at "sourceOrderAt"
          FROM inventory_count_items ici
          JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
          JOIN items item ON item."inventoryItemId"=ici.inventory_item_id
@@ -273,7 +275,7 @@ export async function calculateExpectedInventoryBatch(
           AND (($3::text='OPENING' AND ic.count_date < $2::date) OR ($3::text<>'OPENING' AND ic.count_date <= $2::date))
        UNION ALL
        SELECT obi.inventory_item_id,obi.quantity::float8,ob.effective_at::date::text,
-              ob.effective_at,'OPENING_BASELINE'::text,1,3,ob.effective_at
+              ob.effective_at,'OPENING_BASELINE'::text,1,ob.effective_at
          FROM inventory_opening_baseline_items obi
          JOIN inventory_opening_baselines ob ON ob.id=obi.opening_baseline_id
          JOIN items item ON item."inventoryItemId"=obi.inventory_item_id
@@ -281,7 +283,7 @@ export async function calculateExpectedInventoryBatch(
           AND (($3::text='OPENING' AND ob.effective_at < $2::date) OR ($3::text<>'OPENING' AND ob.effective_at < ($2::date + interval '1 day')))
        UNION ALL
        SELECT balance.inventory_item_id,balance.actual_quantity::float8,balance.as_of::date::text,
-              balance.as_of,'BALANCE'::text,2,4,balance.as_of
+              balance.as_of,'BALANCE'::text,2,balance.as_of
          FROM branch_inventory_balances balance
          JOIN items item ON item."inventoryItemId"=balance.inventory_item_id
         WHERE balance.branch_id=$1 AND NOT balance.is_test_data
@@ -297,7 +299,7 @@ export async function calculateExpectedInventoryBatch(
      ), baselines AS (
        SELECT DISTINCT ON (candidate."inventoryItemId") candidate.*
          FROM baseline_candidates candidate
-        ORDER BY candidate."inventoryItemId",candidate."baselineDate"::date DESC,candidate."checkpointPriority",candidate."sourcePriority",candidate."baselineAt" DESC,candidate."sourceOrderAt" DESC
+        ORDER BY candidate."inventoryItemId",candidate."baselineAt" DESC,candidate."sourcePriority",candidate."sourceOrderAt" DESC
      ), movement_totals AS (
        SELECT baseline."inventoryItemId",
               COALESCE(sum(movement.quantity) FILTER (WHERE movement.movement_type='RECEIPT'),0)::float8 received,

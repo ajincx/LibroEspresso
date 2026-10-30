@@ -8,6 +8,7 @@ suite("final inventory and purchase-order PostgreSQL workflow", () => {
   let pool: pg.Pool;
   let submitInventoryCount: Awaited<typeof import("./inventoryWorkflow.controller.js")>["submitInventoryCount"];
   let createPurchaseOrder: Awaited<typeof import("./operations.controller.js")>["createPurchaseOrder"];
+  let calculateExpectedInventory: Awaited<typeof import("../services/inventoryCalculation.service.js")>["calculateExpectedInventory"];
   let businessDate = "";
   let deliveryDate = "";
   let inventoryItemId = "";
@@ -66,7 +67,7 @@ suite("final inventory and purchase-order PostgreSQL workflow", () => {
     return result.state.body as { data: { count: { id: string; items: Array<{ varianceQuantity: number }> } } };
   }
 
-  async function insertCountCheckpoint(branchId: string, managerId: string, countDate: string, countType: "CLOSING" | "FULL") {
+  async function insertCountCheckpoint(branchId: string, managerId: string, countDate: string, countType: "CLOSING" | "FULL", quantity = 5000) {
     const count = await pool.query<{ id: string }>(
       `INSERT INTO inventory_counts(count_no,branch_id,count_date,submitted_by,count_type,effective_at)
        VALUES($1,$2,$3,$4,$5::varchar(10),CASE WHEN $5::varchar(10)='FULL' THEN NULL ELSE $3::date + time '20:00' END) RETURNING id`,
@@ -75,8 +76,8 @@ suite("final inventory and purchase-order PostgreSQL workflow", () => {
     await pool.query(
       `INSERT INTO inventory_count_items(inventory_count_id,inventory_item_id,previous_actual_quantity,stock_received,
          expected_consumption,approved_adjustments,expected_quantity,actual_quantity,variance_quantity,variance_value,unit)
-       VALUES($1,$2,5000,0,0,0,5000,5000,0,0,$3)`,
-      [count.rows[0]!.id,inventoryItemId,inventoryUnit],
+       VALUES($1,$2,$4,0,0,0,$4,$4,0,0,$3)`,
+      [count.rows[0]!.id,inventoryItemId,inventoryUnit,quantity],
     );
   }
 
@@ -166,6 +167,7 @@ suite("final inventory and purchase-order PostgreSQL workflow", () => {
     pool = new pg.Pool({ connectionString: databaseUrl });
     ({ submitInventoryCount } = await import("./inventoryWorkflow.controller.js"));
     ({ createPurchaseOrder } = await import("./operations.controller.js"));
+    ({ calculateExpectedInventory } = await import("../services/inventoryCalculation.service.js"));
     const { manilaBusinessDate } = await import("../services/businessTime.service.js");
     businessDate = manilaBusinessDate();
     const next = new Date(`${businessDate}T12:00:00+08:00`);
@@ -248,6 +250,23 @@ suite("final inventory and purchase-order PostgreSQL workflow", () => {
       [fixture.branchId],
     );
     expect(result.rows[0]).toEqual({ full: 1, purchaseOrders: 1 });
+  });
+
+  it("uses a later same-day Full Count instead of the earlier Closing checkpoint on the next day", async () => {
+    const checkpointDate = mondayOfPreviousCompletedWeek(businessDate);
+    const nextDate = dateOffset(checkpointDate,1);
+    const fixture = await createBranchFixture(`LATEST-${crypto.randomUUID().slice(0,8)}`,checkpointDate);
+    await insertCountCheckpoint(fixture.branchId,fixture.managerId,checkpointDate,"CLOSING",5000);
+    await insertCountCheckpoint(fixture.branchId,fixture.managerId,checkpointDate,"FULL",4800);
+
+    const expected = await calculateExpectedInventory(pool as never,fixture.branchId,inventoryItemId,nextDate,"OPENING");
+
+    expect(expected).toMatchObject({
+      previousActualQuantity:4800,
+      expectedQuantity:4800,
+      baselineDate:checkpointDate,
+      baselineSource:"PHYSICAL_COUNT",
+    });
   });
 
   it("serializes concurrent Full submissions and permits at most three valid counts in a calendar week", async () => {

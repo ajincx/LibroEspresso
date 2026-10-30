@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import type { ExpectedInventoryItem } from "../../types/inventoryWorkflow";
-import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, copyPreviousClosingEntries, copySameDayClosingEntries, displayedPhysicalCountVariance, filterPhysicalCountItems, fullCountCopySourceMessage, fullCountSubmissionBlockReason, initialPhysicalCountDate, inventoryCountColumns, isDailyCountColumnEditable, isFutureInventoryCountDate, mergeOpeningCorrectionEntries, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, PhysicalCountCorrectionDialog, PhysicalCountLoadingSkeleton, physicalCountCompletion, physicalCountCorrectionReasonError, physicalCountEntryFromCanonical, physicalCountPreviewVariance, physicalCountVarianceLabel, previousClosingCopyMessage, savedCountQuantities, showInventoryCountDateFilter, validPhysicalCountEntries } from "./InventoryCountPage";
+import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, confirmPhysicalCountCopy, copyPreviousClosingEntries, copySameDayClosingEntries, displayedPhysicalCountVariance, filterPhysicalCountItems, fullCountCopySourceMessage, fullCountSubmissionBlockReason, initialPhysicalCountDate, inventoryCountColumns, isDailyCountColumnEditable, isFutureInventoryCountDate, mergeOpeningCorrectionEntries, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, PhysicalCountCorrectionDialog, PhysicalCountLoadingSkeleton, physicalCountCompletion, physicalCountCorrectionReasonError, physicalCountEntryFromCanonical, physicalCountPreviewVariance, physicalCountVarianceLabel, previousClosingCopyMessage, previousPhysicalCopyMessage, savedCountQuantities, showInventoryCountDateFilter, validPhysicalCountEntries } from "./InventoryCountPage";
 import { buildEnteredPhysicalCountItems } from "./InventoryCountPage";
 
 const item = (inventoryItemId: string, sku: string, itemName: string): ExpectedInventoryItem => ({
@@ -59,6 +59,9 @@ describe("Daily partial physical counts",()=>{
     expect(previousClosingCopyMessage("2026-10-15")).toBe(
       "Values copied from the previous Closing Count on 2026-10-15. Review and confirm them before submitting.",
     );
+    expect(previousPhysicalCopyMessage({id:"full",countNo:"IC-FULL",countType:"FULL",countDate:"2026-10-16",submittedAt:"2026-10-16T15:00:00Z"})).toBe(
+      "Values copied from IC-FULL (Full Physical Count) on 2026-10-16. Review and confirm them before submitting.",
+    );
   });
 
   it("prefills only originally counted ingredients when editing an Opening Count",()=>{
@@ -83,7 +86,15 @@ describe("Daily partial physical counts",()=>{
     });
   });
 
-  it("prefills a Full Count from matching same-day Closing items and leaves uncounted ingredients blank",()=>{
+  it("requires confirmation before copied quantities replace manual entries",()=>{
+    const confirm=vi.fn(()=>false);
+    expect(confirmPhysicalCountCopy(0,confirm)).toBe(true);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(confirmPhysicalCountCopy(1,confirm)).toBe(false);
+    expect(confirm).toHaveBeenCalledOnce();
+  });
+
+  it("copies a latest physical checkpoint into a Full Count while leaving missing ingredients blank",()=>{
     expect(copySameDayClosingEntries(ingredients,[
       {inventoryItemId:"ice",actualQuantity:0},
       {inventoryItemId:"sugar",actualQuantity:3},
@@ -94,6 +105,7 @@ describe("Daily partial physical counts",()=>{
     });
     expect(fullCountCopySourceMessage({id:"closing",countNo:"IC-2026-00010",countType:"CLOSING",countDate:"2026-10-29",effectiveAt:"2026-10-29T12:00:00.000Z",submittedAt:"2026-10-29T12:01:00.000Z"},"2026-10-29")).toContain("finalized CLOSING checkpoint IC-2026-00010");
     expect(fullCountCopySourceMessage({id:"closing",countNo:"IC-2026-00010",countType:"CLOSING",countDate:"2026-10-29",effectiveAt:null,submittedAt:"2026-10-29T12:01:00.000Z"},"2026-10-29")).toContain("not physically verified");
+    expect(fullCountCopySourceMessage({id:"full",countNo:"IC-2026-00009",countType:"FULL",countDate:"2026-10-28",effectiveAt:null,submittedAt:"2026-10-28T13:01:00.000Z"},"2026-10-29")).toContain("finalized FULL checkpoint IC-2026-00009");
   });
 
   it("blocks Full entry until Closing and after the weekly limit while allowing the ready state",()=>{

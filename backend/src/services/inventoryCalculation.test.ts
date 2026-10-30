@@ -58,7 +58,11 @@ describe("thesis inventory calculation formulas", () => {
     expect(result.baselineDate).toBe("2026-09-16");
     expect(result.baselineSource).toBe("PHYSICAL_COUNT");
     expect(result.expectedQuantity).toBe(200);
-    expect(query.mock.calls.find(([sql]) => String(sql).includes("FROM inventory_count_items ici"))?.[0]).toContain("ic.count_date <= $3::date");
+    const checkpointSql = String(query.mock.calls.find(([sql]) => String(sql).includes("FROM inventory_count_items ici"))?.[0]);
+    expect(checkpointSql).toContain("ic.count_date <= $3::date");
+    expect(checkpointSql).toContain("COALESCE(");
+    expect(checkpointSql).toContain("AT TIME ZONE 'Asia/Manila'");
+    expect(checkpointSql).not.toContain("CASE ic.count_type WHEN 'CLOSING'");
   });
 
   it("uses a start-of-day opening baseline and includes same-day accepted POS usage after source deactivation", async () => {
@@ -151,6 +155,8 @@ describe("thesis inventory calculation formulas", () => {
     expect(sql).toContain("psi.transaction_timestamp > baseline.\"baselineAt\"");
     expect(sql).toContain("psi.transaction_timestamp <= COALESCE($4::timestamptz");
     expect(sql).toContain("balance.as_of::date <= $2::date");
+    expect(sql).toContain('ORDER BY candidate."inventoryItemId",candidate."baselineAt" DESC');
+    expect(sql).not.toContain('"checkpointPriority"');
   });
 
   describe("computeExpectedStock", () => {

@@ -337,13 +337,23 @@ export interface InventoryCountSummary {
 }
 
 export type InventoryCountType = "FULL" | "OPENING" | "CLOSING";
+export interface PhysicalInventoryCountReference {
+  id: string;
+  countNo: string;
+  countType: InventoryCountType;
+  countDate: string;
+  submittedAt: string;
+  effectiveAt?: string | null;
+}
 export interface DailyInventoryCountContext {
   countType: "OPENING" | "CLOSING";
   openingCount: { id:string;countNo:string;countType:"OPENING";submittedAt:string } | null;
   closingCount: { id:string;countNo:string;countType:"CLOSING";submittedAt:string } | null;
-  previousClosingItems: Array<{inventoryItemId:string;actualQuantity:number;countDate:string;countType?:"CLOSING"|"FULL"}>;
+  previousClosingItems: Array<{inventoryItemId:string;actualQuantity:number;countDate:string;countType?:InventoryCountType}>;
   previousClosingDate: string | null;
-  previousClosingCountType?: "CLOSING" | "FULL" | null;
+  previousClosingCountType?: InventoryCountType | null;
+  latestPhysicalCount?: PhysicalInventoryCountReference | null;
+  latestPhysicalItems?: Array<{inventoryItemId:string;actualQuantity:number}>;
   startingStockCopyEligible?: boolean;
   startingStockSource?: { id:string;baselineNo:string;effectiveAt:string } | null;
   startingStockItems?: Array<{inventoryItemId:string;actualQuantity:number}>;
@@ -355,6 +365,8 @@ export interface FullInventoryCountContext {
   closingCount: { id:string;countNo:string;countType:"CLOSING";submittedAt:string;countDate?:string;effectiveAt?:string|null } | null;
   fullCount: { id:string;countNo:string;countType:"FULL";submittedAt:string } | null;
   sameDayClosingItems: Array<{inventoryItemId:string;actualQuantity:number}>;
+  latestPhysicalCount?: PhysicalInventoryCountReference | null;
+  latestPhysicalItems?: Array<{inventoryItemId:string;actualQuantity:number}>;
   weeklyFullCount: number;
   weeklyFullLimit: number;
 }

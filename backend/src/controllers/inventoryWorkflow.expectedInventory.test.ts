@@ -77,6 +77,8 @@ describe("expected inventory partial baseline availability", () => {
         closingCount: null,
         fullCount: null,
         sameDayClosingItems: [],
+        latestPhysicalCount: null,
+        latestPhysicalItems: [],
         weeklyFullCount: 0,
         weeklyFullLimit: 3,
       },
@@ -88,7 +90,8 @@ describe("expected inventory partial baseline availability", () => {
     mocks.calculateExpectedInventoryBatch.mockResolvedValueOnce({ items: [expectedItem], unavailableItems: [] });
     mocks.poolQuery.mockImplementation(async (statement: unknown) => {
       const sql = String(statement);
-      if (sql.includes("count_type IN ('CLOSING','FULL')")) return { rows: [{ id: "closing-1", countNo: "IC-CLOSE", countType: "CLOSING", submittedAt: "2026-10-23T10:00:00Z" }] };
+      if (sql.includes("count_type IN ('CLOSING','FULL')")) return { rows: [{ id: "closing-1", countNo: "IC-CLOSE", countType: "CLOSING", countDate: "2026-10-23", effectiveAt: "2026-10-23T10:00:00Z", submittedAt: "2026-10-23T10:00:00Z" }] };
+      if (sql.includes("FROM inventory_counts candidate")) return { rows: [{ id: "closing-1", countNo: "IC-CLOSE", countType: "CLOSING", countDate: "2026-10-23", effectiveAt: "2026-10-23T10:00:00Z", submittedAt: "2026-10-23T10:00:00Z" }] };
       if (sql.includes("ici.inventory_count_id=$1")) return { rows: [{ inventoryItemId: validItem.id, actualQuantity: 4980 }] };
       if (sql.includes('count(*)::int "count"')) return { rows: [{ count: 2 }] };
       return { rows: [] };
@@ -103,6 +106,8 @@ describe("expected inventory partial baseline availability", () => {
     expect(json).toHaveBeenCalledWith({ success: true, data: expect.objectContaining({
       closingCount: expect.objectContaining({ id: "closing-1" }),
       sameDayClosingItems: [{ inventoryItemId: validItem.id, actualQuantity: 4980 }],
+      latestPhysicalCount: expect.objectContaining({ id: "closing-1", countType: "CLOSING" }),
+      latestPhysicalItems: [{ inventoryItemId: validItem.id, actualQuantity: 4980 }],
       weeklyFullCount: 2,
       weeklyFullLimit: 3,
     }) });
@@ -121,7 +126,7 @@ describe("expected inventory partial baseline availability", () => {
     });
   });
 
-  it("prefills Opening only from the single latest valid prior Closing Count", async () => {
+  it("prefills Opening from the chronologically latest prior physical checkpoint", async () => {
     const expectedItem = {
       inventoryItemId: validItem.id,
       sku: validItem.sku,
@@ -134,10 +139,14 @@ describe("expected inventory partial baseline availability", () => {
       const sql = String(statement);
       if (sql.includes("count_type IN ('OPENING','CLOSING')")) return { rows: [] };
       if (sql.includes("WITH previous_count AS")) return { rows: [{
+        id: "full-1",
+        countNo: "IC-FULL",
         inventoryItemId: validItem.id,
         actualQuantity: 5100,
         countDate: "2026-10-02",
-        countType: "CLOSING",
+        countType: "FULL",
+        effectiveAt: null,
+        submittedAt: "2026-10-02T13:00:00Z",
       }] };
       if (sql.includes("SELECT EXISTS")) return { rows: [{ complete: false }] };
       return { rows: [] };
@@ -150,17 +159,19 @@ describe("expected inventory partial baseline availability", () => {
     } as never, { json } as never, vi.fn());
 
     const checkpointQuery = String(mocks.poolQuery.mock.calls.find(([sql]) => String(sql).includes("WITH previous_count AS"))?.[0]);
-    expect(checkpointQuery).toContain("count_type='CLOSING'");
-    expect(checkpointQuery).not.toContain("count_type IN ('CLOSING','FULL')");
+    expect(checkpointQuery).not.toContain("count_type='CLOSING'");
+    expect(checkpointQuery).toContain("AT TIME ZONE 'Asia/Manila'");
     expect(checkpointQuery).toContain("LIMIT 1");
     expect(checkpointQuery).toContain("ici.voided_at IS NULL");
     expect(json).toHaveBeenCalledWith({
       success: true,
       data: expect.objectContaining({
         countType: "OPENING",
-        previousClosingItems: [expect.objectContaining({ countType: "CLOSING", actualQuantity: 5100 })],
+        previousClosingItems: [expect.objectContaining({ countType: "FULL", actualQuantity: 5100 })],
         previousClosingDate: "2026-10-02",
-        previousClosingCountType: "CLOSING",
+        previousClosingCountType: "FULL",
+        latestPhysicalCount: expect.objectContaining({ id: "full-1", countType: "FULL", countNo: "IC-FULL" }),
+        latestPhysicalItems: [{ inventoryItemId: validItem.id, actualQuantity: 5100 }],
       }),
     });
   });
