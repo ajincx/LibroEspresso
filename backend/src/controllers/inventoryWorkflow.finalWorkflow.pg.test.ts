@@ -70,7 +70,8 @@ suite("final inventory and purchase-order PostgreSQL workflow", () => {
   async function insertCountCheckpoint(branchId: string, managerId: string, countDate: string, countType: "CLOSING" | "FULL", quantity = 5000) {
     const count = await pool.query<{ id: string }>(
       `INSERT INTO inventory_counts(count_no,branch_id,count_date,submitted_by,count_type,effective_at)
-       VALUES($1,$2,$3,$4,$5::varchar(10),CASE WHEN $5::varchar(10)='FULL' THEN NULL ELSE $3::date + time '20:00' END) RETURNING id`,
+       VALUES($1,$2,$3,$4,$5::varchar(10),CASE WHEN $5::varchar(10)='FULL' THEN NULL
+         ELSE (($3::date + time '20:00') AT TIME ZONE 'Asia/Manila') END) RETURNING id`,
       [`IC-E2E-${crypto.randomUUID().slice(0, 8)}`,branchId,countDate,managerId,countType],
     );
     await pool.query(
