@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { act, create } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { CalendarDateField } from "../../components/ModuleUi";
-import { displayStatus, InventoryCountDateFilter, inventoryCountDateMax, inventoryCountDateRangeError, varianceClassificationLabel, varianceScopeForStatus, varianceTypeLabel, varianceWithoutInvestigationLabel } from "./VariancePage";
+import { displayStatus, InventoryCountDateFilter, inventoryCountDateMax, inventoryCountDateRangeError, varianceBranchFilter, varianceClassificationLabel, varianceScopeForStatus, varianceTypeLabel, varianceWithoutInvestigationLabel } from "./VariancePage";
 
 describe("inventory count date filter", () => {
   const manilaOctober27 = new Date("2026-10-26T16:30:00.000Z");
@@ -37,6 +37,18 @@ describe("inventory count date filter", () => {
     act(() => field.props.onChange("2026-10-27"));
     expect(onChange).toHaveBeenCalledWith("2026-10-27");
     expect(onValidationError).toHaveBeenLastCalledWith("");
+  });
+});
+
+describe("variance deep-link branch scope", () => {
+  it("uses the linked branch for an Owner and preserves the assigned branch for a Manager", () => {
+    expect(varianceBranchFilter("OWNER", "ALL", "lipa-branch")).toBe("lipa-branch");
+    expect(varianceBranchFilter("BRANCH_MANAGER", "gulod-branch", "lipa-branch")).toBe("gulod-branch");
+  });
+
+  it("falls back to the existing scope when no branch context is supplied", () => {
+    expect(varianceBranchFilter("OWNER", "ALL", "")).toBe("");
+    expect(varianceBranchFilter("OWNER", "gulod-branch", "")).toBe("gulod-branch");
   });
 });
 

@@ -1,7 +1,7 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { AnomalyCaseViewButton, missingInvestigationVariancePath, SHRINKAGE_STATUS_FILTER_OPTIONS, ShrinkageAiAnalysisPanel } from "./ShrinkagePage";
+import { AnomalyCaseViewButton, MissingInvestigationVarianceButton, missingInvestigationVariancePath, SHRINKAGE_STATUS_FILTER_OPTIONS, ShrinkageAiAnalysisPanel } from "./ShrinkagePage";
 
 describe("System-Detected Anomaly filters", () => {
   it("consolidates every existing status into one dropdown option set", () => {
@@ -15,9 +15,18 @@ describe("System-Detected Anomaly filters", () => {
   });
 
   it("links a missing material case back to its exact variance date and ingredient", () => {
-    expect(missingInvestigationVariancePath({ countDate: "2026-10-25", inventoryItemName: "Bacon & Eggs" })).toBe(
-      "/variance?countDate=2026-10-25&query=Bacon%20%26%20Eggs",
+    expect(missingInvestigationVariancePath({ branchId: "branch-lipa", countItemId: "count-item-15", countDate: "2026-10-25", inventoryItemName: "Bacon & Eggs" })).toBe(
+      "/inventory/variance?countDate=2026-10-25&branchId=branch-lipa&countItemId=count-item-15&query=Bacon%20%26%20Eggs",
     );
+  });
+
+  it("renders the variance locator as a visible outlined search action", () => {
+    const markup = renderToStaticMarkup(React.createElement(MissingInvestigationVarianceButton, { onClick: () => undefined }));
+    expect(markup).toContain("lucide-search");
+    expect(markup).toContain("Find in Variance Records");
+    expect(markup).toContain("border-[var(--app-primary)]");
+    expect(markup).toContain("focus-visible:ring-[var(--app-primary)]");
+    expect(markup).toContain("cursor-pointer");
   });
 
   it("renders the existing anomaly action as a bordered Eye and View button", () => {

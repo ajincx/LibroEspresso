@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle, Eye, RefreshCw, SearchCheck, ShieldCheck, Sparkles, X } from "lucide-react";
+import { AlertTriangle, CheckCircle, Eye, RefreshCw, Search, SearchCheck, ShieldCheck, Sparkles, X } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { useAuth } from "../../contexts/AuthContext";
@@ -12,13 +12,14 @@ import type { IncidentType } from "../../types/operations";
 import { ShrinkageIncidentReports } from "./ShrinkageIncidentReports";
 import { CalendarDateField, Select, SkeletonBlock, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, TableLoadingRow } from "../../components/ModuleUi";
 import { ControlledActionDialog } from "../../components/ControlledActionDialog";
+import { pagePaths } from "../../routes/routeConfig";
 import { formatAppDate } from "../../utils/appPreferences";
 import { classificationLabel, evidenceBasisOptions, incidentTypeLabel, incidentTypeOptions, managerClassificationOptions } from "../../utils/shrinkageTaxonomy";
 const formatDate = (value: string | null) => value ? formatAppDate(value, true) : "—";
 
 const emptyMetrics: ShrinkageMetrics = { detectedValue: 0, detected: 0, pending: 0, spoilage: 0, wastage: 0, pilferage: 0 };
-export const missingInvestigationVariancePath = (item: Pick<MissingShrinkageInvestigation, "countDate" | "inventoryItemName">) =>
-  `/variance?countDate=${encodeURIComponent(item.countDate)}&query=${encodeURIComponent(item.inventoryItemName)}`;
+export const missingInvestigationVariancePath = (item: Pick<MissingShrinkageInvestigation, "branchId" | "countItemId" | "countDate" | "inventoryItemName">) =>
+  `${pagePaths.variance}?countDate=${encodeURIComponent(item.countDate)}&branchId=${encodeURIComponent(item.branchId)}&countItemId=${encodeURIComponent(item.countItemId)}&query=${encodeURIComponent(item.inventoryItemName)}`;
 export const SHRINKAGE_STATUS_FILTER_OPTIONS: Array<{ value: ShrinkageStatus | ""; label: string }> = [
   { value: "", label: "All Statuses" },
   { value: "DETECTED", label: "Needs Investigation" },
@@ -166,7 +167,7 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
     <div className="flex gap-3 p-4 rounded-2xl border" style={{ borderColor: "var(--app-border)", background: "var(--app-primary-faint)" }}><SearchCheck size={20} style={{ color: "var(--app-primary)" }} /><div><div className="text-sm font-semibold">System-generated workflow</div><p className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>POS sales and standard recipes calculate expected usage. Physical counts create variance automatically. Shortages above tolerance become investigation cases; Managers document findings but cannot edit the calculated quantities.</p></div></div>
 
     {!loading && missingInvestigationCount > 0 && <section aria-label="Material variances missing investigation records" className="rounded-2xl border p-4" style={{ borderColor: "var(--app-danger)", background: "var(--app-danger-bg)" }}>
-      <div className="flex gap-3"><AlertTriangle size={20} className="shrink-0" style={{ color: "var(--app-danger)" }}/><div className="min-w-0 flex-1"><h2 className="text-sm font-bold">{missingInvestigationCount} material variance{missingInvestigationCount === 1 ? "" : "s"} missing an investigation record</h2><p className="mt-1 text-xs text-[var(--app-text-muted)]">These historical shortages exceed the configured tolerance, but no authoritative non-test investigation exists. They are shown for review only; no case or classification was created automatically.</p><div className="mt-3 grid gap-2">{missingInvestigations.map((item)=><div key={item.countItemId} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-xs"><span><strong>{item.inventoryItemName}</strong> · {item.countNo} · {formatAppDate(item.countDate)} · {item.varianceQuantity.toFixed(2)} {item.unit}</span><button type="button" className="font-semibold text-[var(--app-primary)]" onClick={()=>navigate(missingInvestigationVariancePath(item))}>Find in Variance Records</button></div>)}</div></div></div>
+      <div className="flex gap-3"><AlertTriangle size={20} className="shrink-0" style={{ color: "var(--app-danger)" }}/><div className="min-w-0 flex-1"><h2 className="text-sm font-bold">{missingInvestigationCount} material variance{missingInvestigationCount === 1 ? "" : "s"} missing an investigation record</h2><p className="mt-1 text-xs text-[var(--app-text-muted)]">These historical shortages exceed the configured tolerance, but no authoritative non-test investigation exists. They are shown for review only; no case or classification was created automatically.</p><div className="mt-3 grid gap-2">{missingInvestigations.map((item)=><div key={item.countItemId} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-xs"><span><strong>{item.inventoryItemName}</strong> · {item.countNo} · {formatAppDate(item.countDate)} · {item.varianceQuantity.toFixed(2)} {item.unit}</span><MissingInvestigationVarianceButton onClick={()=>navigate(missingInvestigationVariancePath(item))}/></div>)}</div></div></div>
     </section>}
 
     <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">{[
@@ -284,6 +285,16 @@ export function AnomalyCaseViewButton({ reportNo, onClick, title }: { reportNo: 
     aria-label={`View case ${reportNo}`}
   >
     <Eye size={14} /> View
+  </button>;
+}
+
+export function MissingInvestigationVarianceButton({ onClick }: { onClick: () => void }) {
+  return <button
+    type="button"
+    onClick={onClick}
+    className="inline-flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-[var(--app-primary)] bg-[var(--app-surface)] px-3 py-2 text-xs font-semibold text-[var(--app-primary)] transition-colors hover:bg-[var(--app-primary-faint)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] focus-visible:ring-offset-2 sm:w-auto"
+  >
+    <Search size={14} aria-hidden="true" /> Find in Variance Records
   </button>;
 }
 

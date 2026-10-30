@@ -81,6 +81,11 @@ export function InventoryCountDateFilter({ value, onChange, onValidationError, n
   }}/>;
 }
 
+export function varianceBranchFilter(role: "OWNER" | "BRANCH_MANAGER" | "STAFF" | undefined, scopeBranchId: string, requestedBranchId: string) {
+  if (role === "OWNER" && requestedBranchId) return requestedBranchId;
+  return scopeBranchId === "ALL" ? "" : scopeBranchId;
+}
+
 export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string }) {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -88,7 +93,9 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
   const owner = user?.role === "OWNER";
   const [records, setRecords] = useState<VarianceRecord[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
-  const [branchId, setBranchId] = useState(scopeBranchId === "ALL" ? "" : scopeBranchId);
+  const requestedBranchId = searchParams.get("branchId") ?? "";
+  const requestedCountItemId = searchParams.get("countItemId") ?? "";
+  const [branchId, setBranchId] = useState(varianceBranchFilter(user?.role, scopeBranchId, requestedBranchId));
   const requestedCountDate = searchParams.get("countDate") ?? "";
   const requestedCountDateError = inventoryCountDateRangeError(requestedCountDate);
   const [countDate, setCountDate] = useState(requestedCountDateError ? "" : requestedCountDate);
@@ -106,13 +113,13 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
     finally { setLoading(false); }
   };
   useEffect(() => { void load(); }, [branchId, countDate, status]);
-  useEffect(() => { if (owner) setBranchId(scopeBranchId === "ALL" ? "" : scopeBranchId); }, [owner, scopeBranchId]);
+  useEffect(() => { if (owner) setBranchId(varianceBranchFilter(user?.role, scopeBranchId, requestedBranchId)); }, [owner, requestedBranchId, scopeBranchId, user?.role]);
   useEffect(() => { if (owner) void masterDataService.branches().then(setBranches).catch(() => setBranches([])); }, [owner]);
 
   const filtered = useMemo(() => records.filter((record) => {
     const matchesQuery = !query.trim() || `${record.sku} ${record.itemName} ${record.branchName} ${record.countNo}`.toLowerCase().includes(query.trim().toLowerCase());
-    return matchesQuery && (!status || displayStatus(record) === status);
-  }), [records, query, status]);
+    return matchesQuery && (!status || displayStatus(record) === status) && (!requestedCountItemId || record.countItemId === requestedCountItemId);
+  }), [records, query, requestedCountItemId, status]);
 
   const metrics = useMemo(() => ({
     net: records.reduce((sum, record) => sum + record.varianceValue, 0),
@@ -207,7 +214,7 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
             <TableEmptyRow colSpan={owner ? 13 : 12} title="No matching variance records" subtitle="No physical count discrepancies match the selected criteria." />
           ) : (
             filtered.map((record) => (
-              <TR key={record.countItemId}>
+              <TR key={record.countItemId} className={requestedCountItemId === record.countItemId ? "bg-[var(--app-primary-faint)]" : ""}>
                 <TD mono><span className="font-semibold text-[var(--app-primary)]">{record.countNo}</span></TD>
                   <TD muted>{record.countType === "OPENING" ? "Opening" : record.countType === "CLOSING" ? "Closing" : "Full"}</TD>
                   <TD muted>{formatAppDate(record.countDate)}</TD>
