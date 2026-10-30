@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { act, create } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { CalendarDateField } from "../../components/ModuleUi";
-import { displayStatus, InventoryCountDateFilter, inventoryCountDateMax, inventoryCountDateRangeError, varianceBranchFilter, varianceClassificationLabel, varianceScopeForStatus, varianceTypeLabel, varianceWithoutInvestigationLabel } from "./VariancePage";
+import { clearVarianceFilterParams, displayStatus, InventoryCountDateFilter, inventoryCountDateMax, inventoryCountDateRangeError, updateVarianceFilterParams, varianceBranchFilter, varianceClassificationLabel, varianceScopeForStatus, varianceStatusParam, varianceTypeLabel, varianceWithoutInvestigationLabel } from "./VariancePage";
 
 describe("inventory count date filter", () => {
   const manilaOctober27 = new Date("2026-10-26T16:30:00.000Z");
@@ -49,6 +49,32 @@ describe("variance deep-link branch scope", () => {
   it("falls back to the existing scope when no branch context is supplied", () => {
     expect(varianceBranchFilter("OWNER", "ALL", "")).toBe("");
     expect(varianceBranchFilter("OWNER", "gulod-branch", "")).toBe("gulod-branch");
+    expect(varianceBranchFilter("OWNER", "lipa-branch", "ALL")).toBe("");
+  });
+
+  it("removes hidden targeting after a visible filter changes without clearing the other filters", () => {
+    const deepLink = new URLSearchParams("countDate=2026-10-28&branchId=lipa-branch&countItemId=item-15&query=Asian+Noodles");
+    const afterDateClear = updateVarianceFilterParams(deepLink, { countDate: "" });
+    expect(afterDateClear.get("countItemId")).toBeNull();
+    expect(afterDateClear.get("countDate")).toBeNull();
+    expect(afterDateClear.get("branchId")).toBe("lipa-branch");
+    expect(afterDateClear.get("query")).toBe("Asian Noodles");
+
+    const afterAllBranches = updateVarianceFilterParams(afterDateClear, { branchId: "ALL" });
+    expect(afterAllBranches.get("branchId")).toBe("ALL");
+    const afterSearchClear = updateVarianceFilterParams(afterAllBranches, { query: "" });
+    expect(afterSearchClear.get("query")).toBeNull();
+  });
+
+  it("clears every visible and hidden filter while preserving Owner versus Manager scope", () => {
+    expect(clearVarianceFilterParams(true).toString()).toBe("branchId=ALL");
+    expect(clearVarianceFilterParams(false).toString()).toBe("");
+  });
+
+  it("accepts only supported status values restored through browser history", () => {
+    expect(varianceStatusParam("DETECTED")).toBe("DETECTED");
+    expect(varianceStatusParam("unsupported")).toBe("");
+    expect(varianceStatusParam(null)).toBe("");
   });
 });
 

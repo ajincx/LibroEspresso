@@ -24,6 +24,31 @@ type DisplayStatus =
   | "REVIEWED"
   | "MISSING_INVESTIGATION";
 
+const displayStatuses = new Set<DisplayStatus>([
+  "MATCHED", "SHORTAGE", "SHORTAGE_WITHIN_TOLERANCE", "EXCESS", "EXCESS_WITHIN_TOLERANCE",
+  "DETECTED", "VERIFIED", "PENDING_REVIEW", "REVIEWED", "MISSING_INVESTIGATION",
+]);
+
+export function varianceStatusParam(value: string | null): DisplayStatus | "" {
+  return value && displayStatuses.has(value as DisplayStatus) ? value as DisplayStatus : "";
+}
+
+export function updateVarianceFilterParams(current: URLSearchParams, updates: Partial<Record<"countDate" | "branchId" | "query" | "status", string>>) {
+  const next = new URLSearchParams(current);
+  next.delete("countItemId");
+  for (const [key, value] of Object.entries(updates)) {
+    if (value) next.set(key, value);
+    else next.delete(key);
+  }
+  return next;
+}
+
+export function clearVarianceFilterParams(owner: boolean) {
+  const next = new URLSearchParams();
+  if (owner) next.set("branchId", "ALL");
+  return next;
+}
+
 export function displayStatus(record: VarianceRecord): DisplayStatus {
   if (record.anomalyStatus) return record.anomalyStatus;
   const v = record.varianceQuantity;
@@ -82,6 +107,7 @@ export function InventoryCountDateFilter({ value, onChange, onValidationError, n
 }
 
 export function varianceBranchFilter(role: "OWNER" | "BRANCH_MANAGER" | "STAFF" | undefined, scopeBranchId: string, requestedBranchId: string) {
+  if (role === "OWNER" && requestedBranchId === "ALL") return "";
   if (role === "OWNER" && requestedBranchId) return requestedBranchId;
   return scopeBranchId === "ALL" ? "" : scopeBranchId;
 }
@@ -89,7 +115,8 @@ export function varianceBranchFilter(role: "OWNER" | "BRANCH_MANAGER" | "STAFF" 
 export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string }) {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const searchParamKey = searchParams.toString();
   const owner = user?.role === "OWNER";
   const [records, setRecords] = useState<VarianceRecord[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -101,7 +128,7 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
   const [countDate, setCountDate] = useState(requestedCountDateError ? "" : requestedCountDate);
   const [dateError, setDateError] = useState(requestedCountDateError);
   const [query, setQuery] = useState(searchParams.get("query") ?? "");
-  const [status, setStatus] = useState<DisplayStatus | "">("");
+  const [status, setStatus] = useState<DisplayStatus | "">(varianceStatusParam(searchParams.get("status")));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [detailTarget,setDetailTarget]=useState<VarianceRecord|null>(null);
@@ -113,8 +140,30 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
     finally { setLoading(false); }
   };
   useEffect(() => { void load(); }, [branchId, countDate, status]);
-  useEffect(() => { if (owner) setBranchId(varianceBranchFilter(user?.role, scopeBranchId, requestedBranchId)); }, [owner, requestedBranchId, scopeBranchId, user?.role]);
+  useEffect(() => {
+    const nextCountDate = searchParams.get("countDate") ?? "";
+    const nextDateError = inventoryCountDateRangeError(nextCountDate);
+    setCountDate(nextDateError ? "" : nextCountDate);
+    setDateError(nextDateError);
+    setQuery(searchParams.get("query") ?? "");
+    setStatus(varianceStatusParam(searchParams.get("status")));
+    setBranchId(varianceBranchFilter(user?.role, scopeBranchId, searchParams.get("branchId") ?? ""));
+  }, [scopeBranchId, searchParamKey, user?.role]);
   useEffect(() => { if (owner) void masterDataService.branches().then(setBranches).catch(() => setBranches([])); }, [owner]);
+
+  const updateFilter = (key: "countDate" | "branchId" | "query" | "status", value: string) => {
+    if (key === "countDate") setCountDate(value);
+    if (key === "branchId") setBranchId(value);
+    if (key === "query") setQuery(value);
+    if (key === "status") setStatus(varianceStatusParam(value));
+    setSearchParams(updateVarianceFilterParams(searchParams, { [key]: key === "branchId" && owner && !value ? "ALL" : value }), { replace: true });
+  };
+
+  const clearFilters = () => {
+    setCountDate(""); setDateError(""); setQuery(""); setStatus("");
+    if (owner) setBranchId("");
+    setSearchParams(clearVarianceFilterParams(owner), { replace: true });
+  };
 
   const filtered = useMemo(() => records.filter((record) => {
     const matchesQuery = !query.trim() || `${record.sku} ${record.itemName} ${record.branchName} ${record.countNo}`.toLowerCase().includes(query.trim().toLowerCase());
@@ -137,8 +186,9 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
 
   return <div className="p-4 md:p-6 space-y-5">
     <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4"><div><h1 className="text-xl font-bold">Variance &amp; Discrepancies</h1><p className="text-sm mt-1" style={{ color: "var(--app-text-muted)" }}>System-calculated comparison of submitted physical counts and expected inventory (Actual − Expected). Negative values indicate shortages.</p></div><div className="flex gap-2 flex-wrap">
-      <InventoryCountDateFilter value={countDate} onChange={setCountDate} onValidationError={setDateError}/>
-      {owner && <Select value={branchId} onChange={setBranchId} options={[{ value: "", label: "All Branches" }, ...branches.map((branch) => ({ value: branch.id, label: branch.name }))]}/>}
+      <InventoryCountDateFilter value={countDate} onChange={(value) => updateFilter("countDate", value)} onValidationError={setDateError}/>
+      {owner && <Select value={branchId} onChange={(value) => updateFilter("branchId", value)} options={[{ value: "", label: "All Branches" }, ...branches.map((branch) => ({ value: branch.id, label: branch.name }))]}/>}
+      {(countDate || query || status || requestedCountItemId || (owner && branchId)) && <button type="button" onClick={clearFilters} className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--app-border)] px-3 py-2 text-sm font-semibold hover:bg-[var(--app-surface-muted)]"><X size={14}/>Clear Filters</button>}
       <button onClick={() => void load()} className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border text-sm font-semibold"><RefreshCw size={14} />Refresh</button>
     </div></div>
     {dateError && <p role="alert" className="text-sm text-[var(--app-danger)]">{dateError}</p>}
@@ -166,13 +216,13 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
         <>
           <SearchInput
             value={query}
-            onChange={setQuery}
+            onChange={(value) => updateFilter("query", value)}
             placeholder="Search item, SKU, count, or branch…"
             width={280}
           />
           <Select
             value={status}
-            onChange={(value) => setStatus(value as DisplayStatus | "")}
+            onChange={(value) => updateFilter("status", value)}
             options={[
               { value: "", label: "All Discrepancies" },
               { value: "MATCHED", label: "Matched" },
