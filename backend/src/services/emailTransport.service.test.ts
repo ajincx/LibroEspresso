@@ -8,7 +8,7 @@ vi.mock("../config/env.js",()=>({env:{
   SMTP_FROM:"mailer@example.com",PASSWORD_RESET_URL_BASE:"https://libro-espresso.vercel.app/reset-password",
 }}));
 
-import { emailDeliveryConfigured,resetEmailTransportForTests,sendExternalEmail,verifyEmailTransport } from "./emailTransport.service.js";
+import { emailDeliveryConfigured,resetEmailTransportForTests,sanitizeEmailDeliveryErrorCode,sendExternalEmail,verifyEmailTransport } from "./emailTransport.service.js";
 
 describe("Gmail SMTP transport",()=>{
   beforeEach(()=>{
@@ -32,5 +32,14 @@ describe("Gmail SMTP transport",()=>{
     await expect(verifyEmailTransport()).rejects.toMatchObject({code:"ETIMEDOUT"});
     mocks.sendMail.mockRejectedValueOnce(Object.assign(new Error("unavailable"),{code:"EAUTH"}));
     await expect(sendExternalEmail({to:"recipient@example.com",subject:"Test",text:"Text",html:"<p>Text</p>"})).rejects.toMatchObject({code:"EAUTH"});
+  });
+  it.each(["EAUTH","ETIMEDOUT","ECONNECTION","ECONNREFUSED","ENOTFOUND","ESOCKET","ETLS"])(
+    "allows the sanitized SMTP failure code %s",
+    (code)=>expect(sanitizeEmailDeliveryErrorCode({code,message:"sensitive SMTP response"})).toBe(code),
+  );
+  it("uses a generic category for unknown or malformed failures",()=>{
+    expect(sanitizeEmailDeliveryErrorCode({code:"EUNKNOWN",message:"sensitive SMTP response"})).toBe("SMTP_DELIVERY_FAILED");
+    expect(sanitizeEmailDeliveryErrorCode(new Error("sensitive SMTP response"))).toBe("SMTP_DELIVERY_FAILED");
+    expect(sanitizeEmailDeliveryErrorCode("sensitive SMTP response")).toBe("SMTP_DELIVERY_FAILED");
   });
 });

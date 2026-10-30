@@ -2,7 +2,25 @@ import nodemailer, { type Transporter } from "nodemailer";
 import { env } from "../config/env.js";
 
 const SMTP_TIMEOUT_MS = 15_000;
+const EMAIL_DELIVERY_ERROR_CODES = new Set([
+  "EAUTH",
+  "ETIMEDOUT",
+  "ECONNECTION",
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "ESOCKET",
+  "ETLS",
+]);
 let transport: Transporter | null = null;
+
+export function sanitizeEmailDeliveryErrorCode(error: unknown) {
+  const code = error && typeof error === "object" && "code" in error
+    ? (error as { code?: unknown }).code
+    : undefined;
+  return typeof code === "string" && EMAIL_DELIVERY_ERROR_CODES.has(code)
+    ? code
+    : "SMTP_DELIVERY_FAILED";
+}
 
 export const emailDeliveryConfigured = () => Boolean(
   env.SMTP_USER && env.SMTP_APP_PASSWORD && env.SMTP_FROM && env.PASSWORD_RESET_URL_BASE,

@@ -5,6 +5,7 @@ import { clearSessionCookie, sessionCookieOptions } from "../services/sessionCoo
 import { loginSchema } from "../validators/auth.js";
 import { forgotPasswordInput,resetPasswordInput } from "../validators/passwordReset.js";
 import { consumePasswordReset,requestPasswordReset } from "../services/passwordReset.service.js";
+import { sanitizeEmailDeliveryErrorCode } from "../services/emailTransport.service.js";
 
 const requestContext = (req: Parameters<RequestHandler>[0]) => ({
   ipAddress: req.ip,
@@ -23,5 +24,5 @@ export const logout: RequestHandler = async (req, res) => {
   res.json({ success: true, data: {} });
 };
 export const me: RequestHandler = async (req, res) => { const user = await findCurrentUser(req.user!.id); res.json({ success: true, data: { user } }); };
-export const forgotPassword:RequestHandler=async(req,res)=>{const {email}=forgotPasswordInput.parse(req.body);try{await requestPasswordReset(email,requestContext(req));}catch{console.error("Password reset delivery failed");}res.json({success:true,data:{message:"If an active account uses that email, a password reset link will be sent."}});};
+export const forgotPassword:RequestHandler=async(req,res)=>{const {email}=forgotPasswordInput.parse(req.body);try{await requestPasswordReset(email,requestContext(req));}catch(error){console.error("Password reset delivery failed",sanitizeEmailDeliveryErrorCode(error));}res.json({success:true,data:{message:"If an active account uses that email, a password reset link will be sent."}});};
 export const resetPassword:RequestHandler=async(req,res)=>{const input=resetPasswordInput.parse(req.body);await consumePasswordReset(input.token,input.password);clearSessionCookie(res);res.json({success:true,data:{message:"Password reset completed. Sign in with your new password."}});};
