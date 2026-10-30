@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { act, create } from "react-test-renderer";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useLocalDraft, useLocalDraftCollection } from "./useLocalDraft";
 
 const values = new Map<string, string>();
@@ -18,8 +18,8 @@ let draftApi: ReturnType<typeof useLocalDraft<Draft>>;
 let collectionApi: ReturnType<typeof useLocalDraftCollection<Draft>>;
 const validate = (value: unknown): value is Draft => typeof value === "object" && value !== null && typeof (value as Draft).summary === "string";
 
-function Probe({ userId, branchId }: { userId: string; branchId: string }) {
-  draftApi = useLocalDraft({ userId, branchId, form: "incident" }, validate);
+function Probe({ userId, branchId, recordId }: { userId: string; branchId: string; recordId?:string }) {
+  draftApi = useLocalDraft({ userId, branchId, form: "incident", recordId }, validate);
   return null;
 }
 
@@ -33,7 +33,7 @@ describe("local draft recovery", () => {
 
   it("isolates drafts by user and branch, restores valid data, and clears it", () => {
     let renderer = create(createElement(Probe, { userId: "user-a", branchId: "branch-a" }));
-    act(() => draftApi.save({ summary: "Unsubmitted incident" }));
+    act(() => { draftApi.save({ summary: "Unsubmitted incident" }); });
     expect(draftApi.read()).toEqual({ summary: "Unsubmitted incident" });
 
     act(() => renderer.update(createElement(Probe, { userId: "user-a", branchId: "branch-b" })));
@@ -42,7 +42,7 @@ describe("local draft recovery", () => {
     expect(draftApi.read()).toBeNull();
     act(() => renderer.update(createElement(Probe, { userId: "user-a", branchId: "branch-a" })));
     expect(draftApi.read()).toEqual({ summary: "Unsubmitted incident" });
-    act(() => draftApi.clear());
+    act(() => { draftApi.clear(); });
     expect(draftApi.read()).toBeNull();
     renderer.unmount();
   });
@@ -53,6 +53,23 @@ describe("local draft recovery", () => {
     expect(draftApi.read()).toBeNull();
     values.set(draftApi.key, JSON.stringify({ version: 1, savedAt: Date.now(), value: { unexpected: true } }));
     expect(draftApi.read()).toBeNull();
+  });
+
+  it("isolates records such as count dates and reports storage success",()=>{
+    const renderer=create(createElement(Probe,{userId:"manager",branchId:"branch-a",recordId:"OPENING-2026-10-31"}));
+    expect(draftApi.save({summary:"Opening progress"})).toBe(true);
+    expect(draftApi.read()?.summary).toBe("Opening progress");
+    act(()=>renderer.update(createElement(Probe,{userId:"manager",branchId:"branch-a",recordId:"CLOSING-2026-10-31"})));
+    expect(draftApi.read()).toBeNull();
+    act(()=>renderer.update(createElement(Probe,{userId:"manager",branchId:"branch-a",recordId:"OPENING-2026-11-01"})));
+    expect(draftApi.read()).toBeNull();
+    renderer.unmount();
+  });
+
+  it("reports unavailable browser storage without blocking the form",()=>{
+    create(createElement(Probe,{userId:"manager",branchId:"branch-a",recordId:"OPENING-2026-10-31"}));
+    vi.spyOn(globalThis.localStorage,"setItem").mockImplementationOnce(()=>{throw new Error("blocked");});
+    expect(draftApi.save({summary:"Still usable in memory"})).toBe(false);
   });
 });
 

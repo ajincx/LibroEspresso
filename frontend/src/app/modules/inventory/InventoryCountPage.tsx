@@ -6,6 +6,8 @@ import { inventoryWorkflowService } from "../../services/inventoryWorkflow.servi
 import type { CountVarianceItem, DailyInventoryCountContext, ExpectedInventoryItem, FullInventoryCountContext, InventoryCountType, PhysicalInventoryCountReference, UnavailableInventoryCountItem } from "../../types/inventoryWorkflow";
 import { CalendarDateField, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, TableLoadingRow, Btn, SearchInput, Select, SkeletonBlock } from "../../components/ModuleUi";
 import { ControlledActionDialog } from "../../components/ControlledActionDialog";
+import { useAuth } from "../../contexts/AuthContext";
+import { useLocalDraft } from "../../hooks/useLocalDraft";
 
 import { businessDate } from "../../utils/businessDate";
 import { formatAppDate } from "../../utils/appPreferences";
@@ -62,7 +64,63 @@ export const filterPhysicalCountItems = (
 };
 
 export type PhysicalCountUnit = "g" | "kg" | "ml" | "L" | "pc";
-export type PhysicalCountEntry = { quantity: string; enteredUnit: PhysicalCountUnit; confirmed?: boolean };
+export type PhysicalCountEntrySource = "SUGGESTED" | "MANUAL" | "COPIED_PHYSICAL" | "COPIED_STARTING";
+export type PhysicalCountEntry = { quantity: string; enteredUnit: PhysicalCountUnit; confirmed?: boolean; source?: PhysicalCountEntrySource };
+export type PhysicalCountDraftEntry = PhysicalCountEntry & { canonicalUnit: string };
+export type PhysicalCountDraft = {
+  countDate: string;
+  countType: InventoryCountType;
+  checkpointIdentity: string;
+  entries: Record<string, PhysicalCountDraftEntry>;
+  copiedPhysicalSource: PhysicalInventoryCountReference | null;
+  copiedStartingStock: boolean;
+  updatedAt: number;
+};
+export type PhysicalCountDraftStatus = "IDLE" | "UNSAVED" | "SAVED" | "RESTORED" | "UNAVAILABLE" | "STALE";
+
+const physicalCountEntrySources:PhysicalCountEntrySource[]=["SUGGESTED","MANUAL","COPIED_PHYSICAL","COPIED_STARTING"];
+const isPhysicalCountUnit=(value:unknown):value is PhysicalCountUnit=>value==="g"||value==="kg"||value==="ml"||value==="L"||value==="pc";
+const isPhysicalCountReference=(value:unknown):value is PhysicalInventoryCountReference=>Boolean(value&&typeof value==="object"&&typeof (value as PhysicalInventoryCountReference).id==="string"&&typeof (value as PhysicalInventoryCountReference).countNo==="string"&&typeof (value as PhysicalInventoryCountReference).countDate==="string"&&typeof (value as PhysicalInventoryCountReference).submittedAt==="string"&&["OPENING","CLOSING","FULL"].includes((value as PhysicalInventoryCountReference).countType));
+export const isPhysicalCountDraft=(value:unknown):value is PhysicalCountDraft=>{
+  if(!value||typeof value!=="object")return false;
+  const draft=value as PhysicalCountDraft;
+  return /^\d{4}-\d{2}-\d{2}$/.test(draft.countDate)
+    &&["OPENING","CLOSING","FULL"].includes(draft.countType)
+    &&typeof draft.checkpointIdentity==="string"
+    &&typeof draft.updatedAt==="number"&&Number.isFinite(draft.updatedAt)
+    &&typeof draft.copiedStartingStock==="boolean"
+    &&(draft.copiedPhysicalSource===null||isPhysicalCountReference(draft.copiedPhysicalSource))
+    &&Boolean(draft.entries&&typeof draft.entries==="object"&&!Array.isArray(draft.entries)&&Object.values(draft.entries).every((entry)=>entry&&typeof entry==="object"&&typeof entry.quantity==="string"&&isPhysicalCountUnit(entry.enteredUnit)&&typeof entry.confirmed==="boolean"&&typeof entry.canonicalUnit==="string"&&(!entry.source||physicalCountEntrySources.includes(entry.source))));
+};
+
+export const physicalCountDraftCheckpointIdentity=(countType:InventoryCountType,daily:DailyInventoryCountContext|null,full:FullInventoryCountContext|null,editing?:{id:string;submittedAt?:string}|null)=>{
+  if(editing)return `editing:${editing.id}:${editing.submittedAt??"unknown"}`;
+  if(countType==="FULL")return [full?.latestPhysicalCount?.id,full?.latestPhysicalCount?.submittedAt,full?.closingCount?.id,full?.closingCount?.submittedAt,full?.fullCount?.id,full?.fullCount?.submittedAt,full?.weeklyFullCount,full?.weeklyFullLimit].map((value)=>value??"none").join(":");
+  return [daily?.latestPhysicalCount?.id,daily?.latestPhysicalCount?.submittedAt,daily?.openingCount?.id,daily?.openingCount?.submittedAt,daily?.closingCount?.id,daily?.closingCount?.submittedAt,daily?.startingStockSource?.id,daily?.posDayComplete].map((value)=>value??"none").join(":");
+};
+
+export const createPhysicalCountDraft=(countDate:string,countType:InventoryCountType,checkpointIdentity:string,items:ExpectedInventoryItem[],entries:Record<string,PhysicalCountEntry>,copiedPhysicalSource:PhysicalInventoryCountReference|null,copiedStartingStock:boolean,updatedAt=Date.now()):PhysicalCountDraft=>({
+  countDate,countType,checkpointIdentity,copiedPhysicalSource,copiedStartingStock,updatedAt,
+  entries:Object.fromEntries(items.flatMap((item)=>{
+    const entry=entries[item.inventoryItemId];
+    return !entry||entry.source==="SUGGESTED"||(!entry.source&&entry.confirmed===false)?[]:[[item.inventoryItemId,{...entry,confirmed:entry.confirmed===true,source:entry.source??"MANUAL",canonicalUnit:item.unit}]];
+  })),
+});
+
+export const mergePhysicalCountDraftEntries=(items:ExpectedInventoryItem[],base:Record<string,PhysicalCountEntry>,draft:PhysicalCountDraft)=>{
+  const next={...base};
+  for(const item of items){
+    const saved=draft.entries[item.inventoryItemId];
+    if(!saved||saved.canonicalUnit!==item.unit||!allowedPhysicalCountUnits(item.unit).includes(saved.enteredUnit))continue;
+    next[item.inventoryItemId]={quantity:saved.quantity,enteredUnit:saved.enteredUnit,confirmed:saved.confirmed,source:saved.source??"MANUAL"};
+  }
+  return next;
+};
+
+export const physicalCountDraftMatches=(draft:PhysicalCountDraft,countDate:string,countType:InventoryCountType,checkpointIdentity:string)=>draft.countDate===countDate&&draft.countType===countType&&draft.checkpointIdentity===checkpointIdentity;
+export const physicalCountEntryHighlight=(entry:PhysicalCountEntry,canonicalUnit:string)=>confirmedPhysicalCountPreview(entry,canonicalUnit)===null?null:entry.source==="COPIED_PHYSICAL"?"COPIED_PHYSICAL":entry.source==="COPIED_STARTING"?"COPIED_STARTING":"MANUAL";
+export const physicalCountDraftStatusLabel=(status:PhysicalCountDraftStatus)=>status==="SAVED"?"Draft saved locally":status==="RESTORED"?"Draft restored":status==="UNSAVED"?"Unsaved changes":status==="UNAVAILABLE"?"Draft storage unavailable":status==="STALE"?"Saved draft needs review":"";
+export const physicalCountRecordedRevision=(items:Array<{inventoryItemId:string;actualQuantity:number;unit:string}>)=>items.map((item)=>`${item.inventoryItemId}:${item.actualQuantity}:${item.unit}`).sort().join("|");
 
 export const allowedPhysicalCountUnits = (canonicalUnit: string): PhysicalCountUnit[] => {
   if (canonicalUnit === "g") return ["g", "kg"];
@@ -74,11 +132,12 @@ export const blankPhysicalCountEntry = (canonicalUnit: string): PhysicalCountEnt
   quantity: "",
   enteredUnit: allowedPhysicalCountUnits(canonicalUnit)[0]!,
   confirmed: false,
+  source: "SUGGESTED",
 });
 
 export const expectedStockSuggestionEntry = (item: ExpectedInventoryItem): PhysicalCountEntry =>
   Number.isFinite(item.expectedQuantity) && item.expectedQuantity >= 0
-    ? { quantity: String(item.expectedQuantity), enteredUnit: allowedPhysicalCountUnits(item.unit)[0]!, confirmed: false }
+    ? { quantity: String(item.expectedQuantity), enteredUnit: allowedPhysicalCountUnits(item.unit)[0]!, confirmed: false, source: "SUGGESTED" }
     : blankPhysicalCountEntry(item.unit);
 
 export const initialPhysicalCountEntries = (items: ExpectedInventoryItem[], countType: InventoryCountType) =>
@@ -104,6 +163,7 @@ export const editPhysicalCountEntryQuantity = (entry: PhysicalCountEntry, quanti
   ...entry,
   quantity,
   confirmed: quantity.trim() !== "",
+  source: "MANUAL",
 });
 
 export const physicalCountPreviewVariance = (
@@ -137,13 +197,14 @@ export const fullCountCopySourceMessage = (source:PhysicalInventoryCountReferenc
 export const copyPreviousClosingEntries = (
   items: ExpectedInventoryItem[],
   previousClosingItems: DailyInventoryCountContext["previousClosingItems"],
+  source:Extract<PhysicalCountEntrySource,"COPIED_PHYSICAL"|"COPIED_STARTING">="COPIED_PHYSICAL",
 ) => {
   const copied = new Map(previousClosingItems.map((item) => [item.inventoryItemId, item.actualQuantity]));
   return Object.fromEntries(items.map((item) => [
     item.inventoryItemId,
     copied.has(item.inventoryItemId)
-      ? physicalCountEntryFromCanonical(copied.get(item.inventoryItemId)!, item.unit)
-      : blankPhysicalCountEntry(item.unit),
+      ? physicalCountEntryFromCanonical(copied.get(item.inventoryItemId)!, item.unit,source)
+      : { ...blankPhysicalCountEntry(item.unit), source },
   ]));
 };
 
@@ -202,9 +263,18 @@ export function PosUsageIndicator() {
   </span>;
 }
 
+export function CountEnteredIndicator({source}:{source:NonNullable<ReturnType<typeof physicalCountEntryHighlight>>}) {
+  const label=source==="COPIED_PHYSICAL"?"Copied from physical count":source==="COPIED_STARTING"?"Copied from Starting Stock":"Count entered";
+  return <span className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-semibold border-[var(--app-success)]/30 bg-[var(--app-surface)] text-[var(--app-success)]">
+    <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--app-success)]" />
+    {label}
+  </span>;
+}
+
 export const physicalCountEntryFromCanonical = (
   quantity: number,
   canonicalUnit: string,
+  source:PhysicalCountEntrySource="MANUAL",
 ): PhysicalCountEntry => {
   const useLargeUnit = quantity >= 1000 && (canonicalUnit === "g" || canonicalUnit === "ml");
   const enteredUnit: PhysicalCountUnit = useLargeUnit
@@ -214,6 +284,7 @@ export const physicalCountEntryFromCanonical = (
     quantity: String(useLargeUnit ? quantity / 1000 : quantity),
     enteredUnit,
     confirmed: true,
+    source,
   };
 };
 
@@ -226,7 +297,7 @@ export const changePhysicalCountEntryUnit = (
   const normalized = normalizePhysicalCountPreview(entry, canonicalUnit);
   if (normalized === null) return { ...entry, enteredUnit: nextUnit };
   const divisor = nextUnit === "kg" || nextUnit === "L" ? 1000 : 1;
-  return { quantity: String(normalized / divisor), enteredUnit: nextUnit, confirmed: entry.confirmed };
+  return { ...entry, quantity: String(normalized / divisor), enteredUnit: nextUnit, confirmed: entry.confirmed };
 };
 
 export const physicalCountCompletion = (
@@ -302,11 +373,13 @@ export function PhysicalCountCorrectionDialog({countType,reason,error,busy,onRea
 }
 
 export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FULL", embedded=false, editCountId=null }: { onSubmitted?: () => void; onBackToHistory?: () => void; countType?:InventoryCountType; embedded?:boolean; editCountId?:string|null }) {
+  const { user }=useAuth();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const requestedCountId = editCountId ?? params.get("editCount");
   const currentBusinessDate = businessDate();
   const [countDate, setCountDate] = useState(() => countType === "FULL" ? initialPhysicalCountDate(params.get("countDate"), currentBusinessDate) : currentBusinessDate);
+  const draft=useLocalDraft<PhysicalCountDraft>({userId:user?.id,branchId:user?.branchId,form:"physical-count",recordId:requestedCountId??`${countType}-${countDate}`},isPhysicalCountDraft);
   const [expected, setExpected] = useState<ExpectedInventoryItem[]>([]);
   const [unavailable, setUnavailable] = useState<UnavailableInventoryCountItem[]>([]);
   const [entries, setEntries] = useState<Record<string, PhysicalCountEntry>>({});
@@ -334,7 +407,12 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
   const [correctionDialogOpen,setCorrectionDialogOpen]=useState(false);
   const [correctionReason,setCorrectionReason]=useState("");
   const [correctionDialogError,setCorrectionDialogError]=useState("");
+  const [draftStatus,setDraftStatus]=useState<PhysicalCountDraftStatus>("IDLE");
+  const [checkpointIdentity,setCheckpointIdentity]=useState("");
+  const [staleDraft,setStaleDraft]=useState<PhysicalCountDraft|null>(null);
   const correctionSubmittingRef=useRef(false);
+  const draftReadyRef=useRef(false);
+  const baseEntriesRef=useRef<Record<string,PhysicalCountEntry>>({});
   const completion = useMemo(() => physicalCountCompletion(expected, entries), [entries, expected]);
   const visibleItems = useMemo(
     () => filterPhysicalCountItems(expected, search, completionFilter, entries),
@@ -348,9 +426,28 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
   const openingEditing=countType==="OPENING"&&openingMode==="EDIT";
   const activeDailyCount=editingCountId?null:countType==="OPENING"?dailyContext?.openingCount:countType==="CLOSING"?dailyContext?.closingCount:null;
   const fullBlockReason=countType==="FULL"&&!editingCountId?fullCountSubmissionBlockReason(fullContext):null;
+  const markDraftChanged=()=>{setHasUnsavedChanges(true);setDraftStatus("UNSAVED");};
+
+  const restoreDraft=(base:Record<string,PhysicalCountEntry>,items:ExpectedInventoryItem[],identity:string,resolvedDate=countDate)=>{
+    baseEntriesRef.current=base;
+    const saved=draft.read();
+    setCheckpointIdentity(identity);
+    setStaleDraft(null);
+    if(!saved){setEntries(base);setDraftStatus("IDLE");setHasUnsavedChanges(false);draftReadyRef.current=true;return;}
+    if(!physicalCountDraftMatches(saved,resolvedDate,countType,identity)){
+      setEntries(base);setStaleDraft(saved);setDraftStatus("STALE");setHasUnsavedChanges(false);draftReadyRef.current=true;return;
+    }
+    setEntries(mergePhysicalCountDraftEntries(items,base,saved));
+    setCopiedPhysicalSource(saved.copiedPhysicalSource);
+    setCopiedStartingStock(saved.copiedStartingStock);
+    setFullPhysicalVerificationConfirmed(false);
+    setDraftStatus("RESTORED");
+    setHasUnsavedChanges(true);
+    draftReadyRef.current=true;
+  };
 
   const loadExpected = async () => {
-    setLoading(true); setError(""); setSubmitted(null); setEditingCountId(null); setUnavailable([]); setDailyContext(null); setFullContext(null); setFullPhysicalVerificationConfirmed(false); setCopiedPhysicalSource(null);
+    draftReadyRef.current=false;setLoading(true); setError(""); setSubmitted(null); setEditingCountId(null); setUnavailable([]); setDailyContext(null); setFullContext(null); setFullPhysicalVerificationConfirmed(false); setCopiedPhysicalSource(null);setCopiedStartingStock(false);
     try {
       if (requestedCountId) {
         const count = await inventoryWorkflowService.count(requestedCountId);
@@ -361,18 +458,18 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
           setOpeningRecordedItems(count.items);
           setOpeningQuantities(savedCountQuantities(count.items));
           setClosingQuantities({});
-          setEntries(Object.fromEntries(count.items.map((item) => [item.inventoryItemId, physicalCountEntryFromCanonical(item.actualQuantity, item.unit)])));
+          const base=Object.fromEntries(count.items.map((item) => [item.inventoryItemId, physicalCountEntryFromCanonical(item.actualQuantity, item.unit)]));
           setOpeningCanEdit(count.canEdit);
           setOpeningEditBlockReason(count.editBlockReason);
           setOpeningMode("SUMMARY");
-          setHasUnsavedChanges(false);
+          restoreDraft(base,count.items,physicalCountDraftCheckpointIdentity(countType,null,null,{id:`${count.id}:${physicalCountRecordedRevision(count.items)}`}),count.countDate);
           return;
         }
         if (!count.canEdit) throw new Error(count.editBlockReason??"This count is locked because newer inventory activity or a linked investigation prevents correction.");
         setCountDate(count.countDate); setExpected(count.items);
-        setEntries(Object.fromEntries(count.items.map(item => [item.inventoryItemId,physicalCountEntryFromCanonical(item.actualQuantity, item.unit)])));
+        const base=Object.fromEntries(count.items.map(item => [item.inventoryItemId,physicalCountEntryFromCanonical(item.actualQuantity, item.unit)]));
         setEditingCountId(count.id);
-        setHasUnsavedChanges(false);
+        restoreDraft(base,count.items,physicalCountDraftCheckpointIdentity(countType,null,null,{id:`${count.id}:${physicalCountRecordedRevision(count.items)}`}),count.countDate);
         return;
       }
       const data = await inventoryWorkflowService.expected(countDate,undefined,countType);
@@ -388,14 +485,32 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
       ]);
       setOpeningQuantities(savedCountQuantities(opening?.items ?? []));
       setClosingQuantities(savedCountQuantities(closing?.items ?? []));
-      setEntries(initialPhysicalCountEntries(data.items,countType));
+      const base=initialPhysicalCountEntries(data.items,countType);
       setCompletionFilter("ALL");
       setCopiedStartingStock(false);
-      setHasUnsavedChanges(false);
+      restoreDraft(base,data.items,physicalCountDraftCheckpointIdentity(countType,nextDailyContext,nextFullContext));
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to calculate expected inventory"); }
     finally { setLoading(false); }
   };
   useEffect(() => { void loadExpected(); }, [countDate, requestedCountId, countType, reloadRevision]);
+
+  useEffect(()=>{
+    if(!draftReadyRef.current||loading||submitted||!hasUnsavedChanges||!checkpointIdentity||draftStatus!=="UNSAVED")return;
+    const next=createPhysicalCountDraft(countDate,countType,checkpointIdentity,expected,entries,copiedPhysicalSource,copiedStartingStock);
+    setDraftStatus(draft.save(next)?"SAVED":"UNAVAILABLE");
+  },[checkpointIdentity,copiedPhysicalSource,copiedStartingStock,countDate,countType,draft,draftStatus,entries,expected,hasUnsavedChanges,loading,submitted]);
+
+  const discardDraft=()=>{
+    if(!window.confirm("Discard this unfinished physical-count draft? Finalized counts and inventory records will not be changed."))return;
+    draft.clear();
+    setEntries(baseEntriesRef.current);
+    setCopiedPhysicalSource(null);setCopiedStartingStock(false);setStaleDraft(null);setDraftStatus("IDLE");setHasUnsavedChanges(false);setPreviewing(false);setFullPhysicalVerificationConfirmed(false);
+  };
+  const reviewStaleDraft=()=>{
+    if(!staleDraft)return;
+    setEntries(mergePhysicalCountDraftEntries(expected,baseEntriesRef.current,staleDraft));
+    setCopiedPhysicalSource(staleDraft.copiedPhysicalSource);setCopiedStartingStock(staleDraft.copiedStartingStock);setStaleDraft(null);setDraftStatus("UNSAVED");setHasUnsavedChanges(true);setPreviewing(false);setFullPhysicalVerificationConfirmed(false);
+  };
 
   const beginOpeningEdit = async () => {
     if (!requestedCountId || !openingCanEdit) return;
@@ -406,7 +521,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
       setExpected(data.items);
       setUnavailable(data.unavailableItems ?? []);
       setDailyContext(data);
-      setEntries(mergeOpeningCorrectionEntries(data.items,openingRecordedItems));
+      if(draftStatus!=="RESTORED")setEntries(mergeOpeningCorrectionEntries(data.items,openingRecordedItems));
       setEditingCountId(requestedCountId);
       setOpeningMode("EDIT");
       setCompletionFilter("ALL");
@@ -419,6 +534,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
 
   const cancelEdit = () => {
     if (!canLeavePhysicalCountEntry(hasUnsavedChanges, () => window.confirm("Discard unsaved physical-count changes and return?"))) return;
+    if(hasUnsavedChanges){draft.clear();setDraftStatus("IDLE");setStaleDraft(null);}
     if (openingEditing) {
       setEditingCountId(null);
       setOpeningMode("SUMMARY");
@@ -440,7 +556,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
   };
 
   const backToHistory = () => {
-    if (!canLeavePhysicalCountEntry(hasUnsavedChanges, () => window.confirm("Discard unsaved physical-count changes and return?"))) return;
+    if (hasUnsavedChanges&&draftStatus==="UNAVAILABLE"&&!window.confirm("Automatic draft storage is unavailable. Leave this count and lose the unfinished changes?")) return;
     const nextParams = new URLSearchParams(params);
     nextParams.delete("editCount");
     nextParams.delete("countType");
@@ -459,6 +575,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
   };
 
   const finishSubmission = (count:{id:string;countNo:string;items:CountVarianceItem[]}, corrected:boolean) => {
+    draft.clear();setDraftStatus("IDLE");setStaleDraft(null);draftReadyRef.current=false;
     if (!onSubmitted) setSubmitted({ id: count.id, countNo: count.countNo, items: count.items });
     toast.success(corrected
       ? "Physical count corrections saved"
@@ -610,15 +727,17 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
           <Select small value={completionFilter} onChange={(value) => setCompletionFilter(value as PhysicalCountCompletionFilter)} options={[{ value: "ALL", label: "All" }, { value: "COUNTED", label: "Counted" }, { value: "NOT_COUNTED", label: "Not Counted" }]}/>
           <span className="text-xs font-medium text-[var(--app-text-muted)]">Showing {visibleItems.length} of {expected.length} items</span>
           {search && <Btn variant="outline" size="sm" onClick={() => setSearch("")}>Clear search</Btn>}
-          {countType==="OPENING"&&dailyContext?.latestPhysicalCount&&(dailyContext.latestPhysicalItems?.length??0)>0&&!activeDailyCount&&!requestedCountId?<Btn variant="outline" size="sm" onClick={()=>{if(!confirmPhysicalCountCopy(completion.counted,()=>window.confirm("Replace the quantities currently entered with the latest physical count values?")))return;setEntries(copyPreviousClosingEntries(expected,(dailyContext.latestPhysicalItems??[]).map((item)=>({...item,countDate:dailyContext.latestPhysicalCount!.countDate,countType:dailyContext.latestPhysicalCount!.countType}))));setCopiedPhysicalSource(dailyContext.latestPhysicalCount!);setCopiedStartingStock(false);setHasUnsavedChanges(true);setPreviewing(false);}}>Copy Latest Physical Count</Btn>:null}
-          {countType==="FULL"&&fullContext?.latestPhysicalCount&&(fullContext.latestPhysicalItems?.length??0)>0&&!editingCountId?<Btn variant="outline" size="sm" onClick={()=>{if(!confirmPhysicalCountCopy(completion.counted,()=>window.confirm("Replace the quantities currently entered with the latest physical count values?")))return;setEntries(copyPreviousClosingEntries(expected,(fullContext.latestPhysicalItems??[]).map((item)=>({...item,countDate:fullContext.latestPhysicalCount!.countDate,countType:fullContext.latestPhysicalCount!.countType}))));setCopiedPhysicalSource(fullContext.latestPhysicalCount!);setFullPhysicalVerificationConfirmed(false);setHasUnsavedChanges(true);setPreviewing(false);}}>Copy Latest Physical Count</Btn>:null}
-          {countType==="OPENING"&&dailyContext?.startingStockCopyEligible&&!activeDailyCount&&!requestedCountId?<Btn variant="outline" size="sm" onClick={()=>{if(completion.counted>0&&!window.confirm("Replace the quantities currently entered with Starting Stock values?"))return;setEntries(copyPreviousClosingEntries(expected,(dailyContext.startingStockItems??[]).map((item)=>({...item,countDate:""}))));setCopiedStartingStock(true);setCopiedPhysicalSource(null);setHasUnsavedChanges(true);setPreviewing(false);}}>Copy Starting Stock</Btn>:null}
+          {countType==="OPENING"&&dailyContext?.latestPhysicalCount&&(dailyContext.latestPhysicalItems?.length??0)>0&&!activeDailyCount&&!requestedCountId?<Btn variant="outline" size="sm" onClick={()=>{if(!confirmPhysicalCountCopy(completion.counted,()=>window.confirm("Replace the quantities currently entered with the latest physical count values?")))return;setEntries(copyPreviousClosingEntries(expected,(dailyContext.latestPhysicalItems??[]).map((item)=>({...item,countDate:dailyContext.latestPhysicalCount!.countDate,countType:dailyContext.latestPhysicalCount!.countType}))));setCopiedPhysicalSource(dailyContext.latestPhysicalCount!);setCopiedStartingStock(false);markDraftChanged();setPreviewing(false);}}>Copy Latest Physical Count</Btn>:null}
+          {countType==="FULL"&&fullContext?.latestPhysicalCount&&(fullContext.latestPhysicalItems?.length??0)>0&&!editingCountId?<Btn variant="outline" size="sm" onClick={()=>{if(!confirmPhysicalCountCopy(completion.counted,()=>window.confirm("Replace the quantities currently entered with the latest physical count values?")))return;setEntries(copyPreviousClosingEntries(expected,(fullContext.latestPhysicalItems??[]).map((item)=>({...item,countDate:fullContext.latestPhysicalCount!.countDate,countType:fullContext.latestPhysicalCount!.countType}))));setCopiedPhysicalSource(fullContext.latestPhysicalCount!);setFullPhysicalVerificationConfirmed(false);markDraftChanged();setPreviewing(false);}}>Copy Latest Physical Count</Btn>:null}
+          {countType==="OPENING"&&dailyContext?.startingStockCopyEligible&&!activeDailyCount&&!requestedCountId?<Btn variant="outline" size="sm" onClick={()=>{if(completion.counted>0&&!window.confirm("Replace the quantities currently entered with Starting Stock values?"))return;setEntries(copyPreviousClosingEntries(expected,(dailyContext.startingStockItems??[]).map((item)=>({...item,countDate:""})),"COPIED_STARTING"));setCopiedStartingStock(true);setCopiedPhysicalSource(null);markDraftChanged();setPreviewing(false);}}>Copy Starting Stock</Btn>:null}
+          {draftStatus!=="IDLE"&&draftStatus!=="STALE"&&!openingSummary?<Btn variant="outline" size="sm" onClick={discardDraft}>Discard Draft</Btn>:null}
           {openingSummary?<div className="ml-auto"><Btn disabled={!openingCanEdit} onClick={()=>void beginOpeningEdit()}>Edit Inventory</Btn></div>:<div className="ml-auto"><Btn icon={Send} disabled={saving || expected.length === 0 || Boolean(activeDailyCount) || (countType==="FULL"&&(Boolean(fullBlockReason)||completion.remaining > 0||(!editingCountId&&!fullPhysicalVerificationConfirmed))) || (countType==="CLOSING"&&(!dailyContext?.openingCount||!dailyContext.posDayComplete))} onClick={() => void submit()}>
             {saving ? "Saving…" : openingEditing ? "Submit Count" : editingCountId ? "Save Corrections" : previewing ? "Confirm and Submit" : activeDailyCount ? `${countType === "OPENING" ? "Opening" : "Closing"} Submitted` : "Submit Count"}
           </Btn></div>}
         </>}
       >
         {countType==="FULL"&&fullBlockReason&&<div className="border-b p-4 text-sm font-medium text-[var(--app-warning)] border-[var(--app-border)] bg-[var(--app-warning-bg)]">{fullBlockReason}</div>}
+        {staleDraft&&<div className="flex flex-col gap-3 border-b p-4 text-sm border-[var(--app-warning)] bg-[var(--app-warning-bg)] sm:flex-row sm:items-center sm:justify-between" role="alert"><div><strong>Saved draft needs review</strong><p className="mt-1 text-xs text-[var(--app-text-muted)]">The branch checkpoint or finalized-count context changed after this local draft was saved. It was not restored automatically.</p></div><div className="flex flex-wrap gap-2">{!activeDailyCount&&!fullBlockReason&&<Btn variant="outline" size="sm" onClick={reviewStaleDraft}>Review compatible entries</Btn>}<Btn variant="outline" size="sm" onClick={discardDraft}>Discard Draft</Btn></div></div>}
         {countType!=="FULL"&&<div className="border-b p-4 text-sm text-[var(--app-text-muted)] border-[var(--app-border)] bg-[var(--app-surface-muted)]">{openingSummary?(openingCanEdit?"This read-only summary shows only ingredients explicitly recorded in the submitted Opening Count.":openingEditBlockReason??"This Opening Count is read-only because later inventory activity prevents correction."):countType==="CLOSING"&&!dailyContext?.openingCount?"Closing Count is unavailable until today's Opening Count is submitted.":countType==="CLOSING"&&!dailyContext?.posDayComplete?"Closing Count is unavailable until the reconciled end-of-day POS report is imported and confirmed complete.":activeDailyCount?`${countType === "OPENING" ? "Opening" : "Closing"} Count has already been submitted for this date.`:"Blank ingredients are not counted and remain unchanged. Entered zero is saved as zero."}</div>}
         <div className="border-b p-4" style={{ borderColor: "var(--app-border)" }}>
           <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
@@ -628,6 +747,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
           <div className="mt-2 h-2 overflow-hidden rounded-full bg-[var(--app-surface-muted)]" aria-label={`${completion.counted} of ${expected.length} ingredients counted`}>
             <div className="h-full rounded-full bg-[var(--app-primary)] transition-[width]" style={{ width: expected.length ? `${(completion.counted / expected.length) * 100}%` : "0%" }}/>
           </div>
+          {draftStatus!=="IDLE"&&!staleDraft&&<p className={`mt-2 text-xs font-semibold ${draftStatus==="UNAVAILABLE"?"text-[var(--app-warning)]":draftStatus==="SAVED"||draftStatus==="RESTORED"?"text-[var(--app-success)]":"text-[var(--app-text-muted)]"}`} role="status">{physicalCountDraftStatusLabel(draftStatus)}{draftStatus==="SAVED"||draftStatus==="RESTORED"?" · Local only; no official count has been created.":""}</p>}
           {countType==="CLOSING"&&<div className="mt-3 inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-primary)]" role="status">
             {posUsedIngredientIds.size > 0&&<span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-[var(--app-primary)]"/>}
             {closingPosUsageSummary(posUsedIngredientIds.size)}
@@ -651,15 +771,16 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
               visibleItems.map((item) => {
                 const usedInPosSales = posUsedIngredientIds.has(item.inventoryItemId);
                 const entry = entries[item.inventoryItemId] ?? blankPhysicalCountEntry(item.unit);
+                const entryHighlight=physicalCountEntryHighlight(entry,item.unit);
                 const displayedQuantity = normalizePhysicalCountPreview(entry, item.unit);
                 const normalizedActual = confirmedPhysicalCountPreview(entry, item.unit);
                 const variance = displayedPhysicalCountVariance(countType, item.expectedQuantity, normalizedActual);
-                const countEntry=<div className="flex flex-col items-end gap-1"><div className="flex items-center gap-1.5"><input type="number" min={0} step="any" value={entry.quantity} onChange={(event) => { setHasUnsavedChanges(true); setPreviewing(false); if(countType==="FULL")setFullPhysicalVerificationConfirmed(false); setEntries((current) => ({ ...current, [item.inventoryItemId]: editPhysicalCountEntryQuantity(entry, event.target.value) })); }} placeholder="Not counted" className="min-h-9 w-28 px-2.5 py-1.5 rounded-xl border text-right font-semibold text-sm outline-none transition-colors border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] focus:border-[var(--app-primary)] focus:ring-2 focus:ring-[var(--app-primary-faint)]" aria-label={`${item.itemName} ${countType.toLowerCase()} quantity`}/><Select small value={entry.enteredUnit} onChange={(value) => { if(entry.confirmed!==false)setHasUnsavedChanges(true); setPreviewing(false); if(countType==="FULL")setFullPhysicalVerificationConfirmed(false); setEntries((current) => ({ ...current, [item.inventoryItemId]: changePhysicalCountEntryUnit(entry, item.unit, value as PhysicalCountUnit) })); }} className="w-20 [&_.custom-select-trigger]:!min-w-0" ariaLabel={`${item.itemName} physical count unit`} options={allowedPhysicalCountUnits(item.unit).map((unit) => ({ value: unit, label: unit }))}/></div><div className="flex items-center gap-2 text-[10px] text-[var(--app-text-muted)]"><span className="whitespace-nowrap">{entry.quantity.trim() === ""?"Not yet counted":displayedQuantity === null?"Enter a valid non-negative quantity":entry.confirmed===false?"Suggested from Expected Stock · Edit to count":`Converted to system unit: ${displayedQuantity.toLocaleString("en-US", { maximumFractionDigits: 4 })} ${item.unit}`}</span></div></div>;
+                const countEntry=<div className="flex flex-col items-end gap-1"><div className="flex items-center gap-1.5"><input type="number" min={0} step="any" value={entry.quantity} onChange={(event) => { markDraftChanged(); setPreviewing(false); if(countType==="FULL")setFullPhysicalVerificationConfirmed(false); setEntries((current) => ({ ...current, [item.inventoryItemId]: editPhysicalCountEntryQuantity(entry, event.target.value) })); }} placeholder="Not counted" className="min-h-9 w-28 px-2.5 py-1.5 rounded-xl border text-right font-semibold text-sm outline-none transition-colors border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] focus:border-[var(--app-primary)] focus:ring-2 focus:ring-[var(--app-primary-faint)]" aria-label={`${item.itemName} ${countType.toLowerCase()} quantity`}/><Select small value={entry.enteredUnit} onChange={(value) => { if(entry.confirmed!==false)markDraftChanged(); setPreviewing(false); if(countType==="FULL")setFullPhysicalVerificationConfirmed(false); setEntries((current) => ({ ...current, [item.inventoryItemId]: changePhysicalCountEntryUnit(entry, item.unit, value as PhysicalCountUnit) })); }} className="w-20 [&_.custom-select-trigger]:!min-w-0" ariaLabel={`${item.itemName} physical count unit`} options={allowedPhysicalCountUnits(item.unit).map((unit) => ({ value: unit, label: unit }))}/></div><div className="flex items-center gap-2 text-[10px] text-[var(--app-text-muted)]"><span className="whitespace-nowrap">{entry.quantity.trim() === ""?"Not yet counted":displayedQuantity === null?"Enter a valid non-negative quantity":entry.confirmed===false?"Suggested from Expected Stock · Edit to count":`Converted to system unit: ${displayedQuantity.toLocaleString("en-US", { maximumFractionDigits: 4 })} ${item.unit}`}</span></div></div>;
                 const savedQuantity=(value:number|undefined)=>value===undefined?<span className="text-[var(--app-text-muted)]">—</span>:<span className="font-semibold">{value.toLocaleString("en-PH",{maximumFractionDigits:4})} {item.unit}</span>;
                 return (
-                  <TR key={item.inventoryItemId} className={usedInPosSales?"bg-[var(--app-primary-faint)]":""}>
+                  <TR key={item.inventoryItemId} className={entryHighlight?"bg-[var(--app-success-bg)]":usedInPosSales?"bg-[var(--app-primary-faint)]":""}>
                     <TD mono><span className="font-semibold text-[var(--app-primary)]">{item.sku}</span></TD>
-                    <TD><div className="flex min-w-0 flex-wrap items-center gap-2"><span className="font-semibold text-[var(--app-text)]">{item.itemName}</span>{usedInPosSales&&<PosUsageIndicator/>}</div></TD>
+                    <TD><div className="flex min-w-0 flex-wrap items-center gap-2"><span className="font-semibold text-[var(--app-text)]">{item.itemName}</span>{usedInPosSales&&<PosUsageIndicator/>}{entryHighlight&&<CountEnteredIndicator source={entryHighlight}/>}</div></TD>
                     <TD right muted>{item.previousActualQuantity.toFixed(2)} {item.unit}</TD>
                     <TD right muted>{item.stockReceived.toFixed(2)} {item.unit}</TD>
                     <TD right><span className="font-medium text-[var(--app-primary)]">−{item.expectedConsumption.toFixed(2)} {item.unit}</span></TD>
