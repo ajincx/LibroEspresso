@@ -19,7 +19,16 @@ describe("shrinkage supporting-record evidence", () => {
     mocks.poolQuery.mockImplementation(async (statement: unknown, values?: unknown[]) => {
       const sql = String(statement);
       if (sql.includes("FROM shrinkage_reports sr")) {
-        return { rows: [{ branchId, inventoryItemId: ingredientId, countDate: "2026-09-20" }] };
+        return { rows: [{
+          branchId,
+          inventoryItemId: ingredientId,
+          countDate: "2026-09-20",
+          countType: "OPENING",
+          intervalStartAt: "2026-09-19T12:00:00.000Z",
+          intervalEndAt: "2026-09-20T00:00:00.000Z",
+          discrepancyQuantity: 10,
+          unit: "g",
+        }] };
       }
       if (sql.includes("FROM incident_reports ir")) {
         return { rows: [{ id: "incident-1", status: "VERIFIED", explicitlyLinked: false }] };
@@ -43,7 +52,15 @@ describe("shrinkage supporting-record evidence", () => {
     expect(String(incidentCall![0])).toContain("ir.status='VERIFIED'");
     expect(String(incidentCall![0])).toContain("finalized.submitted_at<=ir.created_at");
     expect(String(incidentCall![0])).toContain("AT TIME ZONE 'Asia/Manila'");
-    expect(incidentCall![1]).toEqual([reportId, branchId, ingredientId, "2026-09-20"]);
+    expect(incidentCall![1]).toEqual([
+      reportId,
+      branchId,
+      ingredientId,
+      "2026-09-19T12:00:00.000Z",
+      "2026-09-20T00:00:00.000Z",
+      10,
+      "g",
+    ]);
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
       success: true,
       data: { evidence: expect.objectContaining({ incidents: [{ id: "incident-1", status: "VERIFIED", explicitlyLinked: false }] }) },

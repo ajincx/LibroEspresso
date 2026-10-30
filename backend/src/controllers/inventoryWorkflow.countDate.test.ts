@@ -96,6 +96,7 @@ describe("inventory physical-count future-date protection", () => {
       query: vi.fn()
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ cutoffAt: "2026-10-01T00:00:00.000Z" }] })
         .mockResolvedValueOnce({ rows: [{ absoluteTolerance: 1, relativeTolerance: 2 }] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ countNo: "IC-2026-00006", countType: "FULL" }] })
         .mockResolvedValueOnce({ rows: [] }),
