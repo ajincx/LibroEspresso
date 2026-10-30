@@ -59,7 +59,7 @@ export const inventoryMovementInput = z.object({
 export const inventoryCountInput = z.object({
   countDate: z.iso.date(),
   countType: z.enum(["FULL", "OPENING", "CLOSING"]).optional().default("FULL"),
-  correctionReason: z.string().trim().min(1).max(1000).optional(),
+  correctionReason: z.string().trim().min(10, "Correction reason must be at least 10 characters").max(1000).optional(),
   items: z.array(z.object({
     inventoryItemId: z.string().uuid(),
     quantity: z.number().finite().min(0),

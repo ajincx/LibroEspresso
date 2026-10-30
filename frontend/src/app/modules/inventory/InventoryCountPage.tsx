@@ -8,6 +8,7 @@ import { CalendarDateField, TableCard, TableWrapper, THead, TR, TD, TableEmptyRo
 import { ControlledActionDialog } from "../../components/ControlledActionDialog";
 
 import { businessDate } from "../../utils/businessDate";
+import { formatAppDate } from "../../utils/appPreferences";
 
 export const isFutureInventoryCountDate = (countDate: string, currentBusinessDate = businessDate()) =>
   countDate > currentBusinessDate;
@@ -93,12 +94,21 @@ export const displayedPhysicalCountVariance = (
   countType: InventoryCountType,
   expectedQuantity: number,
   actualQuantity: number | null,
-) => countType === "OPENING" || actualQuantity === null
+) => actualQuantity === null
   ? null
   : physicalCountPreviewVariance(expectedQuantity, actualQuantity);
 
+export const physicalCountVarianceLabel = (countType:InventoryCountType, variance:number|null) => variance === null
+  ? "Not counted"
+  : Math.abs(variance) < 0.0001
+    ? "Matched"
+    : `${countType === "OPENING" ? "Opening " : ""}${variance < 0 ? "Shortage" : "Excess"}`;
+
 export const previousClosingCopyMessage = (countDate: string) =>
   `Values copied from the previous Closing Count on ${countDate}. Review and confirm them before submitting.`;
+
+export const fullCountCopySourceMessage = (source:NonNullable<FullInventoryCountContext["closingCount"]>,fallbackDate:string) =>
+  `Copied from finalized ${source.countType} checkpoint ${source.countNo} · ${source.countDate ?? fallbackDate} · ${formatAppDate(source.effectiveAt ?? source.submittedAt,true)}. Blank ingredients were not in the source and must be entered. Copied values are not physically verified until you confirm below.`;
 
 export const copyPreviousClosingEntries = (
   items: ExpectedInventoryItem[],
@@ -220,7 +230,7 @@ export function PhysicalCountBackAction({ onBack, label="Back to Count History" 
   return <Btn variant="outline" size="sm" icon={ArrowLeft} onClick={onBack}>{label}</Btn>;
 }
 
-export const physicalCountCorrectionReasonError = (reason:string) => reason.trim() ? "" : "Reason for Correction is required.";
+export const physicalCountCorrectionReasonError = (reason:string) => reason.trim().length >= 10 ? "" : "Reason for Correction must be at least 10 characters.";
 
 export function PhysicalCountCorrectionDialog({countType,reason,error,busy,onReasonChange,onCancel,onConfirm}:{
   countType:InventoryCountType;reason:string;error:string;busy:boolean;onReasonChange:(reason:string)=>void;onCancel:()=>void;onConfirm:()=>void;
@@ -234,7 +244,7 @@ export function PhysicalCountCorrectionDialog({countType,reason,error,busy,onRea
     value={{reason,currentPassword:""}}
     busy={busy}
     requireCurrentPassword={false}
-    minReasonLength={1}
+    minReasonLength={10}
     maxReasonLength={1000}
     reasonLabel="Reason for Correction"
     reasonPlaceholder="Explain why this count needs correction"
@@ -267,6 +277,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
   const [fullContext,setFullContext]=useState<FullInventoryCountContext|null>(null);
   const [fullPhysicalVerificationConfirmed,setFullPhysicalVerificationConfirmed]=useState(false);
   const [copiedClosingDate,setCopiedClosingDate]=useState<string|null>(null);
+  const [copiedStartingStock,setCopiedStartingStock]=useState(false);
   const [openingQuantities,setOpeningQuantities]=useState<Record<string,number>>({});
   const [closingQuantities,setClosingQuantities]=useState<Record<string,number>>({});
   const [previewing,setPreviewing]=useState(false);
@@ -332,6 +343,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
         ? copySameDayClosingEntries(data.items,nextFullContext.sameDayClosingItems)
         : Object.fromEntries(data.items.map((item) => [item.inventoryItemId, blankPhysicalCountEntry(item.unit)])));
       setCompletionFilter("ALL");
+      setCopiedStartingStock(false);
       setHasUnsavedChanges(false);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to calculate expected inventory"); }
     finally { setLoading(false); }
@@ -551,7 +563,8 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
           <Select small value={completionFilter} onChange={(value) => setCompletionFilter(value as PhysicalCountCompletionFilter)} options={[{ value: "ALL", label: "All" }, { value: "COUNTED", label: "Counted" }, { value: "NOT_COUNTED", label: "Not Counted" }]}/>
           <span className="text-xs font-medium text-[var(--app-text-muted)]">Showing {visibleItems.length} of {expected.length} items</span>
           {search && <Btn variant="outline" size="sm" onClick={() => setSearch("")}>Clear search</Btn>}
-          {countType==="OPENING"&&dailyContext?.previousClosingItems.length&&!activeDailyCount&&!requestedCountId?<Btn variant="outline" size="sm" onClick={()=>{if(completion.counted>0&&!window.confirm("Replace the quantities currently entered with the previous Closing Count values?"))return;setEntries(copyPreviousClosingEntries(expected,dailyContext.previousClosingItems));setCopiedClosingDate(dailyContext.previousClosingDate);setHasUnsavedChanges(true);setPreviewing(false);}}>Copy Previous Closing Stock</Btn>:null}
+          {countType==="OPENING"&&dailyContext?.previousClosingItems.length&&!activeDailyCount&&!requestedCountId?<Btn variant="outline" size="sm" onClick={()=>{if(completion.counted>0&&!window.confirm("Replace the quantities currently entered with the previous Closing Count values?"))return;setEntries(copyPreviousClosingEntries(expected,dailyContext.previousClosingItems));setCopiedClosingDate(dailyContext.previousClosingDate);setCopiedStartingStock(false);setHasUnsavedChanges(true);setPreviewing(false);}}>Copy Previous Closing Stock</Btn>:null}
+          {countType==="OPENING"&&dailyContext?.startingStockCopyEligible&&!activeDailyCount&&!requestedCountId?<Btn variant="outline" size="sm" onClick={()=>{if(completion.counted>0&&!window.confirm("Replace the quantities currently entered with Starting Stock values?"))return;setEntries(copyPreviousClosingEntries(expected,(dailyContext.startingStockItems??[]).map((item)=>({...item,countDate:""}))));setCopiedStartingStock(true);setCopiedClosingDate(null);setHasUnsavedChanges(true);setPreviewing(false);}}>Copy Starting Stock</Btn>:null}
           {openingSummary?<div className="ml-auto"><Btn disabled={!openingCanEdit} onClick={()=>void beginOpeningEdit()}>Edit Inventory</Btn></div>:<div className="ml-auto"><Btn icon={Send} disabled={saving || expected.length === 0 || Boolean(activeDailyCount) || (countType==="FULL"&&(Boolean(fullBlockReason)||completion.remaining > 0||(!editingCountId&&!fullPhysicalVerificationConfirmed))) || (countType==="CLOSING"&&(!dailyContext?.openingCount||!dailyContext.posDayComplete))} onClick={() => void submit()}>
             {saving ? "Saving…" : openingEditing ? "Submit Count" : editingCountId ? "Save Corrections" : previewing ? "Confirm and Submit" : activeDailyCount ? `${countType === "OPENING" ? "Opening" : "Closing"} Submitted` : "Submit Count"}
           </Btn></div>}
@@ -568,9 +581,10 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
             <div className="h-full rounded-full bg-[var(--app-primary)] transition-[width]" style={{ width: expected.length ? `${(completion.counted / expected.length) * 100}%` : "0%" }}/>
           </div>
           {countType==="FULL"&&completion.remaining > 0 && <p className="mt-2 text-xs text-[var(--app-text-muted)]">Complete the remaining physical quantities before submitting. Still needed: {completion.remainingItems.slice(0, 5).map((item) => item.itemName).join(", ")}{completion.remaining > 5 ? ` and ${completion.remaining - 5} more` : ""}.</p>}
-          {countType==="FULL"&&!editingCountId&&fullContext?.closingCount&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">Same-day Closing quantities were copied where available. Blank ingredients were not included in Closing and must be counted.</p>}
+          {countType==="FULL"&&!editingCountId&&fullContext?.closingCount&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">{fullCountCopySourceMessage(fullContext.closingCount,countDate)}</p>}
           {countType==="FULL"&&!editingCountId&&<label className="mt-3 flex items-start gap-2 text-xs font-medium text-[var(--app-text)]"><input className="mt-0.5" type="checkbox" checked={fullPhysicalVerificationConfirmed} onChange={(event)=>setFullPhysicalVerificationConfirmed(event.target.checked)}/><span>I physically verified every Full Count quantity, including values copied from Closing.</span></label>}
           {copiedClosingDate&&countType==="OPENING"&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">{previousClosingCopyMessage(copiedClosingDate)}</p>}
+          {copiedStartingStock&&dailyContext?.startingStockSource&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">Values copied from preserved Starting Stock {dailyContext.startingStockSource.baselineNo} · {formatAppDate(dailyContext.startingStockSource.effectiveAt,true)}. Review and edit them before submitting; no count or stock movement has been created.</p>}
           {countType==="OPENING"&&!requestedCountId&&dailyContext?.previousClosingItems.length===0&&<p className="mt-2 text-xs text-[var(--app-text-muted)]">No previous Closing Count is available. Enter quantities manually.</p>}
           {countType!=="FULL"&&previewing&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">{countType==="OPENING"?"Review the entered Opening quantities, then choose Confirm and Submit. Only entered ingredients will establish checkpoints.":"Preview ready. Review the calculated variances, then choose Confirm and Submit. Only entered ingredients will establish checkpoints."}</p>}
         </div>
@@ -608,7 +622,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
                               : "var(--app-info)",
                         }}
                       >
-                        {variance === null ? "—" : `${variance > 0 ? "+" : ""}${variance.toFixed(2)} ${item.unit}`}
+                        {variance === null ? "—" : <>{variance > 0 ? "+" : ""}{variance.toFixed(2)} {item.unit}<span className="mt-0.5 block text-[10px] font-semibold">{physicalCountVarianceLabel(countType,variance)}</span></>}
                       </span>
                     </TD>
                   </TR>
@@ -619,7 +633,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
         </TableWrapper>
         <div className="flex flex-wrap items-center justify-between gap-4 p-4 border-t bg-[var(--app-surface)]" style={{ borderColor: "var(--app-border)" }}>
           <p className="text-xs text-[var(--app-text-muted)] max-w-md">
-            {countType==="OPENING"?"Opening quantities establish the day's actual starting stock. Daily variance is calculated only when Closing Count is submitted.":<>Variance and possible shrinkage are calculated by the server. {PHYSICAL_COUNT_INVESTIGATION_GUIDANCE}</>}
+            {countType==="OPENING"?<>Opening preview compares expected stock with the entered actual quantity. On submission, the server records any material Opening discrepancy and resets actual stock to the submitted Opening quantity. {PHYSICAL_COUNT_INVESTIGATION_GUIDANCE}</>:<>Variance and possible shrinkage are calculated by the server. {PHYSICAL_COUNT_INVESTIGATION_GUIDANCE}</>}
           </p>
           <div className="flex items-center gap-2">
             {editingCountId && (

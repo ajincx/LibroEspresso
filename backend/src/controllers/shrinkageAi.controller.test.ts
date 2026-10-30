@@ -21,7 +21,11 @@ const context = {
   classification: null,
   status: "DETECTED",
   relatedHistoricalCases: 0,
+  countType: "OPENING",
+  intervalStartAt: "2026-10-28T12:00:00.000Z",
+  intervalEndAt: "2026-10-29T00:00:00.000Z",
 };
+const candidate={incidentReportId:"44444444-4444-4444-8444-444444444444",incidentReportItemId:"55555555-5555-4555-8555-555555555555",incidentType:"OTHER",occurredAt:"2026-10-28T18:00:00.000Z",quantity:54,unit:"g",status:"PENDING",matchQuality:"EXACT",quantityDifference:0,evidenceStatus:"UNVERIFIED"};
 const analysis = {
   observation: "A 54 g shortage was recorded.",
   risk: "The available evidence does not establish a cause.",
@@ -36,7 +40,7 @@ function request(role: "OWNER" | "BRANCH_MANAGER", scopedBranchId: string | null
 describe("shrinkage AI analysis controller", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.poolQuery.mockResolvedValueOnce({ rows: [context] }).mockResolvedValueOnce({ rows: [] });
+    mocks.poolQuery.mockResolvedValueOnce({ rows: [context] }).mockResolvedValueOnce({ rows: [candidate] });
     mocks.generate.mockResolvedValue(analysis);
   });
 
@@ -49,6 +53,9 @@ describe("shrinkage AI analysis controller", () => {
       actualQuantity: 5_000,
       varianceQuantity: -54,
       materiality: "ABOVE_TOLERANCE",
+      countType:"OPENING",
+      countInterval:{startAt:context.intervalStartAt,endAt:context.intervalEndAt},
+      candidateIncidents:[candidate],
     }));
     expect(res.json).toHaveBeenCalledWith({ success: true, data: { source: "GOOGLE_GEMINI", analysis } });
     expect(mocks.poolQuery.mock.calls.every(([sql]) => /^\s*SELECT/i.test(String(sql)))).toBe(true);

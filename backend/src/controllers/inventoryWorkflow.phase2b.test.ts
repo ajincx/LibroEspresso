@@ -95,6 +95,8 @@ describe("Phase 2B variance visibility", () => {
     expect(sql).toContain('settings.variance_tolerance_quantity');
     expect(sql).toContain('settings.variance_tolerance_percent');
     expect(sql).toContain('"requiresInvestigation"');
+    expect(sql).toContain('ic.count_type "countType"');
+    expect(sql).not.toContain("ic.count_type <> 'OPENING'");
   });
 
   it("returns authoritative count and count-item identifiers for anomaly traceability", async () => {
@@ -108,6 +110,7 @@ describe("Phase 2B variance visibility", () => {
     expect(sql).toContain('ic.id "inventoryCountId"');
     expect(sql).toContain('ic.count_no "countNo"');
     expect(sql).toContain('ici.id "inventoryCountItemId"');
+    expect(sql).toContain('ic.count_type "countType"');
   });
 
   it("surfaces material historical shortages with no authoritative investigation without creating records", async () => {
@@ -124,6 +127,7 @@ describe("Phase 2B variance visibility", () => {
     expect(missingSql).toContain("ici.voided_at IS NULL");
     expect(missingSql).toContain("greatest(settings.variance_tolerance_quantity");
     expect(missingSql).toContain("ic.branch_id=$1");
+    expect(missingSql).not.toContain("ic.count_type <> 'OPENING'");
     expect(json).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
         missingInvestigations: [{ countItemId: "bacon-item", inventoryItemName: "Bacon" }],

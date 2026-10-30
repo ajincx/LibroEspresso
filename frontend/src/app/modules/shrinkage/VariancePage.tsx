@@ -50,6 +50,12 @@ export function varianceClassificationLabel(record: Pick<VarianceRecord, "classi
     : "No investigation classification — within tolerance";
 }
 
+export function varianceTypeLabel(record: Pick<VarianceRecord, "countType" | "varianceQuantity">) {
+  const prefix = record.countType === "OPENING" ? "Opening " : "";
+  if (Math.abs(record.varianceQuantity) <= 0.0001) return `${prefix}Matched`;
+  return `${prefix}${record.varianceQuantity < 0 ? "Shortage" : "Excess"}`;
+}
+
 export function inventoryCountDateMax(now = new Date()) {
   return businessDate(now, "Asia/Manila");
 }
@@ -178,6 +184,7 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
         <THead
           cols={[
             "Count",
+            "Type",
             "Date",
             ...(owner ? ["Branch"] : []),
             "Item",
@@ -193,15 +200,16 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
         />
         <tbody>
           {loading ? (
-            <TableLoadingRow colSpan={owner ? 12 : 11} label="Loading calculated variances…" />
+            <TableLoadingRow colSpan={owner ? 13 : 12} label="Loading calculated variances…" />
           ) : error ? (
-            <TableEmptyRow colSpan={owner ? 12 : 11} title="Unable to load variances" subtitle={error} />
+            <TableEmptyRow colSpan={owner ? 13 : 12} title="Unable to load variances" subtitle={error} />
           ) : filtered.length === 0 ? (
-            <TableEmptyRow colSpan={owner ? 12 : 11} title="No matching variance records" subtitle="No physical count discrepancies match the selected criteria." />
+            <TableEmptyRow colSpan={owner ? 13 : 12} title="No matching variance records" subtitle="No physical count discrepancies match the selected criteria." />
           ) : (
             filtered.map((record) => (
               <TR key={record.countItemId}>
                 <TD mono><span className="font-semibold text-[var(--app-primary)]">{record.countNo}</span></TD>
+                  <TD muted>{record.countType === "OPENING" ? "Opening" : record.countType === "CLOSING" ? "Closing" : "Full"}</TD>
                   <TD muted>{formatAppDate(record.countDate)}</TD>
                 {owner && <TD muted><span className="font-medium text-[var(--app-text)]">{record.branchName}</span></TD>}
                 <TD>
@@ -247,7 +255,7 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
                 </TD>
                 <TD right><span className="font-semibold">{record.varianceValue > 0 ? "+" : ""}₱{record.varianceValue.toFixed(2)}</span></TD>
                 <TD muted>{varianceClassificationLabel(record)}</TD>
-                <TD center><VarianceStatus status={displayStatus(record)} /></TD>
+                <TD center><VarianceStatus status={displayStatus(record)} label={varianceTypeLabel(record)} /></TD>
                 <TD center>
                   <button type="button" onClick={() => record.anomalyId ? navigate(`/shrinkage?reportId=${record.anomalyId}`) : setDetailTarget(record)} className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] px-2.5 py-1.5 text-xs font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-muted)]"><Eye size={14}/>View</button>
                 </TD>
@@ -257,11 +265,11 @@ export function VariancePage({ scopeBranchId = "ALL" }: { scopeBranchId?: string
         </tbody>
       </TableWrapper>
     </TableCard>
-    {detailTarget&&<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" onMouseDown={(event)=>{if(event.target===event.currentTarget)setDetailTarget(null);}}><div role="dialog" aria-modal="true" aria-label="Variance details" className="w-full max-w-lg rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5"><div className="flex items-start justify-between gap-4"><div><h2 className="font-bold">{detailTarget.itemName}</h2><p className="mt-1 text-xs text-[var(--app-text-muted)]">{detailTarget.countNo} · {formatAppDate(detailTarget.countDate)}</p></div><button aria-label="Close variance details" onClick={()=>setDetailTarget(null)}><X size={18}/></button></div><dl className="mt-5 grid grid-cols-2 gap-4 text-sm"><div><dt className="text-xs text-[var(--app-text-muted)]">Expected</dt><dd className="font-semibold">{detailTarget.expectedQuantity} {detailTarget.unit}</dd></div><div><dt className="text-xs text-[var(--app-text-muted)]">Actual</dt><dd className="font-semibold">{detailTarget.actualQuantity} {detailTarget.unit}</dd></div><div><dt className="text-xs text-[var(--app-text-muted)]">Signed variance</dt><dd className="font-semibold">{detailTarget.varianceQuantity>0?"+":""}{detailTarget.varianceQuantity} {detailTarget.unit}</dd></div><div><dt className="text-xs text-[var(--app-text-muted)]">Investigation</dt><dd className="font-semibold">{varianceWithoutInvestigationLabel(detailTarget)}</dd></div></dl></div></div>}
+    {detailTarget&&<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" onMouseDown={(event)=>{if(event.target===event.currentTarget)setDetailTarget(null);}}><div role="dialog" aria-modal="true" aria-label="Variance details" className="w-full max-w-lg rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5"><div className="flex items-start justify-between gap-4"><div><h2 className="font-bold">{detailTarget.itemName}</h2><p className="mt-1 text-xs text-[var(--app-text-muted)]">{detailTarget.countNo} · {detailTarget.countType === "OPENING" ? "Opening Count" : detailTarget.countType === "CLOSING" ? "Closing Count" : "Full Physical Count"} · {formatAppDate(detailTarget.countDate)}</p></div><button aria-label="Close variance details" onClick={()=>setDetailTarget(null)}><X size={18}/></button></div>{detailTarget.countType === "OPENING"&&<p className="mt-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-3 text-xs text-[var(--app-text-muted)]">This discrepancy belongs to the interval before the Opening Count and is not automatically attributed to the current business day.</p>}<dl className="mt-5 grid grid-cols-2 gap-4 text-sm"><div><dt className="text-xs text-[var(--app-text-muted)]">Expected</dt><dd className="font-semibold">{detailTarget.expectedQuantity} {detailTarget.unit}</dd></div><div><dt className="text-xs text-[var(--app-text-muted)]">Actual</dt><dd className="font-semibold">{detailTarget.actualQuantity} {detailTarget.unit}</dd></div><div><dt className="text-xs text-[var(--app-text-muted)]">Signed variance</dt><dd className="font-semibold">{detailTarget.varianceQuantity>0?"+":""}{detailTarget.varianceQuantity} {detailTarget.unit}</dd></div><div><dt className="text-xs text-[var(--app-text-muted)]">Investigation</dt><dd className="font-semibold">{varianceWithoutInvestigationLabel(detailTarget)}</dd></div></dl></div></div>}
   </div>;
 }
 
-function VarianceStatus({ status }: { status: DisplayStatus }) {
+function VarianceStatus({ status, label }: { status: DisplayStatus; label?: string }) {
   const map: Record<DisplayStatus, { label: string; color: string; background: string }> = {
     MATCHED: { label: "Matched", color: "var(--app-success)", background: "var(--app-success-bg)" },
     SHORTAGE: { label: "Shortage", color: "var(--app-danger)", background: "var(--app-danger-bg)" },
@@ -285,7 +293,7 @@ function VarianceStatus({ status }: { status: DisplayStatus }) {
       }}
     >
       <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: visual.color }} />
-      <span>{visual.label}</span>
+      <span>{label ?? visual.label}</span>
     </span>
   );
 }

@@ -598,18 +598,19 @@ describe("access controls", () => {
     expect(response.status).toBe(422);
   });
 
-  it("blocks Staff from final classification and incident-evidence linking endpoints", async () => {
+  it("blocks Staff from final classification and incident-evidence decision endpoints", async () => {
     const cookie = session({
       id: "staff",
       role: "STAFF",
       branchId: "00000000-0000-0000-0000-000000000002",
     });
     const id = "00000000-0000-0000-0000-000000000001";
-    const [classification, linking] = await Promise.all([
+    const [classification, linking, decision] = await Promise.all([
       request(app).patch(`/api/shrinkage-reports/${id}/investigation`).set("Cookie", cookie).send({}),
       request(app).patch(`/api/incidents/${id}/link`).set("Cookie", cookie).send({ shrinkageReportId: id }),
+      request(app).patch(`/api/incidents/${id}/evidence-decision`).set("Cookie", cookie).send({ shrinkageReportId: id }),
     ]);
-    expect([classification.status, linking.status]).toEqual([403, 403]);
+    expect([classification.status, linking.status, decision.status]).toEqual([403, 403, 403]);
   });
 
   it("blocks Staff and anonymous users from Gemini-assisted shrinkage analysis", async () => {

@@ -10,6 +10,7 @@ export interface ExpectedInventoryItem {
   approvedAdjustments: number;
   expectedQuantity: number;
   baselineDate: string;
+  baselineAt?: string;
   baselineSource?: "PHYSICAL_COUNT" | "DAILY_OPENING" | "DAILY_CLOSING" | "OPENING_BASELINE" | "BALANCE";
 }
 
@@ -343,12 +344,15 @@ export interface DailyInventoryCountContext {
   previousClosingItems: Array<{inventoryItemId:string;actualQuantity:number;countDate:string;countType?:"CLOSING"|"FULL"}>;
   previousClosingDate: string | null;
   previousClosingCountType?: "CLOSING" | "FULL" | null;
+  startingStockCopyEligible?: boolean;
+  startingStockSource?: { id:string;baselineNo:string;effectiveAt:string } | null;
+  startingStockItems?: Array<{inventoryItemId:string;actualQuantity:number}>;
   posDayComplete: boolean;
 }
 
 export interface FullInventoryCountContext {
   countType: "FULL";
-  closingCount: { id:string;countNo:string;countType:"CLOSING";submittedAt:string } | null;
+  closingCount: { id:string;countNo:string;countType:"CLOSING";submittedAt:string;countDate?:string;effectiveAt?:string|null } | null;
   fullCount: { id:string;countNo:string;countType:"FULL";submittedAt:string } | null;
   sameDayClosingItems: Array<{inventoryItemId:string;actualQuantity:number}>;
   weeklyFullCount: number;
@@ -403,6 +407,7 @@ export interface ShrinkageReport {
   inventoryCountId: string;
   inventoryCountItemId: string;
   countNo: string;
+  countType: InventoryCountType;
   branchId: string;
   branchName: string;
   inventoryItemId: string;
@@ -434,6 +439,7 @@ export interface ShrinkageReport {
 export interface MissingShrinkageInvestigation {
   countItemId: string;
   countNo: string;
+  countType: InventoryCountType;
   countDate: string;
   branchId: string;
   branchName: string;
@@ -448,10 +454,14 @@ export interface MissingShrinkageInvestigation {
 }
 
 export interface ShrinkageEvidence {
+  interval: { countType:InventoryCountType;startAt:string|null;endAt:string };
   incidents: {
     id: string; incidentReportItemId: string; incidentType: string; quantity: number; unit: string; occurredAt: string; reason: string;
     notes: string | null; photoUrl: string | null; status: string; managerComment: string | null;
     submittedByName: string; explicitlyLinked: boolean;
+    matchQuality:"EXACT"|"APPROXIMATE"|"INSUFFICIENT";quantityDifference:number;
+    evidenceDecision:"ACCEPTED"|"REJECTED"|"UNLINKED"|null;decisionReason:string|null;decidedAt:string|null;
+    evidenceStatus:"UNVERIFIED";
   }[];
   movements: { movementType: string; quantity: number; occurredAt: string; referenceNo: string | null; notes: string | null }[];
   usage: { date: string; expectedUsage: number }[];
@@ -472,6 +482,7 @@ export interface ShrinkageAiAnalysisResult {
 export interface VarianceRecord {
   countItemId: string;
   countNo: string;
+  countType: InventoryCountType;
   countDate: string;
   branchId: string;
   branchName: string;

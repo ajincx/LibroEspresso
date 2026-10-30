@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { act, create } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { CalendarDateField } from "../../components/ModuleUi";
-import { displayStatus, InventoryCountDateFilter, inventoryCountDateMax, inventoryCountDateRangeError, varianceClassificationLabel, varianceScopeForStatus, varianceWithoutInvestigationLabel } from "./VariancePage";
+import { displayStatus, InventoryCountDateFilter, inventoryCountDateMax, inventoryCountDateRangeError, varianceClassificationLabel, varianceScopeForStatus, varianceTypeLabel, varianceWithoutInvestigationLabel } from "./VariancePage";
 
 describe("inventory count date filter", () => {
   const manilaOctober27 = new Date("2026-10-26T16:30:00.000Z");
@@ -41,6 +41,12 @@ describe("inventory count date filter", () => {
 });
 
 describe("variance sign presentation", () => {
+  it("labels Opening discrepancies without attributing them to Closing operations", () => {
+    expect(varianceTypeLabel({ countType: "OPENING", varianceQuantity: -35 })).toBe("Opening Shortage");
+    expect(varianceTypeLabel({ countType: "OPENING", varianceQuantity: 2665 })).toBe("Opening Excess");
+    expect(varianceTypeLabel({ countType: "OPENING", varianceQuantity: 0 })).toBe("Opening Matched");
+    expect(varianceTypeLabel({ countType: "CLOSING", varianceQuantity: -10 })).toBe("Shortage");
+  });
   it("treats negative Actual-minus-Expected variance as shortage", () => {
     expect(displayStatus({ varianceQuantity: -54, anomalyStatus: null, requiresInvestigation: false } as never)).toBe("SHORTAGE_WITHIN_TOLERANCE");
   });

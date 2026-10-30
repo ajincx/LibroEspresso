@@ -111,8 +111,11 @@ export const operationsService = {
       )
     ).data.data.incident;
   },
-  async linkIncident(id: string, shrinkageReportId: string, incidentReportItemId?: string) {
-    return (await api.patch<ApiSuccess<{ incident: IncidentReport }>>(`/incidents/${id}/link`, { shrinkageReportId, incidentReportItemId })).data.data.incident;
+  async linkIncident(id: string, shrinkageReportId: string, incidentReportItemId: string | undefined, reason: string) {
+    return (await api.patch<ApiSuccess<{ incident: IncidentReport }>>(`/incidents/${id}/link`, { shrinkageReportId, incidentReportItemId, reason })).data.data.incident;
+  },
+  async decideIncidentEvidence(id:string,input:{shrinkageReportId:string;incidentReportItemId:string;decision:"REJECTED"|"UNLINKED";reason:string}) {
+    return (await api.patch<ApiSuccess<{incident:IncidentReport}>>(`/incidents/${id}/evidence-decision`,input)).data.data.incident;
   },
   async purchaseOrders(filters?: {
     branchId?: string;

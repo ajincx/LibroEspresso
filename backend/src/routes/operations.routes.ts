@@ -11,6 +11,7 @@ import {
   listIncidentReports,
   listPurchaseOrders,
   linkIncidentToInvestigation,
+  decideIncidentEvidence,
   receivePurchaseOrder,
   reviewIncidentReport,
   updateBranchInventorySettings,
@@ -55,6 +56,11 @@ incidentRouter.patch(
   "/:id/link",
   authorize("BRANCH_MANAGER"),
   asyncHandler(linkIncidentToInvestigation),
+);
+incidentRouter.patch(
+  "/:id/evidence-decision",
+  authorize("BRANCH_MANAGER"),
+  asyncHandler(decideIncidentEvidence),
 );
 incidentRouter.post(
   "/:id/lifecycle",

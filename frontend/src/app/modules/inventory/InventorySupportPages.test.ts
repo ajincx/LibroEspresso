@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { filterIngredientUsageItems, filterInventoryCountHistory, ingredientUsageThroughDateError, IngredientUsageSearch, IngredientUsageToolbar, INGREDIENT_CONSUMPTION_SUBTITLE, INGREDIENT_CONSUMPTION_TITLE, INGREDIENT_USAGE_NO_MATCH_TITLE, inventoryCountHistoryActions, inventoryCountHistoryModes, PhysicalCountHistoryHeaderActions } from "./InventorySupportPages";
+import { filterIngredientUsageItems, filterInventoryCountHistory, ingredientUsageThroughDateError, IngredientUsageSearch, IngredientUsageToolbar, INGREDIENT_CONSUMPTION_SUBTITLE, INGREDIENT_CONSUMPTION_TITLE, INGREDIENT_USAGE_NO_MATCH_TITLE, inventoryCountHistoryActions, inventoryCountHistoryModes, inventoryCountVarianceLabel, PhysicalCountHistoryHeaderActions } from "./InventorySupportPages";
 import type { ExpectedInventoryItem, InventoryCountSummary } from "../../types/inventoryWorkflow";
 
 describe("inventory-count history role actions", () => {
@@ -46,6 +46,11 @@ describe("Stock History filters", () => {
 
   it("combines search, date, and type filters without changing branch-scoped data", () => {
     expect(filterInventoryCountHistory(counts, "Gulod", "2026-10-15", "CLOSING").map((item) => item.id)).toEqual(["IC-2"]);
+  });
+
+  it("shows the stored Opening variance count instead of suppressing it", () => {
+    expect(inventoryCountVarianceLabel({ varianceCount: 2 })).toBe("2");
+    expect(inventoryCountVarianceLabel({ varianceCount: 0 })).toBe("0");
   });
 });
 

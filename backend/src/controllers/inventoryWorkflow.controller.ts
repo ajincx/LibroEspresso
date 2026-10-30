@@ -1292,7 +1292,7 @@ export const getPosAnalytics: RequestHandler = async (req, res) => {
          FROM inventory_counts ic JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id
          LEFT JOIN LATERAL (SELECT corrected_actual_quantity,corrected_variance_value
            FROM inventory_count_corrections WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
-         WHERE NOT ic.is_test_data AND ici.voided_at IS NULL AND ic.count_type<>'OPENING'
+         WHERE NOT ic.is_test_data AND ici.voided_at IS NULL
            AND ic.count_date BETWEEN $1::date AND $2::date ${branchId ? `AND ic.branch_id=$3` : ""}`,
         params,
       ),
@@ -1303,7 +1303,7 @@ export const getPosAnalytics: RequestHandler = async (req, res) => {
          FROM shrinkage_reports sr
          JOIN inventory_count_items ici ON ici.id=sr.inventory_count_item_id
          JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
-        WHERE NOT sr.is_test_data AND ici.voided_at IS NULL AND ic.count_type<>'OPENING'
+        WHERE NOT sr.is_test_data AND ici.voided_at IS NULL
           AND sr.detected_at::date BETWEEN $1::date AND $2::date
           AND sr.status IN ('VERIFIED','REVIEWED')
           AND sr.classification IN (${VERIFIED_SHRINKAGE_CLASSIFICATIONS_SQL})
@@ -1534,8 +1534,8 @@ export const getExpectedInventory: RequestHandler = async (req, res) => {
   const { items, unavailableItems } = await calculateExpectedInventoryBatch(pool, branchId, countDate, countType);
   if (countType === "FULL") {
     const sameDayCounts = await pool.query<{
-      id: string; countNo: string; countType: "CLOSING" | "FULL"; submittedAt: string;
-    }>(`SELECT id,count_no "countNo",count_type "countType",submitted_at "submittedAt"
+      id: string; countNo: string; countType: "CLOSING" | "FULL"; countDate:string;effectiveAt:string|null;submittedAt: string;
+    }>(`SELECT id,count_no "countNo",count_type "countType",count_date::text "countDate",effective_at "effectiveAt",submitted_at "submittedAt"
           FROM inventory_counts
          WHERE branch_id=$1 AND count_date=$2 AND count_type IN ('CLOSING','FULL') AND NOT is_test_data`,
       [branchId,countDate]);
@@ -1593,6 +1593,16 @@ export const getExpectedInventory: RequestHandler = async (req, res) => {
           WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
        ORDER BY ici.inventory_item_id`,
       [branchId,countDate]) : { rows: [] as {inventoryItemId:string;actualQuantity:number;countDate:string;countType:"CLOSING"|"FULL"}[] };
+  const startingStock = countType === "OPENING" ? await pool.query<{
+    id:string; baselineNo:string; effectiveAt:string; inventoryItemId:string; actualQuantity:number;
+  }>(`SELECT baseline.id,baseline.baseline_no "baselineNo",baseline.effective_at "effectiveAt",
+              item.inventory_item_id "inventoryItemId",item.quantity::float8 "actualQuantity"
+         FROM inventory_opening_baselines baseline
+         JOIN inventory_opening_baseline_items item ON item.opening_baseline_id=baseline.id
+        WHERE baseline.branch_id=$1 AND baseline.designation='STARTING_STOCK'
+          AND NOT EXISTS (SELECT 1 FROM inventory_counts existing
+            WHERE existing.branch_id=baseline.branch_id AND NOT existing.is_test_data)
+        ORDER BY item.inventory_item_id`,[branchId]) : { rows: [] as {id:string;baselineNo:string;effectiveAt:string;inventoryItemId:string;actualQuantity:number}[] };
   const completeness = await pool.query<{ complete: boolean }>(
     `SELECT EXISTS(
        SELECT 1 FROM pos_daily_declarations declaration
@@ -1621,6 +1631,11 @@ export const getExpectedInventory: RequestHandler = async (req, res) => {
     previousClosingItems: previousClosing.rows,
     previousClosingDate: previousCheckpoint?.countDate ?? null,
     previousClosingCountType: previousCheckpoint?.countType ?? null,
+    startingStockCopyEligible: startingStock.rows.length > 0,
+    startingStockSource: startingStock.rows[0] ? {
+      id:startingStock.rows[0].id,baselineNo:startingStock.rows[0].baselineNo,effectiveAt:startingStock.rows[0].effectiveAt,
+    } : null,
+    startingStockItems: startingStock.rows.map(({inventoryItemId,actualQuantity})=>({inventoryItemId,actualQuantity})),
     posDayComplete: completeness.rows[0]?.complete === true,
   } });
 };
@@ -1679,6 +1694,10 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
   try {
     await client.query("BEGIN");
     await lockBranchInventoryOperation(client, branchId);
+    const cutoffResult = await client.query<{ cutoffAt: string }>(
+      `SELECT clock_timestamp()::text "cutoffAt"`,
+    );
+    const cutoffAt = cutoffResult.rows[0]!.cutoffAt;
     const rulesResult = await client.query<{ absoluteTolerance: number; relativeTolerance: number }>(
       `SELECT variance_tolerance_quantity::float8 "absoluteTolerance",
               variance_tolerance_percent::float8 "relativeTolerance"
@@ -1754,7 +1773,7 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
         );
       }
     }
-    const expectedSet = await calculateExpectedInventoryBatch(client,branchId,input.countDate,input.countType);
+    const expectedSet = await calculateExpectedInventoryBatch(client,branchId,input.countDate,input.countType,cutoffAt);
     if (input.countType === "FULL") validateCompleteInventoryCountItemSet(expectedSet,input.items.map((item)=>item.inventoryItemId));
     else validatePartialInventoryCountItemSet(expectedSet,input.items.map((item)=>item.inventoryItemId));
     const countNoResult = await client.query<{ countNo: string }>(
@@ -1763,8 +1782,8 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
     );
     const count = await client.query<{ id: string; countNo: string }>(
       `INSERT INTO inventory_counts (count_no,branch_id,count_date,submitted_by,count_type,effective_at)
-       VALUES ($1,$2,$3,$4,$5::varchar(10),CASE WHEN $5::varchar(10)='FULL' THEN NULL ELSE now() END) RETURNING id,count_no "countNo"`,
-      [countNoResult.rows[0]!.countNo, branchId, input.countDate, req.user!.id,input.countType],
+       VALUES ($1,$2,$3,$4,$5::varchar(10),CASE WHEN $5::varchar(10)='FULL' THEN NULL ELSE $6::timestamptz END) RETURNING id,count_no "countNo"`,
+      [countNoResult.rows[0]!.countNo, branchId, input.countDate, req.user!.id,input.countType,cutoffAt],
     );
     const countItems = [];
     for (const submitted of input.items) {
@@ -1774,6 +1793,7 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
         submitted.inventoryItemId,
         input.countDate,
         input.countType,
+        cutoffAt,
       );
       let actualQuantity: number;
       try {
@@ -1834,7 +1854,7 @@ export const submitInventoryCount: RequestHandler = async (req, res) => {
       // If the shortage exceeds the configured tolerance,
       // create a DETECTED shrinkage investigation.
       // Do not automatically classify it as confirmed shrinkage.
-      if (input.countType !== "OPENING" && requiresVarianceInvestigation(expected.expectedQuantity, varianceQuantity, varianceTolerance)) {
+      if (requiresVarianceInvestigation(expected.expectedQuantity, varianceQuantity, varianceTolerance)) {
         const reportNo = await client.query<{ reportNo: string }>(
           `SELECT 'SR-'||to_char(now(),'YYYY')||'-'||lpad(nextval('shrinkage_report_number_seq')::text,5,'0') "reportNo"`,
         );
@@ -2132,7 +2152,7 @@ export const updateInventoryCount: RequestHandler = async (req, res) => {
         ],
       );
       let shrinkageReportId = row.shrinkageReportId;
-      const requiresInvestigation = count.rows[0].countType !== "OPENING" && requiresVarianceInvestigation(
+      const requiresInvestigation = requiresVarianceInvestigation(
         expectedQty,
         varianceQuantity,
         varianceTolerance,
@@ -2254,7 +2274,7 @@ export const listInventoryCounts: RequestHandler = async (req, res) => {
                   AND (imported.business_date>ic.count_date OR (imported.business_date=ic.count_date AND imported.imported_at>ic.submitted_at)))
                 AND NOT EXISTS(SELECT 1 FROM inventory_count_items ci JOIN shrinkage_reports sr ON sr.inventory_count_item_id=ci.id WHERE ci.inventory_count_id=ic.id)) "canEdit",
               concat(u.first_name,' ',u.last_name) "submittedBy",count(ici.id)::int "itemCount",count(*) OVER()::int "__total",
-              (count(ici.id) FILTER (WHERE ic.count_type<>'OPENING' AND abs(COALESCE(correction.corrected_variance_quantity,ici.variance_quantity))>0.0001))::int "varianceCount"
+              (count(ici.id) FILTER (WHERE abs(COALESCE(correction.corrected_variance_quantity,ici.variance_quantity))>0.0001))::int "varianceCount"
        FROM inventory_counts ic JOIN branches b ON b.id=ic.branch_id JOIN users u ON u.id=ic.submitted_by
        LEFT JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id AND ici.voided_at IS NULL
        LEFT JOIN LATERAL (SELECT corrected_variance_quantity FROM inventory_count_corrections
@@ -2476,7 +2496,7 @@ export const listInventoryVariances: RequestHandler = async (req, res) => {
   const filters = varianceFilters.parse(req.query);
   const pagination = paginationQuery.parse(req.query);
   const branchId = getEffectiveBranchId(req.user!, filters.branchId);
-  const clauses: string[] = ["NOT ic.is_test_data", "ici.voided_at IS NULL", "ic.count_type <> 'OPENING'"];
+  const clauses: string[] = ["NOT ic.is_test_data", "ici.voided_at IS NULL"];
   const values: unknown[] = [];
   if (branchId) {
     values.push(branchId);
@@ -2492,7 +2512,7 @@ export const listInventoryVariances: RequestHandler = async (req, res) => {
     clauses.push(`abs(COALESCE(correction.corrected_variance_quantity,ici.variance_quantity)) <= 0.0001`);
   }
   const result = await pool.query(
-    `SELECT ici.id "countItemId",ic.count_no "countNo",ic.count_date::text "countDate",
+    `SELECT ici.id "countItemId",ic.count_no "countNo",ic.count_date::text "countDate",ic.count_type "countType",
             b.id "branchId",b.name "branchName",ii.id "inventoryItemId",ii.sku,ii.name "itemName",
             ici.expected_quantity::float8 "expectedQuantity",COALESCE(correction.corrected_actual_quantity,ici.actual_quantity)::float8 "actualQuantity",
             COALESCE(correction.corrected_variance_quantity,ici.variance_quantity)::float8 "varianceQuantity",
@@ -2528,7 +2548,7 @@ const shrinkageSelection = `SELECT sr.id,sr.report_no "reportNo",sr.status,sr.cl
   CASE WHEN sr.actual_quantity>sr.expected_quantity THEN abs(sr.variance_value)
        WHEN sr.actual_quantity<sr.expected_quantity THEN -abs(sr.variance_value) ELSE 0 END::float8 "varianceValue",sr.unit,
   CASE WHEN sr.expected_quantity > 0 THEN (((sr.actual_quantity-sr.expected_quantity) / sr.expected_quantity) * 100)::float8 ELSE NULL END "variancePercentage",
-  ic.id "inventoryCountId",ic.count_no "countNo",ici.id "inventoryCountItemId",ic.count_date::text "countDate",
+  ic.id "inventoryCountId",ic.count_no "countNo",ici.id "inventoryCountItemId",ic.count_date::text "countDate",ic.count_type "countType",
   sr.detected_at "detectedAt",sr.investigated_at "investigatedAt",sr.submitted_at "submittedAt",sr.reviewed_at "reviewedAt",sr.archived_at "archivedAt",b.id "branchId",b.name "branchName",ii.id "inventoryItemId",ii.sku,ii.name "inventoryItemName",
   mi.id "menuItemId",mi.name "menuItemName",concat(su.first_name,' ',su.last_name) "managerName",concat(ru.first_name,' ',ru.last_name) "reviewedByName"
   FROM shrinkage_reports sr JOIN branches b ON b.id=sr.branch_id JOIN inventory_items ii ON ii.id=sr.inventory_item_id
@@ -2539,7 +2559,7 @@ export const listShrinkageReports: RequestHandler = async (req, res) => {
   const filters = shrinkageFilters.parse(req.query);
   const pagination = paginationQuery.parse(req.query);
   const branchId = getEffectiveBranchId(req.user!, filters.branchId);
-  const clauses: string[] = ["NOT sr.is_test_data", "ic.count_type <> 'OPENING'"];
+  const clauses: string[] = ["NOT sr.is_test_data"];
   if (filters.archiveScope === "ARCHIVED") clauses.push("sr.archived_at IS NOT NULL");
   else if (filters.archiveScope === "ALL") clauses.push("(sr.archived_at IS NOT NULL OR ici.voided_at IS NULL)");
   else clauses.push("sr.archived_at IS NULL", "ici.voided_at IS NULL");
@@ -2576,7 +2596,6 @@ export const listShrinkageReports: RequestHandler = async (req, res) => {
   const missingValues: unknown[] = [];
   const missingClauses = [
     "NOT ic.is_test_data",
-    "ic.count_type <> 'OPENING'",
     "ici.voided_at IS NULL",
     "COALESCE(correction.corrected_variance_quantity,ici.variance_quantity) < 0",
     `abs(COALESCE(correction.corrected_variance_quantity,ici.variance_quantity)) >
@@ -2635,7 +2654,7 @@ export const listShrinkageReports: RequestHandler = async (req, res) => {
     ),
     includeMissingInvestigations
       ? pool.query(
-        `SELECT ici.id "countItemId",ic.count_no "countNo",ic.count_date::text "countDate",
+        `SELECT ici.id "countItemId",ic.count_no "countNo",ic.count_date::text "countDate",ic.count_type "countType",
                 b.id "branchId",b.name "branchName",ii.id "inventoryItemId",ii.sku,
                 ii.name "inventoryItemName",ici.expected_quantity::float8 "expectedQuantity",
                 COALESCE(correction.corrected_actual_quantity,ici.actual_quantity)::float8 "actualQuantity",
@@ -2689,11 +2708,38 @@ export const getShrinkageEvidence: RequestHandler = async (req, res) => {
     branchId: string;
     inventoryItemId: string;
     countDate: string;
+    countType: "OPENING" | "CLOSING" | "FULL";
+    intervalStartAt: string | null;
+    intervalEndAt: string;
+    discrepancyQuantity: number;
+    unit: string;
   }>(
-    `SELECT sr.branch_id "branchId",sr.inventory_item_id "inventoryItemId",ic.count_date::text "countDate"
+    `SELECT sr.branch_id "branchId",sr.inventory_item_id "inventoryItemId",ic.count_date::text "countDate",
+            ic.count_type "countType",COALESCE(ic.effective_at,ic.submitted_at) "intervalEndAt",
+            checkpoint.effective_at "intervalStartAt",abs(sr.variance_quantity)::float8 "discrepancyQuantity",sr.unit
        FROM shrinkage_reports sr
        JOIN inventory_count_items ici ON ici.id=sr.inventory_count_item_id
        JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
+       LEFT JOIN LATERAL (
+         SELECT source.effective_at FROM (
+           SELECT COALESCE(previous.effective_at,previous.submitted_at) effective_at
+             FROM inventory_counts previous
+             JOIN inventory_count_items previous_item ON previous_item.inventory_count_id=previous.id
+               AND previous_item.inventory_item_id=sr.inventory_item_id AND previous_item.voided_at IS NULL
+            WHERE previous.branch_id=sr.branch_id AND NOT previous.is_test_data
+              AND COALESCE(previous.effective_at,previous.submitted_at)<COALESCE(ic.effective_at,ic.submitted_at)
+              AND ((ic.count_type='OPENING' AND previous.count_type IN ('CLOSING','FULL'))
+                OR (ic.count_type='CLOSING' AND previous.count_type='OPENING' AND previous.count_date=ic.count_date)
+                OR (ic.count_type='FULL' AND previous.count_type IN ('OPENING','CLOSING','FULL')))
+           UNION ALL
+           SELECT baseline.effective_at
+             FROM inventory_opening_baselines baseline
+             JOIN inventory_opening_baseline_items baseline_item ON baseline_item.opening_baseline_id=baseline.id
+               AND baseline_item.inventory_item_id=sr.inventory_item_id
+            WHERE ic.count_type='OPENING' AND baseline.branch_id=sr.branch_id
+              AND baseline.effective_at<COALESCE(ic.effective_at,ic.submitted_at)
+         ) source ORDER BY source.effective_at DESC LIMIT 1
+       ) checkpoint ON true
       WHERE sr.id=$1 AND NOT sr.is_test_data ${branchId ? "AND sr.branch_id=$2" : ""}`,
     branchId ? [id, branchId] : [id],
   );
@@ -2705,10 +2751,22 @@ export const getShrinkageEvidence: RequestHandler = async (req, res) => {
       `SELECT ir.id,iri.id "incidentReportItemId",ir.incident_type "incidentType",iri.quantity::float8,iri.unit,ir.occurred_at "occurredAt",
               ir.reason,ir.notes,ir.photo_url "photoUrl",ir.status,ir.manager_comment "managerComment",
               concat(u.first_name,' ',u.last_name) "submittedByName",
-              EXISTS (SELECT 1 FROM incident_shrinkage_links isl WHERE isl.incident_report_item_id=iri.id AND isl.shrinkage_report_id=$1) "explicitlyLinked"
+              EXISTS (SELECT 1 FROM incident_shrinkage_links isl WHERE isl.incident_report_item_id=iri.id AND isl.shrinkage_report_id=$1) "explicitlyLinked",
+              CASE WHEN abs(iri.quantity-$6::numeric)<=0.0001 THEN 'EXACT'
+                   WHEN abs(iri.quantity-$6::numeric)<=greatest(settings.variance_tolerance_quantity,($6::numeric*settings.variance_tolerance_percent/100)) THEN 'APPROXIMATE'
+                   ELSE 'INSUFFICIENT' END "matchQuality",
+              abs(iri.quantity-$6::numeric)::float8 "quantityDifference",
+              decision.decision "evidenceDecision",decision.reason "decisionReason",decision.decided_at "decidedAt",
+              'UNVERIFIED' "evidenceStatus"
          FROM incident_reports ir JOIN users u ON u.id=ir.submitted_by
          JOIN incident_report_items iri ON iri.incident_report_id=ir.id
+         CROSS JOIN calculation_settings settings
+         LEFT JOIN LATERAL (SELECT history.decision,history.reason,history.decided_at
+           FROM incident_shrinkage_evidence_decisions history
+          WHERE history.incident_report_item_id=iri.id AND history.shrinkage_report_id=$1
+          ORDER BY history.decided_at DESC LIMIT 1) decision ON true
         WHERE ir.branch_id=$2 AND iri.inventory_item_id=$3 AND NOT ir.is_test_data AND ir.archived_at IS NULL
+          AND iri.unit=$7
           AND (
             ir.status='VERIFIED'
             OR NOT EXISTS (SELECT 1 FROM inventory_counts finalized
@@ -2722,11 +2780,15 @@ export const getShrinkageEvidence: RequestHandler = async (req, res) => {
             OR (
               NOT EXISTS (SELECT 1 FROM incident_shrinkage_links isl WHERE isl.incident_report_item_id=iri.id)
               AND ir.status IN ('PENDING','VERIFIED')
-              AND (ir.occurred_at AT TIME ZONE 'Asia/Manila')::date BETWEEN $4::date-7 AND $4::date+1
+              AND $4::timestamptz IS NOT NULL
+              AND ir.occurred_at>$4::timestamptz AND ir.occurred_at<=$5::timestamptz
             )
           )
-        ORDER BY EXISTS (SELECT 1 FROM incident_shrinkage_links isl WHERE isl.incident_report_item_id=iri.id AND isl.shrinkage_report_id=$1) DESC,ir.occurred_at DESC`,
-      [id, context.branchId, context.inventoryItemId, context.countDate],
+        ORDER BY EXISTS (SELECT 1 FROM incident_shrinkage_links isl WHERE isl.incident_report_item_id=iri.id AND isl.shrinkage_report_id=$1) DESC,
+                 CASE WHEN abs(iri.quantity-$6::numeric)<=0.0001 THEN 0
+                      WHEN abs(iri.quantity-$6::numeric)<=greatest(settings.variance_tolerance_quantity,($6::numeric*settings.variance_tolerance_percent/100)) THEN 1 ELSE 2 END,
+                 ir.occurred_at DESC`,
+      [id,context.branchId,context.inventoryItemId,context.intervalStartAt,context.intervalEndAt,context.discrepancyQuantity,context.unit],
     ),
     pool.query(
       `SELECT movement_type "movementType",quantity::float8,occurred_at "occurredAt",reference_no "referenceNo",notes
@@ -2751,6 +2813,7 @@ export const getShrinkageEvidence: RequestHandler = async (req, res) => {
     success: true,
     data: {
       evidence: {
+        interval: { countType: context.countType, startAt: context.intervalStartAt, endAt: context.intervalEndAt },
         incidents: incidents.rows,
         movements: movements.rows,
         usage: usage.rows,

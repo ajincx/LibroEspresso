@@ -22,6 +22,7 @@ suite("Opening Count PostgreSQL integration", () => {
   let pool: pg.Pool;
   let submitInventoryCount: Awaited<typeof import("./inventoryWorkflow.controller.js")>["submitInventoryCount"];
   let updateInventoryCount: Awaited<typeof import("./inventoryWorkflow.controller.js")>["updateInventoryCount"];
+  let getExpectedInventory: Awaited<typeof import("./inventoryWorkflow.controller.js")>["getExpectedInventory"];
 
   beforeAll(async () => {
     if (!databaseUrl) throw new Error("PHASE_C_E2E_DATABASE_URL is required");
@@ -33,7 +34,7 @@ suite("Opening Count PostgreSQL integration", () => {
     process.env.NODE_ENV = "test";
     process.env.DATABASE_URL = databaseUrl;
     pool = new pg.Pool({ connectionString: databaseUrl });
-    ({ submitInventoryCount, updateInventoryCount } = await import("./inventoryWorkflow.controller.js"));
+    ({ submitInventoryCount, updateInventoryCount, getExpectedInventory } = await import("./inventoryWorkflow.controller.js"));
 
     const items = (await pool.query<{ id: string; unit: string; unitCost: number }>(
       `SELECT id,unit,unit_cost::float8 "unitCost" FROM inventory_items WHERE status='ACTIVE' ORDER BY sku LIMIT 2`,
@@ -97,7 +98,11 @@ suite("Opening Count PostgreSQL integration", () => {
     await pool.end();
   });
 
-  it("preserves an Opening snapshot as a baseline without creating operational shrinkage", async () => {
+  it("preserves a within-tolerance Opening snapshot as a baseline without creating a shortage anomaly", async () => {
+    const initialContext:{body?:any}={};
+    await getExpectedInventory({query:{countDate:new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Manila",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date()),countType:"OPENING"},user:{id:managerId,role:"BRANCH_MANAGER",branchId}} as never,{json(body:unknown){initialContext.body=body;return this;}} as never,()=>{});
+    expect(initialContext.body.data).toMatchObject({startingStockCopyEligible:true,startingStockSource:{id:baselineId}});
+    expect(initialContext.body.data.startingStockItems).toEqual(expect.arrayContaining([expect.objectContaining({inventoryItemId,actualQuantity:5200})]));
     const state: { status: number; body?: unknown } = { status: 200 };
     const response = {
       status(code: number) { state.status = code; return this; },
@@ -111,7 +116,7 @@ suite("Opening Count PostgreSQL integration", () => {
       body: {
         countDate: businessDate,
         countType: "OPENING",
-        items: [{ inventoryItemId, quantity: 5000, enteredUnit: inventoryUnit }],
+        items: [{ inventoryItemId, quantity: 5300, enteredUnit: inventoryUnit }],
       },
       user: { id: managerId, role: "BRANCH_MANAGER", branchId },
     } as never, response as never, () => {});
@@ -138,8 +143,8 @@ suite("Opening Count PostgreSQL integration", () => {
     expect(stored.rows).toEqual([expect.objectContaining({
       countType: "OPENING",
       expectedQuantity: 5200,
-      actualQuantity: 5000,
-      varianceQuantity: -200,
+      actualQuantity: 5300,
+      varianceQuantity: 100,
     })]);
     expect(stored.rows[0]!.effectiveAt).not.toBeNull();
 
@@ -161,9 +166,12 @@ suite("Opening Count PostgreSQL integration", () => {
         [countId],
       ),
     ]);
-    expect(balance.rows[0]?.quantity).toBe(5000);
+    expect(balance.rows[0]?.quantity).toBe(5300);
     expect(shrinkage.rows[0]?.count).toBe(0);
     expect(audit.rows[0]?.count).toBeGreaterThan(0);
+    const blockedContext:{body?:any}={};
+    await getExpectedInventory({query:{countDate:businessDate,countType:"OPENING"},user:{id:managerId,role:"BRANCH_MANAGER",branchId}} as never,{json(body:unknown){blockedContext.body=body;return this;}} as never,()=>{});
+    expect(blockedContext.body.data).toMatchObject({startingStockCopyEligible:false,startingStockSource:null,startingStockItems:[]});
   });
 
   it("serializes concurrent additions of a previously uncounted eligible ingredient without replacing the Opening Count", async () => {
@@ -176,8 +184,8 @@ suite("Opening Count PostgreSQL integration", () => {
         countDate: businessDate,
         correctionReason: "Add physically verified ingredient",
         items: [
-          { inventoryItemId, quantity: 5000, enteredUnit: inventoryUnit },
-          { inventoryItemId: additionalItemId, quantity: 650, enteredUnit: additionalItemUnit },
+          { inventoryItemId, quantity: 5300, enteredUnit: inventoryUnit },
+          { inventoryItemId: additionalItemId, quantity: 700, enteredUnit: additionalItemUnit },
         ],
       },
       user: { id: managerId, role: "BRANCH_MANAGER", branchId },
@@ -208,15 +216,15 @@ suite("Opening Count PostgreSQL integration", () => {
     ]);
     expect(counts.rows[0]?.count).toBe(1);
     expect(items.rows).toHaveLength(2);
-    expect(items.rows).toContainEqual({ inventoryItemId: additionalItemId, actualQuantity: 650 });
-    expect(addedBalance.rows[0]?.quantity).toBe(650);
+    expect(items.rows).toContainEqual({ inventoryItemId: additionalItemId, actualQuantity: 700 });
+    expect(addedBalance.rows[0]?.quantity).toBe(700);
 
     await expect(updateInventoryCount({
       params: { id: countId },
       body: {
         countDate: businessDate,
         correctionReason: "Attempt to omit original ingredient",
-        items: [{ inventoryItemId: additionalItemId, quantity: 650, enteredUnit: additionalItemUnit }],
+        items: [{ inventoryItemId: additionalItemId, quantity: 700, enteredUnit: additionalItemUnit }],
       },
       user: { id: managerId, role: "BRANCH_MANAGER", branchId },
     } as never, { json() { return this; } } as never, () => {})).rejects.toMatchObject({ code: "COUNT_ITEMS_MISMATCH" });
@@ -257,7 +265,7 @@ suite("Opening Count PostgreSQL integration", () => {
     expect(ledger.get(inventoryLedgerKey(branchId, inventoryItemId))?.calculatedBalance).toBe(5200);
     expect(ledger.get(inventoryLedgerKey(branchId, inventoryItemId))?.availability).toBe("AVAILABLE");
     expect((await pool.query("SELECT actual_quantity::float8 quantity FROM branch_inventory_balances WHERE branch_id=$1 AND inventory_item_id=$2", [branchId, inventoryItemId])).rows[0].quantity)
-      .toBe(5000);
+      .toBe(5300);
 
     const { buildReportDataset } = await import("../services/reportDataset.service.js");
     const report = await buildReportDataset(
@@ -265,7 +273,9 @@ suite("Opening Count PostgreSQL integration", () => {
       reportRequest.parse({ reportTypes: ["INVENTORY_VARIANCE", "SHRINKAGE"], startDate: businessDate, endDate: businessDate }),
     );
     expect(report.sections.map((section) => section.title)).toContain("Inventory Variance");
-    expect(report.sections.find((section) => section.title === "Inventory Variance")?.rows).toEqual([]);
+    expect(report.sections.find((section) => section.title === "Inventory Variance")?.rows).toEqual([
+      expect.objectContaining({ expectedQuantity: 700, actualQuantity: 700, varianceQuantity: 0, varianceStatus: "MATCHED" }),
+    ]);
 
     const fullCountId = (await pool.query<{ id: string }>(
       `INSERT INTO inventory_counts(count_no,branch_id,count_date,submitted_by,count_type)
@@ -290,7 +300,10 @@ suite("Opening Count PostgreSQL integration", () => {
       reportRequest.parse({ reportTypes: ["INVENTORY_VARIANCE", "SHRINKAGE"], startDate: businessDate, endDate: businessDate }),
     );
     expect(correctedReport.sections.find((section) => section.title === "Inventory Variance")?.rows)
-      .toEqual([expect.objectContaining({ expectedQuantity: 5200, actualQuantity: 5300, varianceQuantity: 100, varianceStatus: "EXCESS" })]);
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ expectedQuantity: 5200, actualQuantity: 5300, varianceQuantity: 100, varianceStatus: "EXCESS" }),
+        expect.objectContaining({ expectedQuantity: 700, actualQuantity: 700, varianceQuantity: 0, varianceStatus: "MATCHED" }),
+      ]));
     expect(correctedReport.reportGroups.find((group) => group.reportType === "INVENTORY_VARIANCE")?.summary)
       .toContainEqual(expect.objectContaining({ key: "detected", value: 0 }));
 

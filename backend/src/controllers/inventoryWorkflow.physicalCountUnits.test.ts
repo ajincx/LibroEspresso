@@ -38,6 +38,9 @@ const countId = "33333333-3333-4333-8333-333333333333";
 
 function transactionClient(options: { existingCounts?: Array<{ countNo: string; countType: string }>; posComplete?: boolean; weeklyFullCount?: number } = {}) {
   const query = vi.fn(async (sql: string, params?: unknown[]) => {
+    if (sql.includes('clock_timestamp()::text "cutoffAt"')) {
+      return { rows: [{ cutoffAt: "2026-10-03T08:00:00.000Z" }] };
+    }
     if (sql.includes("FROM calculation_settings")) {
       return { rows: [{ absoluteTolerance: 1, relativeTolerance: 2 }] };
     }
@@ -104,6 +107,7 @@ describe("physical-count API unit normalization", () => {
       approvedAdjustments: 0,
       expectedQuantity: 3864,
       baselineDate: "2026-09-16",
+      baselineAt: "2026-09-15T16:00:00.000Z",
       baselineSource: "OPENING_BASELINE",
     });
   });
@@ -188,7 +192,7 @@ describe("physical-count API unit normalization", () => {
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO inventory_count_items"))).toBe(false);
   });
 
-  it("preserves the Opening snapshot without creating a shrinkage investigation", async () => {
+  it("creates one DETECTED investigation for a material Opening shortage", async () => {
     mocks.calculateExpectedInventory.mockResolvedValueOnce({
       inventoryItemId,
       sku: "RM-002",
@@ -218,11 +222,11 @@ describe("physical-count API unit normalization", () => {
     expect(countItemInsert?.[1]?.[6]).toBe(5000);
     expect(countItemInsert?.[1]?.[7]).toBe(4800);
     expect(countItemInsert?.[1]?.[8]).toBe(-200);
-    expect(client.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO shrinkage_reports"))).toBe(false);
-    expect(mocks.requiresVarianceInvestigation).not.toHaveBeenCalled();
+    expect(client.query.mock.calls.filter(([sql]) => String(sql).includes("INSERT INTO shrinkage_reports"))).toHaveLength(1);
+    expect(mocks.requiresVarianceInvestigation).toHaveBeenCalledWith(5000, -200, { absoluteQuantity: 1, relativePercent: 2 });
     expect(json).toHaveBeenCalledWith(expect.objectContaining({
       data: { count: expect.objectContaining({
-        items: [expect.objectContaining({ actualQuantity: 4800, varianceQuantity: -200, requiresInvestigation: false })],
+        items: [expect.objectContaining({ actualQuantity: 4800, varianceQuantity: -200, requiresInvestigation: true })],
       }) },
     }));
   });

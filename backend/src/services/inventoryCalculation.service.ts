@@ -16,6 +16,7 @@ export interface ExpectedInventoryResult {
   approvedAdjustmentDecreases: number;
   expectedQuantity: number;
   baselineDate: string;
+  baselineAt: string;
   baselineSource: "PHYSICAL_COUNT" | "DAILY_OPENING" | "DAILY_CLOSING" | "OPENING_BASELINE" | "BALANCE";
 }
 
@@ -87,6 +88,7 @@ export async function calculateExpectedInventory(
   inventoryItemId: string,
   countDate: string,
   calculationPhase: "FULL" | "OPENING" | "CLOSING" = "FULL",
+  targetCutoffAt: string | null = null,
 ): Promise<ExpectedInventoryResult> {
   const itemResult = await client.query<{
     id: string; sku: string; name: string; unit: string; unitCost: number;
@@ -109,7 +111,9 @@ export async function calculateExpectedInventory(
          WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
       WHERE ic.branch_id=$1 AND ici.inventory_item_id=$2 AND NOT ic.is_test_data AND ici.voided_at IS NULL
         AND (($4::text='OPENING' AND ic.count_date < $3::date) OR ($4::text<>'OPENING' AND ic.count_date <= $3::date))
-      ORDER BY ic.count_date DESC,COALESCE(ic.effective_at,ic.submitted_at) DESC LIMIT 1`,
+      ORDER BY ic.count_date DESC,
+               CASE ic.count_type WHEN 'CLOSING' THEN 0 WHEN 'FULL' THEN 1 ELSE 2 END,
+               COALESCE(ic.effective_at,ic.submitted_at) DESC LIMIT 1`,
     [branchId, inventoryItemId, countDate, calculationPhase],
   );
   const openingBaseline = await client.query<InventoryBaseline>(
@@ -161,10 +165,12 @@ export async function calculateExpectedInventory(
        COALESCE(sum(quantity) FILTER (WHERE movement_type IN ('APPROVED_ADJUSTMENT', 'APPROVED_ADJUSTMENT_DECREASE')),0)::float8 "adjustmentDecreases"
        FROM inventory_movements
       WHERE branch_id=$1 AND inventory_item_id=$2 AND NOT is_test_data
-        AND (($5::text IN ('OPENING_BASELINE','DAILY_OPENING') AND occurred_at >= $6::timestamptz)
-          OR ($5::text NOT IN ('OPENING_BASELINE','DAILY_OPENING') AND occurred_at::date > $3::date))
-        AND (($7::text='OPENING' AND occurred_at::date < $4::date) OR ($7::text<>'OPENING' AND occurred_at::date <= $4::date))`,
-    [branchId, inventoryItemId, baseline.baselineDate, countDate, baseline.baselineSource, baseline.baselineAt, calculationPhase],
+        AND occurred_at > $3::timestamptz
+        AND occurred_at <= COALESCE($6::timestamptz,
+          CASE WHEN $4::date < (clock_timestamp() AT TIME ZONE 'Asia/Manila')::date OR $5::text='FULL'
+            THEN (($4::date + 1)::timestamp AT TIME ZONE 'Asia/Manila') - interval '1 microsecond'
+            ELSE clock_timestamp() END)`,
+    [branchId, inventoryItemId, baseline.baselineAt, countDate, calculationPhase, targetCutoffAt],
   );
 
   const consumption = await client.query<{ unit: string; quantity: number }>(
@@ -175,11 +181,18 @@ export async function calculateExpectedInventory(
        JOIN pos_sources source ON source.id=pi.pos_source_id
       WHERE pi.branch_id=$1 AND usage.inventory_item_id=$2 AND NOT pi.is_test_data AND pi.voided_at IS NULL
         AND pi.inventory_accounting_treatment='OPERATIONAL'
-        AND (($5::text IN ('OPENING_BASELINE','DAILY_OPENING') AND pi.business_date >= $3::date)
-          OR ($5::text NOT IN ('OPENING_BASELINE','DAILY_OPENING') AND pi.business_date > $3::date))
-        AND (($6::text='OPENING' AND pi.business_date < $4::date) OR ($6::text<>'OPENING' AND pi.business_date <= $4::date))
+        AND ((psi.transaction_timestamp IS NOT NULL
+              AND psi.transaction_timestamp > $6::timestamptz
+              AND psi.transaction_timestamp <= COALESCE($8::timestamptz,
+                CASE WHEN $4::date < (clock_timestamp() AT TIME ZONE 'Asia/Manila')::date OR $7::text='FULL'
+                  THEN (($4::date + 1)::timestamp AT TIME ZONE 'Asia/Manila') - interval '1 microsecond'
+                  ELSE clock_timestamp() END))
+          OR (psi.transaction_timestamp IS NULL
+              AND (($5::text IN ('OPENING_BASELINE','DAILY_OPENING') AND pi.business_date >= $3::date)
+                OR ($5::text NOT IN ('OPENING_BASELINE','DAILY_OPENING') AND pi.business_date > $3::date))
+              AND (($7::text='OPENING' AND pi.business_date < $4::date) OR ($7::text<>'OPENING' AND pi.business_date <= $4::date))))
       GROUP BY usage.unit`,
-    [branchId, inventoryItemId, baseline.baselineDate, countDate, baseline.baselineSource, calculationPhase],
+    [branchId, inventoryItemId, baseline.baselineDate, countDate, baseline.baselineSource, baseline.baselineAt, calculationPhase, targetCutoffAt],
   );
 
   const stockReceived = Number(movements.rows[0]?.received ?? 0);
@@ -210,6 +223,7 @@ export async function calculateExpectedInventory(
     approvedAdjustmentDecreases,
     expectedQuantity,
     baselineDate: baseline.baselineDate,
+    baselineAt: baseline.baselineAt,
     baselineSource: baseline.baselineSource,
   };
 }
@@ -219,6 +233,7 @@ export async function calculateExpectedInventoryBatch(
   branchId: string,
   countDate: string,
   calculationPhase: "FULL" | "OPENING" | "CLOSING" = "FULL",
+  targetCutoffAt: string | null = null,
 ): Promise<ExpectedInventoryBatchResult> {
   type BatchRow = {
     inventoryItemId: string;
@@ -228,6 +243,7 @@ export async function calculateExpectedInventoryBatch(
     unitCost: number;
     actualQuantity: number | null;
     baselineDate: string | null;
+    baselineAt: string | null;
     baselineSource: ExpectedInventoryResult["baselineSource"] | null;
     received: number;
     adjustmentIncreases: number;
@@ -246,7 +262,8 @@ export async function calculateExpectedInventoryBatch(
        SELECT ici.inventory_item_id "inventoryItemId",COALESCE(correction.corrected_actual_quantity,ici.actual_quantity)::float8 "actualQuantity",
               ic.count_date::text "baselineDate",
               COALESCE(ic.effective_at,(ic.count_date::timestamp + interval '1 day') AT TIME ZONE 'Asia/Manila') "baselineAt",
-              CASE ic.count_type WHEN 'OPENING' THEN 'DAILY_OPENING' WHEN 'CLOSING' THEN 'DAILY_CLOSING' ELSE 'PHYSICAL_COUNT' END::text "baselineSource",0 "sourcePriority",ic.submitted_at "sourceOrderAt"
+              CASE ic.count_type WHEN 'OPENING' THEN 'DAILY_OPENING' WHEN 'CLOSING' THEN 'DAILY_CLOSING' ELSE 'PHYSICAL_COUNT' END::text "baselineSource",0 "sourcePriority",
+              CASE ic.count_type WHEN 'CLOSING' THEN 0 WHEN 'FULL' THEN 1 ELSE 2 END "checkpointPriority",ic.submitted_at "sourceOrderAt"
          FROM inventory_count_items ici
          JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
          JOIN items item ON item."inventoryItemId"=ici.inventory_item_id
@@ -256,7 +273,7 @@ export async function calculateExpectedInventoryBatch(
           AND (($3::text='OPENING' AND ic.count_date < $2::date) OR ($3::text<>'OPENING' AND ic.count_date <= $2::date))
        UNION ALL
        SELECT obi.inventory_item_id,obi.quantity::float8,ob.effective_at::date::text,
-              ob.effective_at,'OPENING_BASELINE'::text,1,ob.effective_at
+              ob.effective_at,'OPENING_BASELINE'::text,1,3,ob.effective_at
          FROM inventory_opening_baseline_items obi
          JOIN inventory_opening_baselines ob ON ob.id=obi.opening_baseline_id
          JOIN items item ON item."inventoryItemId"=obi.inventory_item_id
@@ -264,7 +281,7 @@ export async function calculateExpectedInventoryBatch(
           AND (($3::text='OPENING' AND ob.effective_at < $2::date) OR ($3::text<>'OPENING' AND ob.effective_at < ($2::date + interval '1 day')))
        UNION ALL
        SELECT balance.inventory_item_id,balance.actual_quantity::float8,balance.as_of::date::text,
-              balance.as_of,'BALANCE'::text,2,balance.as_of
+              balance.as_of,'BALANCE'::text,2,4,balance.as_of
          FROM branch_inventory_balances balance
          JOIN items item ON item."inventoryItemId"=balance.inventory_item_id
         WHERE balance.branch_id=$1 AND NOT balance.is_test_data
@@ -280,7 +297,7 @@ export async function calculateExpectedInventoryBatch(
      ), baselines AS (
        SELECT DISTINCT ON (candidate."inventoryItemId") candidate.*
          FROM baseline_candidates candidate
-        ORDER BY candidate."inventoryItemId",candidate."baselineDate"::date DESC,candidate."sourcePriority",candidate."baselineAt" DESC,candidate."sourceOrderAt" DESC
+        ORDER BY candidate."inventoryItemId",candidate."baselineDate"::date DESC,candidate."checkpointPriority",candidate."sourcePriority",candidate."baselineAt" DESC,candidate."sourceOrderAt" DESC
      ), movement_totals AS (
        SELECT baseline."inventoryItemId",
               COALESCE(sum(movement.quantity) FILTER (WHERE movement.movement_type='RECEIPT'),0)::float8 received,
@@ -289,9 +306,11 @@ export async function calculateExpectedInventoryBatch(
          FROM baselines baseline
          LEFT JOIN inventory_movements movement ON movement.branch_id=$1
           AND movement.inventory_item_id=baseline."inventoryItemId" AND NOT movement.is_test_data
-          AND ((baseline."baselineSource" IN ('OPENING_BASELINE','DAILY_OPENING') AND movement.occurred_at >= baseline."baselineAt")
-            OR (baseline."baselineSource" NOT IN ('OPENING_BASELINE','DAILY_OPENING') AND movement.occurred_at::date > baseline."baselineDate"::date))
-          AND (($3::text='OPENING' AND movement.occurred_at::date < $2::date) OR ($3::text<>'OPENING' AND movement.occurred_at::date <= $2::date))
+          AND movement.occurred_at > baseline."baselineAt"
+          AND movement.occurred_at <= COALESCE($4::timestamptz,
+            CASE WHEN $2::date < (clock_timestamp() AT TIME ZONE 'Asia/Manila')::date OR $3::text='FULL'
+              THEN (($2::date + 1)::timestamp AT TIME ZONE 'Asia/Manila') - interval '1 microsecond'
+              ELSE clock_timestamp() END)
         GROUP BY baseline."inventoryItemId"
      ), consumption_totals AS (
        SELECT baseline."inventoryItemId",usage.unit "consumptionUnit",
@@ -299,16 +318,23 @@ export async function calculateExpectedInventoryBatch(
          FROM baselines baseline
          JOIN pos_imports pi ON pi.branch_id=$1 AND NOT pi.is_test_data AND pi.voided_at IS NULL
           AND pi.inventory_accounting_treatment='OPERATIONAL'
-          AND ((baseline."baselineSource" IN ('OPENING_BASELINE','DAILY_OPENING') AND pi.business_date >= baseline."baselineDate"::date)
-            OR (baseline."baselineSource" NOT IN ('OPENING_BASELINE','DAILY_OPENING') AND pi.business_date > baseline."baselineDate"::date))
-          AND (($3::text='OPENING' AND pi.business_date < $2::date) OR ($3::text<>'OPENING' AND pi.business_date <= $2::date))
          JOIN pos_sources source ON source.id=pi.pos_source_id
          JOIN pos_sale_items psi ON psi.pos_import_id=pi.id
          JOIN pos_sale_ingredient_usage usage ON usage.pos_sale_item_id=psi.id
           AND usage.inventory_item_id=baseline."inventoryItemId"
+        WHERE (psi.transaction_timestamp IS NOT NULL
+              AND psi.transaction_timestamp > baseline."baselineAt"
+              AND psi.transaction_timestamp <= COALESCE($4::timestamptz,
+                CASE WHEN $2::date < (clock_timestamp() AT TIME ZONE 'Asia/Manila')::date OR $3::text='FULL'
+                  THEN (($2::date + 1)::timestamp AT TIME ZONE 'Asia/Manila') - interval '1 microsecond'
+                  ELSE clock_timestamp() END))
+           OR (psi.transaction_timestamp IS NULL
+              AND ((baseline."baselineSource" IN ('OPENING_BASELINE','DAILY_OPENING') AND pi.business_date >= baseline."baselineDate"::date)
+                OR (baseline."baselineSource" NOT IN ('OPENING_BASELINE','DAILY_OPENING') AND pi.business_date > baseline."baselineDate"::date))
+              AND (($3::text='OPENING' AND pi.business_date < $2::date) OR ($3::text<>'OPENING' AND pi.business_date <= $2::date)))
         GROUP BY baseline."inventoryItemId",usage.unit
      )
-     SELECT item.*,baseline."actualQuantity",baseline."baselineDate",baseline."baselineSource",
+     SELECT item.*,baseline."actualQuantity",baseline."baselineDate",baseline."baselineAt",baseline."baselineSource",
             COALESCE(movement.received,0)::float8 received,
             COALESCE(movement."adjustmentIncreases",0)::float8 "adjustmentIncreases",
             COALESCE(movement."adjustmentDecreases",0)::float8 "adjustmentDecreases",
@@ -318,7 +344,7 @@ export async function calculateExpectedInventoryBatch(
        LEFT JOIN movement_totals movement ON movement."inventoryItemId"=item."inventoryItemId"
        LEFT JOIN consumption_totals consumption ON consumption."inventoryItemId"=item."inventoryItemId"
       ORDER BY item."itemName",consumption."consumptionUnit"`,
-    [branchId, countDate, calculationPhase],
+    [branchId, countDate, calculationPhase, targetCutoffAt],
   );
 
   const unavailableItems: UnavailableExpectedInventoryItem[] = [];
@@ -373,6 +399,7 @@ export async function calculateExpectedInventoryBatch(
         approvedAdjustmentDecreases,
       ),
       baselineDate: row.baselineDate!,
+      baselineAt: row.baselineAt!,
       baselineSource: row.baselineSource!,
     } satisfies ExpectedInventoryResult;
   });

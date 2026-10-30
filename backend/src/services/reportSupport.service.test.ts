@@ -67,7 +67,7 @@ describe("inventory report calculation source", () => {
       .map(([sql]) => String(sql))
       .filter((sql) => sql.includes("FROM inventory_counts ic"));
     expect(inventoryVarianceQueries.length).toBeGreaterThan(0);
-    expect(inventoryVarianceQueries.every((sql) => sql.includes("ic.count_type<>'OPENING'"))).toBe(true);
+    expect(inventoryVarianceQueries.every((sql) => !sql.includes("ic.count_type<>'OPENING'"))).toBe(true);
     expect(inventoryVarianceQueries.every((sql) => sql.includes("ici.voided_at IS NULL"))).toBe(true);
     expect(inventoryVarianceQueries.every((sql) => sql.includes("inventory_count_corrections"))).toBe(true);
 
@@ -75,7 +75,7 @@ describe("inventory report calculation source", () => {
       .map(([sql]) => String(sql))
       .filter((sql) => sql.includes("FROM shrinkage_reports sr"));
     expect(shrinkageQueries.length).toBeGreaterThan(0);
-    expect(shrinkageQueries.every((sql) => sql.includes("ic.count_type<>'OPENING'"))).toBe(true);
+    expect(shrinkageQueries.every((sql) => !sql.includes("ic.count_type<>'OPENING'"))).toBe(true);
     expect(shrinkageQueries.every((sql) => sql.includes("ici.voided_at IS NULL"))).toBe(true);
     const unresolved = shrinkageQueries.find((sql) => sql.includes("sr.status IN ('DETECTED','PENDING_REVIEW')") && sql.includes("SELECT sr.id"));
     expect(unresolved).toContain("sr.archived_at IS NULL");

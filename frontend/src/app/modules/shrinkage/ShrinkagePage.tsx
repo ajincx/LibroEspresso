@@ -11,6 +11,7 @@ import type { Branch, InventoryItem, MenuItem } from "../../types/masterData";
 import type { IncidentType } from "../../types/operations";
 import { ShrinkageIncidentReports } from "./ShrinkageIncidentReports";
 import { CalendarDateField, Select, SkeletonBlock, TableCard, TableWrapper, THead, TR, TD, TableEmptyRow, TableLoadingRow } from "../../components/ModuleUi";
+import { ControlledActionDialog } from "../../components/ControlledActionDialog";
 import { formatAppDate } from "../../utils/appPreferences";
 import { classificationLabel, evidenceBasisOptions, incidentTypeLabel, incidentTypeOptions, managerClassificationOptions } from "../../utils/shrinkageTaxonomy";
 const formatDate = (value: string | null) => value ? formatAppDate(value, true) : "—";
@@ -55,6 +56,7 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [evidenceDecision,setEvidenceDecision]=useState<{incidentId:string;incidentReportItemId:string;decision:"ACCEPTED"|"REJECTED"|"UNLINKED";reason:string}|null>(null);
 
   const load = async () => {
     setLoading(true); setError("");
@@ -136,18 +138,29 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
     finally { setSaving(false); }
   };
 
-  const linkIncident = async (incidentId: string, incidentReportItemId: string) => {
-    if (!selected) return;
+  const submitEvidenceDecision = async () => {
+    if (!selected || !evidenceDecision || evidenceDecision.reason.trim().length < 3) return;
     setSaving(true);
     try {
-      await operationsService.linkIncident(incidentId, selected.id, incidentReportItemId);
+      if(evidenceDecision.decision==="ACCEPTED") await operationsService.linkIncident(evidenceDecision.incidentId,selected.id,evidenceDecision.incidentReportItemId,evidenceDecision.reason.trim());
+      else await operationsService.decideIncidentEvidence(evidenceDecision.incidentId,{shrinkageReportId:selected.id,incidentReportItemId:evidenceDecision.incidentReportItemId,decision:evidenceDecision.decision,reason:evidenceDecision.reason.trim()});
       setEvidence(await inventoryWorkflowService.evidence(selected.id));
-      toast.success("Incident linked as supporting evidence");
-    } catch (reason) { toast.error(reason instanceof Error ? reason.message : "Unable to link incident evidence"); }
+      setEvidenceDecision(null);
+      toast.success(evidenceDecision.decision==="ACCEPTED"?"Incident linked as supporting evidence":evidenceDecision.decision==="REJECTED"?"Suggested relationship rejected":"Incident evidence unlinked");
+    } catch (reason) { toast.error(reason instanceof Error ? reason.message : "Unable to update incident evidence"); }
     finally { setSaving(false); }
   };
 
   return <div className="p-4 md:p-6 space-y-5">
+    {evidenceDecision&&<ControlledActionDialog
+      title={evidenceDecision.decision==="ACCEPTED"?"Accept incident evidence?":evidenceDecision.decision==="REJECTED"?"Reject suggested relationship?":"Unlink incident evidence?"}
+      description="Record the reason for this evidence decision. This does not verify or classify the anomaly, and the decision remains in the audit history."
+      confirmLabel={evidenceDecision.decision==="ACCEPTED"?"Accept & Link":evidenceDecision.decision==="REJECTED"?"Reject Suggestion":"Unlink Evidence"}
+      value={{reason:evidenceDecision.reason,currentPassword:""}} requireCurrentPassword={false}
+      minReasonLength={3} maxReasonLength={1000} busy={saving} showCloseButton
+      onChange={(value)=>setEvidenceDecision((current)=>current?{...current,reason:value.reason}:null)}
+      onCancel={()=>setEvidenceDecision(null)} onConfirm={()=>void submitEvidenceDecision()}
+    />}
     <div className="flex items-start justify-between gap-4"><div><h1 className="text-xl font-bold">Classification &amp; Investigation</h1><p className="text-sm mt-1" style={{ color: "var(--app-text-muted)" }}>{owner ? "Review Manager findings for system-detected inventory shortages across branches." : "Investigate shortages automatically detected from expected stock and physical counts."}</p></div><button onClick={() => void load()} className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border text-sm font-semibold" style={{ borderColor: "var(--app-border)", background: "var(--app-surface)" }}><RefreshCw size={14} />Refresh</button></div>
 
     <div className="flex gap-3 p-4 rounded-2xl border" style={{ borderColor: "var(--app-border)", background: "var(--app-primary-faint)" }}><SearchCheck size={20} style={{ color: "var(--app-primary)" }} /><div><div className="text-sm font-semibold">System-generated workflow</div><p className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>POS sales and standard recipes calculate expected usage. Physical counts create variance automatically. Shortages above tolerance become investigation cases; Managers document findings but cannot edit the calculated quantities.</p></div></div>
@@ -237,7 +250,8 @@ export function ShrinkagePage({ scopeBranchId = "ALL" }: { scopeBranchId?: strin
           <div className="grid gap-3 sm:grid-cols-2">{Array.from({length:2},(_,index)=><div key={index} className="rounded-xl bg-[var(--app-bg)] p-3"><SkeletonBlock w="58%" h={10}/><SkeletonBlock w="92%" h={9} className="mt-3"/><SkeletonBlock w="74%" h={9} className="mt-2"/></div>)}</div>
           <span className="sr-only">Loading available operational evidence…</span>
         </div> : <>
-          {evidence.incidents.length ? <div className="mt-3 space-y-2">{evidence.incidents.map((incident) => <div key={incident.incidentReportItemId} className="rounded-xl border p-3 text-xs" style={{ borderColor: "var(--app-border)" }}><div className="flex justify-between gap-2"><strong>{incidentTypeLabel(incident.incidentType)}</strong><span>{incident.explicitlyLinked ? "Linked evidence" : "Possible match"}</span></div><div className="mt-1" style={{ color: "var(--app-text-muted)" }}>{incident.submittedByName} · {formatDate(incident.occurredAt)} · {incident.quantity} {incident.unit} · {incident.status}</div><p className="mt-2">{incident.reason}</p><div className="flex items-center gap-3 mt-2">{incident.photoUrl && <a href={incident.photoUrl} target="_blank" rel="noreferrer" className="font-semibold" style={{ color: "var(--app-primary)" }}>View supporting image</a>}{!owner && !selected.archivedAt && !incident.explicitlyLinked && <button disabled={saving} onClick={() => void linkIncident(incident.id,incident.incidentReportItemId)} className="font-semibold" style={{ color: "var(--app-primary)" }}>Link as evidence</button>}</div></div>)}</div> : <p className="text-xs mt-2" style={{ color: "var(--app-text-muted)" }}>No linked or potentially relevant Staff incidents were found.</p>}
+          <p className="mt-2 text-xs text-[var(--app-text-muted)]">Reconciliation interval: {evidence.interval.startAt?formatDate(evidence.interval.startAt):"No precise prior timestamp"} to {formatDate(evidence.interval.endAt)}. Candidate timing and quantity proximity are unverified and do not prove causation.</p>
+          {evidence.incidents.length ? <div className="mt-3 space-y-2">{evidence.incidents.map((incident) => <div key={incident.incidentReportItemId} className="rounded-xl border p-3 text-xs" style={{ borderColor: "var(--app-border)" }}><div className="flex justify-between gap-2"><strong>{incidentTypeLabel(incident.incidentType)}</strong><span>{incident.explicitlyLinked?"Linked evidence":incident.evidenceDecision==="REJECTED"?"Rejected suggestion":`${incident.matchQuality === "EXACT" ? "Exact" : incident.matchQuality === "APPROXIMATE" ? "Approximate" : "Insufficient"} match · UNVERIFIED`}</span></div><div className="mt-1" style={{ color: "var(--app-text-muted)" }}>{incident.submittedByName} · {formatDate(incident.occurredAt)} · {incident.quantity} {incident.unit} · difference {incident.quantityDifference.toFixed(2)} {incident.unit} · {incident.status}</div><p className="mt-2">{incident.reason}</p>{incident.decisionReason&&<p className="mt-2 text-[var(--app-text-muted)]">Latest Manager decision: {incident.evidenceDecision} · {incident.decisionReason}</p>}<div className="flex items-center gap-3 mt-2">{incident.photoUrl && <a href={incident.photoUrl} target="_blank" rel="noreferrer" className="font-semibold" style={{ color: "var(--app-primary)" }}>View supporting image</a>}{!owner&&!selected.archivedAt&&selected.status==="DETECTED"&&incident.explicitlyLinked&&<button disabled={saving} onClick={()=>setEvidenceDecision({incidentId:incident.id,incidentReportItemId:incident.incidentReportItemId,decision:"UNLINKED",reason:""})} className="font-semibold text-[var(--app-danger)]">Unlink</button>}{!owner&&!selected.archivedAt&&selected.status==="DETECTED"&&!incident.explicitlyLinked&&incident.evidenceDecision!=="REJECTED"&&incident.matchQuality!=="INSUFFICIENT"&&<><button disabled={saving} onClick={()=>setEvidenceDecision({incidentId:incident.id,incidentReportItemId:incident.incidentReportItemId,decision:"ACCEPTED",reason:""})} className="font-semibold text-[var(--app-primary)]">Accept & Link</button><button disabled={saving} onClick={()=>setEvidenceDecision({incidentId:incident.id,incidentReportItemId:incident.incidentReportItemId,decision:"REJECTED",reason:""})} className="font-semibold text-[var(--app-danger)]">Reject</button></>}</div></div>)}</div> : <p className="text-xs mt-2" style={{ color: "var(--app-text-muted)" }}>No linked or deterministically relevant Staff incidents were found.</p>}
           <div className="grid sm:grid-cols-2 gap-3 mt-3"><div className="rounded-xl p-3" style={{ background: "var(--app-bg)" }}><div className="text-xs font-semibold">Recent inventory records</div>{evidence.movements.length ? <div className="mt-2 space-y-1.5">{evidence.movements.map((movement, index) => <div key={`${movement.occurredAt}-${index}`} className="text-xs" style={{ color: "var(--app-text-muted)" }}><strong>{movement.movementType.replaceAll("_", " ")}</strong> · {movement.quantity} {selected.unit} · {formatDate(movement.occurredAt)}{movement.referenceNo ? ` · ${movement.referenceNo}` : ""}</div>)}</div> : <div className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>No nearby receipt or adjustment records.</div>}</div><div className="rounded-xl p-3" style={{ background: "var(--app-bg)" }}><div className="text-xs font-semibold">Related sales usage</div>{evidence.usage.length ? <div className="mt-2 space-y-1.5">{evidence.usage.map((entry) => <div key={entry.date} className="text-xs" style={{ color: "var(--app-text-muted)" }}>{formatDate(entry.date)} · {entry.expectedUsage.toFixed(2)} {selected.unit} expected usage</div>)}</div> : <div className="text-xs mt-1" style={{ color: "var(--app-text-muted)" }}>No recent recipe-derived usage.</div>}</div></div>
         </>}
       </div>

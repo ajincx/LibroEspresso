@@ -85,6 +85,14 @@ export const incidentReviewInput = z.object({
 export const incidentLinkInput = z.object({
   shrinkageReportId: z.string().uuid(),
   incidentReportItemId: z.string().uuid().optional(),
+  reason: z.string().trim().min(3).max(1000),
+});
+
+export const incidentEvidenceDecisionInput = z.object({
+  shrinkageReportId: z.string().uuid(),
+  incidentReportItemId: z.string().uuid(),
+  decision: z.enum(["REJECTED", "UNLINKED"]),
+  reason: z.string().trim().min(3).max(1000),
 });
 
 const purchaseOrderItem = z.object({

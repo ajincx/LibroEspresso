@@ -146,8 +146,10 @@ describe("thesis inventory calculation formulas", () => {
     expect(sql).toContain("NOT pi.is_test_data");
     expect(sql).toContain("pi.voided_at IS NULL");
     expect(sql).toContain("pi.inventory_accounting_treatment='OPERATIONAL'");
-    expect(sql).toContain("movement.occurred_at::date <= $2::date");
-    expect(sql).toContain("pi.business_date <= $2::date");
+    expect(sql).toContain('movement.occurred_at > baseline."baselineAt"');
+    expect(sql).toContain("movement.occurred_at <= COALESCE($4::timestamptz");
+    expect(sql).toContain("psi.transaction_timestamp > baseline.\"baselineAt\"");
+    expect(sql).toContain("psi.transaction_timestamp <= COALESCE($4::timestamptz");
     expect(sql).toContain("balance.as_of::date <= $2::date");
   });
 

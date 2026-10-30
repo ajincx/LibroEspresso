@@ -69,7 +69,8 @@ describe("Inventory Workflow Input Validation (QA Suite)", () => {
         countDate: "2026-09-04",
         items: [{ inventoryItemId: sampleUuid1, quantity: 2.5, enteredUnit: "kg" }],
       };
-      expect(inventoryCountInput.parse({ ...correction, correctionReason: "Fix" }).correctionReason).toBe("Fix");
+      expect(inventoryCountInput.parse({ ...correction, correctionReason: "Count fixed" }).correctionReason).toBe("Count fixed");
+      expect(() => inventoryCountInput.parse({ ...correction, correctionReason: "Fix" })).toThrow();
       expect(() => inventoryCountInput.parse({ ...correction, correctionReason: "   " })).toThrow();
     });
   });

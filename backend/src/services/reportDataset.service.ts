@@ -424,7 +424,7 @@ export async function buildReportDataset(
 
   if (selected.has("INVENTORY_VARIANCE")) {
     const result = await pool.query(
-      `SELECT ic.count_date::text "countDate",b.name branch,ii.name ingredient,ici.unit,
+      `SELECT ic.count_date::text "countDate",ic.count_type "countType",b.name branch,ii.name ingredient,ici.unit,
        ici.expected_quantity::float8 "expectedQuantity",COALESCE(correction.corrected_actual_quantity,ici.actual_quantity)::float8 "actualQuantity",
        COALESCE(correction.corrected_variance_quantity,ici.variance_quantity)::float8 "varianceQuantity",
        COALESCE(correction.corrected_variance_value,ici.variance_value)::float8 "varianceValue",
@@ -432,7 +432,7 @@ export async function buildReportDataset(
       FROM inventory_counts ic JOIN inventory_count_items ici ON ici.inventory_count_id=ic.id JOIN branches b ON b.id=ic.branch_id JOIN inventory_items ii ON ii.id=ici.inventory_item_id
        LEFT JOIN LATERAL (SELECT corrected_actual_quantity,corrected_variance_quantity,corrected_variance_value
          FROM inventory_count_corrections WHERE inventory_count_item_id=ici.id ORDER BY revision DESC LIMIT 1) correction ON true
-       WHERE NOT ic.is_test_data AND ici.voided_at IS NULL AND ic.count_type<>'OPENING' AND ic.count_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR ic.branch_id=$3::uuid) AND ($4::uuid IS NULL OR ii.id=$4::uuid)
+       WHERE NOT ic.is_test_data AND ici.voided_at IS NULL AND ic.count_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR ic.branch_id=$3::uuid) AND ($4::uuid IS NULL OR ii.id=$4::uuid)
        ORDER BY ic.count_date DESC,abs(COALESCE(correction.corrected_variance_value,ici.variance_value)) DESC LIMIT 5001`,
       [
         request.startDate,
@@ -468,6 +468,7 @@ export async function buildReportDataset(
         "Inventory Variance",
         [
           { key: "countDate", label: "Count Date", type: "date" },
+          { key: "countType", label: "Count Type", type: "text" },
           { key: "branch", label: "Branch", type: "text" },
           { key: "ingredient", label: "Ingredient", type: "text" },
           { key: "unit", label: "Unit", type: "text" },
@@ -509,7 +510,7 @@ export async function buildReportDataset(
       FROM shrinkage_reports sr JOIN branches b ON b.id=sr.branch_id JOIN inventory_items ii ON ii.id=sr.inventory_item_id
       JOIN inventory_count_items ici ON ici.id=sr.inventory_count_item_id JOIN inventory_counts ic ON ic.id=ici.inventory_count_id
       LEFT JOIN users mu ON mu.id=sr.submitted_by
-       WHERE NOT sr.is_test_data AND ici.voided_at IS NULL AND ic.count_type<>'OPENING' AND sr.detected_at::date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR sr.branch_id=$3::uuid) AND ($4::uuid IS NULL OR ii.id=$4::uuid)
+       WHERE NOT sr.is_test_data AND ici.voided_at IS NULL AND sr.detected_at::date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR sr.branch_id=$3::uuid) AND ($4::uuid IS NULL OR ii.id=$4::uuid)
         AND ($5::text IS NULL OR sr.classification::text=$5::text) ORDER BY sr.detected_at DESC LIMIT 5001`,
       [
         request.startDate,

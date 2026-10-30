@@ -24,6 +24,7 @@ import {
   incidentFilters,
   incidentReviewInput,
   incidentLinkInput,
+  incidentEvidenceDecisionInput,
   branchInventorySettingsInput,
   inventoryOverviewFilters,
   inventorySettingsParams,
@@ -498,7 +499,7 @@ export const linkIncidentToInvestigation: RequestHandler = async (req, res) => {
          JOIN shrinkage_reports sr ON sr.id=$3 AND sr.branch_id=ir.branch_id AND sr.inventory_item_id=iri.inventory_item_id
         WHERE ir.id=$1 AND ir.branch_id=$2 AND NOT ir.is_test_data AND ir.archived_at IS NULL
           AND ir.status IN ('PENDING','VERIFIED') AND NOT sr.is_test_data AND sr.archived_at IS NULL
-          AND sr.status IN ('DETECTED','VERIFIED','PENDING_REVIEW')
+          AND sr.status='DETECTED'
           AND ($4::uuid IS NULL OR iri.id=$4::uuid)
         FOR UPDATE OF ir`,
       [id,branchId,input.shrinkageReportId,input.incidentReportItemId??null],
@@ -507,17 +508,95 @@ export const linkIncidentToInvestigation: RequestHandler = async (req, res) => {
     if (linked.rows[0].isLate && linked.rows[0].status !== "VERIFIED") {
       throw new AppError(409, "LATE_INCIDENT_APPROVAL_REQUIRED", "A late incident must be verified by the Branch Manager before it can be linked as evidence.");
     }
-    await client.query(
+    const createdLink = await client.query(
       `INSERT INTO incident_shrinkage_links (incident_report_id,incident_report_item_id,shrinkage_report_id)
-       VALUES ($1,$2,$3) ON CONFLICT (incident_report_item_id,shrinkage_report_id) DO NOTHING`,
+       VALUES ($1,$2,$3) ON CONFLICT (incident_report_item_id,shrinkage_report_id) DO NOTHING
+       RETURNING id`,
       [id,linked.rows[0].incidentReportItemId,input.shrinkageReportId],
     );
-    await client.query(`UPDATE incident_reports SET shrinkage_report_id=COALESCE(shrinkage_report_id,$2),updated_at=now() WHERE id=$1`,[id,input.shrinkageReportId]);
-    await writeAudit(req.user!, "LINK_INCIDENT_EVIDENCE", "INCIDENT_REPORT", id, "Linked an incident item as supporting investigation evidence", { branchId, incidentReportItemId:linked.rows[0].incidentReportItemId, shrinkageReportId: input.shrinkageReportId },client);
+    if (createdLink.rowCount) {
+      await client.query(
+        `INSERT INTO incident_shrinkage_evidence_decisions
+          (incident_report_id,incident_report_item_id,shrinkage_report_id,decision,reason,decided_by)
+         VALUES ($1,$2,$3,'ACCEPTED',$4,$5)`,
+        [id,linked.rows[0].incidentReportItemId,input.shrinkageReportId,input.reason,req.user!.id],
+      );
+      await client.query(`UPDATE incident_reports SET shrinkage_report_id=COALESCE(shrinkage_report_id,$2),updated_at=now() WHERE id=$1`,[id,input.shrinkageReportId]);
+      await writeAudit(req.user!, "LINK_INCIDENT_EVIDENCE", "INCIDENT_REPORT", id, "Linked an incident item as supporting investigation evidence", { branchId, incidentReportItemId:linked.rows[0].incidentReportItemId, shrinkageReportId: input.shrinkageReportId, reason: input.reason },client);
+    }
     await client.query("COMMIT");
   } catch(error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   const result = await pool.query(`${incidentSelection} WHERE ir.id=$1`, [id]);
   res.json({ success: true, data: { incident: result.rows[0] } });
+};
+
+export const decideIncidentEvidence: RequestHandler = async (req, res) => {
+  const { id } = idParams.parse(req.params);
+  const input = incidentEvidenceDecisionInput.parse(req.body);
+  const branchId = requiredBranchId(req.user!);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await lockBranchInventoryOperation(client, branchId);
+    const candidate = await client.query<{ incidentReportItemId: string; explicitlyLinked: boolean; latestDecision: "ACCEPTED" | "REJECTED" | "UNLINKED" | null }>(
+      `SELECT iri.id "incidentReportItemId",
+              EXISTS (SELECT 1 FROM incident_shrinkage_links link
+                WHERE link.incident_report_item_id=iri.id AND link.shrinkage_report_id=sr.id) "explicitlyLinked",
+              latest.decision "latestDecision"
+         FROM incident_reports ir
+         JOIN incident_report_items iri ON iri.incident_report_id=ir.id
+         JOIN shrinkage_reports sr ON sr.id=$3 AND sr.branch_id=ir.branch_id
+           AND sr.inventory_item_id=iri.inventory_item_id
+         LEFT JOIN LATERAL (
+           SELECT history.decision
+             FROM incident_shrinkage_evidence_decisions history
+            WHERE history.incident_report_item_id=iri.id AND history.shrinkage_report_id=sr.id
+            ORDER BY history.decided_at DESC,history.id DESC LIMIT 1
+         ) latest ON true
+        WHERE ir.id=$1 AND ir.branch_id=$2 AND iri.id=$4
+          AND NOT ir.is_test_data AND ir.archived_at IS NULL
+          AND NOT sr.is_test_data AND sr.archived_at IS NULL AND sr.status='DETECTED'
+        FOR UPDATE OF ir,sr`,
+      [id,branchId,input.shrinkageReportId,input.incidentReportItemId],
+    );
+    const row = candidate.rows[0];
+    if (!row) throw new AppError(422,"INCIDENT_EVIDENCE_DECISION_INVALID","The active incident evidence and unlocked investigation must belong to the same branch and ingredient");
+    if (input.decision === "UNLINKED" && !row.explicitlyLinked) {
+      throw new AppError(409,"INCIDENT_EVIDENCE_NOT_LINKED","This incident is not linked to the investigation");
+    }
+    if (input.decision === "REJECTED" && row.explicitlyLinked) {
+      throw new AppError(409,"INCIDENT_EVIDENCE_UNLINK_REQUIRED","Unlink accepted evidence before rejecting the suggested relationship");
+    }
+    const decisionAlreadyRecorded = input.decision === "REJECTED" && row.latestDecision === "REJECTED";
+    if (!decisionAlreadyRecorded) {
+      if (input.decision === "UNLINKED") {
+        await client.query(
+          `DELETE FROM incident_shrinkage_links
+            WHERE incident_report_item_id=$1 AND shrinkage_report_id=$2`,
+          [row.incidentReportItemId,input.shrinkageReportId],
+        );
+        await client.query(
+          `UPDATE incident_reports ir SET shrinkage_report_id=(
+             SELECT link.shrinkage_report_id FROM incident_shrinkage_links link
+              WHERE link.incident_report_id=ir.id ORDER BY link.created_at DESC LIMIT 1
+           ),updated_at=now() WHERE ir.id=$1 AND ir.shrinkage_report_id=$2`,
+          [id,input.shrinkageReportId],
+        );
+      }
+      await client.query(
+        `INSERT INTO incident_shrinkage_evidence_decisions
+          (incident_report_id,incident_report_item_id,shrinkage_report_id,decision,reason,decided_by)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [id,row.incidentReportItemId,input.shrinkageReportId,input.decision,input.reason,req.user!.id],
+      );
+      await writeAudit(req.user!,input.decision === "UNLINKED" ? "UNLINK_INCIDENT_EVIDENCE" : "REJECT_INCIDENT_EVIDENCE",
+        "INCIDENT_REPORT",id,input.decision === "UNLINKED" ? "Unlinked supporting incident evidence" : "Rejected a suggested incident relationship",
+        { branchId,incidentReportItemId:row.incidentReportItemId,shrinkageReportId:input.shrinkageReportId,reason:input.reason },client);
+    }
+    await client.query("COMMIT");
+  } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  const result = await pool.query(`${incidentSelection} WHERE ir.id=$1`,[id]);
+  res.json({ success:true,data:{ incident:result.rows[0] } });
 };
 
 const purchaseOrderSelection = `SELECT po.id,po.po_no "poNo",po.branch_id "branchId",b.name "branchName",po.created_by "createdByUserId",

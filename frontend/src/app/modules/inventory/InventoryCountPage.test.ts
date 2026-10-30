@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import type { ExpectedInventoryItem } from "../../types/inventoryWorkflow";
-import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, copyPreviousClosingEntries, copySameDayClosingEntries, displayedPhysicalCountVariance, filterPhysicalCountItems, fullCountSubmissionBlockReason, initialPhysicalCountDate, inventoryCountColumns, isDailyCountColumnEditable, isFutureInventoryCountDate, mergeOpeningCorrectionEntries, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, PhysicalCountCorrectionDialog, PhysicalCountLoadingSkeleton, physicalCountCompletion, physicalCountCorrectionReasonError, physicalCountEntryFromCanonical, physicalCountPreviewVariance, previousClosingCopyMessage, savedCountQuantities, showInventoryCountDateFilter, validPhysicalCountEntries } from "./InventoryCountPage";
+import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, copyPreviousClosingEntries, copySameDayClosingEntries, displayedPhysicalCountVariance, filterPhysicalCountItems, fullCountCopySourceMessage, fullCountSubmissionBlockReason, initialPhysicalCountDate, inventoryCountColumns, isDailyCountColumnEditable, isFutureInventoryCountDate, mergeOpeningCorrectionEntries, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, PhysicalCountCorrectionDialog, PhysicalCountLoadingSkeleton, physicalCountCompletion, physicalCountCorrectionReasonError, physicalCountEntryFromCanonical, physicalCountPreviewVariance, physicalCountVarianceLabel, previousClosingCopyMessage, savedCountQuantities, showInventoryCountDateFilter, validPhysicalCountEntries } from "./InventoryCountPage";
 import { buildEnteredPhysicalCountItems } from "./InventoryCountPage";
 
 const item = (inventoryItemId: string, sku: string, itemName: string): ExpectedInventoryItem => ({
@@ -45,11 +45,14 @@ describe("Daily partial physical counts",()=>{
     expect(inventoryCountColumns("FULL")).toEqual(["SKU","Ingredient","Previous Actual","Received","Recipe Consumption","Expected Stock","Physical Count","Preview Variance"]);
   });
 
-  it("shows daily variance only for Closing Count",()=>{
-    expect(displayedPhysicalCountVariance("OPENING",3500,3300)).toBeNull();
+  it("shows Opening, Closing, and Full variance previews",()=>{
+    expect(displayedPhysicalCountVariance("OPENING",3500,3300)).toBe(-200);
     expect(displayedPhysicalCountVariance("CLOSING",3500,3300)).toBe(-200);
     expect(displayedPhysicalCountVariance("FULL",3500,3300)).toBe(-200);
     expect(displayedPhysicalCountVariance("CLOSING",3500,null)).toBeNull();
+    expect(physicalCountVarianceLabel("OPENING",-200)).toBe("Opening Shortage");
+    expect(physicalCountVarianceLabel("OPENING",200)).toBe("Opening Excess");
+    expect(physicalCountVarianceLabel("OPENING",0)).toBe("Matched");
   });
 
   it("identifies the authoritative source date after copying previous quantities",()=>{
@@ -89,6 +92,8 @@ describe("Daily partial physical counts",()=>{
       milk:{quantity:"",enteredUnit:"pc"},
       sugar:{quantity:"3",enteredUnit:"pc"},
     });
+    expect(fullCountCopySourceMessage({id:"closing",countNo:"IC-2026-00010",countType:"CLOSING",countDate:"2026-10-29",effectiveAt:"2026-10-29T12:00:00.000Z",submittedAt:"2026-10-29T12:01:00.000Z"},"2026-10-29")).toContain("finalized CLOSING checkpoint IC-2026-00010");
+    expect(fullCountCopySourceMessage({id:"closing",countNo:"IC-2026-00010",countType:"CLOSING",countDate:"2026-10-29",effectiveAt:null,submittedAt:"2026-10-29T12:01:00.000Z"},"2026-10-29")).toContain("not physically verified");
   });
 
   it("blocks Full entry until Closing and after the weekly limit while allowing the ready state",()=>{
@@ -119,16 +124,18 @@ describe("Daily partial physical counts",()=>{
 });
 
 describe("Inventory physical-count history navigation", () => {
-  it("uses an application correction modal with a trimmed nonempty reason and no PIN",()=>{
+  it("uses an application correction modal with the database-aligned 10-character reason and no PIN",()=>{
     const blank=renderToStaticMarkup(React.createElement(PhysicalCountCorrectionDialog,{countType:"OPENING",reason:"   ",error:physicalCountCorrectionReasonError("   "),busy:false,onReasonChange:vi.fn(),onCancel:vi.fn(),onConfirm:vi.fn()}));
-    const short=renderToStaticMarkup(React.createElement(PhysicalCountCorrectionDialog,{countType:"OPENING",reason:"Fix",error:"",busy:false,onReasonChange:vi.fn(),onCancel:vi.fn(),onConfirm:vi.fn()}));
+    const short=renderToStaticMarkup(React.createElement(PhysicalCountCorrectionDialog,{countType:"OPENING",reason:"Fix",error:physicalCountCorrectionReasonError("Fix"),busy:false,onReasonChange:vi.fn(),onCancel:vi.fn(),onConfirm:vi.fn()}));
+    const valid=renderToStaticMarkup(React.createElement(PhysicalCountCorrectionDialog,{countType:"OPENING",reason:"Count fixed",error:"",busy:false,onReasonChange:vi.fn(),onCancel:vi.fn(),onConfirm:vi.fn()}));
     expect(blank).toContain("Confirm Opening Count Correction");
     expect(blank).toContain("Reason for Correction");
     expect(blank).toContain("Close correction dialog");
     expect(blank).not.toContain("Verification PIN");
-    expect(blank).toContain("Reason for Correction is required");
+    expect(blank).toContain("at least 10 characters");
     expect(blank).toMatch(/<button[^>]*disabled[^>]*>Confirm Correction<\/button>/);
-    expect(short).not.toMatch(/<button[^>]*disabled[^>]*>Confirm Correction<\/button>/);
+    expect(short).toMatch(/<button[^>]*disabled[^>]*>Confirm Correction<\/button>/);
+    expect(valid).not.toMatch(/<button[^>]*disabled[^>]*>Confirm Correction<\/button>/);
   });
 
   it("keeps correction dismissal separate from edited quantity state",()=>{

@@ -11,6 +11,10 @@ let createIncidentReport:any,reviewIncidentReport:any,linkIncidentToInvestigatio
 const response=()=>{const state:{status?:number;body?:any}={};return{state,res:{status(code:number){state.status=code;return this;},json(body:any){state.body=body;return this;}}};};
 const manilaDate=(offsetDays=0)=>new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Manila",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date(Date.now()+offsetDays*86400000));
 const manilaNoonIso=(date:string)=>new Date(`${date}T12:00:00+08:00`).toISOString();
+const recentManilaSameDayIso=()=>{
+  const startOfToday=new Date(`${manilaDate()}T00:00:00+08:00`).getTime();
+  return new Date(Math.max(startOfToday,Date.now()-5*60*1000)).toISOString();
+};
 
 describe.skipIf(!databaseUrl)("Phase 3 Fix 10 incident and notification PostgreSQL integration",()=>{
   beforeAll(async()=>{
@@ -31,7 +35,7 @@ describe.skipIf(!databaseUrl)("Phase 3 Fix 10 incident and notification PostgreS
 
   it("persists a same-day classified incident in canonical units and targets its Manager notification",async()=>{
     const out=response();
-    await createIncidentReport({user:{id:staffId,role:"STAFF",branchId},body:{items:[{inventoryItemId:itemId,quantity:1,enteredUnit:"kg"}],incidentType:"WASTAGE",occurredAt:manilaNoonIso(manilaDate()),reason:"A preparation batch was accidentally discarded."}} as never,out.res as never,()=>{});
+    await createIncidentReport({user:{id:staffId,role:"STAFF",branchId},body:{items:[{inventoryItemId:itemId,quantity:1,enteredUnit:"kg"}],incidentType:"WASTAGE",occurredAt:recentManilaSameDayIso(),reason:"A preparation batch was accidentally discarded."}} as never,out.res as never,()=>{});
     expect(out.state.status).toBe(201);
     const incidentId=out.state.body.data.incident.id;
     const incident=(await pool.query(`SELECT incident_type "incidentType",quantity::float8,status FROM incident_reports WHERE id=$1`,[incidentId])).rows[0];
@@ -54,7 +58,7 @@ describe.skipIf(!databaseUrl)("Phase 3 Fix 10 incident and notification PostgreS
     const reviewed=response();
     await reviewIncidentReport({user:{id:managerId,role:"BRANCH_MANAGER",branchId},params:{id:incidentId},body:{status:"VERIFIED",managerComment:"Verified against the closing shift evidence."}} as never,reviewed.res as never,()=>{});
     const linked=response();
-    await linkIncidentToInvestigation({user:{id:managerId,role:"BRANCH_MANAGER",branchId},params:{id:incidentId},body:{shrinkageReportId:reportId}} as never,linked.res as never,()=>{});
+    await linkIncidentToInvestigation({user:{id:managerId,role:"BRANCH_MANAGER",branchId},params:{id:incidentId},body:{shrinkageReportId:reportId,reason:"Reviewed against closing evidence"}} as never,linked.res as never,()=>{});
     expect((await pool.query(`SELECT count(*)::int count FROM incident_shrinkage_links WHERE incident_report_id=$1 AND shrinkage_report_id=$2`,[incidentId,reportId])).rows[0].count).toBe(1);
     expect((await pool.query(`SELECT recipient_user_id::text recipient,type,entity_id::text "entityId" FROM notifications WHERE type='INCIDENT_REVIEWED' AND entity_id=$1`,[incidentId])).rows[0]).toEqual({recipient:staffId,type:"INCIDENT_REVIEWED",entityId:incidentId});
   });

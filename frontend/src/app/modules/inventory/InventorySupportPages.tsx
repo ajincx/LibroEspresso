@@ -20,6 +20,8 @@ export function inventoryCountHistoryActions(role: AppRole, canEdit: boolean) {
   return { canView: role === "owner", canEdit: role === "manager" && canEdit, canDelete: false };
 }
 
+export const inventoryCountVarianceLabel = (count: Pick<InventoryCountSummary, "varianceCount">) => String(count.varianceCount);
+
 export const inventoryCountHistoryModes = (role: AppRole, uatEnabled: boolean) =>
   role === "owner" && uatEnabled ? ["operational", "uat"] as const : ["operational"] as const;
 
@@ -374,7 +376,7 @@ export function PhysicalCountHistoryPage({ role, scopeBranchId = "ALL", onEditCo
                   <TD muted>{item.submittedBy}</TD>
                   <TD right>{item.itemCount}</TD>
                   <TD right bold className={item.varianceCount ? "text-[var(--app-danger)]" : "text-[var(--app-success)]"}>
-                    {item.countType === "OPENING" ? "—" : item.varianceCount}
+                    {inventoryCountVarianceLabel(item)}
                   </TD>
                   <TD><span className="inline-flex rounded-full px-2.5 py-1 text-xs font-semibold bg-[var(--app-success-bg)] text-[var(--app-success)]">Yes</span></TD>
                   <TD center className="whitespace-nowrap">

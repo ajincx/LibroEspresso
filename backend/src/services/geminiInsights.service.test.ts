@@ -47,7 +47,9 @@ const shrinkageFindings: ShrinkageFindings = {
   status: "DETECTED",
   classification: null,
   relatedHistoricalCases: 0,
-  linkedIncidents: [],
+  countType: "OPENING",
+  countInterval: { startAt: "2026-10-28T00:00:00.000Z", endAt: "2026-10-29T00:00:00.000Z" },
+  candidateIncidents: [],
 };
 const validShrinkageAnalysis = {
   observation: "The recorded count is 54 g below expected stock.",
@@ -212,6 +214,7 @@ describe("Gemini-assisted shrinkage analysis", () => {
     expect(prompt).toContain("BEGIN_DATA_JSON");
     expect(prompt).toContain("Never claim that theft");
     expect(prompt).toContain("not as independently proven fact");
+    expect(prompt).toContain("explicitly UNVERIFIED");
     for (const forbidden of ["userId", "incidentNarrative", "private narrative", "databaseUrl", "secret"]) expect(prompt).not.toContain(forbidden);
     expect(buildShrinkageGeminiPrompt(shrinkageFindings)).not.toContain(validShrinkageAnalysis.limitations);
   });

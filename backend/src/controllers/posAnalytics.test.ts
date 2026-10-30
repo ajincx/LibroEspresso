@@ -99,7 +99,7 @@ describe("getPosAnalytics verified shrinkage report causes", () => {
       .find((sql) => sql.includes("FROM shrinkage_reports sr"));
     expect(shrinkageQuery).toContain("NOT sr.is_test_data");
     expect(shrinkageQuery).toContain("ici.voided_at IS NULL");
-    expect(shrinkageQuery).toContain("ic.count_type<>'OPENING'");
+    expect(shrinkageQuery).not.toContain("ic.count_type<>'OPENING'");
     expect(shrinkageQuery).toContain("sr.status IN ('VERIFIED','REVIEWED')");
     expect(shrinkageQuery).toContain("sr.classification IN");
     expect(shrinkageQuery).toContain("sr.branch_id=$3");

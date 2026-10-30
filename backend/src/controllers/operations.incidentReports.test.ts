@@ -55,7 +55,7 @@ describe("incident date and late-report safeguards",()=>{
   });
   it("blocks explicit evidence linkage until a late request is verified",async()=>{
     mocks.clientQuery.mockImplementation(async(statement:unknown)=>String(statement).includes('SELECT iri.id "incidentReportItemId"')?{rows:[{incidentReportItemId:"item-1",isLate:true,status:"PENDING"}]}:{rows:[]});
-    await expect(linkIncidentToInvestigation({params:{id:"00000000-0000-4000-8000-000000000099"},body:{shrinkageReportId:"00000000-0000-4000-8000-000000000098"},user:{id:"manager-1",role:"BRANCH_MANAGER",branchId:"branch-1"}} as never,{} as never,vi.fn())).rejects.toMatchObject({code:"LATE_INCIDENT_APPROVAL_REQUIRED"});
+    await expect(linkIncidentToInvestigation({params:{id:"00000000-0000-4000-8000-000000000099"},body:{shrinkageReportId:"00000000-0000-4000-8000-000000000098",reason:"Reviewed candidate evidence"},user:{id:"manager-1",role:"BRANCH_MANAGER",branchId:"branch-1"}} as never,{} as never,vi.fn())).rejects.toMatchObject({code:"LATE_INCIDENT_APPROVAL_REQUIRED"});
     expect(mocks.clientQuery.mock.calls.map(([statement])=>String(statement)).some((sql)=>sql.includes("INSERT INTO incident_shrinkage_links"))).toBe(false);
   });
 });
