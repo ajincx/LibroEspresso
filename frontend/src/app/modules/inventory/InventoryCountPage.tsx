@@ -164,6 +164,23 @@ export const inventoryCountColumns = (countType: InventoryCountType) => countTyp
 export const isDailyCountColumnEditable = (countType: InventoryCountType, column: "OPENING" | "CLOSING") =>
   countType !== "FULL" && countType === column;
 
+export const closingPosUsedIngredientIds = (items: ExpectedInventoryItem[], countType: InventoryCountType) =>
+  new Set(countType === "CLOSING"
+    ? items.filter((item) => Number.isFinite(item.expectedConsumption) && item.expectedConsumption > 0)
+      .map((item) => item.inventoryItemId)
+    : []);
+
+export const closingPosUsageSummary = (count: number) => count > 0
+  ? `${count} ingredient${count === 1 ? "" : "s"} used in POS sales`
+  : "No operational POS ingredient usage in this count interval.";
+
+export function PosUsageIndicator() {
+  return <span className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-semibold border-[var(--app-primary)]/25 bg-[var(--app-surface)] text-[var(--app-primary)]">
+    <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--app-primary)]" />
+    Used in POS Sales
+  </span>;
+}
+
 export const physicalCountEntryFromCanonical = (
   quantity: number,
   canonicalUnit: string,
@@ -300,6 +317,10 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
   const visibleItems = useMemo(
     () => filterPhysicalCountItems(expected, search, completionFilter, entries),
     [completionFilter, entries, expected, search],
+  );
+  const posUsedIngredientIds = useMemo(
+    () => closingPosUsedIngredientIds(expected, countType),
+    [countType, expected],
   );
   const openingSummary=countType==="OPENING"&&Boolean(requestedCountId)&&openingMode==="SUMMARY";
   const openingEditing=countType==="OPENING"&&openingMode==="EDIT";
@@ -585,6 +606,10 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
           <div className="mt-2 h-2 overflow-hidden rounded-full bg-[var(--app-surface-muted)]" aria-label={`${completion.counted} of ${expected.length} ingredients counted`}>
             <div className="h-full rounded-full bg-[var(--app-primary)] transition-[width]" style={{ width: expected.length ? `${(completion.counted / expected.length) * 100}%` : "0%" }}/>
           </div>
+          {countType==="CLOSING"&&<div className="mt-3 inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-primary)]" role="status">
+            {posUsedIngredientIds.size > 0&&<span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-[var(--app-primary)]"/>}
+            {closingPosUsageSummary(posUsedIngredientIds.size)}
+          </div>}
           {countType==="FULL"&&completion.remaining > 0 && <p className="mt-2 text-xs text-[var(--app-text-muted)]">Complete the remaining physical quantities before submitting. Still needed: {completion.remainingItems.slice(0, 5).map((item) => item.itemName).join(", ")}{completion.remaining > 5 ? ` and ${completion.remaining - 5} more` : ""}.</p>}
           {countType==="FULL"&&!editingCountId&&copiedPhysicalSource&&<p className="mt-2 text-xs font-semibold text-[var(--app-primary)]">{fullCountCopySourceMessage(copiedPhysicalSource,countDate)}</p>}
           {countType==="FULL"&&!editingCountId&&<label className="mt-3 flex items-start gap-2 text-xs font-medium text-[var(--app-text)]"><input className="mt-0.5" type="checkbox" checked={fullPhysicalVerificationConfirmed} onChange={(event)=>setFullPhysicalVerificationConfirmed(event.target.checked)}/><span>I physically verified every Full Count quantity, including copied values.</span></label>}
@@ -602,15 +627,16 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
               <TableEmptyRow colSpan={inventoryCountColumns(countType).length} title="No ingredients found" subtitle="Try a different ingredient name or SKU." />
             ) : (
               visibleItems.map((item) => {
+                const usedInPosSales = posUsedIngredientIds.has(item.inventoryItemId);
                 const entry = entries[item.inventoryItemId] ?? blankPhysicalCountEntry(item.unit);
                 const normalizedActual = normalizePhysicalCountPreview(entry, item.unit);
                 const variance = displayedPhysicalCountVariance(countType, item.expectedQuantity, normalizedActual);
                 const countEntry=<div className="flex flex-col items-end gap-1"><div className="flex items-center gap-1.5"><input type="number" min={0} step="any" value={entry.quantity} onChange={(event) => { setHasUnsavedChanges(true); setPreviewing(false); if(countType==="FULL")setFullPhysicalVerificationConfirmed(false); setEntries((current) => ({ ...current, [item.inventoryItemId]: { ...entry, quantity: event.target.value } })); }} placeholder="Not counted" className="min-h-9 w-28 px-2.5 py-1.5 rounded-xl border text-right font-semibold text-sm outline-none transition-colors border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] focus:border-[var(--app-primary)] focus:ring-2 focus:ring-[var(--app-primary-faint)]" aria-label={`${item.itemName} ${countType.toLowerCase()} quantity`}/><Select small value={entry.enteredUnit} onChange={(value) => { setHasUnsavedChanges(true); setPreviewing(false); if(countType==="FULL")setFullPhysicalVerificationConfirmed(false); setEntries((current) => ({ ...current, [item.inventoryItemId]: changePhysicalCountEntryUnit(entry, item.unit, value as PhysicalCountUnit) })); }} className="w-20 [&_.custom-select-trigger]:!min-w-0" ariaLabel={`${item.itemName} physical count unit`} options={allowedPhysicalCountUnits(item.unit).map((unit) => ({ value: unit, label: unit }))}/></div><span className="text-[10px] whitespace-nowrap text-[var(--app-text-muted)]">{entry.quantity.trim() === ""?"Not yet counted":normalizedActual === null?"Enter a valid non-negative quantity":`Converted to system unit: ${normalizedActual.toLocaleString("en-US", { maximumFractionDigits: 4 })} ${item.unit}`}</span></div>;
                 const savedQuantity=(value:number|undefined)=>value===undefined?<span className="text-[var(--app-text-muted)]">—</span>:<span className="font-semibold">{value.toLocaleString("en-PH",{maximumFractionDigits:4})} {item.unit}</span>;
                 return (
-                  <TR key={item.inventoryItemId}>
+                  <TR key={item.inventoryItemId} className={usedInPosSales?"bg-[var(--app-primary-faint)]":""}>
                     <TD mono><span className="font-semibold text-[var(--app-primary)]">{item.sku}</span></TD>
-                    <TD><span className="font-semibold text-[var(--app-text)]">{item.itemName}</span></TD>
+                    <TD><div className="flex min-w-0 flex-wrap items-center gap-2"><span className="font-semibold text-[var(--app-text)]">{item.itemName}</span>{usedInPosSales&&<PosUsageIndicator/>}</div></TD>
                     <TD right muted>{item.previousActualQuantity.toFixed(2)} {item.unit}</TD>
                     <TD right muted>{item.stockReceived.toFixed(2)} {item.unit}</TD>
                     <TD right><span className="font-medium text-[var(--app-primary)]">−{item.expectedConsumption.toFixed(2)} {item.unit}</span></TD>

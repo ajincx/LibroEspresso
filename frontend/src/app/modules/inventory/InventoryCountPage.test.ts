@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import type { ExpectedInventoryItem } from "../../types/inventoryWorkflow";
-import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, confirmPhysicalCountCopy, copyPreviousClosingEntries, copySameDayClosingEntries, displayedPhysicalCountVariance, filterPhysicalCountItems, fullCountCopySourceMessage, fullCountSubmissionBlockReason, initialPhysicalCountDate, inventoryCountColumns, isDailyCountColumnEditable, isFutureInventoryCountDate, mergeOpeningCorrectionEntries, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, PhysicalCountCorrectionDialog, PhysicalCountLoadingSkeleton, physicalCountCompletion, physicalCountCorrectionReasonError, physicalCountEntryFromCanonical, physicalCountPreviewVariance, physicalCountVarianceLabel, previousClosingCopyMessage, previousPhysicalCopyMessage, savedCountQuantities, showInventoryCountDateFilter, validPhysicalCountEntries } from "./InventoryCountPage";
+import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, closingPosUsedIngredientIds, closingPosUsageSummary, confirmPhysicalCountCopy, copyPreviousClosingEntries, copySameDayClosingEntries, displayedPhysicalCountVariance, filterPhysicalCountItems, fullCountCopySourceMessage, fullCountSubmissionBlockReason, initialPhysicalCountDate, inventoryCountColumns, isDailyCountColumnEditable, isFutureInventoryCountDate, mergeOpeningCorrectionEntries, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, PhysicalCountCorrectionDialog, PhysicalCountLoadingSkeleton, physicalCountCompletion, physicalCountCorrectionReasonError, physicalCountEntryFromCanonical, physicalCountPreviewVariance, physicalCountVarianceLabel, PosUsageIndicator, previousClosingCopyMessage, previousPhysicalCopyMessage, savedCountQuantities, showInventoryCountDateFilter, validPhysicalCountEntries } from "./InventoryCountPage";
 import { buildEnteredPhysicalCountItems } from "./InventoryCountPage";
 
 const item = (inventoryItemId: string, sku: string, itemName: string): ExpectedInventoryItem => ({
@@ -43,6 +43,33 @@ describe("Daily partial physical counts",()=>{
 
   it("keeps the complete Full Physical Count table",()=>{
     expect(inventoryCountColumns("FULL")).toEqual(["SKU","Ingredient","Previous Actual","Received","Recipe Consumption","Expected Stock","Physical Count","Preview Variance"]);
+  });
+
+  it("identifies distinct positive POS usage only for Closing Count",()=>{
+    const usedMilk={...ingredients[1]!,expectedConsumption:250};
+    const usedMilkDuplicate={...usedMilk};
+    const usedSugar={...ingredients[2]!,expectedConsumption:12};
+    const zeroIce={...ingredients[0]!,expectedConsumption:0};
+    expect([...closingPosUsedIngredientIds([usedMilk,usedMilkDuplicate,usedSugar,zeroIce],"CLOSING")]).toEqual(["milk","sugar"]);
+    expect(closingPosUsedIngredientIds([usedMilk,usedSugar],"OPENING").size).toBe(0);
+    expect(closingPosUsedIngredientIds([usedMilk,usedSugar],"FULL").size).toBe(0);
+  });
+
+  it("renders the compact usage indicator and accurate distinct or neutral summaries",()=>{
+    const markup=renderToStaticMarkup(React.createElement(PosUsageIndicator));
+    expect(markup).toContain("Used in POS Sales");
+    expect(markup).toContain("bg-[var(--app-primary)]");
+    expect(closingPosUsageSummary(1)).toBe("1 ingredient used in POS sales");
+    expect(closingPosUsageSummary(2)).toBe("2 ingredients used in POS sales");
+    expect(closingPosUsageSummary(0)).toBe("No operational POS ingredient usage in this count interval.");
+  });
+
+  it("keeps every eligible ingredient visible and POS usage informational for partial counts",()=>{
+    const used=[{...ingredients[0]!,expectedConsumption:4},ingredients[1]!,ingredients[2]!];
+    expect(filterPhysicalCountItems(used,"","ALL",{})).toHaveLength(3);
+    expect(buildEnteredPhysicalCountItems(used,{
+      ice:{quantity:"",enteredUnit:"pc"},milk:{quantity:"2",enteredUnit:"pc"},sugar:{quantity:"",enteredUnit:"pc"},
+    })).toEqual([{inventoryItemId:"milk",quantity:2,enteredUnit:"pc"}]);
   });
 
   it("shows Opening, Closing, and Full variance previews",()=>{
