@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import type { ExpectedInventoryItem } from "../../types/inventoryWorkflow";
-import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, closingPosUsedIngredientIds, closingPosUsageSummary, confirmPhysicalCountCopy, copyPreviousClosingEntries, copySameDayClosingEntries, displayedPhysicalCountVariance, filterPhysicalCountItems, fullCountCopySourceMessage, fullCountSubmissionBlockReason, initialPhysicalCountDate, inventoryCountColumns, isDailyCountColumnEditable, isFutureInventoryCountDate, mergeOpeningCorrectionEntries, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, PhysicalCountCorrectionDialog, PhysicalCountLoadingSkeleton, physicalCountCompletion, physicalCountCorrectionReasonError, physicalCountEntryFromCanonical, physicalCountPreviewVariance, physicalCountVarianceLabel, PosUsageIndicator, previousClosingCopyMessage, previousPhysicalCopyMessage, savedCountQuantities, showInventoryCountDateFilter, validPhysicalCountEntries } from "./InventoryCountPage";
+import { allowedPhysicalCountUnits, blankPhysicalCountEntry, buildPhysicalCountItems, canLeavePhysicalCountEntry, changePhysicalCountEntryUnit, closingPosUsedIngredientIds, closingPosUsageSummary, confirmedPhysicalCountPreview, confirmPhysicalCountCopy, copyPreviousClosingEntries, copySameDayClosingEntries, displayedPhysicalCountVariance, editPhysicalCountEntryQuantity, expectedStockSuggestionEntry, filterPhysicalCountItems, fullCountCopySourceMessage, fullCountSubmissionBlockReason, initialPhysicalCountDate, initialPhysicalCountEntries, inventoryCountColumns, isDailyCountColumnEditable, isFutureInventoryCountDate, mergeOpeningCorrectionEntries, normalizePhysicalCountPreview, PHYSICAL_COUNT_INVESTIGATION_GUIDANCE, PhysicalCountBackAction, PhysicalCountCorrectionDialog, PhysicalCountLoadingSkeleton, physicalCountCompletion, physicalCountCorrectionReasonError, physicalCountEntryFromCanonical, physicalCountPreviewVariance, physicalCountVarianceLabel, PosUsageIndicator, previousClosingCopyMessage, previousPhysicalCopyMessage, savedCountQuantities, showInventoryCountDateFilter, validPhysicalCountEntries } from "./InventoryCountPage";
 import { buildEnteredPhysicalCountItems } from "./InventoryCountPage";
 
 const item = (inventoryItemId: string, sku: string, itemName: string): ExpectedInventoryItem => ({
@@ -31,6 +31,57 @@ describe("Daily partial physical counts",()=>{
       {inventoryItemId:"ice",quantity:0,enteredUnit:"pc"},
       {inventoryItemId:"sugar",quantity:3,enteredUnit:"pc"},
     ]);
+  });
+
+  it("displays Expected Stock suggestions for new Opening and Closing counts without confirming them",()=>{
+    const opening=initialPhysicalCountEntries(ingredients,"OPENING");
+    const closing=initialPhysicalCountEntries(ingredients,"CLOSING");
+    const full=initialPhysicalCountEntries(ingredients,"FULL");
+    expect(opening.ice).toEqual({quantity:"10",enteredUnit:"pc",confirmed:false});
+    expect(closing.ice).toEqual({quantity:"10",enteredUnit:"pc",confirmed:false});
+    expect(full.ice).toEqual({quantity:"",enteredUnit:"pc",confirmed:false});
+    expect(buildEnteredPhysicalCountItems(ingredients,opening)).toEqual([]);
+    expect(physicalCountCompletion(ingredients,closing)).toMatchObject({counted:0,remaining:3});
+  });
+
+  it("counts keyboard or spinner edits, including re-entered Expected Stock, without a separate confirmation",()=>{
+    const suggestion=expectedStockSuggestionEntry(ingredients[0]!);
+    expect(normalizePhysicalCountPreview(suggestion,"pc")).toBe(10);
+    expect(confirmedPhysicalCountPreview(suggestion,"pc")).toBeNull();
+    const reentered=editPhysicalCountEntryQuantity(suggestion,"10");
+    expect(confirmedPhysicalCountPreview(reentered,"pc")).toBe(10);
+    expect(displayedPhysicalCountVariance("CLOSING",10,confirmedPhysicalCountPreview(reentered,"pc"))).toBe(0);
+    const spinnerAdjusted=editPhysicalCountEntryQuantity(suggestion,"11");
+    expect(confirmedPhysicalCountPreview(spinnerAdjusted,"pc")).toBe(11);
+    const typed=editPhysicalCountEntryQuantity(suggestion,"9.5");
+    expect(buildEnteredPhysicalCountItems(ingredients,{ice:typed})).toEqual([{inventoryItemId:"ice",quantity:9.5,enteredUnit:"pc"}]);
+  });
+
+  it("clears edited suggestions back to uncounted while preserving explicit zero",()=>{
+    const suggestion=expectedStockSuggestionEntry(ingredients[0]!);
+    const cleared=editPhysicalCountEntryQuantity(editPhysicalCountEntryQuantity(suggestion,"8"),"");
+    expect(cleared.confirmed).toBe(false);
+    expect(buildEnteredPhysicalCountItems(ingredients,{ice:cleared})).toEqual([]);
+    const zero=editPhysicalCountEntryQuantity(suggestion,"0");
+    expect(zero.confirmed).toBe(true);
+    expect(buildEnteredPhysicalCountItems(ingredients,{ice:zero})).toEqual([{inventoryItemId:"ice",quantity:0,enteredUnit:"pc"}]);
+  });
+
+  it("handles invalid Expected Stock safely and lets copied actual quantities take precedence",()=>{
+    expect(expectedStockSuggestionEntry({...ingredients[0]!,expectedQuantity:Number.NaN})).toEqual(blankPhysicalCountEntry("pc"));
+    expect(expectedStockSuggestionEntry({...ingredients[0]!,expectedQuantity:-1})).toEqual(blankPhysicalCountEntry("pc"));
+    const copied=copyPreviousClosingEntries(ingredients,[{inventoryItemId:"ice",actualQuantity:7,countDate:"2026-10-29"}]);
+    expect(copied.ice).toEqual({quantity:"7",enteredUnit:"pc",confirmed:true});
+    expect(copied.milk).toEqual({quantity:"",enteredUnit:"pc",confirmed:false});
+  });
+
+  it("preserves decimal precision and unit conversion for suggested and confirmed values",()=>{
+    const weighted={...ingredients[0]!,unit:"g",expectedQuantity:1250.75};
+    const suggestion=expectedStockSuggestionEntry(weighted);
+    expect(suggestion).toEqual({quantity:"1250.75",enteredUnit:"g",confirmed:false});
+    const kilograms=changePhysicalCountEntryUnit(suggestion,"g","kg");
+    expect(kilograms).toEqual({quantity:"1.25075",enteredUnit:"kg",confirmed:false});
+    expect(confirmedPhysicalCountPreview(editPhysicalCountEntryQuantity(kilograms,kilograms.quantity),"g")).toBe(1250.75);
   });
 
   it("uses side-by-side Opening and Closing columns while editing only the active count",()=>{
@@ -96,9 +147,9 @@ describe("Daily partial physical counts",()=>{
       {...ingredients[0]!,actualQuantity:0,unit:"pc"},
       {...ingredients[2]!,actualQuantity:3,unit:"pc"},
     ])).toEqual({
-      ice:{quantity:"0",enteredUnit:"pc"},
-      milk:{quantity:"",enteredUnit:"pc"},
-      sugar:{quantity:"3",enteredUnit:"pc"},
+      ice:{quantity:"0",enteredUnit:"pc",confirmed:true},
+      milk:{quantity:"",enteredUnit:"pc",confirmed:false},
+      sugar:{quantity:"3",enteredUnit:"pc",confirmed:true},
     });
   });
 
@@ -107,9 +158,9 @@ describe("Daily partial physical counts",()=>{
       {inventoryItemId:"ice",actualQuantity:0,countDate:"2026-10-15"},
       {inventoryItemId:"sugar",actualQuantity:3,countDate:"2026-10-15"},
     ])).toEqual({
-      ice:{quantity:"0",enteredUnit:"pc"},
-      milk:{quantity:"",enteredUnit:"pc"},
-      sugar:{quantity:"3",enteredUnit:"pc"},
+      ice:{quantity:"0",enteredUnit:"pc",confirmed:true},
+      milk:{quantity:"",enteredUnit:"pc",confirmed:false},
+      sugar:{quantity:"3",enteredUnit:"pc",confirmed:true},
     });
   });
 
@@ -126,9 +177,9 @@ describe("Daily partial physical counts",()=>{
       {inventoryItemId:"ice",actualQuantity:0},
       {inventoryItemId:"sugar",actualQuantity:3},
     ])).toEqual({
-      ice:{quantity:"0",enteredUnit:"pc"},
-      milk:{quantity:"",enteredUnit:"pc"},
-      sugar:{quantity:"3",enteredUnit:"pc"},
+      ice:{quantity:"0",enteredUnit:"pc",confirmed:true},
+      milk:{quantity:"",enteredUnit:"pc",confirmed:false},
+      sugar:{quantity:"3",enteredUnit:"pc",confirmed:true},
     });
     expect(fullCountCopySourceMessage({id:"closing",countNo:"IC-2026-00010",countType:"CLOSING",countDate:"2026-10-29",effectiveAt:"2026-10-29T12:00:00.000Z",submittedAt:"2026-10-29T12:01:00.000Z"},"2026-10-29")).toContain("finalized CLOSING checkpoint IC-2026-00010");
     expect(fullCountCopySourceMessage({id:"closing",countNo:"IC-2026-00010",countType:"CLOSING",countDate:"2026-10-29",effectiveAt:null,submittedAt:"2026-10-29T12:01:00.000Z"},"2026-10-29")).toContain("not physically verified");
@@ -321,7 +372,7 @@ describe("Inventory physical-count ingredient search", () => {
 
 describe("Inventory physical-count unit entry", () => {
   it("starts a new physical count blank in the canonical unit", () => {
-    expect(blankPhysicalCountEntry("g")).toEqual({ quantity: "", enteredUnit: "g" });
+    expect(blankPhysicalCountEntry("g")).toEqual({ quantity: "", enteredUnit: "g", confirmed: false });
     expect(normalizePhysicalCountPreview(blankPhysicalCountEntry("g"), "g")).toBeNull();
   });
 
@@ -333,7 +384,7 @@ describe("Inventory physical-count unit entry", () => {
 
   it("displays 3864 g as 3.864 kg and previews the canonical quantity", () => {
     const entry = physicalCountEntryFromCanonical(3864, "g");
-    expect(entry).toEqual({ quantity: "3.864", enteredUnit: "kg" });
+    expect(entry).toEqual({ quantity: "3.864", enteredUnit: "kg", confirmed: true });
     expect(normalizePhysicalCountPreview(entry, "g")).toBe(3864);
   });
 

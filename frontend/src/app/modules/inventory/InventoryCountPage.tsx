@@ -56,13 +56,13 @@ export const filterPhysicalCountItems = (
     : items;
   if (completionFilter === "ALL") return searched;
   return searched.filter((item) => {
-    const counted = normalizePhysicalCountPreview(entries[item.inventoryItemId] ?? blankPhysicalCountEntry(item.unit), item.unit) !== null;
+    const counted = confirmedPhysicalCountPreview(entries[item.inventoryItemId] ?? blankPhysicalCountEntry(item.unit), item.unit) !== null;
     return completionFilter === "COUNTED" ? counted : !counted;
   });
 };
 
 export type PhysicalCountUnit = "g" | "kg" | "ml" | "L" | "pc";
-export type PhysicalCountEntry = { quantity: string; enteredUnit: PhysicalCountUnit };
+export type PhysicalCountEntry = { quantity: string; enteredUnit: PhysicalCountUnit; confirmed?: boolean };
 
 export const allowedPhysicalCountUnits = (canonicalUnit: string): PhysicalCountUnit[] => {
   if (canonicalUnit === "g") return ["g", "kg"];
@@ -73,7 +73,19 @@ export const allowedPhysicalCountUnits = (canonicalUnit: string): PhysicalCountU
 export const blankPhysicalCountEntry = (canonicalUnit: string): PhysicalCountEntry => ({
   quantity: "",
   enteredUnit: allowedPhysicalCountUnits(canonicalUnit)[0]!,
+  confirmed: false,
 });
+
+export const expectedStockSuggestionEntry = (item: ExpectedInventoryItem): PhysicalCountEntry =>
+  Number.isFinite(item.expectedQuantity) && item.expectedQuantity >= 0
+    ? { quantity: String(item.expectedQuantity), enteredUnit: allowedPhysicalCountUnits(item.unit)[0]!, confirmed: false }
+    : blankPhysicalCountEntry(item.unit);
+
+export const initialPhysicalCountEntries = (items: ExpectedInventoryItem[], countType: InventoryCountType) =>
+  Object.fromEntries(items.map((item) => [
+    item.inventoryItemId,
+    countType === "FULL" ? blankPhysicalCountEntry(item.unit) : expectedStockSuggestionEntry(item),
+  ]));
 
 export const normalizePhysicalCountPreview = (
   entry: PhysicalCountEntry,
@@ -84,6 +96,15 @@ export const normalizePhysicalCountPreview = (
   if (!allowedPhysicalCountUnits(canonicalUnit).includes(entry.enteredUnit)) return null;
   return quantity * (entry.enteredUnit === "kg" || entry.enteredUnit === "L" ? 1000 : 1);
 };
+
+export const confirmedPhysicalCountPreview = (entry: PhysicalCountEntry, canonicalUnit: string) =>
+  entry.confirmed === false ? null : normalizePhysicalCountPreview(entry, canonicalUnit);
+
+export const editPhysicalCountEntryQuantity = (entry: PhysicalCountEntry, quantity: string): PhysicalCountEntry => ({
+  ...entry,
+  quantity,
+  confirmed: quantity.trim() !== "",
+});
 
 export const physicalCountPreviewVariance = (
   expectedQuantity: number,
@@ -192,6 +213,7 @@ export const physicalCountEntryFromCanonical = (
   return {
     quantity: String(useLargeUnit ? quantity / 1000 : quantity),
     enteredUnit,
+    confirmed: true,
   };
 };
 
@@ -204,7 +226,7 @@ export const changePhysicalCountEntryUnit = (
   const normalized = normalizePhysicalCountPreview(entry, canonicalUnit);
   if (normalized === null) return { ...entry, enteredUnit: nextUnit };
   const divisor = nextUnit === "kg" || nextUnit === "L" ? 1000 : 1;
-  return { quantity: String(normalized / divisor), enteredUnit: nextUnit };
+  return { quantity: String(normalized / divisor), enteredUnit: nextUnit, confirmed: entry.confirmed };
 };
 
 export const physicalCountCompletion = (
@@ -212,7 +234,7 @@ export const physicalCountCompletion = (
   entries: Record<string, PhysicalCountEntry>,
 ) => {
   const remainingItems = items.filter((item) =>
-    normalizePhysicalCountPreview(entries[item.inventoryItemId] ?? blankPhysicalCountEntry(item.unit), item.unit) === null
+    confirmedPhysicalCountPreview(entries[item.inventoryItemId] ?? blankPhysicalCountEntry(item.unit), item.unit) === null
   );
   return { counted: items.length - remainingItems.length, remaining: remainingItems.length, remainingItems };
 };
@@ -234,7 +256,7 @@ export const buildEnteredPhysicalCountItems = (
   entries: Record<string, PhysicalCountEntry>,
 ) => items.flatMap((item) => {
   const entry = entries[item.inventoryItemId] ?? blankPhysicalCountEntry(item.unit);
-  return normalizePhysicalCountPreview(entry,item.unit) === null ? [] : [{
+  return confirmedPhysicalCountPreview(entry,item.unit) === null ? [] : [{
     inventoryItemId:item.inventoryItemId,quantity:Number(entry.quantity),enteredUnit:entry.enteredUnit,
   }];
 });
@@ -242,7 +264,7 @@ export const buildEnteredPhysicalCountItems = (
 export const validPhysicalCountEntries = (
   items: ExpectedInventoryItem[],
   entries: Record<string, PhysicalCountEntry>,
-) => items.every((item) => normalizePhysicalCountPreview(entries[item.inventoryItemId] ?? blankPhysicalCountEntry(item.unit), item.unit) !== null);
+) => items.every((item) => confirmedPhysicalCountPreview(entries[item.inventoryItemId] ?? blankPhysicalCountEntry(item.unit), item.unit) !== null);
 
 export const canLeavePhysicalCountEntry = (
   hasUnsavedChanges: boolean,
@@ -366,7 +388,7 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
       ]);
       setOpeningQuantities(savedCountQuantities(opening?.items ?? []));
       setClosingQuantities(savedCountQuantities(closing?.items ?? []));
-      setEntries(Object.fromEntries(data.items.map((item) => [item.inventoryItemId, blankPhysicalCountEntry(item.unit)])));
+      setEntries(initialPhysicalCountEntries(data.items,countType));
       setCompletionFilter("ALL");
       setCopiedStartingStock(false);
       setHasUnsavedChanges(false);
@@ -629,9 +651,10 @@ export function InventoryCountPage({ onSubmitted, onBackToHistory, countType="FU
               visibleItems.map((item) => {
                 const usedInPosSales = posUsedIngredientIds.has(item.inventoryItemId);
                 const entry = entries[item.inventoryItemId] ?? blankPhysicalCountEntry(item.unit);
-                const normalizedActual = normalizePhysicalCountPreview(entry, item.unit);
+                const displayedQuantity = normalizePhysicalCountPreview(entry, item.unit);
+                const normalizedActual = confirmedPhysicalCountPreview(entry, item.unit);
                 const variance = displayedPhysicalCountVariance(countType, item.expectedQuantity, normalizedActual);
-                const countEntry=<div className="flex flex-col items-end gap-1"><div className="flex items-center gap-1.5"><input type="number" min={0} step="any" value={entry.quantity} onChange={(event) => { setHasUnsavedChanges(true); setPreviewing(false); if(countType==="FULL")setFullPhysicalVerificationConfirmed(false); setEntries((current) => ({ ...current, [item.inventoryItemId]: { ...entry, quantity: event.target.value } })); }} placeholder="Not counted" className="min-h-9 w-28 px-2.5 py-1.5 rounded-xl border text-right font-semibold text-sm outline-none transition-colors border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] focus:border-[var(--app-primary)] focus:ring-2 focus:ring-[var(--app-primary-faint)]" aria-label={`${item.itemName} ${countType.toLowerCase()} quantity`}/><Select small value={entry.enteredUnit} onChange={(value) => { setHasUnsavedChanges(true); setPreviewing(false); if(countType==="FULL")setFullPhysicalVerificationConfirmed(false); setEntries((current) => ({ ...current, [item.inventoryItemId]: changePhysicalCountEntryUnit(entry, item.unit, value as PhysicalCountUnit) })); }} className="w-20 [&_.custom-select-trigger]:!min-w-0" ariaLabel={`${item.itemName} physical count unit`} options={allowedPhysicalCountUnits(item.unit).map((unit) => ({ value: unit, label: unit }))}/></div><span className="text-[10px] whitespace-nowrap text-[var(--app-text-muted)]">{entry.quantity.trim() === ""?"Not yet counted":normalizedActual === null?"Enter a valid non-negative quantity":`Converted to system unit: ${normalizedActual.toLocaleString("en-US", { maximumFractionDigits: 4 })} ${item.unit}`}</span></div>;
+                const countEntry=<div className="flex flex-col items-end gap-1"><div className="flex items-center gap-1.5"><input type="number" min={0} step="any" value={entry.quantity} onChange={(event) => { setHasUnsavedChanges(true); setPreviewing(false); if(countType==="FULL")setFullPhysicalVerificationConfirmed(false); setEntries((current) => ({ ...current, [item.inventoryItemId]: editPhysicalCountEntryQuantity(entry, event.target.value) })); }} placeholder="Not counted" className="min-h-9 w-28 px-2.5 py-1.5 rounded-xl border text-right font-semibold text-sm outline-none transition-colors border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] focus:border-[var(--app-primary)] focus:ring-2 focus:ring-[var(--app-primary-faint)]" aria-label={`${item.itemName} ${countType.toLowerCase()} quantity`}/><Select small value={entry.enteredUnit} onChange={(value) => { if(entry.confirmed!==false)setHasUnsavedChanges(true); setPreviewing(false); if(countType==="FULL")setFullPhysicalVerificationConfirmed(false); setEntries((current) => ({ ...current, [item.inventoryItemId]: changePhysicalCountEntryUnit(entry, item.unit, value as PhysicalCountUnit) })); }} className="w-20 [&_.custom-select-trigger]:!min-w-0" ariaLabel={`${item.itemName} physical count unit`} options={allowedPhysicalCountUnits(item.unit).map((unit) => ({ value: unit, label: unit }))}/></div><div className="flex items-center gap-2 text-[10px] text-[var(--app-text-muted)]"><span className="whitespace-nowrap">{entry.quantity.trim() === ""?"Not yet counted":displayedQuantity === null?"Enter a valid non-negative quantity":entry.confirmed===false?"Suggested from Expected Stock · Edit to count":`Converted to system unit: ${displayedQuantity.toLocaleString("en-US", { maximumFractionDigits: 4 })} ${item.unit}`}</span></div></div>;
                 const savedQuantity=(value:number|undefined)=>value===undefined?<span className="text-[var(--app-text-muted)]">—</span>:<span className="font-semibold">{value.toLocaleString("en-PH",{maximumFractionDigits:4})} {item.unit}</span>;
                 return (
                   <TR key={item.inventoryItemId} className={usedInPosSales?"bg-[var(--app-primary-faint)]":""}>
