@@ -19,9 +19,11 @@ type ShrinkageContext = {
   status: "DETECTED" | "VERIFIED" | "PENDING_REVIEW" | "REVIEWED";
   relatedHistoricalCases: number;
   countType: "OPENING" | "CLOSING" | "FULL";
-  intervalStartAt: string | null;
-  intervalEndAt: string;
+  intervalStartAt: string | Date | null;
+  intervalEndAt: string | Date;
 };
+
+const isoTimestamp=(value:string|Date|null)=>value instanceof Date?value.toISOString():value;
 
 export const getShrinkageAiAnalysis: RequestHandler = async (req, res) => {
   const { id } = idParams.parse(req.params);
@@ -68,7 +70,7 @@ export const getShrinkageAiAnalysis: RequestHandler = async (req, res) => {
   const context = report.rows[0];
   if (!context) throw new AppError(404, "SHRINKAGE_REPORT_NOT_FOUND", "Shrinkage report not found");
 
-  const incidents = await pool.query<{ incidentReportId:string; incidentReportItemId:string; incidentType: string; occurredAt:string; quantity: number; unit: string; status: string; matchQuality:"EXACT"|"APPROXIMATE"; quantityDifference:number; evidenceStatus:"UNVERIFIED" }>(
+  const incidents = await pool.query<{ incidentReportId:string; incidentReportItemId:string; incidentType: string; occurredAt:string|Date; quantity: number; unit: string; status: string; matchQuality:"EXACT"|"APPROXIMATE"; quantityDifference:number; evidenceStatus:"UNVERIFIED" }>(
     `SELECT ir.id "incidentReportId",iri.id "incidentReportItemId",ir.incident_type "incidentType",ir.occurred_at "occurredAt",
             iri.quantity::float8,iri.unit,ir.status,
             CASE WHEN abs(iri.quantity-abs($6::numeric))<=0.0001 THEN 'EXACT' ELSE 'APPROXIMATE' END "matchQuality",
@@ -102,8 +104,8 @@ export const getShrinkageAiAnalysis: RequestHandler = async (req, res) => {
     classification: context.classification,
     relatedHistoricalCases: context.relatedHistoricalCases,
     countType: context.countType,
-    countInterval: { startAt: context.intervalStartAt, endAt: context.intervalEndAt },
-    candidateIncidents: incidents.rows,
+    countInterval: { startAt: isoTimestamp(context.intervalStartAt), endAt: isoTimestamp(context.intervalEndAt)! },
+    candidateIncidents: incidents.rows.map((incident)=>({...incident,occurredAt:isoTimestamp(incident.occurredAt)!})),
   });
 
   res.json({

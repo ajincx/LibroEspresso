@@ -68,6 +68,22 @@ describe("shrinkage AI analysis controller", () => {
     expect(res.json).toHaveBeenCalledWith({ success: true, data: { source: "UNAVAILABLE", analysis: null } });
   });
 
+  it("normalizes PostgreSQL Date values before validating Gemini findings",async()=>{
+    const datedContext={...context,intervalStartAt:new Date(context.intervalStartAt),intervalEndAt:new Date(context.intervalEndAt)};
+    const datedCandidate={...candidate,occurredAt:new Date(candidate.occurredAt)};
+    mocks.poolQuery.mockReset();
+    mocks.poolQuery.mockResolvedValueOnce({rows:[datedContext]}).mockResolvedValueOnce({rows:[datedCandidate]});
+    const res={json:vi.fn()};
+
+    await getShrinkageAiAnalysis(request("BRANCH_MANAGER",branchId),res as never,vi.fn());
+
+    expect(mocks.generate).toHaveBeenCalledWith(expect.objectContaining({
+      countInterval:{startAt:context.intervalStartAt,endAt:context.intervalEndAt},
+      candidateIncidents:[expect.objectContaining({occurredAt:candidate.occurredAt,evidenceStatus:"UNVERIFIED"})],
+    }));
+    expect(res.json).toHaveBeenCalledWith({success:true,data:{source:"GOOGLE_GEMINI",analysis}});
+  });
+
   it("enforces the Branch Manager branch scope in the report query", async () => {
     await getShrinkageAiAnalysis(request("BRANCH_MANAGER", branchId), { json: vi.fn() } as never, vi.fn());
     const [sql, values] = mocks.poolQuery.mock.calls[0]!;
