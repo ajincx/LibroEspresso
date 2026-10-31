@@ -1,5 +1,6 @@
 import { pool } from "../config/database.js";
-import { emailDeliveryConfigured, sendExternalEmail } from "./emailTransport.service.js";
+import { env } from "../config/env.js";
+import { emailDeliveryConfigured, sanitizeEmailDeliveryErrorCode, sendExternalEmail } from "./emailTransport.service.js";
 
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAY_MINUTES = 15;
@@ -16,13 +17,28 @@ type ClaimedReminder = {
   sourceName: string;
 };
 
-function safeErrorCode(error: unknown) {
-  const code = typeof error === "object" && error && "code" in error ? String(error.code) : "SMTP_DELIVERY_FAILED";
-  return /^[A-Z0-9_-]{1,80}$/i.test(code) ? code.toUpperCase() : "SMTP_DELIVERY_FAILED";
-}
-
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);
+}
+
+function displayBusinessDate(value:string) {
+  const [year,month,day]=value.split("-").map(Number);
+  if(!year||!month||!day)return value;
+  return new Intl.DateTimeFormat("en-PH",{timeZone:"Asia/Manila",year:"numeric",month:"long",day:"numeric"}).format(new Date(Date.UTC(year,month-1,day)));
+}
+
+export function buildPosImportReminderEmail(input:{recipientName:string;branchName:string;businessDate:string;appUrl:string}) {
+  const name=input.recipientName.trim()||"Branch Manager";
+  const date=displayBusinessDate(input.businessDate);
+  const safeName=escapeHtml(name);
+  const safeBranch=escapeHtml(input.branchName);
+  const safeDate=escapeHtml(date);
+  const safeAppUrl=escapeHtml(input.appUrl);
+  return {
+    subject:`Reminder: Pending POS Sales Import – ${input.branchName} | Libro Espresso`,
+    text:[`Hello ${name},`,"",`This is an automated reminder that the POS sales data for ${date} has not yet been confirmed as complete for ${input.branchName}.`,"","To ensure accurate sales reporting, inventory monitoring, and Cost of Goods Sold (COGS) calculations, please review and complete the POS import process.","",`Open Libro Espresso: ${input.appUrl}`,"","If the POS sales data has already been submitted, please verify that the daily import has been successfully completed and reconciled.","","Thank you,","Libro Espresso Team","","This is an automated notification. Please do not reply."].join("\n"),
+    html:`<!doctype html><html><body style="margin:0;background:#f5f1ed;color:#2d2526;font-family:Arial,sans-serif"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f1ed;padding:24px 12px"><tr><td align="center"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#ffffff;border:1px solid #eadfe0;border-radius:16px;overflow:hidden"><tr><td style="height:6px;background:#7b1e2b"></td></tr><tr><td style="padding:32px"><p style="margin:0 0 8px;color:#7b1e2b;font-size:13px;font-weight:700;letter-spacing:.08em">LIBRO ESPRESSO</p><h1 style="margin:0 0 24px;font-size:26px;line-height:1.25">Pending POS sales import</h1><p style="margin:0 0 16px;line-height:1.6">Hello ${safeName},</p><p style="margin:0 0 16px;line-height:1.6">This is an automated reminder that the POS sales data for <strong>${safeDate}</strong> has not yet been confirmed as complete for <strong>${safeBranch}</strong>.</p><p style="margin:0 0 24px;line-height:1.6">To ensure accurate sales reporting, inventory monitoring, and Cost of Goods Sold (COGS) calculations, please review and complete the POS import process.</p><p style="margin:0 0 24px"><a href="${safeAppUrl}" style="display:inline-block;border-radius:10px;background:#7b1e2b;padding:13px 22px;color:#ffffff;font-weight:700;text-decoration:none">Open Libro Espresso</a></p><p style="margin:0;line-height:1.6">If the POS sales data has already been submitted, please verify that the daily import has been successfully completed and reconciled.</p><p style="margin:24px 0 0;line-height:1.6">Thank you,<br><strong>Libro Espresso Team</strong></p></td></tr><tr><td style="border-top:1px solid #eadfe0;background:#fbf8f6;padding:18px 32px;color:#766b6d;font-size:12px;text-align:center">This is an automated notification. Please do not reply.</td></tr></table></td></tr></table></body></html>`,
+  };
 }
 
 async function claimReminders(businessDate: string) {
@@ -133,7 +149,7 @@ async function markFailed(reminder: ClaimedReminder, error: unknown) {
        'Daily missing POS sales import reminder email failed',
        jsonb_build_object('businessDate',business_date,'recipientUserId',recipient_user_id,'attempt',attempt_count,'errorCode',$4::text)
      FROM updated`,
-    [reminder.id, MAX_ATTEMPTS, RETRY_DELAY_MINUTES, safeErrorCode(error)],
+    [reminder.id, MAX_ATTEMPTS, RETRY_DELAY_MINUTES, sanitizeEmailDeliveryErrorCode(error)],
   );
 }
 
@@ -150,14 +166,9 @@ export async function sendMissingPosImportReminderEmails(businessDate: string) {
       continue;
     }
     try {
-      const recipientName = escapeHtml(reminder.recipientName);
-      const branchName = escapeHtml(reminder.branchName);
-      const sourceName = escapeHtml(reminder.sourceName);
       await sendExternalEmail({
         to: reminder.recipientEmail,
-        subject: `POS sales import reminder — ${reminder.branchName}`,
-        text: `Hello ${reminder.recipientName}, the POS sales report for ${reminder.branchName} on ${reminder.businessDate} is still pending. Please import the completed ${reminder.sourceName} report or record a valid no-sales/closed day in Libro Espresso.`,
-        html: `<p>Hello ${recipientName},</p><p>The POS sales report for <strong>${branchName}</strong> on <strong>${reminder.businessDate}</strong> is still pending.</p><p>Please import the completed ${sourceName} report or record a valid no-sales/closed day in Libro Espresso.</p>`,
+        ...buildPosImportReminderEmail({recipientName:reminder.recipientName,branchName:reminder.branchName,businessDate:reminder.businessDate,appUrl:env.CLIENT_URL}),
       });
       await markSent(reminder);
       sent += 1;

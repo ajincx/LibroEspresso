@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { isPasswordResetPath, loginErrorMessage, loginValidationMessage } from "./LoginPage";
+import { forgotPasswordEmailValidationMessage, isPasswordResetPath, loginErrorMessage, loginValidationMessage } from "./LoginPage";
 
 describe("password reset route", () => {
   it("keeps the HTTPS reset-link path in the authentication UI", () => {
@@ -65,6 +65,80 @@ describe("login authentication errors", () => {
     expect(loginErrorMessage(new Error("Network Error"))).toBe("Unable to sign in. Please try again.");
   });
 
+});
+
+describe("password recovery presentation", () => {
+  afterEach(() => {
+    vi.doUnmock("react");
+    vi.resetModules();
+  });
+
+  it("renders the reset-password fields with scoped bordered input styling", async () => {
+    let stateCall = 0;
+    vi.resetModules();
+    vi.doMock("react", async () => {
+      const actual = await vi.importActual<typeof import("react")>("react");
+      return {
+        ...actual,
+        useEffect: vi.fn(),
+        useState: vi.fn((initial: unknown) => {
+          const value = stateCall === 6 ? "test-token" : typeof initial === "function" ? "" : initial;
+          stateCall += 1;
+          return [value, vi.fn()];
+        }),
+      };
+    });
+    const React = await import("react");
+    const loginModule = await import("./LoginPage");
+    const markup = renderToStaticMarkup(
+      React.createElement(loginModule.LoginPage, { onLogin: vi.fn() }),
+    );
+
+    expect(markup).toContain('class="auth-recovery__card"');
+    expect(markup).toContain('id="reset-new-password"');
+    expect(markup).toContain('id="reset-confirm-password"');
+    expect(markup).toContain("New Password");
+    expect(markup).toContain("Confirm Password");
+    expect(markup).toContain("Reset Password");
+  });
+
+  it("renders the forgot-password confirmation for the login email without a substitute recipient field", async () => {
+    let stateCall = 0;
+    vi.resetModules();
+    vi.doMock("react", async () => {
+      const actual = await vi.importActual<typeof import("react")>("react");
+      return {
+        ...actual,
+        useEffect: vi.fn(),
+        useState: vi.fn((initial: unknown) => {
+          const value = stateCall === 0 ? "manager@example.com" : stateCall === 5 ? true : typeof initial === "function" ? "" : initial;
+          stateCall += 1;
+          return [value, vi.fn()];
+        }),
+      };
+    });
+    const React = await import("react");
+    const loginModule = await import("./LoginPage");
+    const markup = renderToStaticMarkup(
+      React.createElement(loginModule.LoginPage, { onLogin: vi.fn() }),
+    );
+
+    expect(markup).toContain("Forgot Password?");
+    expect(markup).toContain("manager@example.com");
+    expect(markup).not.toContain('id="recovery-email"');
+    expect(markup).toContain("Proceed");
+    expect(markup).toContain("Cancel");
+  });
+});
+
+describe("forgot password login-email requirement",()=>{
+  it.each([
+    ["","Enter your email address."],
+    ["not-an-email","Enter a valid email address."],
+    [" manager@example.com ",null],
+  ])("validates the existing login email %j",(email,expected)=>{
+    expect(forgotPasswordEmailValidationMessage(email)).toBe(expected);
+  });
 });
 
 describe("rendered login errors", () => {

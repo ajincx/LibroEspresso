@@ -3,7 +3,7 @@ import pg from "pg";
 import { afterAll,beforeAll,describe,expect,it,vi } from "vitest";
 
 const mocks=vi.hoisted(()=>({send:vi.fn()}));
-vi.mock("./emailTransport.service.js",()=>({emailDeliveryConfigured:()=>true,sendExternalEmail:mocks.send}));
+vi.mock("./emailTransport.service.js",()=>({emailDeliveryConfigured:()=>true,sanitizeEmailDeliveryErrorCode:(error:unknown)=>typeof error==="object"&&error&&"code" in error&&error.code==="ETIMEDOUT"?"ETIMEDOUT":"SMTP_DELIVERY_FAILED",sendExternalEmail:mocks.send}));
 
 const databaseUrl=process.env.POS_REMINDER_E2E_DATABASE_URL;
 const suite=databaseUrl?describe:describe.skip;
@@ -54,6 +54,11 @@ suite("POS import reminder email PostgreSQL lifecycle",()=>{
     expect(rows.rows.filter(row=>row.branch_id===testOnly.branchId)).toHaveLength(1);
     expect(rows.rows.every(row=>row.status==='SENT'&&row.attempt_count===1)).toBe(true);
     expect(mocks.send).toHaveBeenCalledTimes(3);
+    expect(mocks.send).toHaveBeenCalledWith(expect.objectContaining({
+      subject:expect.stringContaining("Reminder: Pending POS Sales Import"),
+      text:expect.stringContaining("October 27, 2026"),
+      html:expect.stringContaining("Open Libro Espresso"),
+    }));
   });
 
   it("retries a failed delivery on the same audit record without creating a duplicate",async()=>{

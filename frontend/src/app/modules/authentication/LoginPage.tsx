@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Eye, EyeOff, LoaderCircle, Lock, Mail, ShieldCheck } from "lucide-react";
+import { AlertCircle, CheckCircle2, Eye, EyeOff, KeyRound, LoaderCircle, Lock, Mail, ShieldCheck, X } from "lucide-react";
 import { toast } from "sonner";
 import { authService } from "../../services/auth.service";
 import "./LoginPage.css";
@@ -16,6 +16,13 @@ export function loginValidationMessage(email: string, password: string) {
   if (!password) return "Enter your password.";
   if (!SIMPLE_EMAIL_PATTERN.test(normalizedEmail)) return "Enter a valid email address.";
   if (password.length < LOGIN_PASSWORD_MIN_LENGTH) return "Password must be at least 8 characters.";
+  return null;
+}
+
+export function forgotPasswordEmailValidationMessage(email:string) {
+  const normalizedEmail=email.trim();
+  if(!normalizedEmail)return "Enter your email address.";
+  if(!SIMPLE_EMAIL_PATTERN.test(normalizedEmail))return "Enter a valid email address.";
   return null;
 }
 
@@ -44,11 +51,11 @@ export function LoginPage({ onLogin }: LoginPageProps) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [forgotOpen,setForgotOpen]=useState(false);
-  const [recoveryEmail,setRecoveryEmail]=useState("");
   const [resetToken]=useState(()=>new URLSearchParams(window.location.search).get("token")??"");
   const [newPassword,setNewPassword]=useState("");
   const [confirmPassword,setConfirmPassword]=useState("");
   const [recoveryBusy,setRecoveryBusy]=useState(false);
+  const [recoveryFeedback,setRecoveryFeedback]=useState<{type:"success"|"error";message:string}|null>(null);
   const genericRecoveryMessage="If an active account uses that email, a password reset link will be sent.";
   const emailError = error === "Enter your email address." || error === "Enter a valid email address.";
   const passwordError = error === "Enter your password." || error === "Password must be at least 8 characters.";
@@ -75,6 +82,51 @@ export function LoginPage({ onLogin }: LoginPageProps) {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const submitRecovery = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (recoveryBusy) return;
+    setRecoveryFeedback(null);
+    setRecoveryBusy(true);
+    try {
+      if (resetToken) {
+        if (newPassword.length < 10 || newPassword !== confirmPassword) {
+          const message = "Use at least 10 characters and make both passwords match.";
+          setRecoveryFeedback({ type: "error", message });
+          toast.error(message);
+          return;
+        }
+        const result = await authService.resetPassword(resetToken,newPassword,confirmPassword);
+        toast.success(result.message);
+        window.history.replaceState({},"","/");
+        window.location.reload();
+      } else {
+        await authService.forgotPassword(email.trim());
+        setRecoveryFeedback({ type: "success", message: genericRecoveryMessage });
+        toast.success(genericRecoveryMessage);
+      }
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Unable to complete password recovery.";
+      setRecoveryFeedback({ type: "error", message });
+      toast.error(message);
+    } finally {
+      setRecoveryBusy(false);
+    }
+  };
+
+  const openForgotPassword = () => {
+    const validationError=forgotPasswordEmailValidationMessage(email);
+    if(validationError){setError(validationError);return;}
+    setError("");
+    setRecoveryFeedback(null);
+    setForgotOpen(true);
+  };
+
+  const closeRecovery = () => {
+    if (recoveryBusy || resetToken) return;
+    setForgotOpen(false);
+    setRecoveryFeedback(null);
   };
 
   return (
@@ -125,7 +177,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
             </div>
 
             <div className="login-options">
-              <button type="button" onClick={() => setForgotOpen(true)}>Forgot Password?</button>
+              <button type="button" onClick={openForgotPassword}>Forgot Password?</button>
             </div>
 
             {formError && <div className="login-error" role="alert" aria-live="polite">{formError}</div>}
@@ -135,11 +187,54 @@ export function LoginPage({ onLogin }: LoginPageProps) {
           </form>
         </div>
       </section>
-      {(forgotOpen||resetToken)&&<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true"><form className="w-full max-w-md rounded-2xl border bg-[var(--app-surface)] p-6 shadow-2xl" onSubmit={async event=>{event.preventDefault();if(recoveryBusy)return;setRecoveryBusy(true);try{if(resetToken){if(newPassword.length<10||newPassword!==confirmPassword){toast.error("Use at least 10 characters and make both passwords match.");return;}const result=await authService.resetPassword(resetToken,newPassword,confirmPassword);toast.success(result.message);window.history.replaceState({},"","/");window.location.reload();}else{await authService.forgotPassword(recoveryEmail);toast.success(genericRecoveryMessage);setForgotOpen(false);}}catch(reason){toast.error(reason instanceof Error?reason.message:"Unable to complete password recovery.");}finally{setRecoveryBusy(false);}}}>
-        <h2 className="text-lg font-bold">{resetToken?"Choose a new password":"Forgot Password"}</h2><p className="mt-1 text-sm text-[var(--app-text-muted)]">{resetToken?"This secure link can be used once before it expires.":"Enter your registered email. The response is intentionally the same for every address."}</p>
-        {resetToken?<><label className="mt-4 block text-sm font-medium">New password<input className="field mt-1.5" type="password" autoComplete="new-password" value={newPassword} onChange={event=>setNewPassword(event.target.value)}/></label><label className="mt-3 block text-sm font-medium">Confirm password<input className="field mt-1.5" type="password" autoComplete="new-password" value={confirmPassword} onChange={event=>setConfirmPassword(event.target.value)}/></label></>:<label className="mt-4 block text-sm font-medium">Email<input className="field mt-1.5" type="email" value={recoveryEmail} onChange={event=>setRecoveryEmail(event.target.value)} required/></label>}
-        <div className="mt-6 flex justify-end gap-2">{!resetToken&&<button type="button" className="rounded-xl border px-4 py-2 text-sm" onClick={()=>setForgotOpen(false)}>Cancel</button>}<button type="submit" disabled={recoveryBusy} className="rounded-xl bg-[var(--app-primary)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{recoveryBusy?"Please wait…":resetToken?"Reset Password":"Send Reset Link"}</button></div>
-      </form></div>}
+      {(forgotOpen||resetToken)&&(
+        <div className="auth-recovery" role="dialog" aria-modal="true" aria-labelledby="auth-recovery-title">
+          <form className="auth-recovery__card" onSubmit={submitRecovery}>
+            {!resetToken&&(
+              <button className="auth-recovery__close" type="button" onClick={closeRecovery} aria-label="Close password recovery" disabled={recoveryBusy}>
+                <X size={19} aria-hidden="true" />
+              </button>
+            )}
+            <div className="auth-recovery__icon" aria-hidden="true">{resetToken?<KeyRound size={25}/>:<Mail size={25}/>}</div>
+            <header className="auth-recovery__header">
+              <p className="auth-recovery__eyebrow">ACCOUNT RECOVERY</p>
+              <h2 id="auth-recovery-title">{resetToken?"Create a new password":"Forgot Password?"}</h2>
+              <p>{resetToken?"Choose a secure new password for your Libro Espresso account.":<>A password reset link will be sent to the registered email address associated with this account: <strong>{email.trim()}</strong>.</>}</p>
+            </header>
+
+            <div className="auth-recovery__body">
+              {resetToken?(
+                <>
+                  <label className="auth-recovery__field" htmlFor="reset-new-password">
+                    <span>New Password</span>
+                    <input id="reset-new-password" type="password" autoComplete="new-password" value={newPassword} onChange={event=>{setNewPassword(event.target.value);setRecoveryFeedback(null);}} placeholder="Enter your new password" disabled={recoveryBusy}/>
+                  </label>
+                  <label className="auth-recovery__field" htmlFor="reset-confirm-password">
+                    <span>Confirm Password</span>
+                    <input id="reset-confirm-password" type="password" autoComplete="new-password" value={confirmPassword} onChange={event=>{setConfirmPassword(event.target.value);setRecoveryFeedback(null);}} placeholder="Re-enter your new password" disabled={recoveryBusy}/>
+                  </label>
+                </>
+              ):null}
+
+              {recoveryFeedback&&(
+                <div className={`auth-recovery__feedback auth-recovery__feedback--${recoveryFeedback.type}`} role={recoveryFeedback.type==="error"?"alert":"status"} aria-live="polite">
+                  {recoveryFeedback.type==="success"?<CheckCircle2 size={18} aria-hidden="true"/>:<AlertCircle size={18} aria-hidden="true"/>}
+                  <span>{recoveryFeedback.message}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="auth-recovery__actions">
+              {!resetToken&&<button type="button" className="auth-recovery__secondary" onClick={closeRecovery} disabled={recoveryBusy}>Cancel</button>}
+              <button type="submit" disabled={recoveryBusy||(!resetToken&&recoveryFeedback?.type==="success")} className="auth-recovery__primary">
+                {recoveryBusy&&<LoaderCircle className="login-spinner" size={17} aria-hidden="true"/>}
+                {recoveryBusy?"Please wait…":resetToken?"Reset Password":"Proceed"}
+              </button>
+            </div>
+            <p className="auth-recovery__security"><ShieldCheck size={15} aria-hidden="true"/>Your account recovery information is securely protected.</p>
+          </form>
+        </div>
+      )}
     </main>
   );
 }
