@@ -96,6 +96,52 @@ describe("Gemini insight hardening", () => {
     expect(logs).not.toContain("test-key");
   });
 
+  it("logs only the whitelisted structured provider error classification", async () => {
+    const rawMessage = "Request rejected for api key test-key and private prompt content";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: vi.fn().mockResolvedValue({
+        error: { code: 400, status: "INVALID_ARGUMENT", message: rawMessage, details: [{ private: "incident" }] },
+      }),
+    }));
+
+    await expect(generateGeminiShrinkageAnalysis(shrinkageFindings)).resolves.toBeNull();
+
+    const log = JSON.parse(String(vi.mocked(console.info).mock.calls.at(-1)?.[0]));
+    expect(log).toMatchObject({
+      event: "GEMINI_INSIGHTS",
+      outcome: "FALLBACK",
+      reason: "HTTP_4XX",
+      feature: "SHRINKAGE",
+      httpStatus: 400,
+      providerCode: 400,
+      providerStatus: "INVALID_ARGUMENT",
+      modelId: "test-model",
+    });
+    expect(JSON.stringify(log)).not.toContain(rawMessage);
+    expect(JSON.stringify(log)).not.toContain("test-key");
+    expect(JSON.stringify(log)).not.toContain("incident");
+  });
+
+  it("rejects untrusted provider classifications and unsafe model identifiers from logs", async () => {
+    mocks.env.GEMINI_MODEL = "unsafe-model\nprivate-data";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: vi.fn().mockResolvedValue({
+        error: { code: "400", status: "INVALID_ARGUMENT\nprivate-data", message: "private provider response" },
+      }),
+    }));
+
+    await expect(generateGeminiInsights(findings)).resolves.toBeNull();
+
+    const log = JSON.parse(String(vi.mocked(console.info).mock.calls.at(-1)?.[0]));
+    expect(log).toMatchObject({ providerCode: null, providerStatus: "UNKNOWN", modelId: "INVALID_MODEL_ID" });
+    expect(JSON.stringify(log)).not.toContain("private-data");
+    expect(JSON.stringify(log)).not.toContain("private provider response");
+  });
+
   it("aborts after the bounded timeout and falls back", async () => {
     vi.useFakeTimers();
     vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {

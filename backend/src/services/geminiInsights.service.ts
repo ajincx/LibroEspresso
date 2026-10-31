@@ -87,11 +87,35 @@ const MAX_CACHE_ENTRIES = 100;
 type CacheEntry = { expiresAt: number; value: DecisionInsight[] | null };
 const cache = new Map<string, CacheEntry>();
 const inFlight = new Map<string, Promise<DecisionInsight[] | null>>();
+const PROVIDER_ERROR_STATUSES = new Set([
+  "CANCELLED", "UNKNOWN", "INVALID_ARGUMENT", "DEADLINE_EXCEEDED", "NOT_FOUND", "ALREADY_EXISTS",
+  "PERMISSION_DENIED", "RESOURCE_EXHAUSTED", "FAILED_PRECONDITION", "ABORTED", "OUT_OF_RANGE",
+  "UNIMPLEMENTED", "INTERNAL", "UNAVAILABLE", "DATA_LOSS", "UNAUTHENTICATED",
+]);
 
 function logGemini(outcome: "SUCCESS" | "FALLBACK" | "CACHE_HIT" | "DEDUPLICATED", reason: string, details: Record<string, unknown> = {}) {
   console.info(JSON.stringify({ timestamp: new Date().toISOString(), event: "GEMINI_INSIGHTS", outcome,
     source: outcome === "SUCCESS" || (outcome === "CACHE_HIT" && reason === "CACHED_GEMINI") ? "GOOGLE_GEMINI" : "SYSTEM_ANALYSIS",
     reason, ...details }));
+}
+
+function safeModelId() {
+  return /^[a-zA-Z0-9._-]{1,100}$/.test(env.GEMINI_MODEL) ? env.GEMINI_MODEL : "INVALID_MODEL_ID";
+}
+
+async function classifyProviderError(response: Response) {
+  let providerCode: number | null = null;
+  let providerStatus = "UNKNOWN";
+  try {
+    const payload = await response.json() as { error?: { code?: unknown; status?: unknown } };
+    const code = payload?.error?.code;
+    const status = payload?.error?.status;
+    if (typeof code === "number" && Number.isInteger(code) && code >= 400 && code <= 599) providerCode = code;
+    if (typeof status === "string" && PROVIDER_ERROR_STATUSES.has(status)) providerStatus = status;
+  } catch {
+    // The fallback remains available even when the provider error body is absent or malformed.
+  }
+  return { providerCode, providerStatus, modelId: safeModelId() };
 }
 
 function cacheKey(findings: GeminiFindings) {
@@ -149,7 +173,12 @@ async function requestStructuredGemini<T>(input: {
       }),
     });
     if (!response.ok) {
-      logGemini("FALLBACK", `HTTP_${Math.floor(response.status / 100)}XX`, { feature: input.feature, httpStatus: response.status });
+      const providerError = await classifyProviderError(response);
+      logGemini("FALLBACK", `HTTP_${Math.floor(response.status / 100)}XX`, {
+        feature: input.feature,
+        httpStatus: response.status,
+        ...providerError,
+      });
       return null;
     }
     let payload: { candidates?: { content?: { parts?: { text?: string }[] } }[] };
