@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import pg from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+const geminiMocks = vi.hoisted(() => ({ generate: vi.fn() }));
+vi.mock("../services/geminiInsights.service.js", () => ({ generateGeminiShrinkageAnalysis: geminiMocks.generate }));
 
 const databaseUrl = process.env.PHASE_C_E2E_DATABASE_URL;
 const suite = databaseUrl ? describe : describe.skip;
@@ -23,6 +26,7 @@ suite("inventory variance to system-detected anomaly PostgreSQL integration", ()
   let listShrinkageReports: Awaited<typeof import("./inventoryWorkflow.controller.js")>["listShrinkageReports"];
   let getShrinkageReport: Awaited<typeof import("./inventoryWorkflow.controller.js")>["getShrinkageReport"];
   let submitShrinkageInvestigation: Awaited<typeof import("./inventoryWorkflow.controller.js")>["submitShrinkageInvestigation"];
+  let getShrinkageAiAnalysis: Awaited<typeof import("./shrinkageAi.controller.js")>["getShrinkageAiAnalysis"];
   let branchId = "";
   let otherBranchId = "";
   let managerId = "";
@@ -66,6 +70,7 @@ suite("inventory variance to system-detected anomaly PostgreSQL integration", ()
     process.env.DATABASE_URL = databaseUrl;
     pool = new pg.Pool({ connectionString: databaseUrl });
     ({ submitInventoryCount, listInventoryVariances, listShrinkageReports, getShrinkageReport, submitShrinkageInvestigation } = await import("./inventoryWorkflow.controller.js"));
+    ({ getShrinkageAiAnalysis } = await import("./shrinkageAi.controller.js"));
 
     const { manilaBusinessDate } = await import("../services/businessTime.service.js");
     const today = new Date(`${manilaBusinessDate()}T12:00:00+08:00`);
@@ -127,7 +132,7 @@ suite("inventory variance to system-detected anomaly PostgreSQL integration", ()
 
   it("persists one traceable DETECTED case for one qualifying submitted variance", async () => {
     const openingQuantities = Object.fromEntries(Object.values(itemIds).map((id) => [id, 5000]));
-    await submitCount("OPENING", openingQuantities);
+    const opening = await submitCount("OPENING", openingQuantities);
     await pool.query(
       `INSERT INTO pos_daily_declarations(branch_id,business_date,declaration,notes,declared_by)
        VALUES($1,$2,'NO_SALES_CLOSED','Disposable no-sales closing prerequisite',$3)`,
@@ -189,6 +194,47 @@ suite("inventory variance to system-detected anomaly PostgreSQL integration", ()
       [materialItem.id],
     );
     expect(persisted.rows[0]?.count).toBe(1);
+
+    const interval = (await pool.query<{ occurredAt: Date }>(
+      `SELECT opening.effective_at + ((closing.effective_at-opening.effective_at)/2) "occurredAt"
+         FROM inventory_counts opening
+         JOIN inventory_counts closing ON closing.id=$2
+        WHERE opening.id=$1`,
+      [opening.id, closing.id],
+    )).rows[0]!;
+    const incidentId = randomUUID();
+    const incidentItemId = randomUUID();
+    await pool.query(
+      `INSERT INTO incident_reports(id,submitted_by,branch_id,inventory_item_id,incident_type,quantity,occurred_at,reason,status,verified_by,verified_at)
+       VALUES($1,$2,$3,$4,'SPILLAGE',1000,$5,'Disposable AI candidate','VERIFIED',$2,now())`,
+      [incidentId, managerId, branchId, itemIds.material, interval.occurredAt],
+    );
+    await pool.query(
+      `INSERT INTO incident_report_items(id,incident_report_id,inventory_item_id,quantity,unit)
+       VALUES($1,$2,$3,1000,'g')`,
+      [incidentItemId, incidentId, itemIds.material],
+    );
+    geminiMocks.generate.mockResolvedValueOnce({
+      observation: "The shortage and incident quantities align.",
+      risk: "The incident remains supporting evidence only.",
+      recommendation: "Review the evidence before classification.",
+      limitations: "No causal conclusion is established.",
+    });
+    const ai = responseHarness();
+    await getShrinkageAiAnalysis(
+      { params: { id: materialItem.shrinkageReportId }, user: manager() } as never,
+      ai.response as never,
+      () => {},
+    );
+    expect(ai.state.body).toMatchObject({ success: true, data: { source: "GOOGLE_GEMINI" } });
+    expect(geminiMocks.generate).toHaveBeenCalledWith(expect.objectContaining({
+      candidateIncidents: [expect.objectContaining({
+        incidentReportId: incidentId,
+        incidentReportItemId: incidentItemId,
+        matchQuality: "EXACT",
+        evidenceStatus: "UNVERIFIED",
+      })],
+    }));
 
     await expect(submitCount("CLOSING", {
       [itemIds.material]: 4000,

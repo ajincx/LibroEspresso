@@ -93,4 +93,25 @@ describe("shrinkage AI analysis controller", () => {
     expect(String(sql)).not.toContain("historical.archived_at IS NULL");
     expect(values).toEqual([reportId, branchId]);
   });
+
+  it("binds the incident candidate query with contiguous PostgreSQL parameters", async () => {
+    await getShrinkageAiAnalysis(request("BRANCH_MANAGER", branchId), { json: vi.fn() } as never, vi.fn());
+    const [sql, values] = mocks.poolQuery.mock.calls[1]!;
+
+    expect(String(sql)).toContain("ir.branch_id=$1");
+    expect(String(sql)).toContain("iri.inventory_item_id=$2");
+    expect(String(sql)).toContain("$3::timestamptz IS NOT NULL");
+    expect(String(sql)).toContain("ir.occurred_at<=$4::timestamptz");
+    expect(String(sql)).toContain("abs($5::numeric)");
+    expect(String(sql)).toContain("iri.unit=$6");
+    expect(String(sql)).not.toMatch(/\$7\b/);
+    expect(values).toEqual([
+      context.branchId,
+      context.inventoryItemId,
+      context.intervalStartAt,
+      context.intervalEndAt,
+      context.varianceQuantity,
+      context.unit,
+    ]);
+  });
 });

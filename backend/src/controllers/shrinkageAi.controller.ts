@@ -73,22 +73,22 @@ export const getShrinkageAiAnalysis: RequestHandler = async (req, res) => {
   const incidents = await pool.query<{ incidentReportId:string; incidentReportItemId:string; incidentType: string; occurredAt:string|Date; quantity: number; unit: string; status: string; matchQuality:"EXACT"|"APPROXIMATE"; quantityDifference:number; evidenceStatus:"UNVERIFIED" }>(
     `SELECT ir.id "incidentReportId",iri.id "incidentReportItemId",ir.incident_type "incidentType",ir.occurred_at "occurredAt",
             iri.quantity::float8,iri.unit,ir.status,
-            CASE WHEN abs(iri.quantity-abs($6::numeric))<=0.0001 THEN 'EXACT' ELSE 'APPROXIMATE' END "matchQuality",
-            abs(iri.quantity-abs($6::numeric))::float8 "quantityDifference",'UNVERIFIED' "evidenceStatus"
+            CASE WHEN abs(iri.quantity-abs($5::numeric))<=0.0001 THEN 'EXACT' ELSE 'APPROXIMATE' END "matchQuality",
+            abs(iri.quantity-abs($5::numeric))::float8 "quantityDifference",'UNVERIFIED' "evidenceStatus"
        FROM incident_reports ir
        JOIN incident_report_items iri ON iri.incident_report_id=ir.id
        CROSS JOIN calculation_settings settings
-      WHERE ir.branch_id=$2 AND iri.inventory_item_id=$3 AND iri.unit=$7
+      WHERE ir.branch_id=$1 AND iri.inventory_item_id=$2 AND iri.unit=$6
         AND NOT ir.is_test_data AND ir.archived_at IS NULL AND ir.status IN ('PENDING','VERIFIED')
-        AND $4::timestamptz IS NOT NULL AND ir.occurred_at>$4::timestamptz AND ir.occurred_at<=$5::timestamptz
-        AND abs(iri.quantity-abs($6::numeric))<=greatest(settings.variance_tolerance_quantity,(abs($6::numeric)*settings.variance_tolerance_percent/100))
+        AND $3::timestamptz IS NOT NULL AND ir.occurred_at>$3::timestamptz AND ir.occurred_at<=$4::timestamptz
+        AND abs(iri.quantity-abs($5::numeric))<=greatest(settings.variance_tolerance_quantity,(abs($5::numeric)*settings.variance_tolerance_percent/100))
         AND (ir.status='VERIFIED' OR NOT EXISTS (SELECT 1 FROM inventory_counts finalized
           WHERE finalized.branch_id=ir.branch_id
             AND finalized.count_date=(ir.occurred_at AT TIME ZONE 'Asia/Manila')::date
             AND finalized.count_type IN ('CLOSING','FULL') AND NOT finalized.is_test_data
             AND finalized.submitted_at<=ir.created_at))
-      ORDER BY abs(iri.quantity-abs($6::numeric)),ir.occurred_at DESC LIMIT 5`,
-    [id,context.branchId,context.inventoryItemId,context.intervalStartAt,context.intervalEndAt,context.varianceQuantity,context.unit],
+      ORDER BY abs(iri.quantity-abs($5::numeric)),ir.occurred_at DESC LIMIT 5`,
+    [context.branchId,context.inventoryItemId,context.intervalStartAt,context.intervalEndAt,context.varianceQuantity,context.unit],
   );
 
   const analysis = await generateGeminiShrinkageAnalysis({
